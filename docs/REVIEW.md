@@ -134,6 +134,8 @@ unified with `{name: 1}` was accepted). Fixed before the final PR:
 | Definition-only caches could leak into the root export | Export filters cached values by their field definition flag |
 | Recursive nested definition (`#Node: {next?: #Node}`) stack-overflowed | Definition evaluation participates in the cycle guard; optional nested errors are deferred |
 | Optional nested definitions were selectable (`#D.#X`) | Optional definitions are excluded from the selectable definitions map |
+| Optional fields were referenceable by bare name after being cached | Optional values are removed from the cache after constraint collection; bare/selector access reports `cannot reference optional field` |
+| Recursive definition materialization and self-selection inside a definition | Explicitly documented as out of scope in `docs/SCOPE.md`; the non-materialized recursive definition still loads |
 
 ## Deliberately deferred / residual risks
 
