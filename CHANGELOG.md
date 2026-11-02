@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.3
+
+Alias conflict coverage.
+
+- Aliases/lets conflict with import aliases and `_` aliases are rejected.
+- Alias/comprehension-binding conflicts are detected; sibling scopes remain
+  valid.
+- LANGUAGE scope text corrected.
+- 131 tests (23 CLI E2E, 1 conformance, 97 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.2
 
 Alias scoping correction.

@@ -22,7 +22,7 @@ workflow: {
 
 - `params` is optional. A concrete value is a fixed constraint; use `*value` for an overridable default. A parameter with no default must be supplied with `-p name=value`. Parameters must live under the top-level `params` struct.
 - The Rust evaluator JSON-coerces `-p` values (`5` → int, `true` → bool, `[..]` → list, otherwise string). `@tag` attributes are accepted but are not used for type-directed injection in the Rust path. The official oracle honours `@tag(name,type=...)`.
-- Definitions, `let`, imports, comprehensions and builtins are supported by the Rust evaluator as described in [COMPLIANCE.md](COMPLIANCE.md). Closedness, pattern constraints and CUE field aliases are out of scope.
+- Definitions, closedness, patterns, aliases, `let`, imports, comprehensions and builtins are supported by the Rust evaluator as described in [COMPLIANCE.md](COMPLIANCE.md).
 - Only the evaluated concrete `workflow` value is read; other top-level fields are not consumed by the engine (same-package siblings are still unified, as in CUE).
 
 ## Supported CUE surface
@@ -53,7 +53,7 @@ workflow: {
 }
 ```
 
-The Rust evaluator handles package selection, same-package sibling files, imports (`strings`, `list`), local modules via `cue.mod`, relative imports, file-scoped lazy `let`, `for`/`if` struct comprehensions (including clause sequences), dynamic labels, nested field shorthand, closed definitions (with `...`, nested closedness, optional constraints and `[string]`/regex patterns), field aliases, unification, defaults and disjunctions with narrowing, optional fields, `[...T]` / `[x, ...T]` open lists, and the `strings`/`list`/`len` builtins. Clause sequences (`for ... if`), nested comprehension clauses and list comprehensions are implemented. the full disjunction lattice over bounds/patterns, tool packages and optional/open metadata on non-definition struct literals are out of scope; see [SCOPE.md](SCOPE.md).
+The Rust evaluator handles package selection, same-package sibling files, imports (`strings`, `list`), local modules via `cue.mod`, relative imports, file-scoped lazy `let`, `for`/`if` struct comprehensions (including clause sequences), dynamic labels, nested field shorthand, closed definitions (with `...`, nested closedness, optional constraints and `[string]`/regex patterns), field aliases, unification, defaults and disjunctions with narrowing, optional fields, `[...T]` / `[x, ...T]` open lists, and the `strings`/`list`/`len` builtins. Clause sequences (`for ... if`), nested comprehension clauses and list comprehensions are implemented. The full disjunction lattice over bounds/patterns, tool packages and optional/open metadata on non-definition struct literals are out of scope; see [SCOPE.md](SCOPE.md).
 
 ## Workflow fields
 

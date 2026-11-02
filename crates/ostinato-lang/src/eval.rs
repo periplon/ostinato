@@ -252,7 +252,7 @@ impl Value {
 /// Returns evaluation errors for undefined references, cyclic references,
 /// conflicting values and non-concrete disjunctions.
 pub fn eval_file(file: &File) -> Result<Value, LangError> {
-    crate::scope::validate_aliases(&file.items)?;
+    crate::scope::validate_aliases(&file.items, &[])?;
     let frame = Frame::new(&file.items, None, HashMap::new())?;
     frame.to_struct_value()
 }
@@ -274,7 +274,7 @@ pub fn eval_file_with_overrides(
     file: &File,
     overrides: &BTreeMap<String, Value>,
 ) -> Result<Value, LangError> {
-    crate::scope::validate_aliases(&file.items)?;
+    crate::scope::validate_aliases(&file.items, &[])?;
     let frame = Frame::from_static(&file.items, None, HashMap::new())?;
     for (key, value) in overrides {
         frame
@@ -314,7 +314,8 @@ pub fn eval_file_with_imports_mode(
     overrides: &BTreeMap<String, Value>,
     include_definitions: bool,
 ) -> Result<Value, LangError> {
-    crate::scope::validate_aliases(&file.items)?;
+    let import_aliases: Vec<String> = imports.keys().cloned().collect();
+    crate::scope::validate_aliases(&file.items, &import_aliases)?;
     let mut vars = HashMap::new();
     for (name, value) in imports {
         vars.insert(name.clone(), value.clone());
