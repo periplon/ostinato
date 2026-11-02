@@ -9,7 +9,12 @@ use crate::error::LangError;
 /// Returns an error for invalid alias declarations (duplicates, field
 /// conflicts, unreferenced aliases).
 pub fn rename_file_locals(file: &mut File, file_index: usize) -> Result<(), LangError> {
-    validate_aliases(&file.items)?;
+    let import_aliases: Vec<String> = file
+        .imports
+        .iter()
+        .map(|import| import.alias.clone())
+        .collect();
+    validate_aliases(&file.items, &import_aliases)?;
     let prefix = format!("__ost_f{file_index}_");
     let mut locals = HashMap::new();
     for import in &file.imports {
@@ -49,6 +54,7 @@ struct AliasScope {
     parent: Option<usize>,
     fields: HashSet<String>,
     lets: HashSet<String>,
+    bindings: HashSet<String>,
     aliases: HashMap<String, usize>,
 }
 
@@ -89,6 +95,7 @@ impl AliasCtx {
             parent,
             fields: HashSet::new(),
             lets: HashSet::new(),
+            bindings: HashSet::new(),
             aliases: HashMap::new(),
         });
 
@@ -99,6 +106,13 @@ impl AliasCtx {
                         self.scopes[id].fields.insert(name.clone());
                     }
                     if let Some(alias) = &field.alias {
+                        if alias == "_" {
+                            return Err(LangError::eval(
+                                field.span.line,
+                                field.span.col,
+                                "cannot use _ as alias or let clause",
+                            ));
+                        }
                         if self.scopes[id].aliases.contains_key(alias) {
                             return Err(LangError::eval(
                                 field.span.line,
@@ -117,6 +131,9 @@ impl AliasCtx {
                     }
                 }
                 StructItem::Let { name, .. } => {
+                    if name == "_" {
+                        return Err(LangError::eval(1, 1, "cannot use _ as alias or let clause"));
+                    }
                     self.scopes[id].lets.insert(name.clone());
                 }
                 _ => {}
@@ -154,7 +171,11 @@ impl AliasCtx {
                         body_shadow.insert(key.clone());
                     }
                     body_shadow.insert(value.clone());
-                    self.scope(body, Some(id), &chain, &body_shadow)?;
+                    let body_id = self.scope(body, Some(id), &chain, &body_shadow)?;
+                    if let Some(key) = key {
+                        self.scopes[body_id].bindings.insert(key.clone());
+                    }
+                    self.scopes[body_id].bindings.insert(value.clone());
                 }
                 StructItem::If { cond, body, .. } => {
                     self.expr(cond, &chain, &local_shadow)?;
@@ -224,6 +245,16 @@ impl AliasCtx {
                 }
             }
             Expr::ListComp { clauses, body, .. } => {
+                let comp_id = self.scopes.len();
+                self.scopes.push(AliasScope {
+                    parent: chain.last().copied(),
+                    fields: HashSet::new(),
+                    lets: HashSet::new(),
+                    bindings: HashSet::new(),
+                    aliases: HashMap::new(),
+                });
+                let mut comp_chain = chain.to_vec();
+                comp_chain.push(comp_id);
                 let mut body_shadow = shadowed.clone();
                 for clause in clauses {
                     match clause {
@@ -233,15 +264,17 @@ impl AliasCtx {
                             self.expr(source, chain, shadowed)?;
                             if let Some(key) = key {
                                 body_shadow.insert(key.clone());
+                                self.scopes[comp_id].bindings.insert(key.clone());
                             }
                             body_shadow.insert(value.clone());
+                            self.scopes[comp_id].bindings.insert(value.clone());
                         }
                         CompClause::If { cond, .. } => {
-                            self.expr(cond, chain, &body_shadow)?;
+                            self.expr(cond, &comp_chain, &body_shadow)?;
                         }
                     }
                 }
-                self.expr(body, chain, &body_shadow)?;
+                self.expr(body, &comp_chain, &body_shadow)?;
             }
             Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
                 self.expr(left, chain, shadowed)?;
@@ -270,16 +303,19 @@ impl AliasCtx {
 /// # Errors
 /// Returns an evaluation error for duplicate aliases, alias/field conflicts in
 /// enclosing scopes, and unreferenced aliases.
-pub fn validate_aliases(items: &[StructItem]) -> Result<(), LangError> {
+pub fn validate_aliases(items: &[StructItem], import_aliases: &[String]) -> Result<(), LangError> {
     let mut ctx = AliasCtx {
         scopes: Vec::new(),
         aliases: Vec::new(),
     };
-    ctx.scope(items, None, &[], &HashSet::new())?;
+    let root = ctx.scope(items, None, &[], &HashSet::new())?;
+    for alias in import_aliases {
+        ctx.scopes[root].bindings.insert(alias.clone());
+    }
 
     for alias in &ctx.aliases {
         for (scope_id, scope) in ctx.scopes.iter().enumerate() {
-            if scope.fields.contains(&alias.name)
+            if (scope.fields.contains(&alias.name) || scope.bindings.contains(&alias.name))
                 && (ctx.is_ancestor(alias.scope, scope_id)
                     || ctx.is_ancestor(scope_id, alias.scope))
             {
@@ -299,6 +335,20 @@ pub fn validate_aliases(items: &[StructItem]) -> Result<(), LangError> {
                 alias.span.col,
                 format!("unreferenced alias `{}`", alias.name),
             ));
+        }
+    }
+    for (scope_id, scope) in ctx.scopes.iter().enumerate() {
+        for name in &scope.lets {
+            if import_aliases.contains(name) {
+                let _ = scope_id;
+                return Err(LangError::eval(
+                    1,
+                    1,
+                    format!(
+                        "cannot have both alias and field with name `{name}` in the same scope"
+                    ),
+                ));
+            }
         }
     }
     Ok(())

@@ -1903,3 +1903,60 @@ d: X
     let value = ostinato_lang::eval_file(&file).expect("conditional alias");
     assert_eq!(value.to_json().expect("json")["c"], 1);
 }
+
+#[test]
+fn aliases_conflict_with_comprehension_bindings() {
+    for source in [
+        "X=a: 1\nfor X in [1] {b: X}\nc: X",
+        "X=a: 1\nl: [for X in [1, 2] {X + 1}]",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        let error = ostinato_lang::eval_file(&file).expect_err("binding conflict");
+        assert!(error.to_string().contains("both alias and field"));
+    }
+
+    let siblings = r#"
+package demo
+b: {for X in [1] {c: X}}
+d: {X=e: 1, f: X}
+"#;
+    let file = ostinato_lang::parse(siblings).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_ok());
+}
+
+#[test]
+fn aliases_and_lets_conflict_with_import_names() {
+    let alias = r#"
+package demo
+strings=a: 1
+c: strings
+"#;
+    let file = ostinato_lang::parse(alias).expect("parse");
+    let imports = BTreeMap::from([(
+        "strings".to_owned(),
+        ostinato_lang::builtin_module("strings").expect("strings"),
+    )]);
+    let error = ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new())
+        .expect_err("import alias conflict");
+    assert!(error.to_string().contains("both alias and field"));
+
+    let let_binding = r#"
+package demo
+let strings = 1
+c: strings
+"#;
+    let file = ostinato_lang::parse(let_binding).expect("parse");
+    assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
+}
+
+#[test]
+fn underscore_alias_is_rejected() {
+    let source = r#"
+package demo
+_=a: 1
+c: _
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("underscore alias");
+    assert!(error.to_string().contains("cannot use _ as alias"));
+}
