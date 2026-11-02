@@ -229,7 +229,7 @@ crates/
 
 Dependency rule: `domain ← application ← adapters ← cli`; `lang` is used by the application for templates/conditions and by the native loader. Adapters implement ports; the engine never imports an adapter.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and SOLID mapping.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and SOLID mapping. The expert review record and residual risks are in [docs/REVIEW.md](docs/REVIEW.md).
 
 ## CUE compliance
 
