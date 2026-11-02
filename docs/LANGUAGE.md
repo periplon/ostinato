@@ -53,7 +53,7 @@ workflow: {
 }
 ```
 
-The Rust evaluator handles package selection, same-package sibling files, imports (`strings`, `list`), local modules via `cue.mod`, relative imports, file-scoped lazy `let`, `for`/`if` struct comprehensions (including clause sequences), dynamic labels, nested field shorthand, definitions/unification, defaults, optional fields, `[...T]` / `[x, ...T]` open lists, and the `strings`/`list`/`len` builtins. Clause sequences (`for ... if`), nested comprehension clauses, list comprehensions and closed definitions are implemented. Pattern constraints, CUE aliases, the full disjunction lattice, tool packages and narrowing a defaulted constraint with `&` are out of scope; see [SCOPE.md](SCOPE.md).
+The Rust evaluator handles package selection, same-package sibling files, imports (`strings`, `list`), local modules via `cue.mod`, relative imports, file-scoped lazy `let`, `for`/`if` struct comprehensions (including clause sequences), dynamic labels, nested field shorthand, definitions/unification, defaults, optional fields, `[...T]` / `[x, ...T]` open lists, and the `strings`/`list`/`len` builtins. Clause sequences (`for ... if`), nested comprehension clauses, list comprehensions and closed definitions are implemented. Pattern constraints, CUE aliases, the full disjunction lattice, tool packages, nested closedness, optional/open metadata on non-definition struct literals and narrowing a defaulted constraint with `&` are out of scope; see [SCOPE.md](SCOPE.md).
 
 ## Workflow fields
 

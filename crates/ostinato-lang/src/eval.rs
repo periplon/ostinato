@@ -1607,11 +1607,12 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             for key in fields.keys() {
                 optional.remove(key);
             }
-            let open = *open_a || *open_b;
-            let allowed: BTreeSet<String> = if open {
-                allowed_a.union(allowed_b).cloned().collect()
-            } else {
-                allowed_a.intersection(allowed_b).cloned().collect()
+            let open = *open_a && *open_b;
+            let allowed: BTreeSet<String> = match (*open_a, *open_b) {
+                (true, true) => allowed_a.union(allowed_b).cloned().collect(),
+                (true, false) => allowed_b.clone(),
+                (false, true) => allowed_a.clone(),
+                (false, false) => allowed_a.intersection(allowed_b).cloned().collect(),
             };
             optional.retain(|key, _| open || allowed.contains(key));
             Ok(Value::Closed {

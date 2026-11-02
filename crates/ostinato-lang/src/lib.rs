@@ -1,10 +1,10 @@
 //! CUE-compatible front-end for Ostinato.
 //!
-//! The **default** evaluator used by the CLI is the official CUE
-//! implementation (see `docs/COMPLIANCE.md`). This crate provides:
+//! The **default** evaluator used by the CLI is the Rust implementation in this
+//! crate (see `docs/SCOPE.md`). Official CUE is the conformance oracle used by
+//! `--evaluator cue`. This crate provides:
 //!
-//! * a native lexer/parser/evaluator for a documented CUE subset, used by
-//!   `--evaluator native` and by tests that must run without external tools;
+//! * a lexer/parser/evaluator for the workflow-oriented CUE surface;
 //! * the typed workflow compiler shared by both evaluators;
 //! * runtime condition and template evaluation.
 //!

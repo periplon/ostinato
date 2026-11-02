@@ -34,6 +34,7 @@ workflow outside the Rust surface has a supported escape hatch.
 |---|---|
 | Pattern constraints `[string]: T`, `[=~"re"]: T` | Not required by the workflow schema; closedness-with-patterns is a full lattice feature |
 | Nested closedness enforcement | Closed definitions enforce allowed/optional names at their top level; nested structs and list elements remain open |
+| Optional/open metadata on non-definition struct literals | `base: {b?: int}; #D: base` and `{b?: string} & {b: 1}` are out of scope; use a definition literal or the oracle |
 | Full disjunction lattice and `&` over disjunctions | A constraint solver, not a workflow language feature |
 | Multiple defaults / default-set semantics | Workflow parameters use one default; official oracle for the rest |
 | Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |
