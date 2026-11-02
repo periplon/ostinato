@@ -14,6 +14,12 @@ for non-draft PRs and therefore waits for these checks before squashing.
 
 ## v0.2.2
 
+- Code merge: `165a6c6` (PR [#20](https://github.com/periplon/ostinato/pull/20))
+- CI run: `41513612756` — `fmt / clippy / test`, `dependency audit` and
+  `auto-merge when green` all pass; merged automatically.
+- Hardening series: PRs #12–#20 (closedness removal, optional/definition
+  semantics, nested selectors, generated optionals, optional references).
+- Independent post-merge review of `165a6c6`: **passes** (82 tests).
 - Closedness removed from the Rust evaluator after review found unresolved
   semantic edge cases; definitions are documented as open in `docs/SCOPE.md`.
 - Follow-up language fixes: optional constraints across definitions, nested
