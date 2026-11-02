@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.2.1 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.2.2 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -26,9 +26,8 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | `let` declarations | ✅ | File-scoped, lazy (forward references work) |
 | `for` / `if` struct comprehensions | ✅ | Including clause sequences and nested `for` |
 | List comprehensions (`[for ... { expr }]`) | ✅ | |
-| Closed definitions (`#Def`) | ✅ | Top-level allowed/optional names; nested closedness and patterns are out of scope |
 | Nested field shorthand (`exec: cmd: [...]`) | ✅ | |
-| Definitions (`#Foo`) and unification (`&`) | ✅ | Definition references/unification and top-level closedness; metadata on non-definition structs is out of scope |
+| Definitions (`#Foo`) and unification (`&`) | ✅ | References and structural unification; definitions are open (closedness is out of scope) |
 | Defaults and multi-branch disjunctions | ✅ | First default wins; narrowing a defaulted constraint with `&` is out of scope |
 | Optional fields (`foo?:`) | ✅ | Omitted from the concrete export, matching `cue export` |
 | Open lists (`[...T]`, `[x, ...T]`) | ✅ | Prefix and element constraints are unified |
@@ -76,7 +75,6 @@ The corpus lives in [`conformance/`](../conformance):
 - `scope/` — file-scoped `let` shadowing.
 - `hidden/` — `_test.cue`/underscore exclusions.
 - `versioned/` — versioned module path/import alias.
-- `closedness.cue` — closed definitions, optional fields, open `...`.
 - `module/complex.cue` — local module import, `let`, comprehension, definition, builtin, `[...string]`, imported `#Step`.
 
 The test runs each source through the Rust loader and the official CUE oracle, compiles both, and asserts that `workflow` and `params` are identical:

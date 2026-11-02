@@ -1,10 +1,22 @@
 # Changelog
 
+## v0.2.2
+
+Scope correction: closedness removed from the Rust evaluator.
+
+- Definitions are evaluated as **open structs**. No allowed-field enforcement.
+  The earlier closedness implementation had unresolved edge cases (optional
+  fields, generated optionals, open/closed intersection) and could diverge
+  from CUE. It is removed from both behavior and claims.
+- `docs/SCOPE.md` states the limitation explicitly; `--evaluator cue` remains
+  the escape hatch for workflows that need true closedness.
+- No other language or runtime changes.
+- 62 tests (23 CLI E2E, 1 conformance, 28 language, 6 domain, 3 store, 1 unit).
+
 ## v0.2.1
 
-Closedness and remaining workflow-language semantics.
+Remaining workflow-language semantics and explicit scope.
 
-- Closed definitions (`#Def`) reject fields outside the definition.
 - Comprehension clause sequences (`for ... if ...`, nested `for`) and list
   comprehensions (`[for ... { expr }]`).
 - Explicit scope decision: workflow-oriented CUE, not a full constraint solver.
