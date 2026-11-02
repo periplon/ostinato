@@ -20,7 +20,7 @@ workflow: {
 }
 ```
 
-- `params` is optional. Concrete values become defaults. A parameter with no default must be supplied with `-p name=value`; CUE's `@tag` injection enforces this.
+- `params` is optional. A concrete value is a fixed constraint; use `*value` for an overridable default. A parameter with no default must be supplied with `-p name=value`; CUE's `@tag` injection enforces this. Parameters must live under the top-level `params` struct.
 - Tag injection is string-typed by default. Use `@tag(name,type=int)`, `type=number`, or `type=bool` for typed parameters.
 - Definitions, templates, imports, `let`, comprehensions and builtins are ordinary CUE and work normally.
 - Only the evaluated concrete `workflow` value is read; anything else in the file is ignored by the engine.

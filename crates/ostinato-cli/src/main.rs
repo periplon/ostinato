@@ -339,33 +339,65 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             command: AuditCommand::Verify { run },
         } => {
             let (engine, _) = build_runtime(&cli, None, None)?;
-            let events = engine.store().events(&run)?;
+            let snapshot = engine
+                .store()
+                .snapshot(&run)?
+                .with_context(|| format!("run not found: {run}"))?;
+            let events = snapshot.events;
+            let record = snapshot.run;
+            let steps = snapshot.steps;
             match audit::verify_chain(&events) {
                 Ok(()) => {
                     let head = events.last().map_or_else(
                         || audit::GENESIS_HASH.to_owned(),
                         |event| event.hash.clone(),
                     );
-                    let record = engine
-                        .store()
-                        .load_run(&run)?
-                        .with_context(|| format!("run not found: {run}"))?;
                     if head != record.audit_head {
                         eprintln!(
                             "AUDIT FAILED run={run}: audit tail does not match the persisted head"
                         );
                         return Ok(ExitCode::FAILURE);
                     }
-                    let steps = engine.store().steps(&run)?;
+                    if let Some(expected) = ostinato_domain::lifecycle_status(&events)
+                        && record.status.as_str() != expected
+                    {
+                        eprintln!(
+                            "AUDIT FAILED run={run}: status row is `{}` but the audit chain ends in `{expected}`",
+                            record.status.as_str()
+                        );
+                        return Ok(ExitCode::FAILURE);
+                    }
                     let digest = ostinato_domain::state_digest(
                         &record.spec,
                         &record.params,
+                        &record.source_file,
                         record.resume_index,
                         &steps,
                     );
                     if digest != record.state_hash {
                         eprintln!(
                             "AUDIT FAILED run={run}: execution state does not match the persisted digest"
+                        );
+                        return Ok(ExitCode::FAILURE);
+                    }
+                    let anchored = events
+                        .iter()
+                        .rev()
+                        .find(|event| event.kind == "state.committed")
+                        .and_then(|event| event.data.get("stateHash"))
+                        .and_then(|value| value.as_str())
+                        .or_else(|| {
+                            events
+                                .iter()
+                                .find(|event| event.kind == "run.started")
+                                .and_then(|event| event.data.get("stateHash"))
+                                .and_then(|value| value.as_str())
+                        });
+                    if let Some(anchored) = anchored
+                        && anchored != record.state_hash
+                    {
+                        eprintln!(
+                            "AUDIT FAILED run={run}: execution state is not anchored in the audit chain"
                         );
                         return Ok(ExitCode::FAILURE);
                     }

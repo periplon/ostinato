@@ -23,7 +23,7 @@ pub mod template;
 pub use compile::{
     CompiledWorkflow, ParamSpec, compile, compile_json, compile_value, compile_with_params,
 };
-pub use condition::eval_condition;
+pub use condition::{eval_condition, validate_condition};
 pub use error::LangError;
 pub use eval::{
     TypeKind, Value, eval_expr_with_json, eval_file, eval_file_with_overrides, value_from_json,

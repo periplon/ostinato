@@ -25,7 +25,9 @@ improvements(id, run_id, parent_id, round, diagnosis, proposal_json, created_at)
 ```
 
 Pragmas: WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`.
-The database is created with mode `0600` on Unix.
+The database and its `-wal`/`-shm` sidecars are created with mode `0600` on Unix.
+Schema migrations run once, gated by `PRAGMA user_version`; clearing an integrity
+hash after migration is treated as tampering, not as a repair request.
 
 ### Backup
 
@@ -93,7 +95,8 @@ SHA256(run_id 0x1f seq_be_u64 0x1f ts 0x1f kind 0x1f step 0x1f prev_hash 0x1f js
 ```
 
 `runs.audit_head` stores the latest hash and `runs.state_hash` digests the
-execution-relevant state (`spec`, `params`, `resume_index`, step status/output).
+execution-relevant state (`spec`, `params`, `source_file`, `resume_index`, step
+status/output). `state.committed` events embed the digest in the chained history.
 Verification compares both, so payload edits, spec/checkpoint/output tampering
 and tail truncation are detected. Any mismatch is reported as `AUDIT FAILED`
 with the sequence number and exits 1. Appending to a truncated chain is refused.

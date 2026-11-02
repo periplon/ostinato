@@ -12,7 +12,7 @@ pub mod run;
 pub mod trial;
 pub mod workflow;
 
-pub use audit::{AuditEvent, NewEvent, state_digest};
+pub use audit::{AuditEvent, NewEvent, lifecycle_status, state_digest};
 pub use error::DomainError;
 pub use plan::{Plan, PlanNode, build_plan};
 pub use run::{RunRecord, RunReport, RunStatus, StepRecord, StepStatus};

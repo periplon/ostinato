@@ -27,10 +27,16 @@ cue export .:<package> --out json -e params   [-t key=value ...]
 - For a directory source, the instance is `.` inside that directory.
 - For a file, the package name is read from its `package` clause and the
   instance is `.:<package>`; CUE then sees every sibling file in the package.
-- Only `workflow` and `params` are exported, so unrelated incomplete or
-  conflicting top-level fields are not evaluated.
+- A file with no `package` clause (or `package _`) is exported by filename,
+  because CUE has no package instance for it.
+- Only `workflow` and `params` are exported, so unrelated **incomplete**
+  top-level fields are not evaluated. A conflicting sibling still makes the
+  package invalid, exactly as `cue export` does.
 - `-p/--param` values are passed as CUE `-t` tag injections. Use
-  `@tag(name,type=int)`, `type=bool`, `type=number` for non-strings.
+  `@tag(name,type=int)`, `type=bool`, `type=number` for non-strings. A concrete
+  value is a fixed constraint; write `*value` for an overridable default.
+- Parameters must live under the top-level `params` struct; `-p` is rejected if
+  there is no `params` struct.
 - A nonzero exit is surfaced with the command's exit code and stderr. If
   `params` is absent, the second export is treated as `{}` **only** when CUE
   reports `reference "params" not found`.
@@ -44,7 +50,8 @@ cue export .:<package> --out json -e params   [-t key=value ...]
 | **v0.17.1** (current at time of writing) | full run, module import, `let`, comprehension, definition, optional field, `@tag`, split packages, audit |
 | < v0.17.1 | rejected with a clear error |
 
-`CueCliLoader::new` parses `cue version` and requires **>= v0.17.1**. CI
+`CueCliLoader::new` parses `cue version` (including `-rc`/`+meta` suffixes) and
+requires **>= v0.17.1**. CI
 installs v0.17.1 from the official release tarball (`scripts/install-cue.sh`).
 `ostinato doctor` prints the detected version. The version is recorded in
 `validate` output as `evaluator=official CUE (cue version vX.Y.Z)`.
@@ -122,7 +129,7 @@ compliance.
 ### Rules for contributors
 
 - Do not add production features by extending the native evaluator.
-- If a workflow file works with `cue export`, it must work with Ostinato. The typed compiler only rejects structures that do not match the workflow schema.
+- If a workflow file works with `cue export` and declares `workflow` plus (optionally) a top-level `params` struct, it must work with Ostinato. The typed compiler only rejects structures that do not match the workflow schema; `@tag` parameters outside `params` are not part of the contract.
 - Native-subset behavior must never diverge silently: differences are explicit in this table and in the evaluator name.
 
 ## Why not embed CUE as a library?

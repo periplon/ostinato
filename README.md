@@ -31,7 +31,7 @@ CUE source ──► official `cue export` ──► typed workflow spec ──�
 
 ## Status
 
-`v0.1.1` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
+`v0.1.2` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
 
 ## Features
 
@@ -41,7 +41,7 @@ CUE source ──► official `cue export` ──► typed workflow spec ──�
 - **Retries**: bounded exponential backoff, deterministic jitter, per-attempt timeouts.
 - **Cycles**: strongly-connected components execute as bounded rounds; `until` conditions stop early.
 - **Agentic + deterministic**: `exec`, `agent`, `improve`, `noop` step kinds share one scheduler.
-- **Audit**: SHA-256 hash chain per run with a persisted head **and a state digest**; `ostinato audit verify` detects payload tampering, tail truncation and edits to the spec/checkpoint/step outputs.
+- **Audit**: SHA-256 hash chain per run with a persisted head, a state digest and a chained `state.committed` anchor; `ostinato audit verify` detects payload tampering, tail truncation, status flips and edits to the spec/checkpoint/step outputs.
 - **Trials**: append-only log of every attempt with input/output hashes, score, duration and error.
 - **Observability**: structured tracing, `status`, `logs --follow`, run metrics, Prometheus text output.
 - **Recursive improvement**: an `improve` step persists proposals; the CLI can spawn child runs from `params_patch` recursively.
@@ -229,7 +229,7 @@ crates/
 
 Dependency rule: `domain ← application ← adapters ← cli`; `lang` is used by the application for templates/conditions and by the native loader. Adapters implement ports; the engine never imports an adapter.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and SOLID mapping. The expert review record and residual risks are in [docs/REVIEW.md](docs/REVIEW.md).
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and SOLID mapping. The expert review record and residual risks are in [docs/REVIEW.md](docs/REVIEW.md); release verification is in [docs/RELEASE.md](docs/RELEASE.md).
 
 ## CUE compliance
 

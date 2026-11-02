@@ -128,6 +128,14 @@ pub struct Completion {
     pub events: Vec<NewEvent>,
 }
 
+/// Consistent read of a run, its steps and its events in one transaction.
+#[derive(Debug, Clone)]
+pub struct RunSnapshot {
+    pub run: RunRecord,
+    pub steps: Vec<StepRecord>,
+    pub events: Vec<AuditEvent>,
+}
+
 /// Aggregate metrics used by the observability CLI.
 #[derive(Debug, Clone, Default)]
 pub struct MetricsSummary {
@@ -147,6 +155,7 @@ pub struct MetricsSummary {
 pub trait Store: Send + Sync {
     fn create_run(&self, run: &RunRecord) -> PortResult<()>;
     fn load_run(&self, run_id: &str) -> PortResult<Option<RunRecord>>;
+    fn snapshot(&self, run_id: &str) -> PortResult<Option<RunSnapshot>>;
     fn list_runs(&self, limit: usize) -> PortResult<Vec<RunRecord>>;
     fn update_run_status(
         &self,

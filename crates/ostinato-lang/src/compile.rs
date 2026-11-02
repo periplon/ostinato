@@ -6,7 +6,7 @@ use ostinato_domain::{
 };
 use serde_json::{Map, Value as Json};
 
-use crate::condition::eval_condition;
+use crate::condition::validate_condition;
 use crate::error::LangError;
 use crate::eval::{TypeKind, Value, eval_file, value_from_json};
 use crate::parser::parse;
@@ -240,6 +240,21 @@ fn extract_workflow(value: &Value) -> Result<WorkflowSpec, LangError> {
 fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
     let path = format!("workflow.steps.{name}");
     let map = expect_struct(value, &path)?;
+    reject_unknown(
+        map,
+        &path,
+        &[
+            "kind",
+            "needs",
+            "retry",
+            "cycle",
+            "exec",
+            "agent",
+            "improve",
+            "continueOnError",
+            "timeoutMs",
+        ],
+    )?;
     let kind_name =
         opt_string(map, "kind", &format!("{path}.kind"))?.unwrap_or_else(|| "exec".to_owned());
     let kind = match kind_name.as_str() {
@@ -348,6 +363,9 @@ fn extract_retry(value: Option<&Value>, path: &str) -> Result<RetryPolicy, LangE
     if let Value::Int(max_retries) = value {
         let max_retries = u32::try_from(*max_retries)
             .map_err(|_| LangError::Workflow(format!("{path} must be non-negative")))?;
+        if max_retries > 100 {
+            return Err(LangError::Workflow(format!("{path} must be <= 100")));
+        }
         return Ok(RetryPolicy {
             max_retries,
             ..RetryPolicy::default()
@@ -542,17 +560,7 @@ fn dummy_value(value: &Value) -> Json {
 fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangError> {
     let mut steps = Map::new();
     for name in spec.steps.keys() {
-        steps.insert(
-            name.clone(),
-            serde_json::json!({
-                "score": 0.0,
-                "stdout": "",
-                "stderr": "",
-                "text": "",
-                "exitCode": 0,
-                "json": {},
-            }),
-        );
+        steps.insert(name.clone(), serde_json::json!({}));
     }
     let context = serde_json::json!({
         "run_id": "validate",
@@ -563,7 +571,7 @@ fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangErr
     });
     for (name, step) in &spec.steps {
         if let Some(until) = step.cycle.as_ref().and_then(|cycle| cycle.until.as_ref()) {
-            eval_condition(until, &context).map_err(|err| {
+            validate_condition(until, &context).map_err(|err| {
                 LangError::Workflow(format!(
                     "workflow.steps.{name}.cycle.until is invalid: {err}"
                 ))
