@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.1
+
+Alias validation corrections.
+
+- Alias validation is a static per-file pass before renaming: duplicate aliases,
+  alias/field conflicts across enclosing/enclosed scopes, and unreferenced
+  aliases (including optional/definition/pattern-only uses) are handled
+  syntactically.
+- Valid aliases used only inside optional fields, definitions, patterns or
+  nested scopes no longer produce false unreferenced errors.
+- 127 tests (23 CLI E2E, 1 conformance, 93 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.0
 
 CUE field aliases.

@@ -1806,3 +1806,75 @@ b: X
     let error = ostinato_lang::eval_file(&file).expect_err("alias conflict");
     assert!(error.to_string().contains("both alias and field"));
 }
+
+#[test]
+fn aliases_used_only_in_optional_definition_or_pattern_are_referenced() {
+    let optional = r#"
+package demo
+X=a: 1
+b?: X
+"#;
+    let file = ostinato_lang::parse(optional).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("optional use");
+    assert_eq!(value.to_json().expect("json")["a"], 1);
+
+    let definition = r#"
+package demo
+X=a: 1
+#D: {v: X}
+"#;
+    let file = ostinato_lang::parse(definition).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("definition use");
+    assert_eq!(value.to_json().expect("json")["a"], 1);
+
+    let pattern = r#"
+package demo
+X=a: 1
+[string]: X
+"#;
+    let file = ostinato_lang::parse(pattern).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("pattern use");
+    assert_eq!(value.to_json().expect("json")["a"], 1);
+}
+
+#[test]
+fn alias_scope_conflicts_and_duplicates_are_rejected() {
+    let duplicate = r#"
+package demo
+X=a: 2
+X=b: 3
+c: X
+"#;
+    let file = ostinato_lang::parse(duplicate).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("duplicate alias");
+    assert!(error.to_string().contains("redeclared"));
+
+    for source in [
+        "X=a: 1\nb: {X: 2}\nc: X",
+        "b: {X=a: 1, c: X}\nX: 2",
+        "X=a: 1\nif true {X: 3}\nb: X",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        let error = ostinato_lang::eval_file(&file).expect_err("alias/field conflict");
+        assert!(error.to_string().contains("both alias and field"));
+    }
+
+    let siblings = r#"
+package demo
+b: {X=a: 1, c: X}
+d: {X: 2}
+"#;
+    let file = ostinato_lang::parse(siblings).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_ok());
+}
+
+#[test]
+fn unreferenced_alias_inside_definition_is_rejected() {
+    let source = r#"
+package demo
+#D: {X=a: 1}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("unreferenced alias");
+    assert!(error.to_string().contains("unreferenced alias"));
+}

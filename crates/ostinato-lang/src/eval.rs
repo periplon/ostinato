@@ -252,6 +252,7 @@ impl Value {
 /// Returns evaluation errors for undefined references, cyclic references,
 /// conflicting values and non-concrete disjunctions.
 pub fn eval_file(file: &File) -> Result<Value, LangError> {
+    crate::scope::validate_aliases(&file.items)?;
     let frame = Frame::new(&file.items, None, HashMap::new())?;
     frame.to_struct_value()
 }
@@ -273,6 +274,7 @@ pub fn eval_file_with_overrides(
     file: &File,
     overrides: &BTreeMap<String, Value>,
 ) -> Result<Value, LangError> {
+    crate::scope::validate_aliases(&file.items)?;
     let frame = Frame::from_static(&file.items, None, HashMap::new())?;
     for (key, value) in overrides {
         frame
@@ -312,6 +314,7 @@ pub fn eval_file_with_imports_mode(
     overrides: &BTreeMap<String, Value>,
     include_definitions: bool,
 ) -> Result<Value, LangError> {
+    crate::scope::validate_aliases(&file.items)?;
     let mut vars = HashMap::new();
     for (name, value) in imports {
         vars.insert(name.clone(), value.clone());
@@ -338,7 +341,6 @@ fn json_frame(context: &Json) -> Frame<'static> {
         materialized: RefCell::new(BTreeSet::new()),
         patterns: RefCell::new(Vec::new()),
         aliases: RefCell::new(BTreeMap::new()),
-        used_aliases: RefCell::new(HashSet::new()),
         closed: Cell::new(false),
         overrides: RefCell::new(BTreeMap::new()),
         evaluating: RefCell::new(HashSet::new()),
@@ -392,7 +394,6 @@ struct Frame<'a> {
     materialized: RefCell<BTreeSet<String>>,
     patterns: RefCell<Vec<(Pattern, Expr)>>,
     aliases: RefCell<BTreeMap<String, String>>,
-    used_aliases: RefCell<HashSet<String>>,
     closed: Cell<bool>,
     overrides: RefCell<BTreeMap<String, Value>>,
     evaluating: RefCell<HashSet<String>>,
@@ -424,7 +425,6 @@ impl<'a> Frame<'a> {
             materialized: RefCell::new(BTreeSet::new()),
             patterns: RefCell::new(Vec::new()),
             aliases: RefCell::new(BTreeMap::new()),
-            used_aliases: RefCell::new(HashSet::new()),
             closed: Cell::new(parent.is_some_and(|parent| parent.closed.get())),
             overrides: RefCell::new(BTreeMap::new()),
             evaluating: RefCell::new(HashSet::new()),
@@ -669,7 +669,6 @@ impl<'a> Frame<'a> {
             return self.eval_let(name, span);
         }
         if let Some(target) = self.aliases.borrow().get(name).cloned() {
-            self.used_aliases.borrow_mut().insert(name.to_owned());
             let optional = self
                 .fields
                 .borrow()
@@ -930,7 +929,6 @@ impl<'a> Frame<'a> {
         }
         apply_patterns(&patterns, &mut fields, span)?;
         apply_optional_patterns(&patterns, &mut optional, span)?;
-        child.check_aliases()?;
         let open = items
             .iter()
             .any(|item| matches!(item, StructItem::Ellipsis(_)));
@@ -1115,26 +1113,6 @@ impl<'a> Frame<'a> {
         Ok(value)
     }
 
-    fn check_aliases(&self) -> Result<(), LangError> {
-        for alias in self.aliases.borrow().keys() {
-            if self.fields.borrow().contains_key(alias) {
-                return Err(LangError::eval(
-                    1,
-                    1,
-                    format!("cannot have both alias and field with name `{alias}`"),
-                ));
-            }
-            if !self.used_aliases.borrow().contains(alias) {
-                return Err(LangError::eval(
-                    1,
-                    1,
-                    format!("unreferenced alias `{alias}`"),
-                ));
-            }
-        }
-        Ok(())
-    }
-
     fn to_struct_value(&self) -> Result<Value, LangError> {
         self.to_struct_value_mode(false)
     }
@@ -1180,7 +1158,6 @@ impl<'a> Frame<'a> {
                 out.insert(name.clone(), value.clone());
             }
         }
-        self.check_aliases()?;
         Ok(Value::Struct(out))
     }
 }
