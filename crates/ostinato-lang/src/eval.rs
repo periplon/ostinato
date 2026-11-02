@@ -598,22 +598,49 @@ impl<'a> Frame<'a> {
             return self.eval_params_struct(&items, span);
         }
         if is_definition {
+            if self.evaluating.borrow().contains(name) {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("cyclic reference while evaluating `{name}`"),
+                ));
+            }
+            self.evaluating.borrow_mut().insert(name.to_owned());
             let result = if let Some(items) = self.params_items(&exprs) {
-                self.eval_definition_items(&items, span)?
+                self.eval_definition_items(&items, span)
             } else if exprs.len() == 1 {
-                self.eval_definition_expr(&exprs[0], span)?
+                self.eval_definition_expr(&exprs[0], span)
             } else {
                 let mut result = Value::Bottom;
+                let mut error = None;
                 for expr in &exprs {
-                    let value = self.eval_definition_expr(expr, span)?;
-                    result = if matches!(result, Value::Bottom) {
-                        value
-                    } else {
-                        unify_values(&result, &value, span)?
-                    };
+                    match self.eval_definition_expr(expr, span) {
+                        Ok(value) => {
+                            result = if matches!(result, Value::Bottom) {
+                                value
+                            } else {
+                                match unify_values(&result, &value, span) {
+                                    Ok(value) => value,
+                                    Err(err) => {
+                                        error = Some(err);
+                                        break;
+                                    }
+                                }
+                            };
+                        }
+                        Err(err) => {
+                            error = Some(err);
+                            break;
+                        }
+                    }
                 }
-                result
+                match error {
+                    Some(err) => Err(err),
+                    None => Ok(result),
+                }
             };
+            self.evaluating.borrow_mut().remove(name);
+            let result = result?;
             self.values
                 .borrow_mut()
                 .insert(name.to_owned(), result.clone());
@@ -658,7 +685,14 @@ impl<'a> Frame<'a> {
         let mut definitions = BTreeMap::new();
         for name in names {
             if definition_names.contains(&name) {
-                definitions.insert(name.clone(), child.eval_field(&name, span)?);
+                let optional = child
+                    .fields
+                    .borrow()
+                    .get(&name)
+                    .is_some_and(|definition| definition.optional);
+                if !optional {
+                    definitions.insert(name.clone(), child.eval_field(&name, span)?);
+                }
                 continue;
             }
             let declared_optional = child
