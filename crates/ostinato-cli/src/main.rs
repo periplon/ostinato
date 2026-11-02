@@ -32,7 +32,7 @@ struct Cli {
     db: PathBuf,
 
     /// Language evaluator. `cue` uses the official implementation.
-    #[arg(long, global = true, value_enum, default_value_t = Evaluator::Cue)]
+    #[arg(long, global = true, value_enum, default_value_t = Evaluator::Rust)]
     evaluator: Evaluator,
 
     /// Path to the official `cue` executable.
@@ -53,10 +53,11 @@ struct Cli {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Evaluator {
-    /// Official CUE implementation (fully compliant).
+    /// Rust implementation of the required CUE workflow semantics (default).
+    #[value(alias = "native")]
+    Rust,
+    /// Official CUE implementation, used as the conformance oracle.
     Cue,
-    /// Native CUE subset (offline, not fully compliant).
-    Native,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -613,7 +614,7 @@ fn build_loader(cli: &Cli) -> Result<(Arc<dyn SpecLoader>, String)> {
             let version = loader.version().to_owned();
             Ok((Arc::new(loader), version))
         }
-        Evaluator::Native => Ok((Arc::new(NativeLoader), "native-subset".to_owned())),
+        Evaluator::Rust => Ok((Arc::new(NativeLoader), "rust".to_owned())),
     }
 }
 
@@ -828,18 +829,17 @@ fn doctor(cli: &Cli) -> Result<ExitCode> {
     println!(
         "evaluator {}",
         match cli.evaluator {
-            Evaluator::Cue => "cue (official, fully compliant)",
-            Evaluator::Native => "native-subset (not fully compliant)",
+            Evaluator::Rust => "rust (required CUE workflow semantics; default)",
+            Evaluator::Cue => "cue (official conformance oracle)",
         }
     );
-    if cli.evaluator == Evaluator::Cue {
-        match CueCliLoader::new(cli.cue.clone()) {
-            Ok(loader) => println!("{}", loader.version()),
-            Err(err) => {
-                eprintln!("cue unavailable: {err}");
-                return Ok(ExitCode::FAILURE);
-            }
+    match CueCliLoader::new(cli.cue.clone()) {
+        Ok(loader) => println!("oracle {}", loader.version()),
+        Err(err) if cli.evaluator == Evaluator::Cue => {
+            eprintln!("cue oracle unavailable: {err}");
+            return Ok(ExitCode::FAILURE);
         }
+        Err(err) => println!("oracle unavailable: {err}"),
     }
     println!("db {}", cli.db.display());
     println!(

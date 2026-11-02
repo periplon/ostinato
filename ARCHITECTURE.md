@@ -7,7 +7,7 @@
 3. **Ports are small and explicit.** The engine can only do what a trait allows.
 4. **Every durable transition is one transaction.** A run cannot half-commit a group.
 5. **The plan is data.** Cycles are expanded at compile time into a stable, indexable list.
-6. **The reference implementation wins.** Language semantics are delegated to official CUE (see [COMPLIANCE.md](COMPLIANCE.md)).
+6. **Rust implements the required language; the reference implementation is the oracle.** The default evaluator is Rust; official CUE is used only by `--evaluator cue` and the conformance suite (see [COMPLIANCE.md](COMPLIANCE.md)).
 
 ## Crates
 
@@ -16,7 +16,7 @@
 | `ostinato-domain` | Workflow spec, run/trial records, plan builder (Tarjan SCCs), audit hash chain | `serde`, `sha2`, `thiserror` |
 | `ostinato-lang` | Native CUE subset, typed workflow compiler, condition evaluator, template renderer | `domain` |
 | `ostinato-application` | Use cases, ports, scheduler, retry loop, cycle control, improvement service | `domain`, `lang` |
-| `ostinato-adapters` | SQLite store, process executor, command agent, official CUE CLI loader, tracing | `application`, `lang` |
+| `ostinato-adapters` | SQLite store, process executor, command agent, Rust package loader, CUE oracle loader, tracing | `application`, `lang` |
 | `ostinato-cli` | clap parser, wiring, formatting, exit codes | all |
 
 The engine (`ostinato-application`) has no `rusqlite`, `std::process`, or `tracing` import. The CLI is the composition root.
@@ -25,7 +25,7 @@ The engine (`ostinato-application`) has no `rusqlite`, `std::process`, or `traci
 
 | Port | Responsibility | Production adapter |
 |---|---|---|
-| `SpecLoader` | Evaluate a CUE source into a `LoadedWorkflow` | `CueCliLoader` (official CUE), `NativeLoader` (subset) |
+| `SpecLoader` | Evaluate a CUE source into a `LoadedWorkflow` | `NativeLoader` (Rust, default), `CueCliLoader` (oracle) |
 | `Store` | Durable runs, steps, events, trials, improvements, metrics | `SqliteStore` |
 | `CommandExecutor` | Run a deterministic subprocess with timeout | `ProcessExecutor` |
 | `AgentRunner` | Run an agent prompt through a provider | `CommandAgent` |
@@ -136,7 +136,8 @@ The CLI maps:
 | Domain | `crates/ostinato-domain/tests` | SCC/plan determinism, cycle bounds, audit tamper detection, backoff cap |
 | Language | `crates/ostinato-lang/tests` | defaults, unification, interpolation, workflow compilation, conditions, templates |
 | Adapter | `crates/ostinato-adapters/tests` | atomic store round-trip, hash chain, trials, improvements, metrics |
-| CLI/E2E | `crates/ostinato-cli/tests` | official CUE run, retries, resume skip, cycle early stop, tamper detection, recursive improvement |
+| CLI/E2E | `crates/ostinato-cli/tests` | Rust run, oracle run, retries, resume skip, cycle early stop, tamper detection, recursive improvement |
+| Conformance | `crates/ostinato-cli/tests/conformance.rs` | Rust and official CUE compile the same corpus identically |
 | Conformance | `examples/module` | real CUE module with imports, `let`, comprehensions, definitions, builtins |
 
 `scripts/evidence.sh` reruns the high-value CLI scenarios and writes `evidence/`.

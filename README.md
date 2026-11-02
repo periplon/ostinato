@@ -2,11 +2,12 @@
 
 **Durable, observable, agentic workflows written 100% in CUE — executed by a Rust engine.**
 
-Ostinato is a CLI-first workflow runtime that treats the **official CUE implementation as its normative language front-end**. You write ordinary CUE; Ostinato exports the containing package with `cue`, then adds durable execution, retries, cycles, audit, trials, metrics, agent steps and recursive improvement.
+Ostinato is a CLI-first workflow runtime with a **Rust implementation of the required CUE workflow semantics** as its default language front-end. You write ordinary CUE; the official CUE CLI is kept as the **conformance oracle**, then Ostinato adds durable execution, retries, cycles, audit, trials, metrics, agent steps and recursive improvement.
 
 ```text
-CUE source ──► official `cue export` ──► typed workflow spec ──► Rust scheduler
-                                                              │
+CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec ──► Rust scheduler
+                    │                                                      │
+                    └── official `cue` used as the conformance oracle ───┘
                       ┌───────────────────────────────────────┼──────────────────────┐
                       ▼                    ▼                  ▼                      ▼
                  SQLite journal      exec steps         agent steps           audit + trials
@@ -31,11 +32,12 @@ CUE source ──► official `cue export` ──► typed workflow spec ──�
 
 ## Status
 
-`v0.1.2` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
+`v0.2.0` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
 
 ## Features
 
-- **CUE-native**: official CUE `v0.17.1` evaluates the containing package, including modules, imports, builtins, `let`, comprehensions, definitions, disjunctions and `@tag` injection.
+- **Rust CUE front-end (default)**: packages, imports/modules, `let`, comprehensions, nested field shorthand, definitions/unification, defaults, optional fields, `strings`/`list` builtins and parameter injection are implemented in Rust.
+- **Official CUE oracle**: `--evaluator cue` and the conformance suite compare the Rust evaluator against CUE v0.17.1.
 - **Durable**: SQLite WAL + `synchronous=FULL`; each parallel group commits atomically with its audit events.
 - **Resumable**: `ostinato resume <run>` skips completed work using a stable plan index.
 - **Retries**: bounded exponential backoff, deterministic jitter, per-attempt timeouts.
@@ -54,25 +56,25 @@ CUE source ──► official `cue export` ──► typed workflow spec ──�
 Requirements:
 
 - Rust stable (edition 2024; `rust-version = 1.88`)
-- Official CUE **>= v0.17.1** on `PATH` (or `--cue <path>`)
+- **Optional**: official CUE **>= v0.17.1** for `--evaluator cue` and conformance tests
 
 ```sh
-# CUE
-./scripts/install-cue.sh v0.17.1 ~/.local/bin
-
 # Ostinato
 cargo install --path crates/ostinato-cli
 # or
 cargo build --release -p ostinato
+
+# Optional conformance oracle
+./scripts/install-cue.sh v0.17.1 ~/.local/bin
 ```
 
 Verify:
 
 ```sh
 ostinato doctor
-# ostinato 0.1.0
-# evaluator cue (official, fully compliant)
-# cue version v0.17.1
+# ostinato 0.2.0
+# evaluator rust (required CUE workflow semantics; default)
+# oracle cue version v0.17.1
 # db .ostinato/ostinato.db
 # store OK
 ```
@@ -223,7 +225,7 @@ crates/
   ostinato-domain         pure types: workflow, plan, run, trial, audit chain
   ostinato-lang           CUE subset (native, opt-in) + typed compiler + conditions/templates
   ostinato-application    use cases, ports, scheduler, retry, cycles, improvement
-  ostinato-adapters       SQLite, process exec, command agent, official CUE CLI, tracing
+  ostinato-adapters       SQLite, process exec, command agent, Rust/default + CUE oracle loaders, tracing
   ostinato-cli            clap composition root (the only crate that wires I/O)
 ```
 
@@ -233,19 +235,20 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and SOLID mapping. Th
 
 ## CUE compliance
 
-**The default evaluator is the official CUE CLI.** Ostinato does not reimplement CUE semantics for production use; it invokes `cue export` on the containing package (`-e workflow` and `-e params`) and consumes the concrete JSON. The language layer is therefore exactly the official implementation, version-gated at `>= v0.17.1`, including features Ostinato does not use.
+**The default evaluator is Rust.** `ostinato-lang` implements the required CUE workflow semantics directly: package selection, imports and local modules, `let`, comprehensions, nested field shorthand, definitions/unification, defaults, optional fields, `strings`/`list` builtins and parameter injection.
 
-- Requires CUE **>= v0.17.1**; tested with **v0.17.1**.
-- CI installs and pins **v0.17.1**.
-- `--evaluator native` is an offline subset for tests and constrained environments. It is **not** advertised as compliant and is rejected in the doctor output as such.
-- There is **no silent fallback**: if `cue` is missing, the default evaluator errors with install instructions.
+**Official CUE is the conformance oracle, not the runtime.** `--evaluator cue` exports the containing package with CUE v0.17.1; the conformance suite (`conformance/cases`, `conformance/module`) runs the same source through both evaluators and compares the compiled workflow and params.
 
-Read [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the exact contract and the native compatibility matrix.
+- `--evaluator rust` is the default (`native` is an alias).
+- `--evaluator cue` requires CUE **>= v0.17.1**; CI installs and pins v0.17.1.
+- The Rust evaluator targets the workflow-relevant CUE semantics, not every CUE feature. Closedness, aliases, pattern constraints, bytes/tool packages and the full disjunction lattice are not implemented; see [docs/COMPLIANCE.md](docs/COMPLIANCE.md).
+- There is **no silent fallback**: the default is Rust; `--evaluator cue` errors if the oracle is missing.
 
 ## Evidence
 
 ```sh
 ./scripts/evidence.sh          # writes evidence/*.txt
+./scripts/conformance.sh       # Rust vs official CUE corpus
 cargo test --all
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
@@ -261,6 +264,7 @@ The committed [docs/EVIDENCE.md](docs/EVIDENCE.md) contains real command output 
 - No distributed workers, cron scheduler, or web UI (by design: CLI only).
 - Exec/agent steps are trusted configuration; CUE files are code.
 - Agent providers are CLI commands; no API keys are stored by Ostinato.
+- The Rust evaluator is a workflow-focused CUE implementation, not a complete reimplementation of every CUE feature. The conformance corpus and gaps are documented in `docs/COMPLIANCE.md`.
 
 ## License
 

@@ -1,9 +1,13 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
 use ostinato_application::{LoadRequest, LoadedWorkflow, PortError, PortResult, SpecLoader};
-use ostinato_lang::{compile_json, compile_with_params};
+use ostinato_lang::{
+    Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode, parse,
+    rename_file_locals,
+};
 use serde_json::{Value as Json, json};
 
 /// Native CUE-subset loader. **Not** fully CUE compliant; used for tests and
@@ -13,25 +17,360 @@ pub struct NativeLoader;
 
 impl SpecLoader for NativeLoader {
     fn evaluator(&self) -> &'static str {
-        "native-subset"
+        "rust"
     }
 
     fn load(&self, request: &LoadRequest) -> PortResult<LoadedWorkflow> {
         let absolute = canonical(&request.source);
-        let source = std::fs::read_to_string(&absolute).map_err(|err| {
-            PortError::Loader(format!("cannot read {}: {err}", absolute.display()))
-        })?;
-        let compiled = compile_with_params(&source, &request.params)
+        let mut cache = BTreeMap::new();
+        let mut stack = Vec::new();
+        let root = evaluate_path(&absolute, &request.params, &mut cache, &mut stack, false)
             .map_err(|err| PortError::Loader(err.to_string()))?;
-        let params = compiled
-            .resolve_params(&request.params)
+        let spec = compile_value(&root).map_err(|err| PortError::Loader(err.to_string()))?;
+        let params = parameters_json(&root, &request.params)
             .map_err(|err| PortError::Loader(err.to_string()))?;
         Ok(LoadedWorkflow {
-            spec: compiled.spec,
+            spec,
             params,
             source_file: absolute.display().to_string(),
-            evaluator: "native CUE subset (not fully compliant; use --evaluator cue)".to_owned(),
+            evaluator: "rust (CUE workflow semantics)".to_owned(),
         })
+    }
+}
+
+fn evaluate_path(
+    path: &Path,
+    overrides: &BTreeMap<String, String>,
+    cache: &mut BTreeMap<PathBuf, Value>,
+    stack: &mut Vec<PathBuf>,
+    include_definitions: bool,
+) -> Result<Value, ostinato_lang::LangError> {
+    let canonical_path = canonical(path);
+    let key = if canonical_path.is_dir() {
+        canonical_path.clone()
+    } else {
+        canonical_path
+            .parent()
+            .map_or_else(|| canonical_path.clone(), Path::to_path_buf)
+    };
+    if let Some(cached) = cache.get(&key) {
+        return Ok(cached.clone());
+    }
+    if stack.contains(&key) {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "import cycle involving {}",
+            key.display()
+        )));
+    }
+    stack.push(key.clone());
+
+    let files = collect_package_files(&canonical_path)?;
+    let source_dir = if canonical_path.is_dir() {
+        canonical_path.clone()
+    } else {
+        canonical_path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    };
+    let mut combined = ostinato_lang::ast::File {
+        package: None,
+        imports: Vec::new(),
+        items: Vec::new(),
+    };
+    for (index, file) in files.iter().enumerate() {
+        let text = std::fs::read_to_string(file).map_err(|err| {
+            ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
+        })?;
+        let mut parsed = parse(&text)?;
+        rename_file_locals(&mut parsed, index);
+        if combined.package.is_none() {
+            combined.package = parsed.package.clone();
+        }
+        combined.imports.extend(parsed.imports);
+        combined.items.extend(parsed.items);
+    }
+
+    let mut imports = BTreeMap::new();
+    for import in &combined.imports {
+        if let Some(module) = builtin_module(&import.path) {
+            imports.insert(import.alias.clone(), module);
+            continue;
+        }
+        let imported_path = resolve_import(&source_dir, &import.path)?;
+        let value = evaluate_path(&imported_path, &BTreeMap::new(), cache, stack, true)?;
+        imports.insert(import.alias.clone(), value);
+    }
+
+    let mut injected = BTreeMap::new();
+    for (key, raw) in overrides {
+        injected.insert(key.clone(), parse_override_value(raw));
+    }
+    let value = eval_file_with_imports_mode(&combined, &imports, &injected, include_definitions)?;
+    cache.insert(key, value.clone());
+    stack.pop();
+    Ok(value)
+}
+
+fn collect_package_files(path: &Path) -> Result<Vec<PathBuf>, ostinato_lang::LangError> {
+    if path.is_dir() {
+        let mut by_package: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+        let mut anonymous = Vec::new();
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
+            .map_err(|err| {
+                ostinato_lang::LangError::Workflow(format!(
+                    "cannot read directory {}: {err}",
+                    path.display()
+                ))
+            })?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        for entry in entries {
+            let Some(name) = entry.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !entry.is_file()
+                || entry.extension().is_none_or(|ext| ext != "cue")
+                || name.starts_with('.')
+                || name.starts_with('_')
+                || name.ends_with("_test.cue")
+                || name.ends_with("_tool.cue")
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&entry).map_err(|err| {
+                ostinato_lang::LangError::Workflow(format!(
+                    "cannot read {}: {err}",
+                    entry.display()
+                ))
+            })?;
+            let parsed = parse(&text)?;
+            match parsed.package {
+                Some(package) if package != "_" => {
+                    by_package.entry(package).or_default().push(entry);
+                }
+                Some(_) | None => anonymous.push(entry),
+            }
+        }
+        if by_package.len() > 1 {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "multiple packages in {}: {}",
+                path.display(),
+                by_package.keys().cloned().collect::<Vec<_>>().join(", ")
+            )));
+        }
+        if let Some(files) = by_package.into_values().next() {
+            return Ok(files);
+        }
+        if !anonymous.is_empty() {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "directory {} has no named package; pass a file instead",
+                path.display()
+            )));
+        }
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "no CUE files in {}",
+            path.display()
+        )));
+    }
+
+    if path.extension().is_none_or(|ext| ext != "cue") {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "import target is not a .cue file: {}",
+            path.display()
+        )));
+    }
+    let text = std::fs::read_to_string(path).map_err(|err| {
+        ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", path.display()))
+    })?;
+    let parsed = parse(&text)?;
+    let Some(package) = parsed.package else {
+        return Ok(vec![path.to_path_buf()]);
+    };
+    if package == "_" {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut files = Vec::new();
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(directory)
+        .map_err(|err| {
+            ostinato_lang::LangError::Workflow(format!(
+                "cannot read directory {}: {err}",
+                directory.display()
+            ))
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    entries.sort();
+    for entry in entries {
+        let Some(name) = entry.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !entry.is_file()
+            || entry.extension().is_none_or(|ext| ext != "cue")
+            || name.starts_with('.')
+            || name.starts_with('_')
+            || name.ends_with("_test.cue")
+            || name.ends_with("_tool.cue")
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&entry).map_err(|err| {
+            ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", entry.display()))
+        })?;
+        let parsed = parse(&text)?;
+        if parsed.package.as_deref() == Some(package.as_str()) {
+            files.push(entry);
+        }
+    }
+    Ok(files)
+}
+
+fn resolve_import(
+    source_dir: &Path,
+    import_path: &str,
+) -> Result<PathBuf, ostinato_lang::LangError> {
+    if let Some(relative) = import_path.strip_prefix("./") {
+        let target = safe_join(source_dir, relative)?;
+        return check_import_target(&target);
+    }
+    let Some((module_root, module_path)) = find_module(source_dir) else {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "import `{import_path}` is not a builtin and no cue.mod/module.cue was found"
+        )));
+    };
+    let import_base = strip_version(import_path);
+    let module_base = strip_version(&module_path);
+    let suffix = import_base
+        .strip_prefix(module_base)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .ok_or_else(|| {
+            ostinato_lang::LangError::Workflow(format!(
+                "import `{import_path}` is not under module `{module_path}`"
+            ))
+        })?;
+    let target = safe_join(&module_root, suffix)?;
+    let canonical_target = canonical(&target);
+    let canonical_root = canonical(&module_root);
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "import `{import_path}` escapes the module root"
+        )));
+    }
+    check_import_target(&canonical_target)
+}
+
+fn check_import_target(target: &Path) -> Result<PathBuf, ostinato_lang::LangError> {
+    if !target.exists() {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "import target does not exist: {}",
+            target.display()
+        )));
+    }
+    if target.is_file() && target.extension().is_none_or(|ext| ext != "cue") {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "import target is not a .cue file: {}",
+            target.display()
+        )));
+    }
+    Ok(target.to_path_buf())
+}
+
+fn safe_join(base: &Path, suffix: &str) -> Result<PathBuf, ostinato_lang::LangError> {
+    let mut out = base.to_path_buf();
+    for component in suffix.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "invalid import path component `{component}`"
+            )));
+        }
+        out.push(component);
+    }
+    Ok(out)
+}
+
+fn strip_version(path: &str) -> &str {
+    path.split('@').next().unwrap_or(path)
+}
+
+fn find_module(start: &Path) -> Option<(PathBuf, String)> {
+    let mut directory = Some(start);
+    while let Some(current) = directory {
+        let module_file = current.join("cue.mod").join("module.cue");
+        if module_file.exists() {
+            let text = std::fs::read_to_string(&module_file).ok()?;
+            let file = parse(&text).ok()?;
+            let value = ostinato_lang::eval_file(&file).ok()?;
+            if let Value::Struct(map) = value
+                && let Some(Value::String(path)) = map.get("module")
+            {
+                return Some((current.to_path_buf(), path.clone()));
+            }
+        }
+        directory = current.parent();
+    }
+    None
+}
+
+fn parse_override_value(raw: &str) -> Value {
+    let trimmed = raw.trim();
+    let looks_like_json = trimmed.starts_with('{')
+        || trimmed.starts_with('[')
+        || trimmed.starts_with('"')
+        || matches!(trimmed, "true" | "false" | "null")
+        || trimmed.parse::<f64>().is_ok();
+    if looks_like_json && let Ok(value) = serde_json::from_str::<Json>(trimmed) {
+        return ostinato_lang::value_from_json(&value);
+    }
+    Value::String(raw.to_owned())
+}
+
+fn parameters_json(
+    root: &Value,
+    overrides: &BTreeMap<String, String>,
+) -> Result<Json, ostinato_lang::LangError> {
+    let Some(params_value) = root_value(root, "params") else {
+        if overrides.is_empty() {
+            return Ok(json!({}));
+        }
+        return Err(ostinato_lang::LangError::Workflow(
+            "parameters were supplied with -p, but the workflow has no `params` struct".to_owned(),
+        ));
+    };
+    let Value::Struct(params) = params_value else {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "`params` must be a struct, found {}",
+            params_value.type_name()
+        )));
+    };
+    if !overrides.is_empty() {
+        for key in overrides.keys() {
+            if !params.contains_key(key) {
+                return Err(ostinato_lang::LangError::Workflow(format!(
+                    "unknown parameter `{key}`; declare it under `params`"
+                )));
+            }
+        }
+    }
+    let mut out = serde_json::Map::new();
+    for (key, value) in params {
+        if let Some(json) = value.to_json() {
+            out.insert(key.clone(), json);
+        } else {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "missing required parameter `{key}` (pass `-p {key}=...`)"
+            )));
+        }
+    }
+    Ok(Json::Object(out))
+}
+
+fn root_value<'a>(root: &'a Value, name: &str) -> Option<&'a Value> {
+    match root {
+        Value::Struct(map) => map.get(name),
+        _ => None,
     }
 }
 

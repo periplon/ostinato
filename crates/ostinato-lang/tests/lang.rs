@@ -262,3 +262,200 @@ workflow: base
     assert_eq!(compiled.spec.steps.len(), 2);
     assert!(compiled.spec.step("b").is_some());
 }
+
+#[test]
+fn parameter_overrides_are_constraints_and_dependent_fields_see_them() {
+    let source = r#"
+package demo
+params: {
+    name: string @tag(name)
+    greeting: "Hello \(name)"
+}
+workflow: {
+    name: "params"
+    steps: {
+        a: {kind: "exec", exec: {cmd: ["echo", params.greeting]}}
+    }
+}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([("name".to_owned(), "Alice".to_owned())]),
+    )
+    .expect("compile");
+    let cmd = &compiled
+        .spec
+        .step("a")
+        .expect("a")
+        .exec
+        .as_ref()
+        .expect("exec")
+        .cmd;
+    assert_eq!(cmd[1], "Hello Alice");
+}
+
+#[test]
+fn parameter_overrides_respect_fixed_values_and_types() {
+    let fixed = r#"
+package demo
+params: {x: "fixed"}
+workflow: {steps: {a: {kind: "noop"}}}
+"#;
+    assert!(
+        ostinato_lang::compile_with_params(
+            fixed,
+            &BTreeMap::from([("x".to_owned(), "other".to_owned())])
+        )
+        .is_err()
+    );
+
+    let typed = r#"
+package demo
+params: {n: int}
+workflow: {steps: {a: {kind: "noop"}}}
+"#;
+    assert!(
+        ostinato_lang::compile_with_params(
+            typed,
+            &BTreeMap::from([("n".to_owned(), "oops".to_owned())])
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn parameter_overrides_narrow_a_default_free_disjunction() {
+    let source = r#"
+package demo
+params: {env: "dev" | "prod"}
+workflow: {steps: {a: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([("env".to_owned(), "prod".to_owned())]),
+    )
+    .expect("compile");
+    assert_eq!(
+        compiled.resolve_params(&BTreeMap::new()).expect("params")["env"],
+        "prod"
+    );
+}
+
+#[test]
+fn forward_let_references_are_lazy() {
+    let source = r#"
+package demo
+let a = b
+let b = "forward"
+workflow: {name: a, steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile(source).expect("compile");
+    assert_eq!(compiled.spec.name, "forward");
+}
+
+#[test]
+fn open_list_element_types_are_enforced() {
+    let source = r#"
+package demo
+#L: [...string]
+a: #L & [1, 2]
+workflow: {steps: {s: {kind: "noop"}}}
+"#;
+    assert!(ostinato_lang::compile(source).is_err());
+}
+
+#[test]
+fn missing_field_separators_are_rejected() {
+    let source = r#"
+package demo
+workflow: {name: "p" steps: {a: {kind: "noop"}}}
+"#;
+    let error = ostinato_lang::compile(source).expect_err("missing separator");
+    assert!(error.to_string().contains("expected") || error.to_string().contains("missing"));
+}
+
+#[test]
+fn parameters_can_be_backed_by_a_definition_or_split_struct() {
+    let source = r#"
+package demo
+#P: {name: string @tag(name)}
+params: #P & {greeting: "Hello \(name)"}
+workflow: {
+    name: "\(params.greeting)"
+    steps: {s: {kind: "noop"}}
+}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([("name".to_owned(), "Alice".to_owned())]),
+    )
+    .expect("compile");
+    assert_eq!(compiled.spec.name, "Hello Alice");
+}
+
+#[test]
+fn dependent_parameter_overrides_are_order_independent() {
+    let source = r#"
+package demo
+params: {
+    a: "A-\(z)" @tag(a)
+    z: string @tag(z)
+}
+workflow: {name: "\(params.a)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([
+            ("a".to_owned(), "A-zzz".to_owned()),
+            ("z".to_owned(), "zzz".to_owned()),
+        ]),
+    )
+    .expect("compile");
+    assert_eq!(compiled.spec.name, "A-zzz");
+}
+
+#[test]
+fn open_list_prefix_unifies_with_a_concrete_list() {
+    let source = r#"
+package demo
+#Needs: [string, ...string]
+workflow: {
+    steps: {
+        a: {kind: "noop"}
+        b: {kind: "noop", needs: #Needs & ["a"]}
+    }
+}
+"#;
+    let compiled = ostinato_lang::compile(source).expect("prefix open list");
+    assert_eq!(compiled.spec.step("b").expect("b").needs, vec!["a"]);
+}
+
+#[test]
+fn unicode_string_builtins_match_go_semantics() {
+    let source = r#"
+package demo
+import "strings"
+let n = len("é")
+let u = strings.ToUpper("ß")
+workflow: {name: "\(n)-\(u)", steps: {s: {kind: "noop"}}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "strings".to_owned(),
+        ostinato_lang::builtin_module("strings").expect("strings builtin"),
+    );
+    let root =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let spec = ostinato_lang::compile_value(&root).expect("compile");
+    assert_eq!(spec.name, "2-ß");
+}
+
+#[test]
+fn versioned_imports_use_the_unversioned_alias() {
+    let file = ostinato_lang::parse(
+        "package p\nimport \"example.com/foo/lib@v0\"\nworkflow: {steps: {s: {kind: \"noop\"}}}\n",
+    )
+    .expect("parse");
+    assert_eq!(file.imports[0].alias, "lib");
+}

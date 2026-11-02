@@ -545,7 +545,9 @@ fn dummy_value(value: &Value) -> Json {
         | Value::Type(TypeKind::Int | TypeKind::Float | TypeKind::Number) => {
             Json::Number(serde_json::Number::from(0))
         }
-        Value::List(_) => Json::Array(Vec::new()),
+        Value::List(_) | Value::OpenList(_) | Value::OpenListPrefix(_, _) => {
+            Json::Array(Vec::new())
+        }
         Value::Struct(map) => Json::Object(
             map.iter()
                 .map(|(key, value)| (key.clone(), dummy_value(value)))
@@ -553,7 +555,7 @@ fn dummy_value(value: &Value) -> Json {
         ),
         Value::Type(TypeKind::String) => Json::String(String::new()),
         Value::Type(TypeKind::Bool) => Json::Bool(false),
-        Value::Null | Value::Bottom => Json::Null,
+        Value::Null | Value::Bottom | Value::Builtin(_) => Json::Null,
     }
 }
 

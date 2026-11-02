@@ -18,6 +18,7 @@ pub mod error;
 pub mod eval;
 pub mod lexer;
 pub mod parser;
+pub mod scope;
 pub mod template;
 
 pub use compile::{
@@ -26,7 +27,9 @@ pub use compile::{
 pub use condition::{eval_condition, validate_condition};
 pub use error::LangError;
 pub use eval::{
-    TypeKind, Value, eval_expr_with_json, eval_file, eval_file_with_overrides, value_from_json,
+    Builtin, TypeKind, Value, builtin_module, eval_expr_with_json, eval_file,
+    eval_file_with_imports, eval_file_with_imports_mode, eval_file_with_overrides, value_from_json,
 };
 pub use parser::{parse, parse_expr_fragment};
+pub use scope::rename_file_locals;
 pub use template::{lookup_path, render};

@@ -1,8 +1,8 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.oJ3ydArG6E/db.sqlite status 36aee0db-a5f1-453a-9694-4e60c67edf2f
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.g2yCdwK2le/db.sqlite status 67cfa96d-94e2-47e3-908f-d994c293d423
 
-run=36aee0db-a5f1-453a-9694-4e60c67edf2f workflow=cycle status=succeeded resumeIndex=11
+run=67cfa96d-94e2-47e3-908f-d994c293d423 workflow=cycle status=succeeded resumeIndex=11
 source=/Users/joanmarc/dailywork/jmca/ostinato/examples/cycle.cue
-created=2026-11-02T16:41:32.049Z updated=2026-11-02T16:41:32.106Z
+created=2026-11-02T17:25:17.837Z updated=2026-11-02T17:25:17.895Z
 STEP                     STATUS     VISITS ATTEMPTS
 refine                   succeeded  3      1       
 review                   succeeded  3      1       
