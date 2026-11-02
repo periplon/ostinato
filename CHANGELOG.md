@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.0
+
+Closedness and pattern constraints.
+
+- Definitions are closed by default and reject unknown fields; `...` opens them.
+- Nested structs inside definitions are closed recursively.
+- String patterns `[string]: T` and regex patterns `[=~"re"]: T` allow and
+  constrain extra fields.
+- Patterns apply to declared and materialized optional fields.
+- 104 tests (23 CLI E2E, 1 conformance, 70 language, 6 domain, 3 store, 1 unit).
+
 ## v0.2.5
 
 Parenthesized-expression fix.

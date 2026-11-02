@@ -523,7 +523,7 @@ workflow: {name: "x", steps: {a: {kind: "noop"}}}
 
     let open = r#"
 package demo
-#W: {}
+#W: {...}
 workflow: #W & {name: "ok", steps: {a: {kind: "noop"}}}
 "#;
     assert!(ostinato_lang::compile(open).is_ok());
@@ -1236,4 +1236,147 @@ x: #P
     let file = ostinato_lang::parse(optional).expect("parse");
     let value = ostinato_lang::eval_file(&file).expect("eval");
     assert_eq!(value.to_json().expect("json")["x"], serde_json::json!({}));
+}
+
+#[test]
+fn closed_definitions_reject_extra_fields_and_open_definitions_allow_them() {
+    let closed = r#"
+package demo
+#D: {a: int}
+x: #D & {a: 1, b: 2}
+"#;
+    let file = ostinato_lang::parse(closed).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let open = r#"
+package demo
+#D: {a: int, ...}
+x: #D & {a: 1, b: 2}
+"#;
+    let file = ostinato_lang::parse(open).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["b"], 2);
+}
+
+#[test]
+fn patterns_allow_and_constrain_extra_fields() {
+    let any = r#"
+package demo
+#D: {[string]: int}
+x: #D & {a: 1, b: 2}
+"#;
+    let file = ostinato_lang::parse(any).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["b"], 2);
+
+    let bad = r#"
+package demo
+#D: {[string]: int}
+x: #D & {a: "nope"}
+"#;
+    let file = ostinato_lang::parse(bad).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let regex = r#"
+package demo
+#D: {[=~"^x"]: int}
+x: #D & {x1: 1, x2: 2}
+"#;
+    let file = ostinato_lang::parse(regex).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["x2"], 2);
+
+    let regex_bad = r#"
+package demo
+#D: {[=~"^x"]: int}
+x: #D & {y: 1}
+"#;
+    let file = ostinato_lang::parse(regex_bad).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn patterns_apply_to_declared_fields() {
+    let source = r#"
+package demo
+#D: {[string]: int, a: "nope"}
+x: #D
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn nested_definitions_are_closed_unless_opened() {
+    let closed = r#"
+package demo
+#D: {inner: {a: int}}
+x: #D & {inner: {a: 1, b: 2}}
+"#;
+    let file = ostinato_lang::parse(closed).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let open = r#"
+package demo
+#D: {inner: {a: int, ...}}
+x: #D & {inner: {a: 1, b: 2}}
+"#;
+    let file = ostinato_lang::parse(open).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["inner"]["b"], 2);
+}
+
+#[test]
+fn nested_patterns_constrain_nested_fields() {
+    let ok = r#"
+package demo
+#D: {inner: {[string]: int}}
+x: #D & {inner: {a: 1}}
+"#;
+    let file = ostinato_lang::parse(ok).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["inner"]["a"], 1);
+
+    let bad = r#"
+package demo
+#D: {inner: {[string]: int}}
+x: #D & {inner: {a: "nope"}}
+"#;
+    let file = ostinato_lang::parse(bad).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn optional_fields_are_pattern_constrained_when_materialized() {
+    let ok = r#"
+package demo
+#D: {a?: int, [string]: int}
+x: #D & {a: 1}
+"#;
+    let file = ostinato_lang::parse(ok).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["a"], 1);
+
+    let bad = r#"
+package demo
+#D: {a?: int, [string]: int}
+x: #D & {a: "nope"}
+"#;
+    let file = ostinato_lang::parse(bad).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn pattern_values_can_be_disjunctions() {
+    let source = r#"
+package demo
+#D: {[string]: int | *1}
+x: #D & {a: 2}
+y: #D
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["a"], 2);
+    assert_eq!(json["y"], serde_json::json!({}));
 }

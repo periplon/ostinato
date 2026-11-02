@@ -49,6 +49,7 @@ fn rename_items(
                 }
                 rename_expr(&mut field.value, locals, shadowed);
             }
+            StructItem::Pattern { value, .. } => rename_expr(value, locals, shadowed),
             StructItem::Let { name, value, .. } => {
                 if let Some(renamed) = locals.get(name) {
                     name.clone_from(renamed);
