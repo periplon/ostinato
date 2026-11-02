@@ -292,6 +292,17 @@ impl Parser {
                 Ok(Some(StructItem::Ellipsis(span)))
             }
             _ => {
+                let alias = if let Tok::Ident(alias) = self.peek_tok().clone()
+                    && matches!(
+                        self.tokens.get(self.pos + 1).map(|token| &token.tok),
+                        Some(Tok::Equals)
+                    ) {
+                    self.bump();
+                    self.bump();
+                    Some(alias)
+                } else {
+                    None
+                };
                 let definition = matches!(
                     self.peek_tok(),
                     Tok::Ident(name) if name.starts_with('#')
@@ -305,6 +316,7 @@ impl Parser {
                     value,
                     optional,
                     definition,
+                    alias,
                     span,
                 })))
             }
@@ -429,11 +441,23 @@ impl Parser {
 
     fn parse_field_value(&mut self) -> Result<Expr, LangError> {
         self.skip_newlines();
-        let nested = matches!(self.peek_tok(), Tok::Ident(_) | Tok::Str(_))
+        let alias = if let Tok::Ident(alias) = self.peek_tok().clone()
             && matches!(
                 self.tokens.get(self.pos + 1).map(|token| &token.tok),
-                Some(Tok::Colon)
-            );
+                Some(Tok::Equals)
+            ) {
+            self.bump();
+            self.bump();
+            Some(alias)
+        } else {
+            None
+        };
+        let nested = alias.is_some()
+            || (matches!(self.peek_tok(), Tok::Ident(_) | Tok::Str(_))
+                && matches!(
+                    self.tokens.get(self.pos + 1).map(|token| &token.tok),
+                    Some(Tok::Colon)
+                ));
         if nested {
             let span = self.span();
             let definition = matches!(
@@ -450,6 +474,7 @@ impl Parser {
                     value,
                     optional,
                     definition,
+                    alias,
                     span,
                 })],
                 span,

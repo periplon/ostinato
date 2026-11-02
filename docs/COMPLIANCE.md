@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.3.6 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.4.0 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -35,7 +35,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | Type constraints (`string`, `int`, `number`, `bool`) | ✅ | Basic constraint checking |
 | String interpolation `\(...)` | ✅ | |
 | Attributes (`@tag`, `@flow`, ...) | ⚠️ | Syntactically accepted and skipped; `@tag` is not used for type-directed injection |
-| CUE aliases (`X=field: value`) | ❌ | Out of scope; use named fields/`let` |
+| CUE aliases (`X=field: value`) | ✅ | Field aliases, struct-scoped and file-scoped; value aliases are not separate syntax |
 | Full disjunction lattice over bounds/patterns | ⚠️ | Alternatives, defaults, `&` narrowing and intersection work; bounds/pattern interactions are out of scope |
 | Bytes, regexp/math/time, tool packages, `cue` commands | ❌ | |
 

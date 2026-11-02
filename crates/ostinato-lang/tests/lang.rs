@@ -1725,3 +1725,84 @@ fn composed_definitions_keep_referenced_closedness() {
         ostinato_lang::eval_file(&file).expect_err("closed definition must reject the field");
     }
 }
+
+#[test]
+fn aliases_bind_field_values() {
+    let source = r#"
+package demo
+X=foo: 1
+bar: X
+baz: X + 1
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["bar"], 1);
+    assert_eq!(json["baz"], 2);
+}
+
+#[test]
+fn aliases_work_in_definitions_and_nested_structs() {
+    let source = r#"
+package demo
+#D: {X=a: 1, b: X}
+x: #D
+nested: {Y=b: 2, c: Y}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["b"], 1);
+    assert_eq!(json["nested"]["c"], 2);
+}
+
+#[test]
+fn aliases_can_bind_definitions_and_dynamic_labels() {
+    let source = r#"
+package demo
+X=#D: {a: 1}
+def: X
+Y="dyn": 3
+dynValue: Y
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["def"]["a"], 1);
+    assert_eq!(json["dyn"], 3);
+    assert_eq!(json["dynValue"], 3);
+}
+
+#[test]
+fn invalid_aliases_are_rejected() {
+    let unreferenced = r#"
+package demo
+X=a: 1
+"#;
+    let file = ostinato_lang::parse(unreferenced).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("unreferenced alias");
+    assert!(error.to_string().contains("unreferenced alias"));
+
+    let optional = r#"
+package demo
+X=a?: 1
+b: X
+"#;
+    let file = ostinato_lang::parse(optional).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("optional alias");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot reference optional field")
+    );
+
+    let conflict = r#"
+package demo
+X=a: 1
+X: 2
+b: X
+"#;
+    let file = ostinato_lang::parse(conflict).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("alias conflict");
+    assert!(error.to_string().contains("both alias and field"));
+}

@@ -53,7 +53,7 @@ workflow: {
 }
 ```
 
-The Rust evaluator handles package selection, same-package sibling files, imports (`strings`, `list`), local modules via `cue.mod`, relative imports, file-scoped lazy `let`, `for`/`if` struct comprehensions (including clause sequences), dynamic labels, nested field shorthand, closed definitions (with `...`, nested closedness, optional constraints and `[string]`/regex patterns), unification, defaults and disjunctions with narrowing, optional fields, `[...T]` / `[x, ...T]` open lists, and the `strings`/`list`/`len` builtins. Clause sequences (`for ... if`), nested comprehension clauses and list comprehensions are implemented. CUE aliases, the full disjunction lattice over bounds/patterns, tool packages and optional/open metadata on non-definition struct literals are out of scope; see [SCOPE.md](SCOPE.md).
+The Rust evaluator handles package selection, same-package sibling files, imports (`strings`, `list`), local modules via `cue.mod`, relative imports, file-scoped lazy `let`, `for`/`if` struct comprehensions (including clause sequences), dynamic labels, nested field shorthand, closed definitions (with `...`, nested closedness, optional constraints and `[string]`/regex patterns), field aliases, unification, defaults and disjunctions with narrowing, optional fields, `[...T]` / `[x, ...T]` open lists, and the `strings`/`list`/`len` builtins. Clause sequences (`for ... if`), nested comprehension clauses and list comprehensions are implemented. the full disjunction lattice over bounds/patterns, tool packages and optional/open metadata on non-definition struct literals are out of scope; see [SCOPE.md](SCOPE.md).
 
 ## Workflow fields
 

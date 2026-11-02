@@ -337,6 +337,8 @@ fn json_frame(context: &Json) -> Frame<'static> {
         generated_optionals: RefCell::new(BTreeMap::new()),
         materialized: RefCell::new(BTreeSet::new()),
         patterns: RefCell::new(Vec::new()),
+        aliases: RefCell::new(BTreeMap::new()),
+        used_aliases: RefCell::new(HashSet::new()),
         closed: Cell::new(false),
         overrides: RefCell::new(BTreeMap::new()),
         evaluating: RefCell::new(HashSet::new()),
@@ -389,6 +391,8 @@ struct Frame<'a> {
     generated_optionals: RefCell<BTreeMap<String, Value>>,
     materialized: RefCell<BTreeSet<String>>,
     patterns: RefCell<Vec<(Pattern, Expr)>>,
+    aliases: RefCell<BTreeMap<String, String>>,
+    used_aliases: RefCell<HashSet<String>>,
     closed: Cell<bool>,
     overrides: RefCell<BTreeMap<String, Value>>,
     evaluating: RefCell<HashSet<String>>,
@@ -419,6 +423,8 @@ impl<'a> Frame<'a> {
             generated_optionals: RefCell::new(BTreeMap::new()),
             materialized: RefCell::new(BTreeSet::new()),
             patterns: RefCell::new(Vec::new()),
+            aliases: RefCell::new(BTreeMap::new()),
+            used_aliases: RefCell::new(HashSet::new()),
             closed: Cell::new(parent.is_some_and(|parent| parent.closed.get())),
             overrides: RefCell::new(BTreeMap::new()),
             evaluating: RefCell::new(HashSet::new()),
@@ -435,6 +441,12 @@ impl<'a> Frame<'a> {
                             field.optional,
                             field.definition,
                         );
+                        if let Some(alias) = &field.alias {
+                            frame
+                                .aliases
+                                .borrow_mut()
+                                .insert(alias.clone(), name.clone());
+                        }
                     }
                 }
                 StructItem::Let { name, value, .. } => {
@@ -466,7 +478,10 @@ impl<'a> Frame<'a> {
                                 "dynamic field label must evaluate to a string",
                             ));
                         };
-                        self.insert_field(key, field.value.clone(), field.optional, false);
+                        self.insert_field(key.clone(), field.value.clone(), field.optional, false);
+                        if let Some(alias) = &field.alias {
+                            self.aliases.borrow_mut().insert(alias.clone(), key);
+                        }
                     }
                 }
                 StructItem::For {
@@ -653,6 +668,22 @@ impl<'a> Frame<'a> {
         if self.lets.borrow().contains_key(name) {
             return self.eval_let(name, span);
         }
+        if let Some(target) = self.aliases.borrow().get(name).cloned() {
+            self.used_aliases.borrow_mut().insert(name.to_owned());
+            let optional = self
+                .fields
+                .borrow()
+                .get(&target)
+                .is_some_and(|definition| definition.optional);
+            if optional {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("cannot reference optional field `{target}`"),
+                ));
+            }
+            return self.eval_field(&target, span);
+        }
         if let Some(value) = self.values.borrow().get(name) {
             return Ok(value.clone());
         }
@@ -697,6 +728,7 @@ impl<'a> Frame<'a> {
             || self.fields.borrow().contains_key(name)
             || self.vars.borrow().contains_key(name)
             || self.lets.borrow().contains_key(name)
+            || self.aliases.borrow().contains_key(name)
             || self.parent.is_some_and(|parent| parent.has_name(name))
     }
 
@@ -898,6 +930,7 @@ impl<'a> Frame<'a> {
         }
         apply_patterns(&patterns, &mut fields, span)?;
         apply_optional_patterns(&patterns, &mut optional, span)?;
+        child.check_aliases()?;
         let open = items
             .iter()
             .any(|item| matches!(item, StructItem::Ellipsis(_)));
@@ -1082,6 +1115,26 @@ impl<'a> Frame<'a> {
         Ok(value)
     }
 
+    fn check_aliases(&self) -> Result<(), LangError> {
+        for alias in self.aliases.borrow().keys() {
+            if self.fields.borrow().contains_key(alias) {
+                return Err(LangError::eval(
+                    1,
+                    1,
+                    format!("cannot have both alias and field with name `{alias}`"),
+                ));
+            }
+            if !self.used_aliases.borrow().contains(alias) {
+                return Err(LangError::eval(
+                    1,
+                    1,
+                    format!("unreferenced alias `{alias}`"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn to_struct_value(&self) -> Result<Value, LangError> {
         self.to_struct_value_mode(false)
     }
@@ -1127,6 +1180,7 @@ impl<'a> Frame<'a> {
                 out.insert(name.clone(), value.clone());
             }
         }
+        self.check_aliases()?;
         Ok(Value::Struct(out))
     }
 }
