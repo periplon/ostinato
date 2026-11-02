@@ -572,3 +572,98 @@ x: #D & {b: 1}
     let file = ostinato_lang::parse(bad).expect("parse");
     assert!(ostinato_lang::eval_file(&file).is_err());
 }
+
+#[test]
+fn definition_optional_constraint_applies_to_required_fields_in_both_orders() {
+    let left = r#"
+package demo
+#A: {v?: 1}
+#B: {v: int}
+x: #A & #B
+x: {v: 2}
+"#;
+    let file = ostinato_lang::parse(left).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let right = r#"
+package demo
+#A: {v: int}
+#B: {v?: 1}
+x: #A & #B
+x: {v: 2}
+"#;
+    let file = ostinato_lang::parse(right).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let ok = r#"
+package demo
+#A: {v?: int}
+#B: {v: int}
+x: #A & #B
+x: {v: 2}
+"#;
+    let file = ostinato_lang::parse(ok).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["v"], 2);
+}
+
+#[test]
+fn nested_definitions_are_not_exported_as_fields() {
+    let workflow = r#"
+package demo
+#W: {
+    #Step: {kind: "noop"}
+    name: "nested"
+    steps: {s: #Step}
+}
+workflow: #W
+"#;
+    let compiled = ostinato_lang::compile(workflow).expect("nested definition");
+    assert_eq!(compiled.spec.name, "nested");
+
+    let params = r#"
+package demo
+#P: {#Helper: "h", a: 1}
+params: #P
+workflow: {name: "p-\(params.a)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile(params).expect("params definition");
+    assert_eq!(
+        compiled.resolve_params(&BTreeMap::new()).expect("params")["a"],
+        1
+    );
+    assert!(
+        compiled
+            .resolve_params(&BTreeMap::new())
+            .expect("params")
+            .get("#Helper")
+            .is_none()
+    );
+}
+
+#[test]
+fn definitions_behave_like_structs_in_comprehensions_and_equality() {
+    let source = r#"
+package demo
+#Labels: {a: "x", b: "y"}
+#P: {a: 1, b: 2}
+workflow: {
+    name: "iter-\(params == {a: 1, b: 2})"
+    steps: {
+        for k, v in #Labels {
+            "\(k)": {kind: "noop"}
+        }
+        for k, v in #P {
+            "p-\(k)": {kind: "noop"}
+        }
+    }
+}
+params: #P
+"#;
+    let compiled = ostinato_lang::compile(source).expect("definition comprehension");
+    assert!(compiled.spec.step("a").is_some());
+    assert!(compiled.spec.step("b").is_some());
+    assert!(compiled.spec.step("p-a").is_some());
+    assert!(compiled.spec.step("p-b").is_some());
+    assert_eq!(compiled.spec.name, "iter-true");
+}

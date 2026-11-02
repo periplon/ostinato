@@ -18,26 +18,26 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 1 test
 test rust_matches_official_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.72s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
 
      Running tests/e2e.rs (target/debug/deps/e2e-ed2327ab07f0d75b)
 
 running 23 tests
-test package_underscore_files_are_file_local ... ok
 test non_struct_params_are_rejected ... ok
+test package_underscore_files_are_file_local ... ok
 test package_less_cue_file_is_loaded_by_filename ... ok
 test native_evaluator_supports_the_offline_subset ... ok
 test background_grandchild_does_not_extend_a_successful_step ... ok
 test split_package_and_sibling_conflicts_follow_cue_semantics ... ok
 test unknown_fields_are_rejected ... ok
 test recomputed_state_hash_is_still_rejected_by_the_chain_anchor ... ok
-test audit_detects_tail_truncation_via_persisted_head ... ok
 test audit_verification_detects_tampering ... ok
-test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
-test read_only_commands_do_not_require_cue ... ok
-test bad_template_is_a_durable_failure ... ok
+test audit_detects_tail_truncation_via_persisted_head ... ok
 test cleared_integrity_hashes_are_not_silently_repaired ... ok
+test read_only_commands_do_not_require_cue ... ok
+test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
 test state_tampering_is_detected_and_resume_refuses_it ... ok
+test bad_template_is_a_durable_failure ... ok
 test truncation_blocks_resume_and_appends ... ok
 test retries_are_attempted_and_logged_as_trials ... ok
 test official_cue_runs_and_audit_verifies ... ok
@@ -45,11 +45,11 @@ test resume_skips_completed_steps_and_finishes ... ok
 test cycles_stop_when_until_becomes_true ... ok
 test recursive_improvement_creates_child_runs ... ok
 test exec_timeout_kills_the_process_group ... ok
-run=20cb5a64-ed89-4f8e-b8b4-657209874b23 workflow=cancel status=cancelled durationMs=4024
+run=54e6960b-bf33-4687-8f06-b4512f5b8a43 workflow=cancel status=cancelled durationMs=4026
 STEP                     STATUS     VISITS ATTEMPTS
 test cancel_stops_a_running_run_and_blocks_resume ... ok
 
-test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.09s
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.10s
 
      Running unittests src/lib.rs (target/debug/deps/ostinato_adapters-811ba340f51f40fc)
 
@@ -99,40 +99,43 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
      Running tests/lang.rs (target/debug/deps/lang-010052e624538b88)
 
-running 31 tests
-test missing_field_separators_are_rejected ... ok
-test open_list_element_types_are_enforced ... ok
+running 34 tests
 test evaluates_conditions ... ok
-test optional_definition_fields_are_not_materialized ... ok
+test missing_field_separators_are_rejected ... ok
+test native_defaults_work_in_multibranch_disjunctions ... ok
+test definition_optional_conflicts_error_only_when_materialized ... ok
+test open_list_element_types_are_enforced ... ok
+test forward_let_references_are_lazy ... ok
 test list_comprehensions_are_supported ... ok
-test invalid_until_is_rejected_at_validation_time ... ok
 test definitions_preserve_optional_constraints_while_open ... ok
 test dependent_parameter_overrides_are_order_independent ... ok
-test open_list_prefix_unifies_with_a_concrete_list ... ok
-test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
-test comprehension_clause_sequences_are_supported ... ok
-test native_overrides_apply_before_top_level_comprehensions ... ok
-test native_defaults_work_in_multibranch_disjunctions ... ok
+test invalid_until_is_rejected_at_validation_time ... ok
+test optional_definition_fields_are_not_materialized ... ok
 test parameter_overrides_respect_fixed_values_and_types ... ok
 test parameter_overrides_narrow_a_default_free_disjunction ... ok
-test evaluates_structs_defaults_unification_and_interpolation ... ok
-test forward_let_references_are_lazy ... ok
-test parameter_overrides_are_constraints_and_dependent_fields_see_them ... ok
-test definition_optional_conflicts_error_only_when_materialized ... ok
-test native_parameter_overrides_are_injected_before_interpolation ... ok
-test renders_templates ... ok
-test compiles_workflow_and_resolves_parameters ... ok
-test rejects_missing_required_parameter ... ok
+test definitions_behave_like_structs_in_comprehensions_and_equality ... ok
+test open_list_prefix_unifies_with_a_concrete_list ... ok
 test parameters_can_be_backed_by_a_definition_or_split_struct ... ok
+test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
+test definition_optional_constraint_applies_to_required_fields_in_both_orders ... ok
+test native_overrides_apply_before_top_level_comprehensions ... ok
+test native_parameter_overrides_are_injected_before_interpolation ... ok
+test parameter_overrides_are_constraints_and_dependent_fields_see_them ... ok
+test compiles_workflow_and_resolves_parameters ... ok
+test evaluates_structs_defaults_unification_and_interpolation ... ok
+test comprehension_clause_sequences_are_supported ... ok
+test nested_definitions_are_not_exported_as_fields ... ok
+test rejects_missing_required_parameter ... ok
+test renders_templates ... ok
+test parenthesized_dynamic_labels_and_if_clause_sequences_work ... ok
 test retry_int_shorthand_respects_the_cap ... ok
 test step_level_unknown_fields_are_rejected ... ok
-test parenthesized_dynamic_labels_and_if_clause_sequences_work ... ok
 test unknown_workflow_fields_are_rejected ... ok
 test versioned_imports_use_the_unversioned_alias ... ok
 test unicode_string_builtins_match_go_semantics ... ok
 test until_accepts_nested_json_provider_and_hyphenated_steps ... ok
 
-test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
    Doc-tests ostinato_adapters
 
