@@ -1189,3 +1189,51 @@ r: {
     assert_eq!(json["c"], 10);
     assert_eq!(json["r"]["a"], 1);
 }
+
+#[test]
+fn parenthesized_params_keep_overrides() {
+    let source = r#"
+package demo
+params: ({name: string})
+workflow: {name: "n-\(params.name)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([("name".to_owned(), "Alice".to_owned())]),
+    )
+    .expect("parenthesized params");
+    assert_eq!(compiled.spec.name, "n-Alice");
+
+    let definition = r#"
+package demo
+#P: {name: string}
+params: (#P)
+workflow: {name: "n-\(params.name)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        definition,
+        &BTreeMap::from([("name".to_owned(), "Bob".to_owned())]),
+    )
+    .expect("parenthesized definition params");
+    assert_eq!(compiled.spec.name, "n-Bob");
+}
+
+#[test]
+fn parenthesized_definition_literal_keeps_optional_constraints() {
+    let source = r#"
+package demo
+#P: ({name?: string})
+x: #P & {name: 2}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let optional = r#"
+package demo
+#P: ({name?: string})
+x: #P
+"#;
+    let file = ostinato_lang::parse(optional).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"], serde_json::json!({}));
+}

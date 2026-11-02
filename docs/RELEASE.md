@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.2.5
+
+- Parenthesized structs are transparent for parameter overrides and
+  definition optional constraints.
+- 97 tests (23 CLI E2E, 1 conformance, 63 language, 6 domain, 3 store, 1 unit).
+
 ## v0.2.4
 
 - Disjunction review fixes: conflict alternatives, parenthesized/default
