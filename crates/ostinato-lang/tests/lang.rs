@@ -1714,3 +1714,14 @@ x: #D & {a: 1}
     let value = ostinato_lang::eval_file(&file).expect("eval");
     assert_eq!(value.to_json().expect("json")["x"]["a"], 1);
 }
+
+#[test]
+fn composed_definitions_keep_referenced_closedness() {
+    for source in [
+        "#A: {a: 1}\n#B: {a: 1}\n#D: {o?: 1}\n#D: #A | #B\nx: #D & {o: 1}",
+        "#A: {a: 1}\n#D: {[string]: int}\n#D: #A | #A\nx: #D & {b: 2}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        ostinato_lang::eval_file(&file).expect_err("closed definition must reject the field");
+    }
+}

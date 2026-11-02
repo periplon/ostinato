@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.3.6
+
+- Closedness/pattern correction: composed definitions keep referenced-definition
+  admissions and add their own outer admission.
+- 120 tests (23 CLI E2E, 1 conformance, 86 language, 6 domain, 3 store, 1 unit).
+
 ## v0.3.5
 
 - Closedness/pattern third review fixes: eager regex validation, metadata-aware

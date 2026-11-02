@@ -1473,6 +1473,7 @@ fn close_composed_definition(value: &Value) -> Value {
             definitions,
             patterns,
             open,
+            admissions,
             ..
         } => {
             let fields: BTreeMap<String, Value> = fields
@@ -1484,20 +1485,19 @@ fn close_composed_definition(value: &Value) -> Value {
                 .map(|(key, value)| (key.clone(), close_nested(value)))
                 .collect();
             let closed = !*open;
-            let admissions = if *open {
-                Vec::new()
-            } else {
+            let mut admissions = admissions.clone();
+            if !*open {
                 let mut names: BTreeSet<String> = fields.keys().cloned().collect();
                 names.extend(optional.keys().cloned());
                 names.extend(definitions.keys().cloned());
-                vec![Admission {
+                admissions.push(Admission {
                     names,
                     patterns: patterns
                         .iter()
                         .map(|(pattern, _)| pattern.clone())
                         .collect(),
-                }]
-            };
+                });
+            }
             Value::Definition {
                 fields,
                 optional,
