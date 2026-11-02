@@ -1,9 +1,8 @@
 //! Infrastructure adapters for Ostinato.
 //!
-//! * [`CueCliLoader`] delegates language semantics to the official CUE CLI,
-//!   which makes the default evaluator fully compliant with current CUE.
-//! * [`NativeLoader`] provides an offline CUE subset (explicitly not fully
-//!   compliant).
+//! * [`NativeLoader`] is the default Rust workflow-CUE evaluator.
+//! * [`CueCliLoader`] exposes official CUE as the conformance oracle
+//!   (`--evaluator cue`).
 //! * [`SqliteStore`] is the durable, transactional journal.
 //! * [`ProcessExecutor`] and [`CommandAgent`] are the deterministic and
 //!   agentic step runners.

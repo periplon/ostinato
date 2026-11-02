@@ -19,7 +19,7 @@ for non-draft PRs and therefore waits for these checks before squashing.
 - Explicit scope narrowing: `docs/SCOPE.md` (workflow-oriented CUE, not a full
   constraint solver). CUE aliases and pattern constraints are out of scope.
 - CI gate: `fmt / clippy / test` and `dependency audit`; auto-merge after green.
-- 66 tests (23 CLI E2E, 1 conformance, 32 language, 6 domain, 3 store, 1 unit).
+- 67 tests (23 CLI E2E, 1 conformance, 33 language, 6 domain, 3 store, 1 unit).
 
 ## v0.2.0
 

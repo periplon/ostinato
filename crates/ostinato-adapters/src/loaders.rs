@@ -10,8 +10,8 @@ use ostinato_lang::{
 };
 use serde_json::{Value as Json, json};
 
-/// Native CUE-subset loader. **Not** fully CUE compliant; used for tests and
-/// offline environments. The default is [`CueCliLoader`].
+/// Default Rust workflow-CUE loader. Implements the scope documented in
+/// `docs/SCOPE.md`; use [`CueCliLoader`] for the full official oracle.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NativeLoader;
 
@@ -374,7 +374,7 @@ fn root_value<'a>(root: &'a Value, name: &str) -> Option<&'a Value> {
     }
 }
 
-/// Fully compliant loader: shells out to the official CUE implementation.
+/// Official CUE oracle: shells out to the reference implementation.
 ///
 /// The containing **package** is exported (not a single file), so split
 /// packages, modules and sibling files behave exactly as they do in CUE.

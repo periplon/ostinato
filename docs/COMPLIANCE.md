@@ -28,7 +28,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | List comprehensions (`[for ... { expr }]`) | ✅ | |
 | Closed definitions (`#Def`) | ✅ | Top-level allowed/optional names; nested closedness and patterns are out of scope |
 | Nested field shorthand (`exec: cmd: [...]`) | ✅ | |
-| Definitions (`#Foo`) and unification (`&`) | ✅ | References, structural unification and closedness |
+| Definitions (`#Foo`) and unification (`&`) | ✅ | Definition references/unification and top-level closedness; metadata on non-definition structs is out of scope |
 | Defaults and multi-branch disjunctions | ✅ | First default wins; narrowing a defaulted constraint with `&` is out of scope |
 | Optional fields (`foo?:`) | ✅ | Omitted from the concrete export, matching `cue export` |
 | Open lists (`[...T]`, `[x, ...T]`) | ✅ | Prefix and element constraints are unified |

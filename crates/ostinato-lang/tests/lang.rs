@@ -592,3 +592,16 @@ x: #D
     assert_eq!(json["x"]["a"], 1);
     assert_eq!(json["x"]["c"], 3);
 }
+
+#[test]
+fn open_and_closed_intersection_is_closed() {
+    let source = r#"
+package demo
+#O: {a: int, ...}
+#C: {a: int, b?: int}
+#M: #O & #C
+x: #M & {a: 1, extra: 2}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
