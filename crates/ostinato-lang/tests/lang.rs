@@ -1878,3 +1878,28 @@ package demo
     let error = ostinato_lang::eval_file(&file).expect_err("unreferenced alias");
     assert!(error.to_string().contains("unreferenced alias"));
 }
+
+#[test]
+fn inner_alias_shadows_an_enclosing_let() {
+    let source = r#"
+package demo
+let X = 2
+b: {X=a: 1, c: X}
+d: X
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("inner alias");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["b"]["c"], 1);
+    assert_eq!(json["d"], 2);
+
+    let conditional = r#"
+package demo
+let X = 2
+if true {X=a: 1, c: X}
+d: X
+"#;
+    let file = ostinato_lang::parse(conditional).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("conditional alias");
+    assert_eq!(value.to_json().expect("json")["c"], 1);
+}

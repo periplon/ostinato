@@ -125,8 +125,7 @@ impl AliasCtx {
 
         let mut chain = visible.to_vec();
         chain.push(id);
-        let mut local_shadow = shadowed.clone();
-        local_shadow.extend(self.scopes[id].lets.iter().cloned());
+        let local_shadow = shadowed.clone();
 
         for item in items {
             match item {
