@@ -877,6 +877,7 @@ impl<'a> Frame<'a> {
             patterns.push((pattern.clone(), eval_expr(expr, &child)?));
         }
         apply_patterns(&patterns, &mut fields, span)?;
+        apply_patterns(&patterns, &mut optional, span)?;
         let open = items
             .iter()
             .any(|item| matches!(item, StructItem::Ellipsis(_)));
@@ -931,26 +932,7 @@ impl<'a> Frame<'a> {
         }
         let value = eval_expr(expr, self)?;
         let _ = span;
-        if let Value::Struct(fields) = value {
-            let names = fields.keys().cloned().collect();
-            let mut fields = fields;
-            for value in fields.values_mut() {
-                *value = close_nested(value);
-            }
-            return Ok(Value::Definition {
-                fields,
-                optional: BTreeMap::new(),
-                definitions: BTreeMap::new(),
-                patterns: Vec::new(),
-                closed: true,
-                open: false,
-                admissions: vec![Admission {
-                    names,
-                    patterns: Vec::new(),
-                }],
-            });
-        }
-        Ok(value)
+        Ok(close_nested(&value))
     }
 
     fn params_items(&self, exprs: &[Expr]) -> Option<Vec<StructItem>> {
@@ -1574,6 +1556,23 @@ fn pattern_constraint(
     Ok(matched.then_some(result))
 }
 
+fn pattern_constraint_closed(
+    patterns: &[(Pattern, Value)],
+    key: &str,
+    value: &Value,
+    span: Span,
+) -> Result<Option<Value>, LangError> {
+    let mut matched = false;
+    let mut result = value.clone();
+    for (pattern, constraint) in patterns {
+        if pattern_matches(pattern, key, span)? {
+            matched = true;
+            result = unify_values(&result, &close_nested(constraint), span)?;
+        }
+    }
+    Ok(matched.then_some(result))
+}
+
 fn apply_patterns(
     patterns: &[(Pattern, Value)],
     fields: &mut BTreeMap<String, Value>,
@@ -2050,7 +2049,9 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     }
                     fields.insert(key.clone(), unify_values(&constraint, value, span)?);
                 } else if admitted(admissions, key, span)? {
-                    fields.insert(key.clone(), value.clone());
+                    let value = pattern_constraint_closed(patterns, key, value, span)?
+                        .unwrap_or_else(|| value.clone());
+                    fields.insert(key.clone(), value);
                 } else {
                     return Err(closed_error(span, key));
                 }
@@ -2097,7 +2098,9 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     }
                     fields.insert(key.clone(), unify_values(&constraint, value, span)?);
                 } else if admitted(admissions_a, key, span)? {
-                    fields.insert(key.clone(), value.clone());
+                    let value = pattern_constraint_closed(patterns_a, key, value, span)?
+                        .unwrap_or_else(|| value.clone());
+                    fields.insert(key.clone(), value);
                 } else {
                     return Err(closed_error(span, key));
                 }
@@ -2109,8 +2112,12 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 {
                     return Err(closed_error(span, key));
                 }
-                if !b.contains_key(key) && !optional_b.contains_key(key) {
-                    let _ = value;
+                if !b.contains_key(key)
+                    && !optional_b.contains_key(key)
+                    && let Some(constrained) =
+                        pattern_constraint_closed(patterns_b, key, value, span)?
+                {
+                    fields.insert(key.clone(), constrained);
                 }
             }
             for (key, value) in optional_b {

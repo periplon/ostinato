@@ -23,7 +23,19 @@ ref: #Ref & {inner: {a: 1, b: 2}}
 #Named: {a: int}
 both: #Both & #Named & {a: 1}
 
+#Map: {[string]: {name: string}}
+map: #Map & {alice: {name: "a"}}
+
+#Steps: [{name: string}]
+seq: #Steps & [{name: "a"}]
+
+#Kind: {a: int} | {b: int}
+kind: #Kind & {a: 1}
+
+#OptionalPattern: {[string]: {a: int}, k?: {b: 2}}
+optionalPattern: #OptionalPattern & {k: {b: 2}}
+
 workflow: {
-	name: "\(closed.name)-\(open.extra)-\(pattern.x2)-\(all.b)-\(nested.inner.b)-\(composed.inner.b)-\(ref.inner.b)-\(both.a)"
+	name: "\(closed.name)-\(open.extra)-\(pattern.x2)-\(all.b)-\(nested.inner.b)-\(composed.inner.b)-\(ref.inner.b)-\(both.a)-\(map.alice.name)-\(seq[0].name)-\(kind.a)-\(optionalPattern.k.b)"
 	steps: {s: {kind: "noop"}}
 }
