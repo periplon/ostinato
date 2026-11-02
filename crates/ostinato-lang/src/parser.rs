@@ -1,5 +1,6 @@
 use crate::ast::{
-    BinOp, CompClause, Expr, Field, File, ImportDecl, Label, Span, StrPart, StructItem, UnOp,
+    BinOp, CompClause, Expr, Field, File, ImportDecl, Label, Pattern, Span, StrPart, StructItem,
+    UnOp,
 };
 use crate::error::LangError;
 use crate::lexer::{Tok, Token, lex};
@@ -238,6 +239,19 @@ impl Parser {
             self.skip_attribute()?;
             return Ok(None);
         }
+        if matches!(self.peek_tok(), Tok::LBracket) {
+            let saved = self.pos;
+            if let Some(pattern) = self.try_parse_pattern()? {
+                self.expect(&Tok::Colon, "`:`")?;
+                let value = self.parse_field_value()?;
+                return Ok(Some(StructItem::Pattern {
+                    pattern,
+                    value,
+                    span: self.span(),
+                }));
+            }
+            self.pos = saved;
+        }
         let span = self.span();
         match self.peek_tok().clone() {
             Tok::Let => {
@@ -295,6 +309,27 @@ impl Parser {
                 })))
             }
         }
+    }
+
+    fn try_parse_pattern(&mut self) -> Result<Option<Pattern>, LangError> {
+        self.expect(&Tok::LBracket, "`[`")?;
+        let pattern = match self.peek_tok().clone() {
+            Tok::Ident(name) if name == "string" => {
+                self.bump();
+                Pattern::Any
+            }
+            Tok::Match => {
+                self.bump();
+                let Tok::Str(regex) = self.peek_tok().clone() else {
+                    return Err(self.error("expected regex string after `=~`"));
+                };
+                self.bump();
+                Pattern::Regex(regex)
+            }
+            _ => return Ok(None),
+        };
+        self.expect(&Tok::RBracket, "`]`")?;
+        Ok(Some(pattern))
     }
 
     fn parse_label(&mut self) -> Result<Label, LangError> {

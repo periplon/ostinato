@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.2.5 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.3.0 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -27,14 +27,14 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | `for` / `if` struct comprehensions | ✅ | Including clause sequences and nested `for` |
 | List comprehensions (`[for ... { expr }]`) | ✅ | |
 | Nested field shorthand (`exec: cmd: [...]`) | ✅ | |
-| Definitions (`#Foo`) and unification (`&`) | ✅ | References and structural unification; optional constraints are preserved when materialized by plain unification; definitions are open. Recursive materialization, self-selection and required expressions that depend on optional fields are out of scope |
+| Definitions (`#Foo`) and unification (`&`) | ✅ | Closed by default, `...` opens, nested closedness, optional constraints and patterns. Recursive materialization, self-selection and required expressions that depend on optional fields are out of scope |
+| Pattern constraints (`[string]: T`, `[=~"re"]: T`) | ✅ | String and regex patterns; other pattern expressions are out of scope |
 | Defaults and multi-branch disjunctions | ✅ | Alternatives, defaults, `&` narrowing, disjunction intersection and duplicate-default collapsing; bounds/pattern lattice is out of scope |
 | Optional fields (`foo?:`) | ✅ | Omitted from the concrete export, matching `cue export` |
 | Open lists (`[...T]`, `[x, ...T]`) | ✅ | Prefix and element constraints are unified |
 | Type constraints (`string`, `int`, `number`, `bool`) | ✅ | Basic constraint checking |
 | String interpolation `\(...)` | ✅ | |
 | Attributes (`@tag`, `@flow`, ...) | ⚠️ | Syntactically accepted and skipped; `@tag` is not used for type-directed injection |
-| Pattern constraints (`[string]: T`, regex patterns) | ❌ | Out of scope (see `SCOPE.md`) |
 | CUE aliases (`X=field: value`) | ❌ | Out of scope; use named fields/`let` |
 | Full disjunction lattice over bounds/patterns | ⚠️ | Alternatives, defaults, `&` narrowing and intersection work; bounds/pattern interactions are out of scope |
 | Bytes, regexp/math/time, tool packages, `cue` commands | ❌ | |

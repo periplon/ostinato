@@ -52,9 +52,20 @@ pub struct Field {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pattern {
+    Any,
+    Regex(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StructItem {
     Field(Field),
+    Pattern {
+        pattern: Pattern,
+        value: Expr,
+        span: Span,
+    },
     Let {
         name: String,
         value: Expr,
@@ -80,7 +91,8 @@ impl StructItem {
     pub fn span(&self) -> Span {
         match self {
             Self::Field(field) => field.span,
-            Self::Let { span, .. }
+            Self::Pattern { span, .. }
+            | Self::Let { span, .. }
             | Self::For { span, .. }
             | Self::If { span, .. }
             | Self::Ellipsis(span) => *span,

@@ -36,6 +36,7 @@ pub enum Tok {
     Amp,
     Pipe,
     EqEq,
+    Match,
     Equals,
     NotEq,
     Lt,
@@ -264,7 +265,10 @@ impl Lexer {
                 }
             }
             '=' => {
-                if self.peek() == Some('=') {
+                if self.peek() == Some('~') {
+                    self.bump();
+                    Tok::Match
+                } else if self.peek() == Some('=') {
                     self.bump();
                     Tok::EqEq
                 } else {
