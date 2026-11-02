@@ -303,6 +303,7 @@ impl Parser {
                 } else {
                     None
                 };
+                let quoted = matches!(self.peek_tok(), Tok::Str(_));
                 let definition = matches!(
                     self.peek_tok(),
                     Tok::Ident(name) if name.starts_with('#')
@@ -317,6 +318,7 @@ impl Parser {
                     optional,
                     definition,
                     alias,
+                    quoted,
                     span,
                 })))
             }
@@ -439,6 +441,21 @@ impl Parser {
         self.parse_struct_body()
     }
 
+    fn starts_struct_item(&self) -> bool {
+        match self.peek_tok() {
+            Tok::Let | Tok::For | Tok::If | Tok::Ellipsis | Tok::LBracket => true,
+            Tok::Ident(_) | Tok::Str(_) => matches!(
+                self.tokens.get(self.pos + 1).map(|token| &token.tok),
+                Some(Tok::Colon | Tok::Equals | Tok::Question)
+            ),
+            _ => false,
+        }
+    }
+
+    fn expect_rbrace(&mut self) -> Result<(), LangError> {
+        self.expect(&Tok::RBrace, "`}`")
+    }
+
     fn parse_field_value(&mut self) -> Result<Expr, LangError> {
         self.skip_newlines();
         let alias = if let Tok::Ident(alias) = self.peek_tok().clone()
@@ -460,6 +477,7 @@ impl Parser {
                 ));
         if nested {
             let span = self.span();
+            let quoted = matches!(self.peek_tok(), Tok::Str(_));
             let definition = matches!(
                 self.peek_tok(),
                 Tok::Ident(name) if name.starts_with('#')
@@ -475,6 +493,7 @@ impl Parser {
                     optional,
                     definition,
                     alias,
+                    quoted,
                     span,
                 })],
                 span,
@@ -692,9 +711,14 @@ impl Parser {
                     let clauses = self.parse_comprehension_clauses()?;
                     self.skip_newlines();
                     self.expect(&Tok::LBrace, "`{`")?;
-                    let body = self.parse_expr()?;
-                    self.skip_newlines();
-                    self.expect(&Tok::RBrace, "`}`")?;
+                    let body = if self.starts_struct_item() {
+                        Expr::Struct(self.parse_struct_body()?, span)
+                    } else {
+                        let body = self.parse_expr()?;
+                        self.skip_newlines();
+                        self.expect_rbrace()?;
+                        body
+                    };
                     self.skip_newlines();
                     self.expect(&Tok::RBracket, "`]`")?;
                     return Ok(Expr::ListComp {

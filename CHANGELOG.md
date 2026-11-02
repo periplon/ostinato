@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.4
+
+Alias/let scope and list-comprehension fixes.
+
+- Let clauses are tracked statically: duplicate lets, unreferenced lets,
+  let/field conflicts across enclosing scopes, let/import conflicts and
+  let/comprehension-binding conflicts are rejected like CUE.
+- Quoted labels are distinct from aliases, so `X=a: 1` and `"X": 2` coexist.
+- List comprehensions accept struct bodies (`[for i in [1, 2] {a: i}]`).
+- List-comprehension renaming keeps earlier clause bindings in scope for later
+  clauses and the body.
+- 134 tests (23 CLI E2E, 1 conformance, 100 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.3
 
 Alias conflict coverage.

@@ -1960,3 +1960,57 @@ c: _
     let error = ostinato_lang::eval_file(&file).expect_err("underscore alias");
     assert!(error.to_string().contains("cannot use _ as alias"));
 }
+
+#[test]
+fn let_conflicts_and_unreferenced_lets_are_rejected() {
+    for source in [
+        "let X = 1\nlet X = 2\na: X",
+        "let X = 1\na: 2",
+        "let X = 1\nX: 2\nb: X",
+        "let X = 1\nb: {X: 2}\nc: X",
+        "let X = 1\nl: [for X in [1, 2] {X + 1}]",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(ostinato_lang::eval_file(&file).is_err(), "{source}");
+    }
+
+    let used = r#"
+package demo
+let X = 1
+b: {Y: 2}
+c: X
+"#;
+    let file = ostinato_lang::parse(used).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("used let");
+    assert_eq!(value.to_json().expect("json")["c"], 1);
+}
+
+#[test]
+fn quoted_labels_do_not_conflict_with_aliases() {
+    let source = r#"
+package demo
+X=a: 1
+"X": 2
+b: X
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("quoted label");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 1);
+    assert_eq!(json["X"], 2);
+    assert_eq!(json["b"], 1);
+}
+
+#[test]
+fn list_comprehensions_support_struct_bodies() {
+    let source = r#"
+package demo
+l: [for i in [1, 2] {a: i, b: i}]
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(
+        value.to_json().expect("json")["l"],
+        serde_json::json!([{"a": 1, "b": 1}, {"a": 2, "b": 2}])
+    );
+}
