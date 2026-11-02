@@ -56,7 +56,9 @@ section() {
   echo "exit=$?"
 } >evidence/01-quality.txt 2>&1 || true
 
-section 02-validate "$BIN" --db "$WORK/db.sqlite" --cue "$CUE_BIN" validate examples/module/complex.cue -p prefix=prod
+section 02-validate-rust "$BIN" --db "$WORK/db.sqlite" validate examples/module/complex.cue -p prefix=prod
+section 02b-validate-oracle "$BIN" --db "$WORK/db.sqlite" --evaluator cue --cue "$CUE_BIN" validate examples/module/complex.cue -p prefix=prod
+section 02c-conformance "$ROOT/scripts/conformance.sh"
 section 03-run-hello "$BIN" --db "$WORK/db.sqlite" --cue "$CUE_BIN" run examples/hello.cue -p name=Ostinato
 section 04-run-retry "$BIN" --db "$WORK/db.sqlite" run examples/retry.cue
 section 05-run-cycle "$BIN" --db "$WORK/db.sqlite" run examples/cycle.cue

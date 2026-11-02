@@ -458,7 +458,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "ostinato"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "ostinato-adapters"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "ostinato-application",
@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "ostinato-application"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "hex",
  "ostinato-domain",
@@ -503,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "ostinato-domain"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",
@@ -514,7 +514,7 @@ dependencies = [
 
 [[package]]
 name = "ostinato-lang"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "ostinato-domain",
  "serde_json",

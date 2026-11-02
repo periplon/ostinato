@@ -1,4 +1,4 @@
-use crate::ast::{BinOp, Expr, Field, File, Label, Span, StrPart, StructItem, UnOp};
+use crate::ast::{BinOp, Expr, Field, File, ImportDecl, Label, Span, StrPart, StructItem, UnOp};
 use crate::error::LangError;
 use crate::lexer::{Tok, Token, lex};
 
@@ -74,6 +74,13 @@ impl Parser {
         }
     }
 
+    fn at_separator_or(&self, closer: &Tok) -> bool {
+        matches!(
+            self.peek_tok(),
+            Tok::Newline | Tok::Comma | Tok::Semi | Tok::At | Tok::Eof
+        ) || self.peek_tok() == closer
+    }
+
     fn eat(&mut self, tok: &Tok) -> bool {
         if self.peek_tok() == tok {
             self.bump();
@@ -109,6 +116,30 @@ impl Parser {
         } else {
             None
         };
+        let mut imports = Vec::new();
+        loop {
+            self.skip_separators();
+            if !self.eat(&Tok::Import) {
+                break;
+            }
+            if self.eat(&Tok::LParen) {
+                loop {
+                    self.skip_separators();
+                    if self.eat(&Tok::RParen) {
+                        break;
+                    }
+                    if matches!(self.peek_tok(), Tok::Eof) {
+                        return Err(self.error("unterminated import block"));
+                    }
+                    imports.push(self.parse_import_decl()?);
+                    if !self.at_separator_or(&Tok::RParen) {
+                        return Err(self.error("expected `,`, newline or `)` after import"));
+                    }
+                }
+            } else {
+                imports.push(self.parse_import_decl()?);
+            }
+        }
         let mut items = Vec::new();
         loop {
             self.skip_separators();
@@ -117,9 +148,39 @@ impl Parser {
             }
             if let Some(item) = self.parse_struct_item()? {
                 items.push(item);
+                if !self.at_separator_or(&Tok::Eof) {
+                    return Err(self.error("expected `,`, newline or end of file after field"));
+                }
             }
         }
-        Ok(File { package, items })
+        Ok(File {
+            package,
+            imports,
+            items,
+        })
+    }
+
+    fn parse_import_decl(&mut self) -> Result<ImportDecl, LangError> {
+        let span = self.span();
+        let mut alias = None;
+        if let Tok::Ident(name) = self.peek_tok().clone()
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|token| &token.tok),
+                Some(Tok::Str(_))
+            )
+        {
+            self.bump();
+            alias = Some(name);
+        }
+        let Tok::Str(path) = self.peek_tok().clone() else {
+            return Err(self.error("expected import path string"));
+        };
+        self.bump();
+        let alias = alias.unwrap_or_else(|| {
+            let segment = path.rsplit('/').next().unwrap_or(path.as_str());
+            segment.split('@').next().unwrap_or(segment).to_owned()
+        });
+        Ok(ImportDecl { alias, path, span })
     }
 
     fn parse_struct_body(&mut self) -> Result<Vec<StructItem>, LangError> {
@@ -134,6 +195,9 @@ impl Parser {
             }
             if let Some(item) = self.parse_struct_item()? {
                 items.push(item);
+                if !self.at_separator_or(&Tok::RBrace) {
+                    return Err(self.error("expected `,`, newline or `}` after field"));
+                }
             }
         }
         Ok(items)
@@ -174,6 +238,13 @@ impl Parser {
         }
         let span = self.span();
         match self.peek_tok().clone() {
+            Tok::Let => {
+                self.bump();
+                let name = self.expect_ident()?;
+                self.expect(&Tok::Equals, "`=`")?;
+                let value = self.parse_expr()?;
+                Ok(Some(StructItem::Let { name, value, span }))
+            }
             Tok::For => {
                 self.bump();
                 let first = self.expect_ident()?;
@@ -212,7 +283,7 @@ impl Parser {
                 let label = self.parse_label()?;
                 let optional = self.eat(&Tok::Question);
                 self.expect(&Tok::Colon, "`:`")?;
-                let value = self.parse_expr()?;
+                let value = self.parse_field_value()?;
                 let definition = matches!(&label, Label::Name(name, _) if name.starts_with('#'));
                 Ok(Some(StructItem::Field(Field {
                     label,
@@ -234,7 +305,12 @@ impl Parser {
             }
             Tok::Str(raw) => {
                 self.bump();
-                Ok(Label::Name(raw, span))
+                if raw.contains("\\(") {
+                    let parts = parse_str_parts(&raw, span)?;
+                    Ok(Label::Dynamic(Box::new(Expr::Str(parts, span)), span))
+                } else {
+                    Ok(Label::Name(raw, span))
+                }
             }
             Tok::LBracket => {
                 self.bump();
@@ -243,6 +319,35 @@ impl Parser {
                 Ok(Label::Dynamic(Box::new(expr), span))
             }
             other => Err(self.error(format!("expected field label, found {other:?}"))),
+        }
+    }
+
+    fn parse_field_value(&mut self) -> Result<Expr, LangError> {
+        self.skip_newlines();
+        let nested = matches!(self.peek_tok(), Tok::Ident(_) | Tok::Str(_))
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|token| &token.tok),
+                Some(Tok::Colon)
+            );
+        if nested {
+            let span = self.span();
+            let label = self.parse_label()?;
+            let optional = self.eat(&Tok::Question);
+            self.expect(&Tok::Colon, "`:`")?;
+            let value = self.parse_field_value()?;
+            let definition = matches!(&label, Label::Name(name, _) if name.starts_with('#'));
+            Ok(Expr::Struct(
+                vec![StructItem::Field(Field {
+                    label,
+                    value,
+                    optional,
+                    definition,
+                    span,
+                })],
+                span,
+            ))
+        } else {
+            self.parse_expr()
         }
     }
 
@@ -391,6 +496,19 @@ impl Parser {
                     self.expect(&Tok::RBracket, "`]`")?;
                     expr = Expr::Index(Box::new(expr), Box::new(index), span);
                 }
+                Tok::LParen => {
+                    self.bump();
+                    let mut arguments = Vec::new();
+                    loop {
+                        self.skip_separators();
+                        if self.eat(&Tok::RParen) {
+                            break;
+                        }
+                        arguments.push(self.parse_expr()?);
+                        self.skip_separators();
+                    }
+                    expr = Expr::Call(Box::new(expr), arguments, span);
+                }
                 _ => break,
             }
         }
@@ -436,6 +554,18 @@ impl Parser {
             }
             Tok::LBracket => {
                 self.bump();
+                self.skip_separators();
+                if matches!(self.peek_tok(), Tok::Ellipsis) {
+                    self.bump();
+                    self.skip_newlines();
+                    let element = if matches!(self.peek_tok(), Tok::RBracket) {
+                        None
+                    } else {
+                        Some(Box::new(self.parse_expr()?))
+                    };
+                    self.expect(&Tok::RBracket, "`]`")?;
+                    return Ok(Expr::OpenList(element, span));
+                }
                 let mut items = Vec::new();
                 loop {
                     self.skip_separators();
@@ -447,9 +577,19 @@ impl Parser {
                     }
                     if matches!(self.peek_tok(), Tok::Ellipsis) {
                         self.bump();
-                        continue;
+                        self.skip_newlines();
+                        let tail = if matches!(self.peek_tok(), Tok::RBracket) {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_expr()?))
+                        };
+                        self.expect(&Tok::RBracket, "`]`")?;
+                        return Ok(Expr::OpenListPrefix(items, tail, span));
                     }
                     items.push(self.parse_expr()?);
+                    if !self.at_separator_or(&Tok::RBracket) {
+                        return Err(self.error("expected `,`, newline or `]` after list element"));
+                    }
                     self.skip_separators();
                 }
                 Ok(Expr::List(items, span))
@@ -478,16 +618,30 @@ fn parse_str_parts(raw: &str, span: Span) -> Result<Vec<StrPart>, LangError> {
             let start = index + 2;
             let mut depth = 1usize;
             let mut end = start;
+            let mut in_string = false;
+            let mut escaped = false;
             while end < chars.len() {
-                match chars[end] {
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
+                let current = chars[end];
+                if in_string {
+                    if escaped {
+                        escaped = false;
+                    } else if current == '\\' {
+                        escaped = true;
+                    } else if current == '"' {
+                        in_string = false;
                     }
-                    _ => {}
+                } else {
+                    match current {
+                        '"' => in_string = true,
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 end += 1;
             }

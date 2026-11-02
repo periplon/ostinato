@@ -55,6 +55,11 @@ pub struct Field {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StructItem {
     Field(Field),
+    Let {
+        name: String,
+        value: Expr,
+        span: Span,
+    },
     For {
         key: Option<String>,
         value: String,
@@ -75,7 +80,10 @@ impl StructItem {
     pub fn span(&self) -> Span {
         match self {
             Self::Field(field) => field.span,
-            Self::For { span, .. } | Self::If { span, .. } | Self::Ellipsis(span) => *span,
+            Self::Let { span, .. }
+            | Self::For { span, .. }
+            | Self::If { span, .. }
+            | Self::Ellipsis(span) => *span,
         }
     }
 }
@@ -96,8 +104,11 @@ pub enum Expr {
     Ident(String, Span),
     Select(Box<Expr>, String, Span),
     Index(Box<Expr>, Box<Expr>, Span),
+    Call(Box<Expr>, Vec<Expr>, Span),
     Struct(Vec<StructItem>, Span),
     List(Vec<Expr>, Span),
+    OpenList(Option<Box<Expr>>, Span),
+    OpenListPrefix(Vec<Expr>, Option<Box<Expr>>, Span),
     Unify(Box<Expr>, Box<Expr>, Span),
     Disjunction(Box<Expr>, Box<Expr>, Span),
     Default(Box<Expr>, Span),
@@ -117,8 +128,11 @@ impl Expr {
             | Self::Ident(_, span)
             | Self::Select(_, _, span)
             | Self::Index(_, _, span)
+            | Self::Call(_, _, span)
             | Self::Struct(_, span)
             | Self::List(_, span)
+            | Self::OpenList(_, span)
+            | Self::OpenListPrefix(_, _, span)
             | Self::Unify(_, _, span)
             | Self::Disjunction(_, _, span)
             | Self::Default(_, span)
@@ -128,9 +142,18 @@ impl Expr {
     }
 }
 
+/// An import declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportDecl {
+    pub alias: String,
+    pub path: String,
+    pub span: Span,
+}
+
 /// A parsed CUE-compatible file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct File {
     pub package: Option<String>,
+    pub imports: Vec<ImportDecl>,
     pub items: Vec<StructItem>,
 }

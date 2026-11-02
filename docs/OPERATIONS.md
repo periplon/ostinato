@@ -3,12 +3,25 @@
 ## Install and pin
 
 ```sh
-./scripts/install-cue.sh v0.17.1 ~/.local/bin
 cargo build --release -p ostinato
 install -m 0755 target/release/ostinato ~/.local/bin/ostinato
+
+# Optional: CUE conformance oracle / --evaluator cue
+./scripts/install-cue.sh v0.17.1 ~/.local/bin
 ```
 
-`ostinato doctor` must report official CUE **>= v0.17.1** and `store OK`. Use `--cue /path/to/cue` or `CUE_BIN` to pin a binary per invocation.
+`ostinato doctor` reports the default Rust evaluator, the detected CUE oracle
+(if installed), and `store OK`. Use `--cue /path/to/cue` or `CUE_BIN` to pin the
+oracle per invocation. The default runtime does not require CUE.
+
+## Conformance
+
+```sh
+CUE_BIN=cue ./scripts/conformance.sh
+```
+
+Compares the Rust evaluator and official CUE on the `conformance/` corpus. CI
+runs the same test with CUE v0.17.1.
 
 ## Database
 
@@ -173,8 +186,9 @@ Backoff is deterministic: `base × factor^attempt`, capped, then jittered with a
 
 | Symptom | Cause / fix |
 |---|---|
-| `official CUE CLI not found` | install `cue` v0.17.1 or pass `--cue` |
-| `CUE evaluation failed: ... non-concrete value` | a required `@tag` param is missing; pass `-p name=value` |
+| `CUE CLI not found` when using `--evaluator cue` | install `cue` v0.17.1 or pass `--cue` |
+| `missing required parameter` / non-concrete value | pass `-p name=value`; declare defaults with `*value` |
+| Rust evaluator rejects a CUE feature | use `--evaluator cue` (documented escape hatch) |
 | `agent step requires --agent-cmd` | configure a provider |
 | `cycle ... has no cycle policy` | add `cycle: {max: N, until: "..."}` |
 | `run ... is cancelled` | start a new run |

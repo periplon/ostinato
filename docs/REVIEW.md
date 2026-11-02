@@ -88,6 +88,32 @@ private sidecars, package-less files, background grandchildren, nested
 `until`, step-level typos, retry caps, version suffixes, native top-level
 comprehensions and snapshot-based verification.
 
+## Third-pass review (v0.2.0)
+
+The third review verified that the Rust evaluator is the default and the CUE
+oracle is explicit. It found blockers in the new package/parameter layer; all
+were fixed before release:
+
+| Finding | Fix |
+|---|---|
+| `let` and imports leaked across files | File-local bindings are renamed to unique names; `let` is lazy; imported definitions are preserved |
+| Directory inputs resolved imports from the parent | Source directory is the package directory for a directory input |
+| Parameter overrides replaced constraints instead of unifying | Overrides are pre-seeded and unified with declared constraints; dependent params see all overrides |
+| Split-file/definition-backed `params` ignored `-p` | Params struct items are collected through structs, definitions and unifications |
+| Non-struct `params` became `{}` | Present-but-non-struct params fail with the CUE contract |
+| `_test.cue`/`_tool.cue` and `package _` were not treated like CUE | Build-exclusion and anonymous-package rules implemented |
+| `module.cue` line scan broke on comments/@v | Module file is parsed as CUE; `@v` is stripped for matching |
+| Import paths allowed `..` traversal | Components validated, canonical target constrained to the module root, `.cue` required for file targets |
+| `[...T]` only handled pure open lists | Prefix plus open tail (`[x, ...T]`) is represented and unified |
+| Builtins diverged (`list.Concat`, `list.Len`, arity, Unicode case/len) | CUE/Go-compatible `list.Concat`, global `len`, exact arity, Go-style case mapping and byte length |
+| Interpolation broke on nested string literals | Lexer/parser are string-aware inside `\(...)` |
+| Missing field separators were accepted | Struct/top-level/list/import separators are enforced |
+| Conformance corpus did not cover params, scope, hidden files, versioned modules, open lists | Corpus expanded; `scripts/conformance.sh` exercises them |
+
+Clause sequences (`for ... if`, nested `for`) and list comprehensions remain
+unsupported and are documented as such; they fail with a parse error rather
+than silently doing something different.
+
 ## Deliberately deferred / residual risks
 
 | Item | Status |

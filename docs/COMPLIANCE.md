@@ -1,143 +1,103 @@
-# CUE compliance contract
+# CUE implementation and conformance contract
 
-Ostinato's language layer has one rule:
+## The contract
 
-> **The official CUE implementation is the normative evaluator. Ostinato executes what CUE exports.**
+Ostinato v0.2.0 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
-This is deliberate. Reimplementing CUE's lattice, closedness, modules, builtins and tool packages in Rust would create a second, subtly different language. Instead:
-
-1. The user's `.cue` file is evaluated by the official `cue` binary.
-2. Ostinato consumes the **concrete JSON export** and compiles the `workflow` field into a typed `WorkflowSpec`.
-3. The Rust engine executes that spec.
-
-Because step 1 is the reference implementation, every CUE feature — including features the workflow schema does not use — behaves exactly as it does in current CUE.
-
-## Exact invocation
-
-The loader exports the **containing CUE package**, not a lone file, so split
-definitions, sibling conflicts and module imports behave exactly as they do in
-CUE:
-
-```sh
-cd <directory of the source, or the directory itself>
-cue export .:<package> --out json -e workflow [-t key=value ...]
-cue export .:<package> --out json -e params   [-t key=value ...]
+```text
+source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
+                       ▲
+                       │  conformance tests compare
+                       ▼
+              official CUE v0.17.1 CLI
 ```
 
-- For a directory source, the instance is `.` inside that directory.
-- For a file, the package name is read from its `package` clause and the
-  instance is `.:<package>`; CUE then sees every sibling file in the package.
-- A file with no `package` clause (or `package _`) is exported by filename,
-  because CUE has no package instance for it.
-- Only `workflow` and `params` are exported, so unrelated **incomplete**
-  top-level fields are not evaluated. A conflicting sibling still makes the
-  package invalid, exactly as `cue export` does.
-- `-p/--param` values are passed as CUE `-t` tag injections. Use
-  `@tag(name,type=int)`, `type=bool`, `type=number` for non-strings. A concrete
-  value is a fixed constraint; write `*value` for an overridable default.
-- Parameters must live under the top-level `params` struct; `-p` is rejected if
-  there is no `params` struct.
-- A nonzero exit is surfaced with the command's exit code and stderr. If
-  `params` is absent, the second export is treated as `{}` **only** when CUE
-  reports `reference "params" not found`.
-- If `cue` is missing or older than the required version, the default
-  evaluator fails with install instructions. There is no silent fallback.
+This is a deliberate scope decision: the required semantics are implemented and tested in Rust; the reference implementation is retained to prove equivalence and to provide an escape hatch when a workflow uses an unimplemented CUE feature.
+
+## Rust evaluator coverage
+
+| CUE feature | Rust default | Notes |
+|---|---|---|
+| Package selection and same-package sibling files | ✅ | File, directory, and `package _` / no-package fallbacks |
+| Split packages and sibling conflicts | ✅ | Same-directory package files are unified |
+| Imports: `strings`, `list` | ✅ | `ToUpper`, `ToLower`, `TrimSpace`, `Join`, `Split`, `HasPrefix`, `HasSuffix`; `Range`, `Concat`; global `len` |
+| Local module imports (`cue.mod/module.cue`) | ✅ | Module path prefix resolution, `@v` suffixes, comments, cycle detection |
+| Relative imports (`./pkg`) | ✅ | |
+| `let` declarations | ✅ | File-scoped, lazy (forward references work) |
+| `for` / `if` struct comprehensions | ✅ | Single clause; dynamic labels |
+| Clause sequences (`for ... if`, nested `for`) and list comprehensions | ❌ | Explicit parse error |
+| Nested field shorthand (`exec: cmd: [...]`) | ✅ | |
+| Definitions (`#Foo`) and unification (`&`) | ✅ | References and structural unification |
+| Defaults and multi-branch disjunctions | ✅ | First default wins; full lattice is not implemented |
+| Optional fields (`foo?:`) | ✅ | Omitted from the concrete export, matching `cue export` |
+| Open lists (`[...T]`, `[x, ...T]`) | ✅ | Prefix and element constraints are unified |
+| Type constraints (`string`, `int`, `number`, `bool`) | ✅ | Basic constraint checking |
+| String interpolation `\(...)` | ✅ | |
+| Attributes (`@tag`, `@flow`, ...) | ⚠️ | Syntactically accepted and skipped; `@tag` is not used for type-directed injection |
+| Closedness / closed structs | ❌ | `#Def & {extra: 1}` is not rejected |
+| Aliases, pattern constraints, `let` patterns | ❌ | |
+| Full disjunction lattice, `&` with disjunctions | ⚠️ | Workflow-level defaults work; full CUE lattice is out of scope |
+| Bytes, regexp/math/time, tool packages, `cue` commands | ❌ | |
+
+Unsupported features fail explicitly or are documented here. Use `--evaluator cue` for a workflow that needs them.
+
+## Parameter injection
+
+The Rust evaluator accepts `-p key=value` and injects values before evaluation, so compile-time `\(params.x)` and runtime `{{ params.x }}` see the same override.
+
+Values are JSON-coerced: `5` becomes an integer, `true` a boolean, `["a"]` a list, otherwise a string. Official CUE `@tag` injection is string-typed unless `@tag(name,type=int|bool|number)` is used; this is the main deliberate difference. Keep parameters string-typed or use the oracle if exact `@tag` coercion matters.
+
+## Official CUE oracle
+
+`--evaluator cue` invokes:
+
+```sh
+cue export .:<package> --out json -e workflow -e params [-t key=value ...]
+```
+
+- Package-level export: split packages and sibling conflicts behave exactly as CUE.
+- Only `workflow` and `params` are exported.
+- CUE **>= v0.17.1** is required for the oracle; CI installs and pins v0.17.1.
+- There is no silent fallback. The default is `rust`; the oracle is explicit.
+
+## Conformance suite
+
+The corpus lives in [`conformance/`](../conformance):
+
+- `defaults.cue` — defaults, package selection.
+- `unify.cue` — definitions, unification, open list type, optional field.
+- `comprehension.cue` — dynamic labels from a `for` comprehension.
+- `let-builtin.cue` — `import "strings"`, `let`, builtin call.
+- `nested.cue` — nested field shorthand.
+- `module/complex.cue` — local module import, `let`, comprehension, definition, builtin, `[...string]`.
+
+The test runs each source through the Rust loader and the official CUE oracle, compiles both, and asserts that `workflow` and `params` are identical:
+
+```sh
+CUE_BIN=cue cargo test -p ostinato --test conformance -- --nocapture
+# test rust_matches_official_cue_on_the_conformance_corpus ... ok
+```
+
+or:
+
+```sh
+./scripts/conformance.sh
+```
+
+CI installs CUE v0.17.1 and runs this suite. The evidence bundle records the result.
 
 ## Version policy
 
-| Version | Result |
+| Component | Requirement |
 |---|---|
-| **v0.17.1** (current at time of writing) | full run, module import, `let`, comprehension, definition, optional field, `@tag`, split packages, audit |
-| < v0.17.1 | rejected with a clear error |
+| Rust evaluator (default) | none beyond the Ostinato binary |
+| CUE oracle / conformance | CUE **>= v0.17.1**, tested with v0.17.1 |
+| CI | installs v0.17.1 from the official release with a pinned SHA-256 |
 
-`CueCliLoader::new` parses `cue version` (including `-rc`/`+meta` suffixes) and
-requires **>= v0.17.1**. CI
-installs v0.17.1 from the official release tarball (`scripts/install-cue.sh`).
-`ostinato doctor` prints the detected version. The version is recorded in
-`validate` output as `evaluator=official CUE (cue version vX.Y.Z)`.
+`ostinato doctor` reports both the default evaluator and the detected oracle, or that the oracle is unavailable.
 
-## What is exercised in the repository
+## Why not implement every CUE feature?
 
-`examples/module/` is a real CUE module:
+CUE is a large constraint language: closedness, aliases, pattern constraints, a full disjunction lattice, modules and tool packages. Ostinato's language is a workflow DSL expressed in CUE; the required surface is the part used to declare parameters, steps, retries, cycles and agent prompts. Implementing that surface in Rust, with the reference implementation as an oracle, gives a self-contained runtime without pretending to be a complete CUE implementation.
 
-```text
-cue.mod/module.cue        module: "example.com/ostinato/demo"
-lib/lib.cue               package lib
-complex.cue               imports strings + example.com/ostinato/demo/lib
-```
-
-`complex.cue` uses:
-
-- package + module import + non-standard library import;
-- a top-level `let`;
-- a definition (`#Step`) unified with a value;
-- a `for` comprehension that generates step names via interpolation;
-- a default/disjunction parameter injected with `@tag`;
-- an optional field;
-- builtin `strings.ToUpper`.
-
-It validates and runs:
-
-```text
-$ ostinato --cue cue validate examples/module/complex.cue -p prefix=prod
-OK complex (3 steps, maxParallel=3, evaluator=official CUE (cue version v0.17.1))
-
-$ ostinato --cue cue run examples/module/complex.cue -p prefix=prod
-run=... workflow=complex status=succeeded
-STEP       STATUS     VISITS ATTEMPTS
-job-one    succeeded  1      1
-job-two    succeeded  1      1
-summary    succeeded  1      1
-```
-
-## Native subset (`--evaluator native`)
-
-The `ostinato-lang` crate contains a hand-written lexer/parser/evaluator. It exists for:
-
-- hermetic tests in environments without CUE;
-- offline/air-gapped experiments;
-- a readable reference for the workflow compiler.
-
-**It is not fully CUE compliant and is not the production path.** It is selected only by an explicit `--evaluator native` and reports itself as such:
-
-```text
-evaluator native CUE subset (not fully compliant; use --evaluator cue)
-```
-
-| Feature | Native subset | Official CUE (default) |
-|---|---|---|
-| Explicit `label: value` structs, references, lists | ✅ | ✅ |
-| Single or multi-branch defaults/unification | ✅ (first default wins) | ✅ |
-| String interpolation `\(...)` | ✅ (escaped `\\(` not fully) | ✅ |
-| `if` / `for` struct comprehensions | ⚠️ simple; generated fields are readable | ✅ |
-| Type constraints (`string`, `int`, ...) | ✅ (basic) | ✅ |
-| Imports / modules / `cue.mod` | ❌ | ✅ |
-| `let` declarations | ❌ | ✅ |
-| Builtins (`strings`, `list`, `math`, `regexp`, ...) | ❌ | ✅ |
-| Definitions (`#Foo`) with closedness/constraints | ⚠️ references only; closedness not enforced | ✅ |
-| Optional fields | ⚠️ always omitted, matching `cue export` | ✅ |
-| Nested field shorthand (`exec: cmd: [...]`) | ❌ | ✅ |
-| Attributes | ✅ simple attributes skipped, including `@tag(n,type=int)` | ✅ |
-| Aliases, pattern constraints, full disjunction lattices | ❌ | ✅ |
-| Bytes, tool packages, `cue` commands | ❌ | ✅ |
-
-Native `-p` overrides are injected before evaluation (so compile-time
-interpolation sees them), but values are JSON-coerced rather than CUE
-`@tag`-typed. This difference is explicit; use the official evaluator for
-compliance.
-
-### Rules for contributors
-
-- Do not add production features by extending the native evaluator.
-- If a workflow file works with `cue export` and declares `workflow` plus (optionally) a top-level `params` struct, it must work with Ostinato. The typed compiler only rejects structures that do not match the workflow schema; `@tag` parameters outside `params` are not part of the contract.
-- Native-subset behavior must never diverge silently: differences are explicit in this table and in the evaluator name.
-
-## Why not embed CUE as a library?
-
-CUE is a Go implementation (`cuelang.org/go`). Embedding it would require cgo or a sidecar, which complicates static Rust builds. The binary contract is simple, auditable, version-pinnable, and exactly matches the CUE the user runs themselves:
-
-```sh
-cue export workflow.cue --out json
-```
-
-If a future release embeds the Go library, this document and the `SpecLoader` port are the only things that change.
+If a workflow needs an unsupported feature, the error is explicit; `--evaluator cue` is the supported escape hatch.

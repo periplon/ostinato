@@ -16,10 +16,30 @@ pub enum Value {
     String(String),
     List(Vec<Value>),
     Struct(BTreeMap<String, Value>),
+    /// An open list type `[...T]`; `None` means any element.
+    OpenList(Option<Box<Value>>),
+    /// A list with a fixed prefix and an open tail.
+    OpenListPrefix(Vec<Value>, Option<Box<Value>>),
     /// A type constraint (`string`, `int`, `number`, ...).
     Type(TypeKind),
+    /// A builtin function exposed by an imported package.
+    Builtin(Builtin),
     /// The top value `_` (any). Also used for incomplete values.
     Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Builtin {
+    StringsToUpper,
+    StringsToLower,
+    StringsTrimSpace,
+    StringsJoin,
+    StringsSplit,
+    StringsHasPrefix,
+    StringsHasSuffix,
+    ListRange,
+    ListConcat,
+    Len,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +62,8 @@ impl Value {
             Self::String(_) => "string",
             Self::List(_) => "list",
             Self::Struct(_) => "struct",
+            Self::OpenList(_) | Self::OpenListPrefix(_, _) => "list",
+            Self::Builtin(_) => "builtin",
             Self::Type(kind) => match kind {
                 TypeKind::String => "string",
                 TypeKind::Int => "int",
@@ -81,7 +103,18 @@ impl Value {
                 }
                 Some(Json::Object(out))
             }
-            Self::Type(_) | Self::Bottom => None,
+            Self::OpenList(_)
+            | Self::OpenListPrefix(_, _)
+            | Self::Builtin(_)
+            | Self::Type(_)
+            | Self::Bottom => None,
+        }
+    }
+
+    fn open_list_element(&self) -> Option<&Value> {
+        match self {
+            Self::OpenList(element) => element.as_deref(),
+            _ => None,
         }
     }
 
@@ -95,7 +128,8 @@ impl Value {
             Self::String(value) => !value.is_empty(),
             Self::List(values) => !values.is_empty(),
             Self::Struct(values) => !values.is_empty(),
-            Self::Type(_) | Self::Bottom => false,
+            Self::OpenList(_) | Self::OpenListPrefix(_, _) => true,
+            Self::Builtin(_) | Self::Type(_) | Self::Bottom => false,
         }
     }
 
@@ -115,7 +149,26 @@ impl Value {
                 TypeKind::Bool => "bool",
             }
             .to_owned(),
+            Self::Builtin(_) => "<function>".to_owned(),
             Self::Bottom => "_".to_owned(),
+            Self::OpenList(_) => format!(
+                "[...{}]",
+                self.open_list_element()
+                    .map_or_else(|| "_".to_owned(), |value| value.display())
+            ),
+            Self::OpenListPrefix(prefix, tail) => {
+                let mut rendered = String::from("[");
+                for value in prefix {
+                    rendered.push_str(&value.display());
+                    rendered.push_str(", ");
+                }
+                rendered.push_str("...");
+                if let Some(tail) = tail {
+                    rendered.push_str(&tail.display());
+                }
+                rendered.push(']');
+                rendered
+            }
             Self::List(_) | Self::Struct(_) => self.to_json().map_or_else(
                 || format!("<{}>", self.type_name()),
                 |json| json.to_string(),
@@ -152,32 +205,67 @@ pub fn eval_file_with_overrides(
     overrides: &BTreeMap<String, Value>,
 ) -> Result<Value, LangError> {
     let frame = Frame::from_static(&file.items, None, HashMap::new())?;
-    if !overrides.is_empty() {
-        let Value::Struct(mut params) = frame.eval_field("params", Span::default())? else {
-            return Err(LangError::eval(
-                1,
-                1,
-                "parameters were supplied but `params` is not a struct",
-            ));
-        };
-        for (key, value) in overrides {
-            params.insert(key.clone(), value.clone());
-        }
+    for (key, value) in overrides {
         frame
-            .values
+            .overrides
             .borrow_mut()
-            .insert("params".to_owned(), Value::Struct(params));
+            .insert(key.clone(), value.clone());
     }
     frame.expand(&file.items)?;
     frame.to_struct_value()
 }
 
+/// Evaluate a file with imported package values and parameter overrides.
+///
+/// Imports are inserted into the root scope before `let` bindings and
+/// comprehensions are evaluated.
+///
+/// # Errors
+/// Returns an evaluation error for invalid imports or missing `params`.
+pub fn eval_file_with_imports(
+    file: &File,
+    imports: &BTreeMap<String, Value>,
+    overrides: &BTreeMap<String, Value>,
+) -> Result<Value, LangError> {
+    eval_file_with_imports_mode(file, imports, overrides, false)
+}
+
+/// Like [`eval_file_with_imports`], optionally retaining definitions.
+///
+/// Imported packages need `#definitions` to be visible; the root package
+/// export must hide them, matching `cue export`.
+///
+/// # Errors
+/// Returns an evaluation error for invalid imports or missing `params`.
+pub fn eval_file_with_imports_mode(
+    file: &File,
+    imports: &BTreeMap<String, Value>,
+    overrides: &BTreeMap<String, Value>,
+    include_definitions: bool,
+) -> Result<Value, LangError> {
+    let mut vars = HashMap::new();
+    for (name, value) in imports {
+        vars.insert(name.clone(), value.clone());
+    }
+    let frame = Frame::from_static(&file.items, None, vars)?;
+    for (key, value) in overrides {
+        frame
+            .overrides
+            .borrow_mut()
+            .insert(key.clone(), value.clone());
+    }
+    frame.expand(&file.items)?;
+    frame.to_struct_value_mode(include_definitions)
+}
+
 fn json_frame(context: &Json) -> Frame<'static> {
     let frame = Frame {
         parent: None,
-        vars: HashMap::new(),
+        vars: RefCell::new(HashMap::new()),
+        lets: RefCell::new(BTreeMap::new()),
         fields: RefCell::new(BTreeMap::new()),
         values: RefCell::new(BTreeMap::new()),
+        overrides: RefCell::new(BTreeMap::new()),
         evaluating: RefCell::new(HashSet::new()),
     };
     if let Json::Object(map) = context {
@@ -220,9 +308,11 @@ struct FieldDef {
 
 struct Frame<'a> {
     parent: Option<&'a Frame<'a>>,
-    vars: HashMap<String, Value>,
+    vars: RefCell<HashMap<String, Value>>,
+    lets: RefCell<BTreeMap<String, Expr>>,
     fields: RefCell<BTreeMap<String, FieldDef>>,
     values: RefCell<BTreeMap<String, Value>>,
+    overrides: RefCell<BTreeMap<String, Value>>,
     evaluating: RefCell<HashSet<String>>,
 }
 
@@ -244,18 +334,26 @@ impl<'a> Frame<'a> {
     ) -> Result<Self, LangError> {
         let frame = Self {
             parent,
-            vars,
+            vars: RefCell::new(vars),
+            lets: RefCell::new(BTreeMap::new()),
             fields: RefCell::new(BTreeMap::new()),
             values: RefCell::new(BTreeMap::new()),
+            overrides: RefCell::new(BTreeMap::new()),
             evaluating: RefCell::new(HashSet::new()),
         };
 
-        // Pass 1: static fields.
+        // Pass 1: static fields and lazy let bindings.
         for item in items {
-            if let StructItem::Field(field) = item
-                && let crate::ast::Label::Name(name, _) = &field.label
-            {
-                frame.insert_field(name.clone(), field.value.clone(), field.optional);
+            match item {
+                StructItem::Field(field) => {
+                    if let crate::ast::Label::Name(name, _) = &field.label {
+                        frame.insert_field(name.clone(), field.value.clone(), field.optional);
+                    }
+                }
+                StructItem::Let { name, value, .. } => {
+                    frame.lets.borrow_mut().insert(name.clone(), value.clone());
+                }
+                _ => {}
             }
         }
         Ok(frame)
@@ -334,7 +432,7 @@ impl<'a> Frame<'a> {
                         ));
                     }
                 }
-                StructItem::Ellipsis(_) => {}
+                StructItem::Let { .. } | StructItem::Ellipsis(_) => {}
             }
         }
         Ok(())
@@ -382,8 +480,11 @@ impl<'a> Frame<'a> {
     }
 
     fn lookup(&self, name: &str, span: Span) -> Result<Value, LangError> {
-        if let Some(value) = self.vars.get(name) {
+        if let Some(value) = self.vars.borrow().get(name) {
             return Ok(value.clone());
+        }
+        if self.lets.borrow().contains_key(name) {
+            return self.eval_let(name, span);
         }
         if let Some(value) = self.values.borrow().get(name) {
             return Ok(value.clone());
@@ -403,6 +504,7 @@ impl<'a> Frame<'a> {
             "number" => Ok(Value::Type(TypeKind::Number)),
             "bool" => Ok(Value::Type(TypeKind::Bool)),
             "_" => Ok(Value::Bottom),
+            "len" => Ok(Value::Builtin(Builtin::Len)),
             _ => Err(LangError::eval(
                 span.line,
                 span.col,
@@ -414,7 +516,8 @@ impl<'a> Frame<'a> {
     fn has_name(&self, name: &str) -> bool {
         self.values.borrow().contains_key(name)
             || self.fields.borrow().contains_key(name)
-            || self.vars.contains_key(name)
+            || self.vars.borrow().contains_key(name)
+            || self.lets.borrow().contains_key(name)
             || self.parent.is_some_and(|parent| parent.has_name(name))
     }
 
@@ -440,6 +543,12 @@ impl<'a> Frame<'a> {
             };
             def.exprs.clone()
         };
+        if name == "params"
+            && !self.overrides.borrow().is_empty()
+            && let Some(items) = self.params_items(&exprs)
+        {
+            return self.eval_params_struct(&items, span);
+        }
         self.evaluating.borrow_mut().insert(name.to_owned());
         let mut result = Value::Bottom;
         for (index, expr) in exprs.iter().enumerate() {
@@ -457,12 +566,135 @@ impl<'a> Frame<'a> {
         Ok(result)
     }
 
+    fn params_items(&self, exprs: &[Expr]) -> Option<Vec<StructItem>> {
+        let mut items = Vec::new();
+        let mut seen = HashSet::new();
+        for expr in exprs {
+            self.collect_struct_items(expr, &mut items, &mut seen, 0)?;
+        }
+        Some(items)
+    }
+
+    fn collect_struct_items(
+        &self,
+        expr: &Expr,
+        out: &mut Vec<StructItem>,
+        seen: &mut HashSet<String>,
+        depth: usize,
+    ) -> Option<()> {
+        if depth > 32 {
+            return None;
+        }
+        match expr {
+            Expr::Struct(items, _) => out.extend(items.iter().cloned()),
+            Expr::Default(inner, _) => {
+                self.collect_struct_items(inner, out, seen, depth + 1)?;
+            }
+            Expr::Unify(left, right, _) => {
+                self.collect_struct_items(left, out, seen, depth + 1)?;
+                self.collect_struct_items(right, out, seen, depth + 1)?;
+            }
+            Expr::Ident(name, _) => {
+                if !seen.insert(name.clone()) {
+                    return None;
+                }
+                let exprs = self
+                    .fields
+                    .borrow()
+                    .get(name)
+                    .map(|definition| definition.exprs.clone())?;
+                for expr in &exprs {
+                    self.collect_struct_items(expr, out, seen, depth + 1)?;
+                }
+                seen.remove(name);
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
+    fn eval_params_struct(&self, items: &[StructItem], span: Span) -> Result<Value, LangError> {
+        let child = Frame::from_static(items, Some(self), HashMap::new())?;
+        child.expand(items)?;
+        let overrides = self.overrides.borrow().clone();
+        for (key, value) in &overrides {
+            let known =
+                child.fields.borrow().contains_key(key) || child.values.borrow().contains_key(key);
+            if !known {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("unknown parameter `{key}`"),
+                ));
+            }
+            // Pre-seed every override so dependent parameters can see each
+            // other regardless of declaration or alphabetical order.
+            child.values.borrow_mut().insert(key.clone(), value.clone());
+        }
+        for (key, value) in &overrides {
+            child.values.borrow_mut().remove(key);
+            let declared = {
+                let fields = child.fields.borrow();
+                fields.get(key).map(|definition| definition.exprs.clone())
+            };
+            let resolved = if let Some(exprs) = declared {
+                let mut result: Option<Value> = None;
+                for expr in &exprs {
+                    let candidate = eval_with_override(expr, &child, value, span)?;
+                    result = Some(match result {
+                        None => candidate,
+                        Some(current) => unify_values(&current, &candidate, span)?,
+                    });
+                }
+                result.ok_or_else(|| {
+                    LangError::eval(span.line, span.col, format!("empty parameter `{key}`"))
+                })?
+            } else {
+                value.clone()
+            };
+            child.values.borrow_mut().insert(key.clone(), resolved);
+        }
+        child.to_struct_value()
+    }
+
+    fn eval_let(&self, name: &str, span: Span) -> Result<Value, LangError> {
+        if let Some(value) = self.vars.borrow().get(name) {
+            return Ok(value.clone());
+        }
+        if self.evaluating.borrow().contains(name) {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("cyclic let binding while evaluating `{name}`"),
+            ));
+        }
+        let expr = self.lets.borrow().get(name).cloned();
+        let Some(expr) = expr else {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("undefined let binding `{name}`"),
+            ));
+        };
+        self.evaluating.borrow_mut().insert(name.to_owned());
+        let value = eval_expr(&expr, self)?;
+        self.evaluating.borrow_mut().remove(name);
+        self.vars
+            .borrow_mut()
+            .insert(name.to_owned(), value.clone());
+        Ok(value)
+    }
+
     fn to_struct_value(&self) -> Result<Value, LangError> {
+        self.to_struct_value_mode(false)
+    }
+
+    fn to_struct_value_mode(&self, include_definitions: bool) -> Result<Value, LangError> {
         let names: Vec<String> = {
             let fields = self.fields.borrow();
             fields
                 .keys()
-                .filter(|name| !name.starts_with('#'))
+                .filter(|name| include_definitions || !name.starts_with('#'))
                 .cloned()
                 .collect()
         };
@@ -482,7 +714,7 @@ impl<'a> Frame<'a> {
             out.insert(name, value);
         }
         for (name, value) in self.values.borrow().iter() {
-            if !name.starts_with('#') {
+            if include_definitions || !name.starts_with('#') {
                 out.insert(name.clone(), value.clone());
             }
         }
@@ -524,6 +756,14 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 )),
             }
         }
+        Expr::Call(callee, arguments, span) => {
+            let callee = eval_expr(callee, frame)?;
+            let mut values = Vec::with_capacity(arguments.len());
+            for argument in arguments {
+                values.push(eval_expr(argument, frame)?);
+            }
+            apply_builtin(&callee, &values, *span)
+        }
         Expr::Index(base, index, span) => {
             let base = eval_expr(base, frame)?;
             let index = eval_expr(index, frame)?;
@@ -559,6 +799,21 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 out.push(eval_expr(item, frame)?);
             }
             Ok(Value::List(out))
+        }
+        Expr::OpenList(element, _) => Ok(Value::OpenList(match element {
+            Some(element) => Some(Box::new(eval_expr(element, frame)?)),
+            None => None,
+        })),
+        Expr::OpenListPrefix(prefix, tail, _) => {
+            let mut values = Vec::with_capacity(prefix.len());
+            for item in prefix {
+                values.push(eval_expr(item, frame)?);
+            }
+            let tail = match tail {
+                Some(tail) => Some(Box::new(eval_expr(tail, frame)?)),
+                None => None,
+            };
+            Ok(Value::OpenListPrefix(values, tail))
         }
         Expr::Unify(left, right, span) => {
             let left = eval_expr(left, frame)?;
@@ -623,6 +878,251 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
     }
 }
 
+fn go_case(text: &str, upper: bool) -> String {
+    text.chars()
+        .map(|character| {
+            let mapped: Vec<char> = if upper {
+                character.to_uppercase().collect()
+            } else {
+                character.to_lowercase().collect()
+            };
+            if mapped.len() == 1 {
+                mapped[0]
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+/// Return the builtin package value for a standard import path.
+#[must_use]
+pub fn builtin_module(path: &str) -> Option<Value> {
+    let entries: &[(&str, Builtin)] = match path {
+        "strings" => &[
+            ("ToUpper", Builtin::StringsToUpper),
+            ("ToLower", Builtin::StringsToLower),
+            ("TrimSpace", Builtin::StringsTrimSpace),
+            ("Join", Builtin::StringsJoin),
+            ("Split", Builtin::StringsSplit),
+            ("HasPrefix", Builtin::StringsHasPrefix),
+            ("HasSuffix", Builtin::StringsHasSuffix),
+        ],
+        "list" => &[
+            ("Range", Builtin::ListRange),
+            ("Concat", Builtin::ListConcat),
+        ],
+        _ => return None,
+    };
+    Some(Value::Struct(
+        entries
+            .iter()
+            .map(|(name, builtin)| ((*name).to_owned(), Value::Builtin(*builtin)))
+            .collect(),
+    ))
+}
+
+fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Value, LangError> {
+    let Value::Builtin(builtin) = callee else {
+        return Err(LangError::eval(
+            span.line,
+            span.col,
+            "attempted to call a non-function value",
+        ));
+    };
+    match builtin {
+        Builtin::StringsToUpper | Builtin::StringsToLower | Builtin::StringsTrimSpace => {
+            if arguments.len() != 1 {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "string function requires exactly one argument",
+                ));
+            }
+            let Some(Value::String(text)) = arguments.first() else {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "string function requires a string argument",
+                ));
+            };
+            let result = match builtin {
+                Builtin::StringsToUpper => go_case(text, true),
+                Builtin::StringsToLower => go_case(text, false),
+                _ => text.trim().to_owned(),
+            };
+            Ok(Value::String(result))
+        }
+        Builtin::StringsJoin => {
+            if arguments.len() != 2 {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "strings.Join requires exactly two arguments",
+                ));
+            }
+            let (Some(Value::List(values)), Some(Value::String(separator))) =
+                (arguments.first(), arguments.get(1))
+            else {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "strings.Join requires a list and a separator",
+                ));
+            };
+            let mut pieces = Vec::with_capacity(values.len());
+            for value in values {
+                let Value::String(text) = value else {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        "strings.Join requires a list of strings",
+                    ));
+                };
+                pieces.push(text.clone());
+            }
+            Ok(Value::String(pieces.join(separator)))
+        }
+        Builtin::StringsSplit => {
+            if arguments.len() != 2 {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "strings.Split requires exactly two arguments",
+                ));
+            }
+            let (Some(Value::String(text)), Some(Value::String(separator))) =
+                (arguments.first(), arguments.get(1))
+            else {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "strings.Split requires two strings",
+                ));
+            };
+            if separator.is_empty() {
+                return Ok(Value::List(
+                    text.chars()
+                        .map(|character| Value::String(character.to_string()))
+                        .collect(),
+                ));
+            }
+            Ok(Value::List(
+                text.split(separator)
+                    .map(|part| Value::String(part.to_owned()))
+                    .collect(),
+            ))
+        }
+        Builtin::StringsHasPrefix | Builtin::StringsHasSuffix => {
+            if arguments.len() != 2 {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "string predicate requires exactly two arguments",
+                ));
+            }
+            let (Some(Value::String(text)), Some(Value::String(needle))) =
+                (arguments.first(), arguments.get(1))
+            else {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "string predicate requires two strings",
+                ));
+            };
+            Ok(Value::Bool(match builtin {
+                Builtin::StringsHasPrefix => text.starts_with(needle),
+                _ => text.ends_with(needle),
+            }))
+        }
+        Builtin::ListRange => {
+            if arguments.len() != 3 {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "list.Range requires exactly three arguments",
+                ));
+            }
+            let (Some(Value::Int(start)), Some(Value::Int(end)), Some(Value::Int(step))) =
+                (arguments.first(), arguments.get(1), arguments.get(2))
+            else {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "list.Range requires three integers",
+                ));
+            };
+            if *step == 0 {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "list.Range step is zero",
+                ));
+            }
+            let mut out = Vec::new();
+            let mut current = *start;
+            while (step > &0 && current < *end) || (step < &0 && current > *end) {
+                out.push(Value::Int(current));
+                current = current.saturating_add(*step);
+            }
+            Ok(Value::List(out))
+        }
+        Builtin::ListConcat => {
+            if arguments.len() != 1 {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "list.Concat requires exactly one list of lists",
+                ));
+            }
+            let Some(Value::List(outer)) = arguments.first() else {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "list.Concat requires a list of lists",
+                ));
+            };
+            let mut values = Vec::new();
+            for inner in outer {
+                let Value::List(inner) = inner else {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        "list.Concat requires a list of lists",
+                    ));
+                };
+                values.extend(inner.iter().cloned());
+            }
+            Ok(Value::List(values))
+        }
+        Builtin::Len => {
+            if arguments.len() != 1 {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "len requires exactly one argument",
+                ));
+            }
+            match arguments.first() {
+                Some(Value::List(values)) => {
+                    Ok(Value::Int(i64::try_from(values.len()).unwrap_or(i64::MAX)))
+                }
+                Some(Value::Struct(values)) => {
+                    Ok(Value::Int(i64::try_from(values.len()).unwrap_or(i64::MAX)))
+                }
+                Some(Value::String(value)) => {
+                    Ok(Value::Int(i64::try_from(value.len()).unwrap_or(i64::MAX)))
+                }
+                _ => Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "len requires a list, struct or string",
+                )),
+            }
+        }
+    }
+}
+
 fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
     match op {
         BinOp::Add => match (left, right) {
@@ -634,6 +1134,24 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
             (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + *b as f64)),
             (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
+            (Value::OpenList(element), Value::List(values))
+            | (Value::List(values), Value::OpenList(element)) => {
+                if let Some(element) = element {
+                    for value in values {
+                        let _ = unify_values(element, value, span)?;
+                    }
+                }
+                Ok(Value::List(values.clone()))
+            }
+            (Value::OpenList(left), Value::OpenList(right)) => match (left, right) {
+                (None, None) => Ok(Value::OpenList(None)),
+                (Some(left), Some(right)) => Ok(Value::OpenList(Some(Box::new(unify_values(
+                    left, right, span,
+                )?)))),
+                (Some(element), None) | (None, Some(element)) => {
+                    Ok(Value::OpenList(Some(element.clone())))
+                }
+            },
             (Value::List(a), Value::List(b)) => {
                 let mut out = a.clone();
                 out.extend(b.iter().cloned());
@@ -766,6 +1284,79 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             }
             Ok(Value::Struct(out))
         }
+        (Value::OpenListPrefix(prefix, tail), Value::List(values))
+        | (Value::List(values), Value::OpenListPrefix(prefix, tail)) => {
+            if prefix.len() > values.len() {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "list prefix is longer than the concrete list",
+                ));
+            }
+            for (expected, value) in prefix.iter().zip(values) {
+                let _ = unify_values(expected, value, span)?;
+            }
+            if let Some(tail) = tail {
+                for value in values.iter().skip(prefix.len()) {
+                    let _ = unify_values(tail, value, span)?;
+                }
+            }
+            Ok(Value::List(values.clone()))
+        }
+        (Value::OpenListPrefix(prefix, tail), Value::OpenList(element))
+        | (Value::OpenList(element), Value::OpenListPrefix(prefix, tail)) => {
+            let mut out = prefix.clone();
+            if let Some(tail) = tail {
+                out.push((**tail).clone());
+            }
+            let mut merged_tail = element.clone();
+            if let Some(element) = element
+                && let Some(tail) = tail
+            {
+                merged_tail = Some(Box::new(unify_values(tail, element, span)?));
+            }
+            Ok(Value::OpenListPrefix(out, merged_tail))
+        }
+        (
+            Value::OpenListPrefix(left_prefix, left_tail),
+            Value::OpenListPrefix(right_prefix, right_tail),
+        ) => {
+            if left_prefix.len() != right_prefix.len() {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "cannot unify list prefixes of different lengths",
+                ));
+            }
+            let mut prefix = Vec::with_capacity(left_prefix.len());
+            for (left, right) in left_prefix.iter().zip(right_prefix) {
+                prefix.push(unify_values(left, right, span)?);
+            }
+            let tail = match (left_tail, right_tail) {
+                (None, None) => None,
+                (Some(left), Some(right)) => Some(Box::new(unify_values(left, right, span)?)),
+                (Some(tail), None) | (None, Some(tail)) => Some(tail.clone()),
+            };
+            Ok(Value::OpenListPrefix(prefix, tail))
+        }
+        (Value::OpenList(element), Value::List(values))
+        | (Value::List(values), Value::OpenList(element)) => {
+            if let Some(element) = element {
+                for value in values {
+                    let _ = unify_values(element, value, span)?;
+                }
+            }
+            Ok(Value::List(values.clone()))
+        }
+        (Value::OpenList(left), Value::OpenList(right)) => match (left, right) {
+            (None, None) => Ok(Value::OpenList(None)),
+            (Some(left), Some(right)) => Ok(Value::OpenList(Some(Box::new(unify_values(
+                left, right, span,
+            )?)))),
+            (Some(element), None) | (None, Some(element)) => {
+                Ok(Value::OpenList(Some(element.clone())))
+            }
+        },
         (Value::List(a), Value::List(b)) => {
             if a.len() != b.len() {
                 return Err(LangError::eval(
@@ -829,6 +1420,51 @@ fn kind_name(kind: TypeKind) -> &'static str {
         TypeKind::Number => "number",
         TypeKind::Bool => "bool",
     }
+}
+
+fn eval_with_override(
+    expr: &Expr,
+    frame: &Frame<'_>,
+    override_value: &Value,
+    span: Span,
+) -> Result<Value, LangError> {
+    let mut alternatives = Vec::new();
+    collect_disjunction(expr, &mut alternatives);
+    if alternatives.len() == 1 {
+        let declared = eval_expr(expr, frame)?;
+        return unify_values(&declared, override_value, span);
+    }
+    // Prefer non-default alternatives so an explicit override can select a
+    // branch that differs from the default.
+    let mut ordered: Vec<&Expr> = alternatives
+        .iter()
+        .copied()
+        .filter(|alternative| !matches!(alternative, Expr::Default(_, _)))
+        .collect();
+    ordered.extend(
+        alternatives
+            .iter()
+            .copied()
+            .filter(|alternative| matches!(alternative, Expr::Default(_, _))),
+    );
+    let mut last_error = None;
+    for alternative in ordered {
+        let candidate = match alternative {
+            Expr::Default(inner, _) => eval_expr(inner, frame),
+            other => eval_expr(other, frame),
+        };
+        match candidate.and_then(|candidate| unify_values(&candidate, override_value, span)) {
+            Ok(value) => return Ok(value),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        LangError::eval(
+            span.line,
+            span.col,
+            "no parameter alternative matched the override",
+        )
+    }))
 }
 
 fn collect_disjunction<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {

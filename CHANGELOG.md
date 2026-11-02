@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.2.0
+
+Rust-first language release.
+
+- **Rust evaluator is the default** (`--evaluator rust`, alias `native`). The
+  language front-end is `ostinato-lang`, not the Go `cue` binary.
+- Rust CUE surface: package selection, same-package sibling files, anonymous
+  packages, `import "strings"`/`"list"`, local modules via `cue.mod`, relative
+  imports, `let`, `for`/`if` comprehensions, dynamic labels, nested field
+  shorthand, definitions/unification, defaults, optional fields, `[...T]` open
+  lists, string interpolation and parameter injection.
+- **Official CUE is the conformance oracle** (`--evaluator cue`). The corpus in
+  `conformance/` (including a real module) is compiled by both evaluators and
+  asserted equal; `scripts/conformance.sh` runs it.
+- Documented Rust gaps: closedness, aliases, pattern constraints, bytes/tool
+  packages and the full disjunction lattice. Unsupported workflows can use the
+  oracle explicitly.
+- CUE is now optional for the default runtime; `doctor` reports both the
+  default evaluator and the detected oracle.
+- 59 tests (23 CLI E2E, 1 conformance, 25 language, 6 domain, 3 store, 1 unit).
+
 ## v0.1.2
 
 Second-pass hardening after a red-team review of v0.1.1.

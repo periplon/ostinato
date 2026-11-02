@@ -379,13 +379,79 @@ impl Lexer {
         }
 
         let mut raw = String::new();
+        let mut interpolation_depth = 0usize;
+        let mut in_inner_string = false;
         loop {
-            match self.peek() {
-                Some('"') => {
+            let Some(current) = self.peek() else {
+                return Err(LangError::parse(
+                    line,
+                    col,
+                    if interpolation_depth > 0 {
+                        "unterminated interpolation"
+                    } else {
+                        "unterminated string"
+                    },
+                ));
+            };
+
+            if interpolation_depth > 0 {
+                if in_inner_string {
+                    match current {
+                        '\\' => {
+                            raw.push(current);
+                            self.bump();
+                            if let Some(escaped) = self.bump() {
+                                raw.push(escaped);
+                            } else {
+                                return Err(LangError::parse(
+                                    line,
+                                    col,
+                                    "unterminated escape sequence",
+                                ));
+                            }
+                        }
+                        '"' => {
+                            raw.push(current);
+                            self.bump();
+                            in_inner_string = false;
+                        }
+                        _ => {
+                            raw.push(current);
+                            self.bump();
+                        }
+                    }
+                } else {
+                    match current {
+                        '"' => {
+                            raw.push(current);
+                            self.bump();
+                            in_inner_string = true;
+                        }
+                        '(' => {
+                            interpolation_depth += 1;
+                            raw.push(current);
+                            self.bump();
+                        }
+                        ')' => {
+                            interpolation_depth -= 1;
+                            raw.push(current);
+                            self.bump();
+                        }
+                        _ => {
+                            raw.push(current);
+                            self.bump();
+                        }
+                    }
+                }
+                continue;
+            }
+
+            match current {
+                '"' => {
                     self.bump();
                     return Ok(raw);
                 }
-                Some('\\') => {
+                '\\' => {
                     self.bump();
                     let Some(escaped) = self.bump() else {
                         return Err(LangError::parse(line, col, "unterminated escape sequence"));
@@ -400,6 +466,7 @@ impl Lexer {
                         '(' => {
                             raw.push('\\');
                             raw.push('(');
+                            interpolation_depth = 1;
                         }
                         other => {
                             raw.push('\\');
@@ -407,12 +474,9 @@ impl Lexer {
                         }
                     }
                 }
-                Some(c) => {
-                    raw.push(c);
+                _ => {
+                    raw.push(current);
                     self.bump();
-                }
-                None => {
-                    return Err(LangError::parse(line, col, "unterminated string"));
                 }
             }
         }

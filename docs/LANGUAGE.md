@@ -1,6 +1,6 @@
 # Language reference
 
-Ostinato does not invent a new syntax. A workflow is a CUE file whose top-level `workflow` field matches the schema below. Evaluation is performed by the official CUE implementation (see [COMPLIANCE.md](COMPLIANCE.md)).
+Ostinato does not invent a new syntax. A workflow is a CUE file whose top-level `workflow` field matches the schema below. The default evaluator is the Rust implementation in `ostinato-lang`; `--evaluator cue` uses the official CUE CLI as a conformance oracle (see [COMPLIANCE.md](COMPLIANCE.md)).
 
 ## File shape
 
@@ -20,10 +20,40 @@ workflow: {
 }
 ```
 
-- `params` is optional. A concrete value is a fixed constraint; use `*value` for an overridable default. A parameter with no default must be supplied with `-p name=value`; CUE's `@tag` injection enforces this. Parameters must live under the top-level `params` struct.
-- Tag injection is string-typed by default. Use `@tag(name,type=int)`, `type=number`, or `type=bool` for typed parameters.
-- Definitions, templates, imports, `let`, comprehensions and builtins are ordinary CUE and work normally.
-- Only the evaluated concrete `workflow` value is read; anything else in the file is ignored by the engine.
+- `params` is optional. A concrete value is a fixed constraint; use `*value` for an overridable default. A parameter with no default must be supplied with `-p name=value`. Parameters must live under the top-level `params` struct.
+- The Rust evaluator JSON-coerces `-p` values (`5` → int, `true` → bool, `[..]` → list, otherwise string). `@tag` attributes are accepted but are not used for type-directed injection in the Rust path. The official oracle honours `@tag(name,type=...)`.
+- Definitions, `let`, imports, comprehensions and builtins are supported by the Rust evaluator as described in [COMPLIANCE.md](COMPLIANCE.md). Closedness, aliases and pattern constraints are not.
+- Only the evaluated concrete `workflow` value is read; other top-level fields are not consumed by the engine (same-package siblings are still unified, as in CUE).
+
+## Supported CUE surface
+
+```cue
+package demo
+
+import "strings"
+
+#Step: {
+	kind: "exec"
+	exec: cmd: [...string]        // nested shorthand
+}
+
+params: {env: string | *"dev"}
+
+let upper = strings.ToUpper(params.env)
+
+workflow: {
+	name: "example"
+	steps: {
+		for _, job in ["one", "two"] {
+			"job-\(job)": #Step & {
+				exec: cmd: ["sh", "-c", "echo \(upper)-\(job)"]
+			}
+		}
+	}
+}
+```
+
+The Rust evaluator handles package selection, same-package sibling files, imports (`strings`, `list`), local modules via `cue.mod`, relative imports, file-scoped lazy `let`, single-clause `for`/`if` comprehensions, dynamic labels, nested field shorthand, definitions/unification, defaults, optional fields, `[...T]` / `[x, ...T]` open lists, and the `strings`/`list`/`len` builtins. Clause sequences (`for ... if`), nested comprehension clauses and list comprehensions are not implemented and fail explicitly; use `--evaluator cue` for features outside this surface.
 
 ## Workflow fields
 

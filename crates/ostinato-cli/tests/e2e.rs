@@ -70,6 +70,8 @@ workflow: {
         db.to_str().expect("db"),
         "--cue",
         &cue,
+        "--evaluator",
+        "cue",
         "--json",
         "run",
         workflow.to_str().expect("workflow"),
@@ -486,7 +488,7 @@ package demo
 workflow: {
     name: "cancel"
     steps: {
-        slow: { kind: "exec", exec: { cmd: ["sh", "-c", "sleep 2; echo done"] } }
+        slow: { kind: "exec", exec: { cmd: ["sh", "-c", "sleep 4; echo done"] } }
         after: { kind: "exec", needs: ["slow"], exec: { cmd: ["sh", "-c", "echo after"] } }
     }
 }
@@ -504,7 +506,7 @@ workflow: {
         .spawn()
         .expect("spawn run");
     let mut run = None;
-    for _ in 0..40 {
+    for _ in 0..80 {
         if let Ok(output) = std::process::Command::new(bin())
             .args(["--db", db.to_str().expect("db"), "--json", "runs"])
             .output()
@@ -1145,4 +1147,64 @@ workflow: {
     let verified = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
     assert!(!verified.status.success());
     assert!(String::from_utf8_lossy(&verified.stderr).contains("not anchored"));
+}
+
+#[test]
+fn package_underscore_files_are_file_local() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let a = directory.path().join("a.cue");
+    let b = directory.path().join("b.cue");
+    write(
+        &a,
+        r#"
+package _
+params: {x: string | *"one"}
+workflow: {name: "a", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    write(
+        &b,
+        r#"
+package _
+params: {y: string | *"two"}
+extra: "ignored"
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "--json",
+        "validate",
+        a.to_str().expect("a"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json(&output);
+    assert_eq!(value["params"]["x"], "one");
+    assert!(value["params"].get("y").is_none());
+}
+
+#[test]
+fn non_struct_params_are_rejected() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let workflow = directory.path().join("params.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: "not-a-struct"
+workflow: {name: "p", steps: {a: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("must be a struct"));
 }
