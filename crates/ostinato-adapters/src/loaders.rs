@@ -232,8 +232,26 @@ fn cue_instance(path: &Path) -> PortResult<(PathBuf, String)> {
 fn package_name(path: &Path) -> PortResult<Option<String>> {
     let source = std::fs::read_to_string(path)
         .map_err(|err| PortError::Loader(format!("cannot read {}: {err}", path.display())))?;
+    let mut in_block_comment = false;
     for line in source.lines() {
-        let trimmed = line.trim_start();
+        let mut trimmed = line.trim_start();
+        if in_block_comment {
+            if let Some(end) = trimmed.find("*/") {
+                in_block_comment = false;
+                trimmed = &trimmed[end + 2..];
+            } else {
+                continue;
+            }
+        }
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("/*") {
+            if !rest.contains("*/") {
+                in_block_comment = true;
+            }
+            continue;
+        }
         if let Some(rest) = trimmed.strip_prefix("package")
             && rest.starts_with(char::is_whitespace)
         {

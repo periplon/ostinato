@@ -821,7 +821,11 @@ fn backfill_audit_head(connection: &Connection) -> PortResult<()> {
             "UPDATE runs SET audit_head = COALESCE(
                  (SELECT hash FROM events WHERE events.run_id = runs.id
                   ORDER BY seq DESC LIMIT 1), ?1)
-             WHERE audit_head = '' OR audit_head IS NULL",
+             WHERE audit_head = '' OR audit_head IS NULL OR (
+                 audit_head = ?1 AND EXISTS (
+                     SELECT 1 FROM events WHERE events.run_id = runs.id
+                 )
+             )",
             params![audit::GENESIS_HASH],
         )
         .map_err(|err| PortError::Store(format!("backfill audit head: {err}")))?;

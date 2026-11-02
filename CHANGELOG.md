@@ -25,7 +25,7 @@ Second-pass hardening after a red-team review of v0.1.1.
   `json.*`, `provider`, `improvementId` or hyphenated step names.
 - Step-level unknown fields and the integer `retry` cap are enforced.
 - Native `-p` overrides are injected before top-level comprehensions.
-- 44 tests (21 CLI E2E, 14 language, 6 domain, 3 store) and regenerated evidence.
+- 45 tests (21 CLI E2E, 14 language, 6 domain, 3 store, 1 unit) and regenerated evidence.
 
 ## v0.1.1
 
