@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.1
+
+Closedness and remaining workflow-language semantics.
+
+- Closed definitions (`#Def`) reject fields outside the definition.
+- Comprehension clause sequences (`for ... if ...`, nested `for`) and list
+  comprehensions (`[for ... { expr }]`).
+- Explicit scope decision: workflow-oriented CUE, not a full constraint solver.
+  Pattern constraints, the full disjunction lattice, tool packages and CUE
+  aliases are out of scope and documented in `docs/SCOPE.md`; the official
+  oracle remains the escape hatch.
+- 66 tests (23 CLI E2E, 1 conformance, 32 language, 6 domain, 3 store, 1 unit).
+
 ## v0.2.0
 
 Rust-first language release.

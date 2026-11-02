@@ -1,4 +1,6 @@
-use crate::ast::{BinOp, Expr, Field, File, ImportDecl, Label, Span, StrPart, StructItem, UnOp};
+use crate::ast::{
+    BinOp, CompClause, Expr, Field, File, ImportDecl, Label, Span, StrPart, StructItem, UnOp,
+};
 use crate::error::LangError;
 use crate::lexer::{Tok, Token, lex};
 
@@ -256,9 +258,7 @@ impl Parser {
                 };
                 self.expect(&Tok::In, "`in`")?;
                 let source = self.parse_expr()?;
-                self.skip_newlines();
-                self.expect(&Tok::LBrace, "`{`")?;
-                let body = self.parse_struct_body()?;
+                let body = self.parse_comprehension_body(span)?;
                 Ok(Some(StructItem::For {
                     key,
                     value,
@@ -320,6 +320,69 @@ impl Parser {
             }
             other => Err(self.error(format!("expected field label, found {other:?}"))),
         }
+    }
+
+    fn parse_comprehension_clauses(&mut self) -> Result<Vec<CompClause>, LangError> {
+        let mut clauses = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.eat(&Tok::For) {
+                let first = self.expect_ident()?;
+                let (key, value) = if self.eat(&Tok::Comma) {
+                    let second = self.expect_ident()?;
+                    (Some(first), second)
+                } else {
+                    (None, first)
+                };
+                self.expect(&Tok::In, "`in`")?;
+                let source = self.parse_expr()?;
+                clauses.push(CompClause::For {
+                    key,
+                    value,
+                    source,
+                    span: self.span(),
+                });
+            } else if self.eat(&Tok::If) {
+                let cond = self.parse_expr()?;
+                clauses.push(CompClause::If {
+                    cond,
+                    span: self.span(),
+                });
+            } else {
+                break;
+            }
+        }
+        Ok(clauses)
+    }
+
+    fn parse_comprehension_body(&mut self, span: Span) -> Result<Vec<StructItem>, LangError> {
+        self.skip_newlines();
+        if self.eat(&Tok::If) {
+            let cond = self.parse_expr()?;
+            let body = self.parse_comprehension_body(span)?;
+            return Ok(vec![StructItem::If { cond, body, span }]);
+        }
+        if self.eat(&Tok::For) {
+            let first = self.expect_ident()?;
+            let (key, value) = if self.eat(&Tok::Comma) {
+                let second = self.expect_ident()?;
+                (Some(first), second)
+            } else {
+                (None, first)
+            };
+            self.expect(&Tok::In, "`in`")?;
+            let source = self.parse_expr()?;
+            let body = self.parse_comprehension_body(span)?;
+            return Ok(vec![StructItem::For {
+                key,
+                value,
+                source,
+                body,
+                span,
+            }]);
+        }
+        self.expect(&Tok::LBrace, "`{`")?;
+        self.parse_struct_body()
     }
 
     fn parse_field_value(&mut self) -> Result<Expr, LangError> {
@@ -555,6 +618,21 @@ impl Parser {
             Tok::LBracket => {
                 self.bump();
                 self.skip_separators();
+                if matches!(self.peek_tok(), Tok::For | Tok::If) {
+                    let clauses = self.parse_comprehension_clauses()?;
+                    self.skip_newlines();
+                    self.expect(&Tok::LBrace, "`{`")?;
+                    let body = self.parse_expr()?;
+                    self.skip_newlines();
+                    self.expect(&Tok::RBrace, "`}`")?;
+                    self.skip_newlines();
+                    self.expect(&Tok::RBracket, "`]`")?;
+                    return Ok(Expr::ListComp {
+                        clauses,
+                        body: Box::new(body),
+                        span,
+                    });
+                }
                 if matches!(self.peek_tok(), Tok::Ellipsis) {
                     self.bump();
                     self.skip_newlines();

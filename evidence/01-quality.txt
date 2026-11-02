@@ -2,43 +2,41 @@
 exit=0
 
 ### cargo clippy --all-targets --all-features -- -D warnings
-    Checking ostinato v0.2.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-cli)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.19s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
 exit=0
 
 ### cargo test --all
-   Compiling ostinato v0.2.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-cli)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
-     Running unittests src/main.rs (target/debug/deps/ostinato-3b5871b38ee2b1dd)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/main.rs (target/debug/deps/ostinato-561ad1c026d9ebf7)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/conformance.rs (target/debug/deps/conformance-d4bbaca359aed69a)
+     Running tests/conformance.rs (target/debug/deps/conformance-e606433b38bd1b73)
 
 running 1 test
 test rust_matches_official_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.71s
 
-     Running tests/e2e.rs (target/debug/deps/e2e-864bdd27c4fb5320)
+     Running tests/e2e.rs (target/debug/deps/e2e-168341b1cebc5c85)
 
 running 23 tests
 test package_underscore_files_are_file_local ... ok
 test non_struct_params_are_rejected ... ok
 test package_less_cue_file_is_loaded_by_filename ... ok
-test native_evaluator_supports_the_offline_subset ... ok
 test background_grandchild_does_not_extend_a_successful_step ... ok
 test split_package_and_sibling_conflicts_follow_cue_semantics ... ok
 test unknown_fields_are_rejected ... ok
-test recomputed_state_hash_is_still_rejected_by_the_chain_anchor ... ok
+test native_evaluator_supports_the_offline_subset ... ok
 test read_only_commands_do_not_require_cue ... ok
 test audit_verification_detects_tampering ... ok
+test recomputed_state_hash_is_still_rejected_by_the_chain_anchor ... ok
 test audit_detects_tail_truncation_via_persisted_head ... ok
-test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
-test cleared_integrity_hashes_are_not_silently_repaired ... ok
 test state_tampering_is_detected_and_resume_refuses_it ... ok
+test cleared_integrity_hashes_are_not_silently_repaired ... ok
+test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
 test bad_template_is_a_durable_failure ... ok
 test truncation_blocks_resume_and_appends ... ok
 test official_cue_runs_and_audit_verifies ... ok
@@ -47,20 +45,20 @@ test resume_skips_completed_steps_and_finishes ... ok
 test cycles_stop_when_until_becomes_true ... ok
 test recursive_improvement_creates_child_runs ... ok
 test exec_timeout_kills_the_process_group ... ok
-run=8218bef5-3624-4182-b06a-844f1248cb59 workflow=cancel status=cancelled durationMs=4030
+run=fdafec1c-fa10-41aa-bd3b-f924dcc8c3dc workflow=cancel status=cancelled durationMs=4024
 STEP                     STATUS     VISITS ATTEMPTS
 test cancel_stops_a_running_run_and_blocks_resume ... ok
 
-test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.08s
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.09s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_adapters-7f8a568e628d5590)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_adapters-0992025eb8e69d3b)
 
 running 1 test
 test loaders::tests::parses_release_pre_release_and_build_metadata ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/store.rs (target/debug/deps/store-efa0d548edefbc33)
+     Running tests/store.rs (target/debug/deps/store-0b8db18d2e6b7f93)
 
 running 3 tests
 test database_and_wal_files_are_private ... ok
@@ -69,66 +67,73 @@ test reopened_store_does_not_repair_blank_integrity_hashes ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_application-d7d54fd861dbec3b)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_application-dd9275ee76c8bfc0)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_domain-4b15763fe8ae6516)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_domain-420a754fb6845cb5)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/domain.rs (target/debug/deps/domain-8db59558ab63a4b3)
+     Running tests/domain.rs (target/debug/deps/domain-339ec1807ccfd19e)
 
 running 6 tests
 test retry_backoff_is_capped_and_deterministic ... ok
 test new_event_helper_is_ergonomic ... ok
-test cycles_expand_into_bounded_rounds ... ok
 test cycles_require_an_explicit_policy ... ok
-test audit_chain_detects_tampering ... ok
+test cycles_expand_into_bounded_rounds ... ok
 test independent_steps_share_a_parallel_group ... ok
+test audit_chain_detects_tampering ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_lang-6c7ad4e6c2f38b91)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_lang-3062d7f65c0e6e49)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/lang.rs (target/debug/deps/lang-718ddab8fdeefa30)
+     Running tests/lang.rs (target/debug/deps/lang-b130b0a08d7fd37c)
 
-running 25 tests
+running 32 tests
 test evaluates_conditions ... ok
-test missing_field_separators_are_rejected ... ok
 test native_defaults_work_in_multibranch_disjunctions ... ok
-test renders_templates ... ok
+test missing_field_separators_are_rejected ... ok
 test forward_let_references_are_lazy ... ok
-test parameter_overrides_narrow_a_default_free_disjunction ... ok
-test invalid_until_is_rejected_at_validation_time ... ok
-test parameter_overrides_respect_fixed_values_and_types ... ok
-test retry_int_shorthand_respects_the_cap ... ok
-test step_level_unknown_fields_are_rejected ... ok
-test rejects_missing_required_parameter ... ok
-test open_list_element_types_are_enforced ... ok
-test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
-test native_parameter_overrides_are_injected_before_interpolation ... ok
-test unknown_workflow_fields_are_rejected ... ok
+test closed_definitions_reject_unknown_fields ... ok
+test definitions_include_comprehension_and_conditional_fields ... ok
 test dependent_parameter_overrides_are_order_independent ... ok
-test parameters_can_be_backed_by_a_definition_or_split_struct ... ok
-test versioned_imports_use_the_unversioned_alias ... ok
-test parameter_overrides_are_constraints_and_dependent_fields_see_them ... ok
+test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
+test invalid_until_is_rejected_at_validation_time ... ok
+test list_comprehensions_are_supported ... ok
+test open_list_element_types_are_enforced ... ok
+test closed_definitions_allow_optional_fields_and_open_ellipsis ... ok
+test closed_closed_intersection_rejects_both_directions_and_keeps_optionality ... ok
+test native_parameter_overrides_are_injected_before_interpolation ... ok
+test parameter_overrides_narrow_a_default_free_disjunction ... ok
 test native_overrides_apply_before_top_level_comprehensions ... ok
-test evaluates_structs_defaults_unification_and_interpolation ... ok
+test comprehension_clause_sequences_are_supported ... ok
+test parameter_overrides_respect_fixed_values_and_types ... ok
+test renders_templates ... ok
 test open_list_prefix_unifies_with_a_concrete_list ... ok
 test compiles_workflow_and_resolves_parameters ... ok
+test rejects_missing_required_parameter ... ok
+test retry_int_shorthand_respects_the_cap ... ok
+test parameter_overrides_are_constraints_and_dependent_fields_see_them ... ok
+test parameters_can_be_backed_by_a_definition_or_split_struct ... ok
+test step_level_unknown_fields_are_rejected ... ok
+test split_definitions_merge_and_optional_values_are_not_materialized ... ok
+test evaluates_structs_defaults_unification_and_interpolation ... ok
+test versioned_imports_use_the_unversioned_alias ... ok
+test unknown_workflow_fields_are_rejected ... ok
 test unicode_string_builtins_match_go_semantics ... ok
 test until_accepts_nested_json_provider_and_hyphenated_steps ... ok
 
-test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
    Doc-tests ostinato_adapters
 

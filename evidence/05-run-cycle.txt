@@ -1,6 +1,6 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.g2yCdwK2le/db.sqlite run examples/cycle.cue
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.QhyQx9cNwO/db.sqlite run examples/cycle.cue
 
-run=67cfa96d-94e2-47e3-908f-d994c293d423 workflow=cycle status=succeeded durationMs=57
+run=d113a589-99b8-476a-b187-6f75f3c87171 workflow=cycle status=succeeded durationMs=59
 STEP                     STATUS     VISITS ATTEMPTS
 refine                   succeeded  3      1       
 review                   succeeded  3      1       

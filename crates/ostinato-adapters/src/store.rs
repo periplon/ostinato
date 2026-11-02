@@ -49,10 +49,10 @@ impl SqliteStore {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|err| PortError::Store(format!("read schema version: {err}")))?;
 
-        connection
-            .execute_batch(
-                r#"
-                PRAGMA busy_timeout = 5000;
+        execute_batch_with_retry(
+            &connection,
+            r#"
+                PRAGMA busy_timeout = 10000;
                 PRAGMA journal_mode = WAL;
                 PRAGMA synchronous = FULL;
                 PRAGMA foreign_keys = ON;
@@ -133,8 +133,7 @@ impl SqliteStore {
                 CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);
                 CREATE INDEX IF NOT EXISTS idx_trials_run ON trials(run_id, id);
                 "#,
-            )
-            .map_err(|err| PortError::Store(format!("migration failed: {err}")))?;
+        )?;
 
         // One-time migration. Never repair blank integrity fields after v1: a
         // blank hash after migration is evidence of tampering, not a hint to
@@ -746,6 +745,28 @@ impl Store for SqliteStore {
             avg_attempt_ms: attempts.2,
         })
     }
+}
+
+fn execute_batch_with_retry(connection: &Connection, sql: &str) -> PortResult<()> {
+    let mut last = None;
+    for _ in 0..10 {
+        match connection.execute_batch(sql) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                let message = err.to_string();
+                if message.contains("locked") || message.contains("busy") {
+                    last = Some(err);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                } else {
+                    return Err(PortError::Store(format!("migration failed: {err}")));
+                }
+            }
+        }
+    }
+    Err(PortError::Store(format!(
+        "migration failed after retries: {}",
+        last.map_or_else(|| "database busy".to_owned(), |err| err.to_string())
+    )))
 }
 
 fn table_exists(connection: &Connection, table: &str) -> PortResult<bool> {

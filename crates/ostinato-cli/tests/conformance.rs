@@ -9,18 +9,51 @@ fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ostinato"))
 }
 
-fn cue_bin() -> Option<String> {
-    let cue = std::env::var("CUE_BIN").unwrap_or_else(|_| "cue".to_owned());
-    let output = Command::new(&cue).arg("version").output().ok()?;
+fn cue_version(text: &str) -> Option<(u32, u32, u32)> {
+    let token = text
+        .split_whitespace()
+        .find(|token| token.starts_with('v') && token.contains('.'))?;
+    let core = token.trim_start_matches('v').split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    Some((
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    ))
+}
+
+fn cue_bin() -> Result<Option<String>, String> {
+    let explicit = std::env::var("CUE_BIN").ok();
+    let cue = explicit.clone().unwrap_or_else(|| "cue".to_owned());
+    let output = match Command::new(&cue).arg("version").output() {
+        Ok(output) => output,
+        Err(err) if explicit.is_some() => {
+            return Err(format!("CUE_BIN `{cue}` is not executable: {err}"));
+        }
+        Err(_) => return Ok(None),
+    };
     if !output.status.success() {
-        return None;
+        if explicit.is_some() {
+            return Err(format!("`{cue} version` failed"));
+        }
+        return Ok(None);
     }
-    let version = String::from_utf8_lossy(&output.stdout);
-    if version.contains("v0.17") || version.contains("v0.18") || version.contains("v0.19") {
-        Some(cue)
-    } else {
-        None
+    let text = String::from_utf8_lossy(&output.stdout);
+    let Some(version) = cue_version(&text) else {
+        if explicit.is_some() {
+            return Err(format!("cannot parse CUE version from `{text}`"));
+        }
+        return Ok(None);
+    };
+    if version < (0, 17, 1) {
+        if explicit.is_some() {
+            return Err(format!(
+                "CUE {version:?} is too old; the oracle requires >= v0.17.1"
+            ));
+        }
+        return Ok(None);
     }
+    Ok(Some(cue))
 }
 
 fn rust_export(path: &Path, params: &[&str]) -> Value {
@@ -101,8 +134,8 @@ fn compare(cue: &str, path: &Path, params: &[&str]) {
 
 #[test]
 fn rust_matches_official_cue_on_the_conformance_corpus() {
-    let Some(cue) = cue_bin() else {
-        eprintln!("skipping: official CUE >= 0.17 not installed");
+    let Some(cue) = cue_bin().expect("explicit CUE_BIN must be usable") else {
+        eprintln!("skipping: official CUE >= 0.17.1 not installed and CUE_BIN is unset");
         return;
     };
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

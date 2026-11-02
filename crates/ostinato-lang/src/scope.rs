@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Expr, File, Label, StrPart, StructItem};
+use crate::ast::{CompClause, Expr, File, Label, StrPart, StructItem};
 
 /// Rewrite file-local imports and `let` bindings to unique names.
 pub fn rename_file_locals(file: &mut File, file_index: usize) {
@@ -111,6 +111,24 @@ fn rename_expr(expr: &mut Expr, locals: &HashMap<String, String>, shadowed: &Has
         Expr::OpenList(element, _) => {
             if let Some(element) = element {
                 rename_expr(element, locals, shadowed);
+            }
+        }
+        Expr::ListComp { clauses, body, .. } => {
+            for clause in clauses {
+                match clause {
+                    CompClause::For {
+                        key, value, source, ..
+                    } => {
+                        rename_expr(source, locals, shadowed);
+                        let mut scoped = shadowed.clone();
+                        if let Some(key) = key {
+                            scoped.insert(key.clone());
+                        }
+                        scoped.insert(value.clone());
+                        rename_expr(body, locals, &scoped);
+                    }
+                    CompClause::If { cond, .. } => rename_expr(cond, locals, shadowed),
+                }
             }
         }
         Expr::OpenListPrefix(prefix, tail, _) => {

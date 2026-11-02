@@ -89,6 +89,20 @@ impl StructItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum CompClause {
+    For {
+        key: Option<String>,
+        value: String,
+        source: Expr,
+        span: Span,
+    },
+    If {
+        cond: Expr,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum StrPart {
     Text(String),
     Interp(Expr),
@@ -109,6 +123,11 @@ pub enum Expr {
     List(Vec<Expr>, Span),
     OpenList(Option<Box<Expr>>, Span),
     OpenListPrefix(Vec<Expr>, Option<Box<Expr>>, Span),
+    ListComp {
+        clauses: Vec<CompClause>,
+        body: Box<Expr>,
+        span: Span,
+    },
     Unify(Box<Expr>, Box<Expr>, Span),
     Disjunction(Box<Expr>, Box<Expr>, Span),
     Default(Box<Expr>, Span),
@@ -133,6 +152,7 @@ impl Expr {
             | Self::List(_, span)
             | Self::OpenList(_, span)
             | Self::OpenListPrefix(_, _, span)
+            | Self::ListComp { span, .. }
             | Self::Unify(_, _, span)
             | Self::Disjunction(_, _, span)
             | Self::Default(_, span)
