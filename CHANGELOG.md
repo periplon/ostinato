@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.5
+
+List-comprehension and inner-`let` corrections.
+
+- List-comprehension bodies starting with `[` are parsed as list expressions
+  again; only a bracket that closes a label followed by `:` starts a struct.
+- A `let` is not in scope in its own value, so an inner `let` can shadow an
+  enclosing `let` or alias (`let X = X + 1`).
+- 137 tests (23 CLI E2E, 1 conformance, 103 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.4
 
 Alias/let scope and list-comprehension fixes.

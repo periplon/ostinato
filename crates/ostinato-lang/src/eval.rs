@@ -1097,7 +1097,9 @@ impl<'a> Frame<'a> {
                 format!("cyclic let binding while evaluating `{name}`"),
             ));
         }
-        let expr = self.lets.borrow().get(name).cloned();
+        // A `let` is not in scope in its own value: a same-named identifier
+        // in the RHS resolves to an enclosing let or alias.
+        let expr = self.lets.borrow_mut().remove(name);
         let Some(expr) = expr else {
             return Err(LangError::eval(
                 span.line,
@@ -1106,8 +1108,10 @@ impl<'a> Frame<'a> {
             ));
         };
         self.evaluating.borrow_mut().insert(name.to_owned());
-        let value = eval_expr(&expr, self)?;
+        let result = eval_expr(&expr, self);
         self.evaluating.borrow_mut().remove(name);
+        self.lets.borrow_mut().insert(name.to_owned(), expr);
+        let value = result?;
         self.vars
             .borrow_mut()
             .insert(name.to_owned(), value.clone());
