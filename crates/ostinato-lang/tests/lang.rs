@@ -860,3 +860,63 @@ workflow: {name: "len-\(len(params))", steps: {s: {kind: "noop"}}}
     let compiled = ostinato_lang::compile(source).expect("generated optional");
     assert_eq!(compiled.spec.name, "len-1");
 }
+
+#[test]
+fn generated_optional_conflicts_when_required_field_comes_later() {
+    let source = r#"
+package demo
+#W: {
+    steps: {s: {kind: "noop"}}
+    for k in ["name"] { "\(k)"?: int }
+    if true { name: "gen" }
+}
+workflow: #W
+"#;
+    assert!(ostinato_lang::compile(source).is_err());
+}
+
+#[test]
+fn generated_optional_unifies_with_required_dynamic_label() {
+    let direct = r#"
+package demo
+#W: {
+    let k = "sub"
+    for x in ["sub"] {
+        "\(x)"?: {a: int}
+        "\(k)": {a: 1}
+    }
+}
+workflow: {name: "\(#W.sub.a)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile(direct).expect("direct dynamic label");
+    assert_eq!(compiled.spec.name, "1");
+
+    let nested = r#"
+package demo
+#W: {
+    let k = "sub"
+    for x in ["sub"] {
+        if true { "\(x)"?: {a: int} }
+        "\(k)": {a: 1}
+    }
+}
+workflow: {name: "\(#W.sub.a)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile(nested).expect("nested dynamic label");
+    assert_eq!(compiled.spec.name, "1");
+}
+
+#[test]
+fn generated_optional_conflicts_with_required_dynamic_label() {
+    let source = r#"
+package demo
+#W: {
+    for x in ["sub"] {
+        "\(x)"?: {a: string}
+        "sub": {a: 1}
+    }
+}
+workflow: #W
+"#;
+    assert!(ostinato_lang::compile(source).is_err());
+}

@@ -138,6 +138,8 @@ unified with `{name: 1}` was accepted). Fixed before the final PR:
 | Recursive definition materialization and self-selection inside a definition | Explicitly documented as out of scope in `docs/SCOPE.md`; the non-materialized recursive definition still loads |
 | Required field expressions that depend on optional fields were rejected eagerly | Explicitly documented as out of scope; optional fields must be materialized through a named definition that flattens the unification, or the oracle must be used |
 | A generated optional constraint could shadow/delete a matching required field | Generated constraints are unified into the required field when one exists; only generated-only optionals remain optional |
+| Required field emitted after a generated optional, or as a dynamic label | Generated required fields are reconciled before export; later required values unify the stored constraint and surface conflicts |
+| Debug `eprintln!` leaked evaluator state to stderr | Removed; CLI stderr is clean for successful validation |
 
 ## Deliberately deferred / residual risks
 

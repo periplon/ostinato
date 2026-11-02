@@ -39,7 +39,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 1 test
 test rust_matches_official_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
 
      Running tests/e2e.rs (target/debug/deps/e2e-ed2327ab07f0d75b)
 
@@ -47,26 +47,26 @@ running 23 tests
 test non_struct_params_are_rejected ... ok
 test package_underscore_files_are_file_local ... ok
 test package_less_cue_file_is_loaded_by_filename ... ok
-test native_evaluator_supports_the_offline_subset ... ok
 test background_grandchild_does_not_extend_a_successful_step ... ok
+test native_evaluator_supports_the_offline_subset ... ok
 test split_package_and_sibling_conflicts_follow_cue_semantics ... ok
 test unknown_fields_are_rejected ... ok
 test recomputed_state_hash_is_still_rejected_by_the_chain_anchor ... ok
 test audit_verification_detects_tampering ... ok
-test audit_detects_tail_truncation_via_persisted_head ... ok
-test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
 test read_only_commands_do_not_require_cue ... ok
+test audit_detects_tail_truncation_via_persisted_head ... ok
 test cleared_integrity_hashes_are_not_silently_repaired ... ok
+test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
 test state_tampering_is_detected_and_resume_refuses_it ... ok
 test bad_template_is_a_durable_failure ... ok
 test truncation_blocks_resume_and_appends ... ok
 test retries_are_attempted_and_logged_as_trials ... ok
-test official_cue_runs_and_audit_verifies ... ok
 test resume_skips_completed_steps_and_finishes ... ok
+test official_cue_runs_and_audit_verifies ... ok
 test cycles_stop_when_until_becomes_true ... ok
 test recursive_improvement_creates_child_runs ... ok
 test exec_timeout_kills_the_process_group ... ok
-run=d1c957dd-29a7-4cbf-a67b-b12af37f7ca9 workflow=cancel status=cancelled durationMs=4027
+run=ca5ac52b-54d5-42d9-ab8b-1942692fa6e8 workflow=cancel status=cancelled durationMs=4027
 STEP                     STATUS     VISITS ATTEMPTS
 test cancel_stops_a_running_run_and_blocks_resume ... ok
 
@@ -83,8 +83,8 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 3 tests
 test database_and_wal_files_are_private ... ok
-test reopened_store_does_not_repair_blank_integrity_hashes ... ok
 test sqlite_store_roundtrip_is_atomic_and_hash_chained ... ok
+test reopened_store_does_not_repair_blank_integrity_hashes ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
@@ -103,8 +103,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests/domain.rs (target/debug/deps/domain-ac7ce8b7c4ff7cbc)
 
 running 6 tests
-test retry_backoff_is_capped_and_deterministic ... ok
 test new_event_helper_is_ergonomic ... ok
+test retry_backoff_is_capped_and_deterministic ... ok
 test cycles_require_an_explicit_policy ... ok
 test independent_steps_share_a_parallel_group ... ok
 test cycles_expand_into_bounded_rounds ... ok
@@ -120,54 +120,57 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
      Running tests/lang.rs (target/debug/deps/lang-010052e624538b88)
 
-running 45 tests
+running 48 tests
 test evaluates_conditions ... ok
-test definition_optional_conflicts_error_only_when_materialized ... ok
-test definition_optional_constraint_applies_to_required_fields_in_both_orders ... ok
-test forward_let_references_are_lazy ... ok
+test generated_optional_conflicts_with_required_dynamic_label ... ok
 test generated_optional_constraint_conflicts_with_a_required_field ... ok
-test definitions_preserve_optional_constraints_while_open ... ok
-test dependent_parameter_overrides_are_order_independent ... ok
-test generated_optional_constraint_applies_to_a_required_field ... ok
-test invalid_until_is_rejected_at_validation_time ... ok
-test comprehension_clause_sequences_are_supported ... ok
-test missing_field_separators_are_rejected ... ok
-test list_comprehensions_are_supported ... ok
-test definitions_behave_like_structs_in_comprehensions_and_equality ... ok
-test compiles_workflow_and_resolves_parameters ... ok
+test definition_optional_conflicts_error_only_when_materialized ... ok
+test forward_let_references_are_lazy ... ok
+test generated_optional_conflicts_when_required_field_comes_later ... ok
 test definitions_can_be_used_in_conditions_and_selectors ... ok
-test native_defaults_work_in_multibranch_disjunctions ... ok
+test missing_field_separators_are_rejected ... ok
 test generated_only_optional_fields_are_not_materialized ... ok
+test list_comprehensions_are_supported ... ok
+test dependent_parameter_overrides_are_order_independent ... ok
+test native_defaults_work_in_multibranch_disjunctions ... ok
+test definitions_preserve_optional_constraints_while_open ... ok
+test definition_optional_constraint_applies_to_required_fields_in_both_orders ... ok
+test definitions_behave_like_structs_in_comprehensions_and_equality ... ok
+test generated_optional_constraint_applies_to_a_required_field ... ok
 test named_definition_flattens_optional_field_materialization ... ok
-test evaluates_structs_defaults_unification_and_interpolation ... ok
+test open_list_element_types_are_enforced ... ok
+test comprehension_clause_sequences_are_supported ... ok
+test nested_definitions_are_selectable ... ok
 test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
 test native_parameter_overrides_are_injected_before_interpolation ... ok
-test open_list_element_types_are_enforced ... ok
 test native_overrides_apply_before_top_level_comprehensions ... ok
-test nested_definitions_are_selectable ... ok
+test evaluates_structs_defaults_unification_and_interpolation ... ok
+test compiles_workflow_and_resolves_parameters ... ok
 test optional_fields_cannot_be_referenced_by_bare_name ... ok
-test optional_fields_cannot_be_selected_from_a_definition ... ok
+test invalid_until_is_rejected_at_validation_time ... ok
 test optional_definition_fields_are_not_materialized ... ok
-test optional_nested_definitions_are_not_selectable ... ok
+test optional_fields_cannot_be_selected_from_a_definition ... ok
 test open_list_prefix_unifies_with_a_concrete_list ... ok
 test nested_definitions_are_not_exported_as_fields ... ok
-test quoted_hash_labels_are_regular_fields ... ok
-test parameter_overrides_narrow_a_default_free_disjunction ... ok
+test optional_nested_definitions_are_not_selectable ... ok
+test generated_optional_unifies_with_required_dynamic_label ... ok
 test parameter_overrides_respect_fixed_values_and_types ... ok
+test parameter_overrides_narrow_a_default_free_disjunction ... ok
+test quoted_hash_labels_are_regular_fields ... ok
 test renders_templates ... ok
-test rejects_missing_required_parameter ... ok
 test parameter_overrides_are_constraints_and_dependent_fields_see_them ... ok
 test retry_int_shorthand_respects_the_cap ... ok
+test rejects_missing_required_parameter ... ok
 test parameters_can_be_backed_by_a_definition_or_split_struct ... ok
+test step_level_unknown_fields_are_rejected ... ok
 test recursive_nested_definitions_do_not_overflow ... ok
 test parenthesized_dynamic_labels_and_if_clause_sequences_work ... ok
-test step_level_unknown_fields_are_rejected ... ok
-test versioned_imports_use_the_unversioned_alias ... ok
-test unknown_workflow_fields_are_rejected ... ok
 test unicode_string_builtins_match_go_semantics ... ok
+test unknown_workflow_fields_are_rejected ... ok
+test versioned_imports_use_the_unversioned_alias ... ok
 test until_accepts_nested_json_provider_and_hyphenated_steps ... ok
 
-test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
    Doc-tests ostinato_adapters
 
@@ -222,7 +225,7 @@ exit=0
 
 ## Conformance corpus
 
-Rust vs CUE: defaults, unification, open definitions with optional constraints, nested/recursive definitions and selectors, generated optionals, definition iteration/equality, comprehensions, clause sequences, list comprehensions, let/builtins, params, scope, hidden files, open lists, versioned/nested modules.
+Rust vs CUE: defaults, unification, open definitions with optional constraints, nested/recursive definitions and selectors, generated optionals and ordering, definition iteration/equality, comprehensions, clause sequences, list comprehensions, let/builtins, params, scope, hidden files, open lists, versioned/nested modules.
 
 ````text
 ### ./scripts/conformance.sh
@@ -233,7 +236,7 @@ Rust vs CUE: defaults, unification, open definitions with optional constraints, 
 running 1 test
 test rust_matches_official_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.88s
 
 
 exit=0
@@ -246,7 +249,7 @@ Dependency ordering and typed parameter.
 ````text
 ### ./target/debug/ostinato --db <workdir>/db.sqlite --cue cue run examples/hello.cue -p name=Ostinato
 
-run=b38380dc-9ee0-4991-bfa5-de2de81c15a1 workflow=hello status=succeeded durationMs=13
+run=14a444b3-2568-4ffb-bd4a-a698f6eb0971 workflow=hello status=succeeded durationMs=12
 STEP                     STATUS     VISITS ATTEMPTS
 audit                    succeeded  1      1       
 greet                    succeeded  1      1       
@@ -262,7 +265,7 @@ Fail twice, succeed on third attempt.
 ````text
 ### ./target/debug/ostinato --db <workdir>/db.sqlite run examples/retry.cue
 
-run=42d965d7-dcd9-43a1-89aa-422db3c90897 workflow=retry status=succeeded durationMs=321
+run=01dae176-ab30-4cc2-bfbf-47fb744add77 workflow=retry status=succeeded durationMs=328
 STEP                     STATUS     VISITS ATTEMPTS
 flaky                    succeeded  1      3       
 setup                    succeeded  1      1       
@@ -277,7 +280,7 @@ Review/refine until score >= 0.8.
 ````text
 ### ./target/debug/ostinato --db <workdir>/db.sqlite run examples/cycle.cue
 
-run=148757c9-19db-4d0a-bac0-f66341318343 workflow=cycle status=succeeded durationMs=92
+run=0d50d568-a6e1-4186-9647-6f8b10dddae5 workflow=cycle status=succeeded durationMs=96
 STEP                     STATUS     VISITS ATTEMPTS
 refine                   succeeded  3      1       
 review                   succeeded  3      1       
@@ -291,11 +294,11 @@ exit=0
 Visits/attempts.
 
 ````text
-### ./target/debug/ostinato --db <workdir>/db.sqlite status 148757c9-19db-4d0a-bac0-f66341318343
+### ./target/debug/ostinato --db <workdir>/db.sqlite status 0d50d568-a6e1-4186-9647-6f8b10dddae5
 
-run=148757c9-19db-4d0a-bac0-f66341318343 workflow=cycle status=succeeded resumeIndex=11
+run=0d50d568-a6e1-4186-9647-6f8b10dddae5 workflow=cycle status=succeeded resumeIndex=11
 source=./examples/cycle.cue
-created=2026-11-02T19:39:44.283Z updated=2026-11-02T19:39:44.376Z
+created=2026-11-02T19:49:58.013Z updated=2026-11-02T19:49:58.110Z
 STEP                     STATUS     VISITS ATTEMPTS
 refine                   succeeded  3      1       
 review                   succeeded  3      1       
@@ -309,27 +312,27 @@ exit=0
 state.committed, cycle.completed, checkpoints.
 
 ````text
-### ./target/debug/ostinato --db <workdir>/db.sqlite logs 148757c9-19db-4d0a-bac0-f66341318343
+### ./target/debug/ostinato --db <workdir>/db.sqlite logs 0d50d568-a6e1-4186-9647-6f8b10dddae5
 
-0 2026-11-02T19:39:44.283Z run.started step=- {"params":{},"stateHash":"a90a55f77a374d6b6bb941201f6c71ddf0591fe74deacf8d3b1ebc9e5ddf2423","workflow":"cycle"}
-1 2026-11-02T19:39:44.304Z step.succeeded step=setup {"attempts":1,"error":null,"outputHash":"59a35389d3c6ef89657eab4285e7fc91ec1a96b838415f5eab1b77f767b34c1c","round":0,"score":1.0}
-2 2026-11-02T19:39:44.304Z state.committed step=- {"resumeIndex":1,"stateHash":"45c178124b49006c62b57096d8f276349f80c0130429ccad51790f757aa7c072"}
-3 2026-11-02T19:39:44.314Z step.succeeded step=refine {"attempts":1,"error":null,"outputHash":"e476419789baaf00ddb53f87499699de47dbff6fe4a20fe112d9f8cf5a20c8fe","round":0,"score":1.0}
-4 2026-11-02T19:39:44.314Z state.committed step=- {"resumeIndex":2,"stateHash":"b3f61f97ce8fd8f448d206ad0bb4929834dd80a499e79c0dfa43f0719e80bdcf"}
-5 2026-11-02T19:39:44.331Z step.succeeded step=review {"attempts":1,"error":null,"outputHash":"f81dd03a67783f862c001d9968c8779967d176566ee0df4fd3bcd910c232aa53","round":0,"score":0.3}
-6 2026-11-02T19:39:44.331Z state.committed step=- {"resumeIndex":3,"stateHash":"424254928ad2790338ce7e8ee5ee96aba1bdcb3d0a37a693fe1b2614d5a35c3e"}
-7 2026-11-02T19:39:44.340Z step.succeeded step=refine {"attempts":1,"error":null,"outputHash":"e476419789baaf00ddb53f87499699de47dbff6fe4a20fe112d9f8cf5a20c8fe","round":1,"score":1.0}
-8 2026-11-02T19:39:44.340Z state.committed step=- {"resumeIndex":4,"stateHash":"db9bc3dc2700ca875d4d905abeed329e13580a64255cfec75c9a94c2027cd309"}
-9 2026-11-02T19:39:44.355Z step.succeeded step=review {"attempts":1,"error":null,"outputHash":"35d2d43594f1d681b729a6cff821499f4d0d4d7e2f73edda68024b58ea3fd62b","round":1,"score":0.6}
-10 2026-11-02T19:39:44.355Z state.committed step=- {"resumeIndex":5,"stateHash":"3fac015bd38e6e64f6077e3b36469c70459db04f5f868e967603b26d4984ea76"}
-11 2026-11-02T19:39:44.363Z step.succeeded step=refine {"attempts":1,"error":null,"outputHash":"e476419789baaf00ddb53f87499699de47dbff6fe4a20fe112d9f8cf5a20c8fe","round":2,"score":1.0}
-12 2026-11-02T19:39:44.363Z state.committed step=- {"resumeIndex":6,"stateHash":"babdea534dac4ee2586b9935fea4615f48ee838a7a27aeb26c3463ce72ced152"}
-13 2026-11-02T19:39:44.375Z step.succeeded step=review {"attempts":1,"error":null,"outputHash":"f9c366e18ca810feb7d3efbf149aec9b5bb3f7e93562d76a8914757f0787a70d","round":2,"score":0.9}
-14 2026-11-02T19:39:44.375Z state.committed step=- {"resumeIndex":7,"stateHash":"575e25bb558c08b854e9cbc400c5eb6ae16859d59c06308fed2f73d9669dbc18"}
-15 2026-11-02T19:39:44.376Z cycle.completed step=review {"resumeIndex":11,"round":2,"until":"steps.review.score >= 0.8"}
-16 2026-11-02T19:39:44.376Z state.committed step=- {"resumeIndex":11,"stateHash":"db938daf1062e00dcfa2de68cf461befb9755366ca5b129a0694e51f1ab1bdbd"}
-17 2026-11-02T19:39:44.376Z run.succeeded step=- {"resumeIndex":11}
-18 2026-11-02T19:39:44.376Z state.committed step=- {"resumeIndex":11,"stateHash":"db938daf1062e00dcfa2de68cf461befb9755366ca5b129a0694e51f1ab1bdbd"}
+0 2026-11-02T19:49:58.013Z run.started step=- {"params":{},"stateHash":"a90a55f77a374d6b6bb941201f6c71ddf0591fe74deacf8d3b1ebc9e5ddf2423","workflow":"cycle"}
+1 2026-11-02T19:49:58.035Z step.succeeded step=setup {"attempts":1,"error":null,"outputHash":"59a35389d3c6ef89657eab4285e7fc91ec1a96b838415f5eab1b77f767b34c1c","round":0,"score":1.0}
+2 2026-11-02T19:49:58.035Z state.committed step=- {"resumeIndex":1,"stateHash":"45c178124b49006c62b57096d8f276349f80c0130429ccad51790f757aa7c072"}
+3 2026-11-02T19:49:58.046Z step.succeeded step=refine {"attempts":1,"error":null,"outputHash":"e476419789baaf00ddb53f87499699de47dbff6fe4a20fe112d9f8cf5a20c8fe","round":0,"score":1.0}
+4 2026-11-02T19:49:58.046Z state.committed step=- {"resumeIndex":2,"stateHash":"b3f61f97ce8fd8f448d206ad0bb4929834dd80a499e79c0dfa43f0719e80bdcf"}
+5 2026-11-02T19:49:58.062Z step.succeeded step=review {"attempts":1,"error":null,"outputHash":"f81dd03a67783f862c001d9968c8779967d176566ee0df4fd3bcd910c232aa53","round":0,"score":0.3}
+6 2026-11-02T19:49:58.062Z state.committed step=- {"resumeIndex":3,"stateHash":"424254928ad2790338ce7e8ee5ee96aba1bdcb3d0a37a693fe1b2614d5a35c3e"}
+7 2026-11-02T19:49:58.070Z step.succeeded step=refine {"attempts":1,"error":null,"outputHash":"e476419789baaf00ddb53f87499699de47dbff6fe4a20fe112d9f8cf5a20c8fe","round":1,"score":1.0}
+8 2026-11-02T19:49:58.070Z state.committed step=- {"resumeIndex":4,"stateHash":"db9bc3dc2700ca875d4d905abeed329e13580a64255cfec75c9a94c2027cd309"}
+9 2026-11-02T19:49:58.085Z step.succeeded step=review {"attempts":1,"error":null,"outputHash":"35d2d43594f1d681b729a6cff821499f4d0d4d7e2f73edda68024b58ea3fd62b","round":1,"score":0.6}
+10 2026-11-02T19:49:58.085Z state.committed step=- {"resumeIndex":5,"stateHash":"3fac015bd38e6e64f6077e3b36469c70459db04f5f868e967603b26d4984ea76"}
+11 2026-11-02T19:49:58.094Z step.succeeded step=refine {"attempts":1,"error":null,"outputHash":"e476419789baaf00ddb53f87499699de47dbff6fe4a20fe112d9f8cf5a20c8fe","round":2,"score":1.0}
+12 2026-11-02T19:49:58.094Z state.committed step=- {"resumeIndex":6,"stateHash":"babdea534dac4ee2586b9935fea4615f48ee838a7a27aeb26c3463ce72ced152"}
+13 2026-11-02T19:49:58.109Z step.succeeded step=review {"attempts":1,"error":null,"outputHash":"f9c366e18ca810feb7d3efbf149aec9b5bb3f7e93562d76a8914757f0787a70d","round":2,"score":0.9}
+14 2026-11-02T19:49:58.109Z state.committed step=- {"resumeIndex":7,"stateHash":"575e25bb558c08b854e9cbc400c5eb6ae16859d59c06308fed2f73d9669dbc18"}
+15 2026-11-02T19:49:58.109Z cycle.completed step=review {"resumeIndex":11,"round":2,"until":"steps.review.score >= 0.8"}
+16 2026-11-02T19:49:58.109Z state.committed step=- {"resumeIndex":11,"stateHash":"db938daf1062e00dcfa2de68cf461befb9755366ca5b129a0694e51f1ab1bdbd"}
+17 2026-11-02T19:49:58.110Z run.succeeded step=- {"resumeIndex":11}
+18 2026-11-02T19:49:58.110Z state.committed step=- {"resumeIndex":11,"stateHash":"db938daf1062e00dcfa2de68cf461befb9755366ca5b129a0694e51f1ab1bdbd"}
 
 exit=0
 ````
@@ -339,16 +342,16 @@ exit=0
 One row per attempt.
 
 ````text
-### ./target/debug/ostinato --db <workdir>/db.sqlite trials 148757c9-19db-4d0a-bac0-f66341318343
+### ./target/debug/ostinato --db <workdir>/db.sqlite trials 0d50d568-a6e1-4186-9647-6f8b10dddae5
 
 STEP                 ROUND ATTEMPT STATUS   SCORE      DUR(ms)  ERROR
-setup                0     0      succeeded 1.000      18       
+setup                0     0      succeeded 1.000      20       
 refine               0     0      succeeded 1.000      8        
-review               0     0      succeeded 0.300      15       
+review               0     0      succeeded 0.300      14       
 refine               1     0      succeeded 1.000      7        
-review               1     0      succeeded 0.600      14       
-refine               2     0      succeeded 1.000      6        
-review               2     0      succeeded 0.900      11       
+review               1     0      succeeded 0.600      13       
+refine               2     0      succeeded 1.000      7        
+review               2     0      succeeded 0.900      13       
 
 exit=0
 ````
@@ -358,9 +361,9 @@ exit=0
 Hash chain, state digest, anchor.
 
 ````text
-### ./target/debug/ostinato --db <workdir>/db.sqlite audit verify 148757c9-19db-4d0a-bac0-f66341318343
+### ./target/debug/ostinato --db <workdir>/db.sqlite audit verify 0d50d568-a6e1-4186-9647-6f8b10dddae5
 
-OK run=148757c9-19db-4d0a-bac0-f66341318343 events=19 head=b64089c878c2fe9e0da16e313f32bb476a7eaca7cfa04d15db868daf8dfe9ac0
+OK run=0d50d568-a6e1-4186-9647-6f8b10dddae5 events=19 head=0c5b28d1615f42e543cafdd3f9bc6ebac59e6b15c3b40a8700e6aedf5f5b6e5c
 
 exit=0
 ````
@@ -370,7 +373,7 @@ exit=0
 Prometheus text.
 
 ````text
-### ./target/debug/ostinato --db <workdir>/db.sqlite metrics --run 148757c9-19db-4d0a-bac0-f66341318343 --format prometheus
+### ./target/debug/ostinato --db <workdir>/db.sqlite metrics --run 0d50d568-a6e1-4186-9647-6f8b10dddae5 --format prometheus
 
 # HELP ostinato_runs_total Runs started.
 # TYPE ostinato_runs_total counter
@@ -382,7 +385,7 @@ ostinato_steps_total 3
 ostinato_steps_failed_total 0
 ostinato_attempts_total 7
 ostinato_retries_total 0
-ostinato_attempt_duration_ms_avg 11.29
+ostinato_attempt_duration_ms_avg 11.71
 
 exit=0
 ````
@@ -394,7 +397,7 @@ Checkpoint and run.failed.
 ````text
 ### ./target/debug/ostinato --db <workdir>/resume.sqlite run <workdir>/resume.cue
 
-run=7f6002ea-2a1b-4ab5-bd0b-af4eefd8bfbd workflow=resume-evidence status=failed durationMs=11
+run=567f9ffc-7f71-46bf-ba4d-d704dbf0cc3e workflow=resume-evidence status=failed durationMs=11
 error: command exited with 7: 
 STEP                     STATUS     VISITS ATTEMPTS
 a                        succeeded  1      1       
@@ -408,9 +411,9 @@ exit=1
 Resume finishes.
 
 ````text
-### ./target/debug/ostinato --db <workdir>/resume.sqlite resume 7f6002ea-2a1b-4ab5-bd0b-af4eefd8bfbd
+### ./target/debug/ostinato --db <workdir>/resume.sqlite resume 567f9ffc-7f71-46bf-ba4d-d704dbf0cc3e
 
-run=7f6002ea-2a1b-4ab5-bd0b-af4eefd8bfbd workflow=resume-evidence status=succeeded durationMs=6
+run=567f9ffc-7f71-46bf-ba4d-d704dbf0cc3e workflow=resume-evidence status=succeeded durationMs=6
 STEP                     STATUS     VISITS ATTEMPTS
 a                        succeeded  1      1       
 b                        succeeded  1      1       
@@ -423,7 +426,7 @@ exit=0
 Completed step not re-executed.
 
 ````text
-### ./target/debug/ostinato --db <workdir>/resume.sqlite trials 7f6002ea-2a1b-4ab5-bd0b-af4eefd8bfbd
+### ./target/debug/ostinato --db <workdir>/resume.sqlite trials 567f9ffc-7f71-46bf-ba4d-d704dbf0cc3e
 
 STEP                 ROUND ATTEMPT STATUS   SCORE      DUR(ms)  ERROR
 a                    0     0      succeeded 1.000      5        
@@ -440,7 +443,7 @@ agent + improve + report.
 ````text
 ### ./target/debug/ostinato --db <workdir>/agent.sqlite --cue cue run examples/agentic.cue --agent-cmd ./examples/agent.sh
 
-run=06303455-329c-49f8-8389-31e288461a22 workflow=agentic status=succeeded durationMs=49
+run=bdde6129-4134-44aa-8c14-8d6e83dc73f6 workflow=agentic status=succeeded durationMs=31
 STEP                     STATUS     VISITS ATTEMPTS
 assess                   succeeded  1      1       
 improve                  succeeded  1      1       
@@ -454,9 +457,9 @@ exit=0
 Patched-param child runs.
 
 ````text
-### ./target/debug/ostinato --db <workdir>/agent.sqlite improve 06303455-329c-49f8-8389-31e288461a22 --rounds 2 --agent-cmd ./examples/agent.sh
+### ./target/debug/ostinato --db <workdir>/agent.sqlite improve bdde6129-4134-44aa-8c14-8d6e83dc73f6 --rounds 2 --agent-cmd ./examples/agent.sh
 
-improvement #2 run=06303455-329c-49f8-8389-31e288461a22 diagnosis=The plan is sound; keep the scope small and reversible.
+improvement #2 run=bdde6129-4134-44aa-8c14-8d6e83dc73f6 diagnosis=The plan is sound; keep the scope small and reversible.
 {
   "changes": [
     "no structural change"
@@ -469,8 +472,8 @@ improvement #2 run=06303455-329c-49f8-8389-31e288461a22 diagnosis=The plan is so
   },
   "score": 0.93
 }
-child run 1db82dab-5c97-4f99-b416-d17bbc5c9ac5 status=succeeded parent=06303455-329c-49f8-8389-31e288461a22
-improvement #4 run=1db82dab-5c97-4f99-b416-d17bbc5c9ac5 diagnosis=The plan is sound; keep the scope small and reversible.
+child run c74c6a07-4471-426b-8182-d1e3124ab115 status=succeeded parent=bdde6129-4134-44aa-8c14-8d6e83dc73f6
+improvement #4 run=c74c6a07-4471-426b-8182-d1e3124ab115 diagnosis=The plan is sound; keep the scope small and reversible.
 {
   "changes": [
     "no structural change"
@@ -483,7 +486,7 @@ improvement #4 run=1db82dab-5c97-4f99-b416-d17bbc5c9ac5 diagnosis=The plan is so
   },
   "score": 0.93
 }
-child run 0d3acaf2-4cb7-4311-9fed-efae67f603e1 status=succeeded parent=1db82dab-5c97-4f99-b416-d17bbc5c9ac5
+child run 9c27a481-3618-4f0a-a65f-f8f310b7a57f status=succeeded parent=c74c6a07-4471-426b-8182-d1e3124ab115
 
 exit=0
 ````
@@ -496,9 +499,9 @@ Parent/child chain.
 ### ./target/debug/ostinato --db <workdir>/agent.sqlite runs
 
 RUN                                    WORKFLOW         STATUS     STEPS    CREATED                 
-0d3acaf2-4cb7-4311-9fed-efae67f603e1   agentic          succeeded  3        2026-11-02T19:39:44.629Z
-1db82dab-5c97-4f99-b416-d17bbc5c9ac5   agentic          succeeded  3        2026-11-02T19:39:44.588Z
-06303455-329c-49f8-8389-31e288461a22   agentic          succeeded  3        2026-11-02T19:39:44.501Z
+9c27a481-3618-4f0a-a65f-f8f310b7a57f   agentic          succeeded  3        2026-11-02T19:49:58.343Z
+c74c6a07-4471-426b-8182-d1e3124ab115   agentic          succeeded  3        2026-11-02T19:49:58.300Z
+bdde6129-4134-44aa-8c14-8d6e83dc73f6   agentic          succeeded  3        2026-11-02T19:49:58.232Z
 
 exit=0
 ````
@@ -508,6 +511,6 @@ exit=0
 Payload mutation fails.
 
 ````text
-AUDIT FAILED run=06303455-329c-49f8-8389-31e288461a22: invalid audit chain at sequence 1: event hash does not match its content
+AUDIT FAILED run=bdde6129-4134-44aa-8c14-8d6e83dc73f6: invalid audit chain at sequence 1: event hash does not match its content
 exit= 1
 ````

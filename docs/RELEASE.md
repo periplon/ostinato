@@ -19,7 +19,7 @@ for non-draft PRs and therefore waits for these checks before squashing.
 - Follow-up language fixes: optional constraints across definitions, nested
   definition selection, quoted `"#h"` fields, recursion guards, optional
   reference rejection and generated-optional/required-field unification.
-- 79 tests (23 CLI E2E, 1 conformance, 45 language, 6 domain, 3 store, 1 unit).
+- 82 tests (23 CLI E2E, 1 conformance, 48 language, 6 domain, 3 store, 1 unit).
 - CI gate unchanged: `fmt / clippy / test` and `dependency audit`.
 
 ## v0.2.1
