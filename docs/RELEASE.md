@@ -12,6 +12,19 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.2.0
+
+- PR: [#7](https://github.com/periplon/ostinato/pull/7)
+- Merge commit: `5f6ac8f` (squash)
+- CI run: `41491093459` — `fmt / clippy / test` pass, `dependency audit` pass,
+  `auto-merge when green` pass; merged automatically.
+- **Rust CUE evaluator is the default.** `--evaluator cue` is the official
+  conformance oracle only.
+- Conformance corpus: defaults, unification, comprehension, `let`/builtins,
+  nested shorthand, params, file scope, hidden files, open lists, versioned
+  modules and a full module.
+- 59 tests (23 CLI E2E, 1 conformance, 25 language, 6 domain, 3 store, 1 unit).
+
 ## v0.1.2
 
 - PR: [#3](https://github.com/periplon/ostinato/pull/3)
