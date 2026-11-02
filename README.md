@@ -32,7 +32,7 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 
 ## Status
 
-`v0.2.0` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
+`v0.2.1` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
 
 ## Features
 
@@ -72,7 +72,7 @@ Verify:
 
 ```sh
 ostinato doctor
-# ostinato 0.2.0
+# ostinato 0.2.1
 # evaluator rust (required CUE workflow semantics; default)
 # oracle cue version v0.17.1
 # db .ostinato/ostinato.db
@@ -223,7 +223,7 @@ See [docs/LANGUAGE.md](docs/LANGUAGE.md) for the full reference.
 ```text
 crates/
   ostinato-domain         pure types: workflow, plan, run, trial, audit chain
-  ostinato-lang           CUE subset (native, opt-in) + typed compiler + conditions/templates
+  ostinato-lang           Rust CUE evaluator (default) + typed compiler + conditions/templates
   ostinato-application    use cases, ports, scheduler, retry, cycles, improvement
   ostinato-adapters       SQLite, process exec, command agent, Rust/default + CUE oracle loaders, tracing
   ostinato-cli            clap composition root (the only crate that wires I/O)
@@ -241,7 +241,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and SOLID mapping. Th
 
 - `--evaluator rust` is the default (`native` is an alias).
 - `--evaluator cue` requires CUE **>= v0.17.1**; CI installs and pins v0.17.1.
-- The Rust evaluator targets the workflow-relevant CUE semantics, not every CUE feature. Closedness, aliases, pattern constraints, bytes/tool packages and the full disjunction lattice are not implemented; see [docs/COMPLIANCE.md](docs/COMPLIANCE.md).
+- The Rust evaluator targets the workflow-relevant CUE semantics, not every CUE feature. Closed definitions, clause-sequence/list comprehensions and file-scoped `let` are implemented; pattern constraints, CUE aliases, bytes/tool packages and the full disjunction lattice are explicitly out of scope in [docs/SCOPE.md](docs/SCOPE.md).
 - There is **no silent fallback**: the default is Rust; `--evaluator cue` errors if the oracle is missing.
 
 ## Evidence

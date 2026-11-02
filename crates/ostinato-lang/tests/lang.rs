@@ -459,3 +459,136 @@ fn versioned_imports_use_the_unversioned_alias() {
     .expect("parse");
     assert_eq!(file.imports[0].alias, "lib");
 }
+
+#[test]
+fn closed_definitions_reject_unknown_fields() {
+    let source = r#"
+package demo
+#Step: {kind: "exec", exec: cmd: [...string]}
+workflow: {
+    steps: {
+        a: #Step & {bogus: 1, exec: cmd: ["true"]}
+    }
+}
+"#;
+    let error = ostinato_lang::compile(source).expect_err("closed definition");
+    assert!(error.to_string().contains("not allowed"));
+}
+
+#[test]
+fn comprehension_clause_sequences_are_supported() {
+    let source = r#"
+package demo
+workflow: {
+    steps: {
+        for _, job in ["a", "b"] if job != "b" {
+            "job-\(job)": {kind: "noop"}
+        }
+        for _, x in ["1"] for _, y in ["x", "y"] {
+            "\(x)-\(y)": {kind: "noop"}
+        }
+    }
+}
+"#;
+    let compiled = ostinato_lang::compile(source).expect("clause sequences");
+    assert!(compiled.spec.step("job-a").is_some());
+    assert!(compiled.spec.step("job-b").is_none());
+    assert!(compiled.spec.step("1-x").is_some());
+    assert!(compiled.spec.step("1-y").is_some());
+}
+
+#[test]
+fn list_comprehensions_are_supported() {
+    let source = r#"
+package demo
+let doubled = [for i in [1, 2] {i * 2}]
+workflow: {name: "n-\(len(doubled))", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile(source).expect("list comp");
+    assert_eq!(compiled.spec.name, "n-2");
+}
+
+#[test]
+fn closed_definitions_allow_optional_fields_and_open_ellipsis() {
+    let source = r#"
+package demo
+#D: {a: int, b?: int}
+x: #D & {a: 1, b: 2}
+#Cfg: {opts: {a: 1, b: 2}}
+cfg: #Cfg
+eq: (#D & {a: 1, b: 2}) == {a: 1, b: 2}
+#Open: {a: int, ...}
+open: #Open & {a: 1, extra: 2}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["b"], 2);
+    assert_eq!(json["eq"], true);
+    assert_eq!(json["open"]["extra"], 2);
+}
+
+#[test]
+fn closed_closed_intersection_rejects_both_directions_and_keeps_optionality() {
+    let bad = r#"
+package demo
+#A: {a: int, b: int}
+#B: {a: int}
+x: #A & #B
+workflow: {steps: {s: {kind: "noop"}}}
+"#;
+    let file = ostinato_lang::parse(bad).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let optional = r#"
+package demo
+#D: {a: int, b?: int}
+x: #D & {a: 1}
+y: x & {b: 2}
+workflow: {name: "\(y.b)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile(optional).expect("optional preserved");
+    assert_eq!(compiled.spec.name, "2");
+}
+
+#[test]
+fn split_definitions_merge_and_optional_values_are_not_materialized() {
+    let source = r#"
+package demo
+#D: {a: int}
+#D: {b?: int}
+x: #D & {a: 1, b: 2}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["b"], 2);
+
+    let optional = r#"
+package demo
+#D: {b?: 2}
+y: #D
+"#;
+    let file = ostinato_lang::parse(optional).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["y"], serde_json::json!({}));
+}
+
+#[test]
+fn definitions_include_comprehension_and_conditional_fields() {
+    let source = r#"
+package demo
+#D: {
+    z: 2
+    for k in ["a"] {"\(k)": 1}
+    if true {c: 3}
+}
+x: #D
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["z"], 2);
+    assert_eq!(json["x"]["a"], 1);
+    assert_eq!(json["x"]["c"], 3);
+}

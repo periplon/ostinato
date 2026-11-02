@@ -11,4 +11,14 @@ if ! "$CUE_BIN" version >/dev/null 2>&1; then
   exit 1
 fi
 
+VERSION="$("$CUE_BIN" version | head -1)"
+MAJOR_MINOR="$(echo "$VERSION" | sed -E 's/.*v([0-9]+)\.([0-9]+)\.[0-9]+.*/\1.\2/')"
+case "$MAJOR_MINOR" in
+  0.17|0.18|0.19|0.2[0-9]) ;;
+  *)
+    echo "CUE oracle too old ($VERSION); require >= v0.17.1" >&2
+    exit 1
+    ;;
+esac
+
 cargo test -p ostinato --test conformance -- --nocapture

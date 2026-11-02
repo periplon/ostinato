@@ -1,9 +1,9 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde_json::{Map, Number, Value as Json};
 
-use crate::ast::{BinOp, Expr, File, Span, StrPart, StructItem, UnOp};
+use crate::ast::{BinOp, CompClause, Expr, File, Span, StrPart, StructItem, UnOp};
 use crate::error::LangError;
 
 /// Runtime value produced by the CUE-compatible evaluator.
@@ -16,6 +16,13 @@ pub enum Value {
     String(String),
     List(Vec<Value>),
     Struct(BTreeMap<String, Value>),
+    /// A closed struct (a CUE definition) with optional constraints.
+    Closed {
+        fields: BTreeMap<String, Value>,
+        optional: BTreeMap<String, Value>,
+        allowed: BTreeSet<String>,
+        open: bool,
+    },
     /// An open list type `[...T]`; `None` means any element.
     OpenList(Option<Box<Value>>),
     /// A list with a fixed prefix and an open tail.
@@ -61,7 +68,7 @@ impl Value {
             Self::Float(_) => "float",
             Self::String(_) => "string",
             Self::List(_) => "list",
-            Self::Struct(_) => "struct",
+            Self::Struct(_) | Self::Closed { .. } => "struct",
             Self::OpenList(_) | Self::OpenListPrefix(_, _) => "list",
             Self::Builtin(_) => "builtin",
             Self::Type(kind) => match kind {
@@ -96,7 +103,7 @@ impl Value {
                 }
                 Some(Json::Array(out))
             }
-            Self::Struct(values) => {
+            Self::Struct(values) | Self::Closed { fields: values, .. } => {
                 let mut out = Map::new();
                 for (key, value) in values {
                     out.insert(key.clone(), value.to_json()?);
@@ -127,7 +134,7 @@ impl Value {
             Self::Float(value) => *value != 0.0,
             Self::String(value) => !value.is_empty(),
             Self::List(values) => !values.is_empty(),
-            Self::Struct(values) => !values.is_empty(),
+            Self::Struct(values) | Self::Closed { fields: values, .. } => !values.is_empty(),
             Self::OpenList(_) | Self::OpenListPrefix(_, _) => true,
             Self::Builtin(_) | Self::Type(_) | Self::Bottom => false,
         }
@@ -169,7 +176,7 @@ impl Value {
                 rendered.push(']');
                 rendered
             }
-            Self::List(_) | Self::Struct(_) => self.to_json().map_or_else(
+            Self::List(_) | Self::Struct(_) | Self::Closed { .. } => self.to_json().map_or_else(
                 || format!("<{}>", self.type_name()),
                 |json| json.to_string(),
             ),
@@ -385,7 +392,7 @@ impl<'a> Frame<'a> {
                 } => {
                     let source_value = eval_expr(source, self)?;
                     match source_value {
-                        Value::Struct(map) => {
+                        Value::Struct(map) | Value::Closed { fields: map, .. } => {
                             for (entry_key, entry_value) in map {
                                 let mut bindings = HashMap::new();
                                 if let Some(key) = key {
@@ -549,6 +556,32 @@ impl<'a> Frame<'a> {
         {
             return self.eval_params_struct(&items, span);
         }
+        if name.starts_with('#') {
+            let has_reference = exprs.iter().any(expr_contains_ident);
+            let flattened = if has_reference {
+                None
+            } else {
+                self.params_items(&exprs)
+            };
+            let result = if let Some(items) = flattened {
+                self.eval_definition_items(&items, span)?
+            } else {
+                let mut result = Value::Bottom;
+                for expr in &exprs {
+                    let value = self.eval_definition_expr(expr, span)?;
+                    result = if matches!(result, Value::Bottom) {
+                        value
+                    } else {
+                        unify_values(&result, &value, span)?
+                    };
+                }
+                result
+            };
+            self.values
+                .borrow_mut()
+                .insert(name.to_owned(), result.clone());
+            return Ok(result);
+        }
         self.evaluating.borrow_mut().insert(name.to_owned());
         let mut result = Value::Bottom;
         for (index, expr) in exprs.iter().enumerate() {
@@ -564,6 +597,58 @@ impl<'a> Frame<'a> {
             .borrow_mut()
             .insert(name.to_owned(), result.clone());
         Ok(result)
+    }
+
+    fn eval_definition_items(&self, items: &[StructItem], span: Span) -> Result<Value, LangError> {
+        let child = Frame::from_static(items, Some(self), HashMap::new())?;
+        child.expand(items)?;
+        let mut names: Vec<String> = child.fields.borrow().keys().cloned().collect();
+        names.extend(child.values.borrow().keys().cloned());
+        names.sort();
+        names.dedup();
+        let allowed: BTreeSet<String> = names.iter().cloned().collect();
+        let mut fields = BTreeMap::new();
+        let mut optional = BTreeMap::new();
+        for name in names {
+            let optional_field = child
+                .fields
+                .borrow()
+                .get(&name)
+                .is_some_and(|definition| definition.optional);
+            let value = child.eval_field(&name, span)?;
+            if optional_field {
+                optional.insert(name, value);
+            } else {
+                fields.insert(name, value);
+            }
+        }
+        let open = items
+            .iter()
+            .any(|item| matches!(item, StructItem::Ellipsis(_)));
+        Ok(Value::Closed {
+            fields,
+            optional,
+            allowed,
+            open,
+        })
+    }
+
+    fn eval_definition_expr(&self, expr: &Expr, span: Span) -> Result<Value, LangError> {
+        if let Expr::Struct(items, struct_span) = expr {
+            return self.eval_definition_items(items, *struct_span);
+        }
+        let value = eval_expr(expr, self)?;
+        let _ = span;
+        if let Value::Struct(fields) = value {
+            let allowed = fields.keys().cloned().collect();
+            return Ok(Value::Closed {
+                fields,
+                optional: BTreeMap::new(),
+                allowed,
+                open: false,
+            });
+        }
+        Ok(value)
     }
 
     fn params_items(&self, exprs: &[Expr]) -> Option<Vec<StructItem>> {
@@ -742,13 +827,15 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         Expr::Select(base, field, span) => {
             let base = eval_expr(base, frame)?;
             match base {
-                Value::Struct(map) => map.get(field).cloned().ok_or_else(|| {
-                    LangError::eval(
-                        span.line,
-                        span.col,
-                        format!("field `{field}` not found in struct"),
-                    )
-                }),
+                Value::Struct(map) | Value::Closed { fields: map, .. } => {
+                    map.get(field).cloned().ok_or_else(|| {
+                        LangError::eval(
+                            span.line,
+                            span.col,
+                            format!("field `{field}` not found in struct"),
+                        )
+                    })
+                }
                 other => Err(LangError::eval(
                     span.line,
                     span.col,
@@ -776,7 +863,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         LangError::eval(span.line, span.col, "list index out of range")
                     })
                 }
-                (Value::Struct(map), Value::String(key)) => {
+                (Value::Struct(map) | Value::Closed { fields: map, .. }, Value::String(key)) => {
                     map.get(&key).cloned().ok_or_else(|| {
                         LangError::eval(
                             span.line,
@@ -804,6 +891,11 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             Some(element) => Some(Box::new(eval_expr(element, frame)?)),
             None => None,
         })),
+        Expr::ListComp { clauses, body, .. } => {
+            let mut out = Vec::new();
+            eval_list_comp(clauses, 0, body, frame, &mut out)?;
+            Ok(Value::List(out))
+        }
         Expr::OpenListPrefix(prefix, tail, _) => {
             let mut values = Vec::with_capacity(prefix.len());
             for item in prefix {
@@ -875,6 +967,147 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 )),
             }
         }
+    }
+}
+
+fn eval_list_comp(
+    clauses: &[CompClause],
+    index: usize,
+    body: &Expr,
+    frame: &Frame<'_>,
+    out: &mut Vec<Value>,
+) -> Result<(), LangError> {
+    let Some(clause) = clauses.get(index) else {
+        out.push(eval_expr(body, frame)?);
+        return Ok(());
+    };
+    match clause {
+        CompClause::For {
+            key,
+            value,
+            source,
+            span,
+        } => {
+            let source = eval_expr(source, frame)?;
+            let entries: Vec<(Option<Value>, Value)> = match source {
+                Value::Struct(map) | Value::Closed { fields: map, .. } => map
+                    .into_iter()
+                    .map(|(key, value)| (Some(Value::String(key)), value))
+                    .collect(),
+                Value::List(values) => values
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        (
+                            Some(Value::Int(i64::try_from(index).unwrap_or(i64::MAX))),
+                            value,
+                        )
+                    })
+                    .collect(),
+                other => {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!(
+                            "`for ... in` requires a struct or list, found {}",
+                            other.type_name()
+                        ),
+                    ));
+                }
+            };
+            for (entry_key, entry_value) in entries {
+                let mut bindings = HashMap::new();
+                if let Some(key) = key
+                    && let Some(entry_key) = entry_key
+                {
+                    bindings.insert(key.clone(), entry_key);
+                }
+                bindings.insert(value.clone(), entry_value);
+                let child = Frame::new(&[], Some(frame), bindings)?;
+                eval_list_comp(clauses, index + 1, body, &child, out)?;
+            }
+        }
+        CompClause::If { cond, .. } => {
+            if eval_expr(cond, frame)?.truthy() {
+                eval_list_comp(clauses, index + 1, body, frame, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn expr_contains_ident(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(name, _) => !matches!(
+            name.as_str(),
+            "string" | "int" | "float" | "number" | "bool" | "_" | "len"
+        ),
+        Expr::Select(base, _, _) => expr_contains_ident(base),
+        Expr::Index(base, index, _) => expr_contains_ident(base) || expr_contains_ident(index),
+        Expr::Call(callee, arguments, _) => {
+            expr_contains_ident(callee) || arguments.iter().any(expr_contains_ident)
+        }
+        Expr::Struct(items, _) => items.iter().any(item_contains_ident),
+        Expr::List(items, _) => items.iter().any(expr_contains_ident),
+        Expr::OpenList(Some(element), _) => expr_contains_ident(element),
+        Expr::OpenList(None, _) => false,
+        Expr::OpenListPrefix(prefix, tail, _) => {
+            prefix.iter().any(expr_contains_ident)
+                || tail.as_ref().is_some_and(|tail| expr_contains_ident(tail))
+        }
+        Expr::ListComp { clauses, body, .. } => {
+            clauses.iter().any(|clause| match clause {
+                CompClause::For { source, .. } => expr_contains_ident(source),
+                CompClause::If { cond, .. } => expr_contains_ident(cond),
+            }) || expr_contains_ident(body)
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            expr_contains_ident(left) || expr_contains_ident(right)
+        }
+        Expr::Binary(_, left, right, _) => expr_contains_ident(left) || expr_contains_ident(right),
+        Expr::Unary(_, inner, _) | Expr::Default(inner, _) => expr_contains_ident(inner),
+        Expr::Str(parts, _) => parts.iter().any(|part| match part {
+            StrPart::Interp(expr) => expr_contains_ident(expr),
+            StrPart::Text(_) => false,
+        }),
+        Expr::Null(_) | Expr::Bool(_, _) | Expr::Int(_, _) | Expr::Float(_, _) => false,
+    }
+}
+
+fn item_contains_ident(item: &StructItem) -> bool {
+    match item {
+        StructItem::Field(field) => {
+            let label = match &field.label {
+                crate::ast::Label::Dynamic(expr, _) => expr_contains_ident(expr),
+                crate::ast::Label::Name(_, _) => false,
+            };
+            label || expr_contains_ident(&field.value)
+        }
+        StructItem::Let { value, .. } => expr_contains_ident(value),
+        StructItem::For { source, body, .. } => {
+            expr_contains_ident(source) || body.iter().any(item_contains_ident)
+        }
+        StructItem::If { cond, body, .. } => {
+            expr_contains_ident(cond) || body.iter().any(item_contains_ident)
+        }
+        StructItem::Ellipsis(_) => false,
+    }
+}
+
+fn values_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (
+            Value::Struct(a) | Value::Closed { fields: a, .. },
+            Value::Struct(b) | Value::Closed { fields: b, .. },
+        ) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(key, value)| b.get(key).is_some_and(|other| values_equal(value, other)))
+        }
+        (Value::List(a), Value::List(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| values_equal(a, b))
+        }
+        _ => left == right,
     }
 }
 
@@ -1107,7 +1340,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                 Some(Value::List(values)) => {
                     Ok(Value::Int(i64::try_from(values.len()).unwrap_or(i64::MAX)))
                 }
-                Some(Value::Struct(values)) => {
+                Some(Value::Struct(values) | Value::Closed { fields: values, .. }) => {
                     Ok(Value::Int(i64::try_from(values.len()).unwrap_or(i64::MAX)))
                 }
                 Some(Value::String(value)) => {
@@ -1175,8 +1408,8 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a % b)),
             _ => type_error("mod", left, right, span),
         },
-        BinOp::Eq => Ok(Value::Bool(left == right)),
-        BinOp::Ne => Ok(Value::Bool(left != right)),
+        BinOp::Eq => Ok(Value::Bool(values_equal(left, right))),
+        BinOp::Ne => Ok(Value::Bool(!values_equal(left, right))),
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => compare(op, left, right, span),
         BinOp::And | BinOp::Or => Ok(Value::Bool(match op {
             BinOp::And => left.truthy() && right.truthy(),
@@ -1272,6 +1505,121 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     ),
                 ))
             }
+        }
+        (
+            Value::Closed {
+                fields: a,
+                optional: optional_a,
+                allowed: allowed_a,
+                open,
+            },
+            Value::Struct(b),
+        )
+        | (
+            Value::Struct(b),
+            Value::Closed {
+                fields: a,
+                optional: optional_a,
+                allowed: allowed_a,
+                open,
+            },
+        ) => {
+            let mut fields = a.clone();
+            let mut optional = optional_a.clone();
+            for (key, value) in b {
+                if let Some(existing) = fields.get(key).cloned() {
+                    fields.insert(key.clone(), unify_values(&existing, value, span)?);
+                } else if let Some(constraint) = optional.remove(key) {
+                    fields.insert(key.clone(), unify_values(&constraint, value, span)?);
+                } else if *open || allowed_a.contains(key) {
+                    fields.insert(key.clone(), value.clone());
+                } else {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!("field `{key}` is not allowed by the closed definition"),
+                    ));
+                }
+            }
+            Ok(Value::Closed {
+                fields,
+                optional,
+                allowed: allowed_a.clone(),
+                open: *open,
+            })
+        }
+        (
+            Value::Closed {
+                fields: a,
+                optional: optional_a,
+                allowed: allowed_a,
+                open: open_a,
+            },
+            Value::Closed {
+                fields: b,
+                optional: optional_b,
+                allowed: allowed_b,
+                open: open_b,
+            },
+        ) => {
+            for key in a.keys() {
+                if !open_b && !allowed_b.contains(key) {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!("field `{key}` is not allowed by the closed definition"),
+                    ));
+                }
+            }
+            for key in b.keys() {
+                if !open_a && !allowed_a.contains(key) {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!("field `{key}` is not allowed by the closed definition"),
+                    ));
+                }
+            }
+            let mut fields = a.clone();
+            for (key, value) in b {
+                if let Some(existing) = fields.get(key).cloned() {
+                    fields.insert(key.clone(), unify_values(&existing, value, span)?);
+                } else if let Some(constraint) = optional_a.get(key).cloned() {
+                    fields.insert(key.clone(), unify_values(&constraint, value, span)?);
+                } else if *open_a || allowed_a.contains(key) {
+                    fields.insert(key.clone(), value.clone());
+                } else {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!("field `{key}` is not allowed by the closed definition"),
+                    ));
+                }
+            }
+            let mut optional = optional_a.clone();
+            for (key, value) in optional_b {
+                if let Some(existing) = optional.get(key).cloned() {
+                    optional.insert(key.clone(), unify_values(&existing, value, span)?);
+                } else {
+                    optional.insert(key.clone(), value.clone());
+                }
+            }
+            for key in fields.keys() {
+                optional.remove(key);
+            }
+            let open = *open_a || *open_b;
+            let allowed: BTreeSet<String> = if open {
+                allowed_a.union(allowed_b).cloned().collect()
+            } else {
+                allowed_a.intersection(allowed_b).cloned().collect()
+            };
+            optional.retain(|key, _| open || allowed.contains(key));
+            Ok(Value::Closed {
+                fields,
+                optional,
+                allowed,
+                open,
+            })
         }
         (Value::Struct(a), Value::Struct(b)) => {
             let mut out = a.clone();
@@ -1371,7 +1719,7 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             }
             Ok(Value::List(out))
         }
-        (a, b) if a == b => Ok(a.clone()),
+        (a, b) if values_equal(a, b) => Ok(a.clone()),
         (a, b) => Err(LangError::eval(
             span.line,
             span.col,
@@ -1479,6 +1827,9 @@ fn collect_disjunction<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
 fn combine_disjunction(left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
     match (left, right) {
         (Value::Bottom, value) | (value, Value::Bottom) => Ok(value.clone()),
+        (Value::Closed { .. }, Value::Struct(_))
+        | (Value::Struct(_), Value::Closed { .. })
+        | (Value::Closed { .. }, Value::Closed { .. }) => unify_values(left, right, span),
         (Value::Type(a), Value::Type(b)) => unify_types(*a, *b, span),
         (Value::Type(kind), value) | (value, Value::Type(kind)) => {
             if type_matches(*kind, value) {
