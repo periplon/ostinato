@@ -2014,3 +2014,60 @@ l: [for i in [1, 2] {a: i, b: i}]
         serde_json::json!([{"a": 1, "b": 1}, {"a": 2, "b": 2}])
     );
 }
+
+#[test]
+fn list_comprehension_bodies_can_start_with_brackets() {
+    let source = r#"
+package demo
+pairs: [for i in [1, 2] {[i, i]}]
+empty: [for i in [1] {[]}]
+nested: [for i in [1, 2] {[for j in [3] {j + i}]}]
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["pairs"], serde_json::json!([[1, 1], [2, 2]]));
+    assert_eq!(json["empty"], serde_json::json!([[]]));
+    assert_eq!(json["nested"], serde_json::json!([[4], [5]]));
+}
+
+#[test]
+fn list_comprehension_struct_bodies_still_support_patterns() {
+    let source = r#"
+package demo
+all: [for name in ["a", "b"] {[string]: name}]
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(
+        value.to_json().expect("json")["all"],
+        serde_json::json!([{}, {}])
+    );
+}
+
+#[test]
+fn inner_lets_can_shadow_outer_lets_and_aliases() {
+    let outer_let = r#"
+package demo
+let X = 2
+b: {let X = X + 1, c: X}
+d: X
+"#;
+    let file = ostinato_lang::parse(outer_let).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("inner let");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["b"]["c"], 3);
+    assert_eq!(json["d"], 2);
+
+    let outer_alias = r#"
+package demo
+X=a: 2
+b: {let X = X + 1, c: X}
+d: X
+"#;
+    let file = ostinato_lang::parse(outer_alias).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("inner let over alias");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["b"]["c"], 3);
+    assert_eq!(json["d"], 2);
+}

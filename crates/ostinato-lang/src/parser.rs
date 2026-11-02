@@ -443,13 +443,39 @@ impl Parser {
 
     fn starts_struct_item(&self) -> bool {
         match self.peek_tok() {
-            Tok::Let | Tok::For | Tok::If | Tok::Ellipsis | Tok::LBracket => true,
+            Tok::Let | Tok::For | Tok::If | Tok::Ellipsis => true,
+            Tok::LBracket => self.bracket_closes_a_label(),
             Tok::Ident(_) | Tok::Str(_) => matches!(
                 self.tokens.get(self.pos + 1).map(|token| &token.tok),
                 Some(Tok::Colon | Tok::Equals | Tok::Question)
             ),
             _ => false,
         }
+    }
+
+    /// A leading `[` starts a struct item only when the bracket closes a
+    /// pattern/dynamic label followed by `:`; otherwise it starts a list.
+    fn bracket_closes_a_label(&self) -> bool {
+        let mut depth = 0usize;
+        let mut index = self.pos;
+        while let Some(token) = self.tokens.get(index) {
+            match &token.tok {
+                Tok::LBracket => depth += 1,
+                Tok::RBracket => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return matches!(
+                            self.tokens.get(index + 1).map(|token| &token.tok),
+                            Some(Tok::Colon)
+                        );
+                    }
+                }
+                Tok::Eof => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
     }
 
     fn expect_rbrace(&mut self) -> Result<(), LangError> {
