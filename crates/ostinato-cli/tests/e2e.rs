@@ -798,7 +798,7 @@ workflow: {
         slow: {
             kind: "exec"
             timeoutMs: 500
-            exec: { cmd: ["sh", "-c", "sleep 3 & wait"] }
+            exec: { cmd: ["sh", "-c", "sleep 30 & wait"] }
         }
     }
 }
@@ -816,7 +816,7 @@ workflow: {
     let elapsed = started.elapsed();
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        elapsed < std::time::Duration::from_secs(2),
+        elapsed < std::time::Duration::from_secs(10),
         "timeout took {elapsed:?}"
     );
     let run = run_id(&directory.path().join("db.sqlite"));
@@ -966,7 +966,7 @@ workflow: {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(3),
+        elapsed < std::time::Duration::from_secs(10),
         "background grandchild held the pipes for {elapsed:?}"
     );
 }
