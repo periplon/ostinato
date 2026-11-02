@@ -796,3 +796,19 @@ workflow: {name: "x", steps: {s: #D.a}}
             .contains("cannot reference optional field")
     );
 }
+
+#[test]
+fn named_definition_flattens_optional_field_materialization() {
+    let source = r#"
+package demo
+#P: {
+    name?: string
+    greeting: "Hello \(name)"
+}
+#Q: #P & {name: "Alice"}
+params: #Q
+workflow: {name: "\(params.greeting)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile(source).expect("named flattening");
+    assert_eq!(compiled.spec.name, "Hello Alice");
+}
