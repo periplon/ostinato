@@ -136,6 +136,7 @@ unified with `{name: 1}` was accepted). Fixed before the final PR:
 | Optional nested definitions were selectable (`#D.#X`) | Optional definitions are excluded from the selectable definitions map |
 | Optional fields were referenceable by bare name after being cached | Optional values are removed from the cache after constraint collection; bare/selector access reports `cannot reference optional field` |
 | Recursive definition materialization and self-selection inside a definition | Explicitly documented as out of scope in `docs/SCOPE.md`; the non-materialized recursive definition still loads |
+| Required field expressions that depend on optional fields were rejected eagerly | Explicitly documented as out of scope; optional fields must be materialized through a named definition that flattens the unification, or the oracle must be used |
 
 ## Deliberately deferred / residual risks
 
