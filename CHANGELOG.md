@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.3
+
+Closedness/pattern second review corrections.
+
+- Unmaterialized optional pattern conflicts are deferred; materialized ones fail.
+- Multiple matching patterns merge before their result is closed.
+- Referenced definitions keep their closedness through flattened definition
+  expressions (`#Derived: #Base & {...}` rejects extra fields at definition time).
+- Pattern constraints close optional fields promoted from a different
+  definition, in both composition orders.
+- 113 tests (23 CLI E2E, 1 conformance, 79 language, 6 domain, 3 store, 1 unit).
+
 ## v0.3.2
 
 Closedness/pattern review corrections.

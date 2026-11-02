@@ -1,4 +1,4 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.DAPibNrhxu/db.sqlite --evaluator cue --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue validate examples/module/complex.cue -p prefix=prod
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.7rBQz3QGjM/db.sqlite --evaluator cue --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue validate examples/module/complex.cue -p prefix=prod
 
 OK complex (3 steps, maxParallel=3, evaluator=official CUE (cue version v0.17.1))
 

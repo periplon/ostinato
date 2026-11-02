@@ -1,4 +1,4 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.DAPibNrhxu/db.sqlite metrics --run f17944fa-998c-4ba0-87bb-3e55540e0868 --format prometheus
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.7rBQz3QGjM/db.sqlite metrics --run abe590da-64ec-406c-8e2a-99fc51a16b1c --format prometheus
 
 # HELP ostinato_runs_total Runs started.
 # TYPE ostinato_runs_total counter
@@ -10,6 +10,6 @@ ostinato_steps_total 3
 ostinato_steps_failed_total 0
 ostinato_attempts_total 7
 ostinato_retries_total 0
-ostinato_attempt_duration_ms_avg 11.57
+ostinato_attempt_duration_ms_avg 11.86
 
 exit=0

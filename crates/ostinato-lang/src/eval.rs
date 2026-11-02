@@ -771,7 +771,23 @@ impl<'a> Frame<'a> {
                 }
             };
             self.evaluating.borrow_mut().remove(name);
-            let result = result?;
+            let mut result = result?;
+            let mut references = Vec::new();
+            for expr in &exprs {
+                collect_definition_references(expr, &mut references);
+            }
+            for reference in references {
+                if reference == name {
+                    continue;
+                }
+                match self.eval_field(&reference, span) {
+                    Ok(value) => {
+                        result = unify_values(&result, &value, span)?;
+                    }
+                    Err(err) if err.to_string().contains("cannot reference optional field") => {}
+                    Err(err) => return Err(err),
+                }
+            }
             self.values
                 .borrow_mut()
                 .insert(name.to_owned(), result.clone());
@@ -877,7 +893,7 @@ impl<'a> Frame<'a> {
             patterns.push((pattern.clone(), eval_expr(expr, &child)?));
         }
         apply_patterns(&patterns, &mut fields, span)?;
-        apply_patterns(&patterns, &mut optional, span)?;
+        apply_optional_patterns(&patterns, &mut optional, span);
         let open = items
             .iter()
             .any(|item| matches!(item, StructItem::Ellipsis(_)));
@@ -1419,6 +1435,20 @@ fn merge_generated_optional(
     Ok(())
 }
 
+fn collect_definition_references(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::Ident(name, _) if name.starts_with('#') => out.push(name.clone()),
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            collect_definition_references(left, out);
+            collect_definition_references(right, out);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+            collect_definition_references(inner, out);
+        }
+        _ => {}
+    }
+}
+
 fn close_nested(value: &Value) -> Value {
     match value {
         Value::Struct(fields) => {
@@ -1562,15 +1592,20 @@ fn pattern_constraint_closed(
     value: &Value,
     span: Span,
 ) -> Result<Option<Value>, LangError> {
-    let mut matched = false;
-    let mut result = value.clone();
+    let mut matching = Vec::new();
     for (pattern, constraint) in patterns {
         if pattern_matches(pattern, key, span)? {
-            matched = true;
-            result = unify_values(&result, &close_nested(constraint), span)?;
+            matching.push(constraint.clone());
         }
     }
-    Ok(matched.then_some(result))
+    let Some(first) = matching.first().cloned() else {
+        return Ok(None);
+    };
+    let mut merged = first;
+    for constraint in matching.iter().skip(1) {
+        merged = unify_values(&merged, constraint, span)?;
+    }
+    Ok(Some(unify_values(value, &close_nested(&merged), span)?))
 }
 
 fn apply_patterns(
@@ -1584,6 +1619,23 @@ fn apply_patterns(
         }
     }
     Ok(())
+}
+
+fn apply_optional_patterns(
+    patterns: &[(Pattern, Value)],
+    optional: &mut BTreeMap<String, Value>,
+    span: Span,
+) {
+    for (key, value) in optional.iter_mut() {
+        if matches!(value, Value::Conflict(_)) {
+            continue;
+        }
+        match pattern_constraint(patterns, key, value, span) {
+            Ok(Some(constrained)) => *value = constrained,
+            Ok(None) => {}
+            Err(err) => *value = Value::Conflict(err.to_string()),
+        }
+    }
 }
 
 fn values_equal(left: &Value, right: &Value) -> bool {
@@ -2087,6 +2139,8 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 admissions: admissions_b,
             },
         ) => {
+            let optional_a_keys: BTreeSet<String> = optional_a.keys().cloned().collect();
+            let optional_b_keys: BTreeSet<String> = optional_b.keys().cloned().collect();
             let mut fields = a.clone();
             let mut optional = optional_a.clone();
             for (key, value) in b {
@@ -2132,6 +2186,25 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 } else {
                     optional.insert(key.clone(), value.clone());
                 }
+            }
+            for (key, value) in optional.iter_mut() {
+                let mut current = value.clone();
+                let mut conflict = None;
+                if !optional_a_keys.contains(key) {
+                    match pattern_constraint_closed(patterns_a, key, &current, span) {
+                        Ok(Some(constrained)) => current = constrained,
+                        Ok(None) => {}
+                        Err(err) => conflict = Some(err),
+                    }
+                }
+                if conflict.is_none() && !optional_b_keys.contains(key) {
+                    match pattern_constraint_closed(patterns_b, key, &current, span) {
+                        Ok(Some(constrained)) => current = constrained,
+                        Ok(None) => {}
+                        Err(err) => conflict = Some(err),
+                    }
+                }
+                *value = conflict.map_or(current, |err| Value::Conflict(err.to_string()));
             }
             let mut definitions = definitions_a.clone();
             for (key, value) in definitions_b {

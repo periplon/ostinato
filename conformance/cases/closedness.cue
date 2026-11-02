@@ -35,7 +35,13 @@ kind: #Kind & {a: 1}
 #OptionalPattern: {[string]: {a: int}, k?: {b: 2}}
 optionalPattern: #OptionalPattern & {k: {b: 2}}
 
+#Multi: {[string]: {a: int}, [=~"^k"]: {b: int}}
+multi: #Multi & {k: {a: 1, b: 2}}
+
+#Deferred: {[string]: string, k?: 1}
+deferred: #Deferred
+
 workflow: {
-	name: "\(closed.name)-\(open.extra)-\(pattern.x2)-\(all.b)-\(nested.inner.b)-\(composed.inner.b)-\(ref.inner.b)-\(both.a)-\(map.alice.name)-\(seq[0].name)-\(kind.a)-\(optionalPattern.k.b)"
+	name: "\(closed.name)-\(open.extra)-\(pattern.x2)-\(all.b)-\(nested.inner.b)-\(composed.inner.b)-\(ref.inner.b)-\(both.a)-\(map.alice.name)-\(seq[0].name)-\(kind.a)-\(optionalPattern.k.b)-\(multi.k.b)-\(len(deferred))"
 	steps: {s: {kind: "noop"}}
 }

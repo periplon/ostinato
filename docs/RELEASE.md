@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.3.3
+
+- Closedness/pattern second review fixes: deferred optional conflicts, merged
+  multi-pattern constraints, referenced-definition closedness, and closed
+  promotion of optional fields.
+- 113 tests (23 CLI E2E, 1 conformance, 79 language, 6 domain, 3 store, 1 unit).
+
 ## v0.3.2
 
 - Closedness/pattern review fixes: closed pattern values for external fields,
