@@ -19,7 +19,7 @@ workflow outside the Rust surface has a supported escape hatch.
 - `for`/`if` struct comprehensions, clause sequences (`for ... if ...`,
   nested `for`), dynamic labels, list comprehensions;
 - nested field shorthand, definitions/unification (**definitions are open**), defaults,
-  optional fields, type constraints;
+  disjunctions with defaults and narrowing, optional fields, type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - string interpolation, including nested quoted expressions;
 - `strings`, `list` and global `len` builtins with CUE/Go-compatible behaviour;
@@ -35,8 +35,8 @@ workflow outside the Rust surface has a supported escape hatch.
 | Closedness / closed structs | Definitions are treated as open structs; no allowed-field enforcement. Optional-field constraints are still unified when a field is materialized |
 | Nested closedness enforcement | N/A; closedness is out of scope |
 | Optional/open metadata on non-definition struct literals | `base: {b?: int}; #D: base` and `{b?: string} & {b: 1}` are out of scope; use a definition literal or the oracle |
-| Full disjunction lattice and `&` over disjunctions | A constraint solver, not a workflow language feature |
-| Multiple defaults / default-set semantics | Workflow parameters use one default; official oracle for the rest |
+| Full disjunction lattice over bounds/patterns | Alternatives, defaults, narrowing and disjunction intersection are implemented; bounds and pattern interactions are not |
+| Default sets over bounds/patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through bounds/patterns is out of scope |
 | Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |
 | Recursive definition materialization (`#Tree: {children?: [...#Tree]}`) | Definitions are evaluated eagerly; self-referential constraints are not solved. Use `--evaluator cue` for recursive types |
 | Required fields that depend on optional fields (`#P: {name?: string, greeting: "Hello \\(name)"}`) | Definitions are evaluated eagerly; required-field expressions are not deferred until the optional field is materialized. Use a named definition that flattens the materialization (`#Q: #P & {name: "Alice"}`; `params: #Q`) or the oracle |

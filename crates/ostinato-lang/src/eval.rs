@@ -16,6 +16,8 @@ pub enum Value {
     String(String),
     List(Vec<Value>),
     Struct(BTreeMap<String, Value>),
+    /// A disjunction with optional default alternatives (indices).
+    Disjunction(Vec<Value>, Vec<usize>),
     /// A CUE definition: fields plus optional-field constraints. Open.
     Definition {
         fields: BTreeMap<String, Value>,
@@ -70,6 +72,7 @@ impl Value {
             Self::String(_) => "string",
             Self::List(_) => "list",
             Self::Struct(_) | Self::Definition { .. } => "struct",
+            Self::Disjunction(_, _) => "disjunction",
             Self::OpenList(_) | Self::OpenListPrefix(_, _) => "list",
             Self::Builtin(_) => "builtin",
             Self::Type(kind) => match kind {
@@ -83,9 +86,32 @@ impl Value {
         }
     }
 
+    /// Select a single concrete alternative when a disjunction has one
+    /// surviving value or exactly one default.
+    #[must_use]
+    pub fn concretize(&self) -> &Value {
+        match self {
+            Self::Disjunction(alternatives, defaults) => {
+                if alternatives.len() == 1 {
+                    return alternatives[0].concretize();
+                }
+                if defaults.len() == 1
+                    && let Some(alternative) = alternatives.get(defaults[0])
+                {
+                    return alternative.concretize();
+                }
+                self
+            }
+            _ => self,
+        }
+    }
+
     #[must_use]
     pub fn is_concrete(&self) -> bool {
-        !matches!(self, Self::Type(_) | Self::Bottom | Self::Conflict(_))
+        match self {
+            Self::Disjunction(_, _) => self.to_json().is_some(),
+            _ => !matches!(self, Self::Type(_) | Self::Bottom | Self::Conflict(_)),
+        }
     }
 
     /// Convert to JSON, returning `None` for incomplete values.
@@ -110,6 +136,9 @@ impl Value {
                     out.insert(key.clone(), value.to_json()?);
                 }
                 Some(Json::Object(out))
+            }
+            Self::Disjunction(alternatives, defaults) => {
+                disjunction_to_json(alternatives, defaults)
             }
             Self::OpenList(_)
             | Self::OpenListPrefix(_, _)
@@ -137,6 +166,16 @@ impl Value {
             Self::String(value) => !value.is_empty(),
             Self::List(values) => !values.is_empty(),
             Self::Struct(values) | Self::Definition { fields: values, .. } => !values.is_empty(),
+            Self::Disjunction(alternatives, defaults) => {
+                disjunction_to_json(alternatives, defaults).is_some_and(|json| match json {
+                    Json::Null => false,
+                    Json::Bool(value) => value,
+                    Json::Number(number) => number.as_f64().is_some_and(|value| value != 0.0),
+                    Json::String(value) => !value.is_empty(),
+                    Json::Array(values) => !values.is_empty(),
+                    Json::Object(values) => !values.is_empty(),
+                })
+            }
             Self::OpenList(_) | Self::OpenListPrefix(_, _) => true,
             Self::Builtin(_) | Self::Type(_) | Self::Bottom | Self::Conflict(_) => false,
         }
@@ -159,6 +198,14 @@ impl Value {
             }
             .to_owned(),
             Self::Builtin(_) => "<function>".to_owned(),
+            Self::Disjunction(alternatives, defaults) => {
+                let mut parts = Vec::with_capacity(alternatives.len());
+                for (index, alternative) in alternatives.iter().enumerate() {
+                    let prefix = if defaults.contains(&index) { "*" } else { "" };
+                    parts.push(format!("{prefix}{}", alternative.display()));
+                }
+                parts.join(" | ")
+            }
             Self::Bottom => "_".to_owned(),
             Self::Conflict(message) => format!("<conflict: {message}>"),
             Self::OpenList(_) => format!(
@@ -1001,7 +1048,18 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             for part in parts {
                 match part {
                     StrPart::Text(text) => out.push_str(text),
-                    StrPart::Interp(expr) => out.push_str(&eval_expr(expr, frame)?.display()),
+                    StrPart::Interp(expr) => {
+                        let value = eval_expr(expr, frame)?;
+                        let concrete = value.concretize();
+                        if concrete.to_json().is_none() {
+                            return Err(LangError::eval(
+                                1,
+                                1,
+                                "non-concrete value in string interpolation",
+                            ));
+                        }
+                        out.push_str(&concrete.display());
+                    }
                 }
             }
             Ok(Value::String(out))
@@ -1054,7 +1112,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             let callee = eval_expr(callee, frame)?;
             let mut values = Vec::with_capacity(arguments.len());
             for argument in arguments {
-                values.push(eval_expr(argument, frame)?);
+                values.push(eval_expr(argument, frame)?.concretize().clone());
             }
             apply_builtin(&callee, &values, *span)
         }
@@ -1121,23 +1179,22 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             unify_values(&left, &right, *span)
         }
         Expr::Disjunction(_, _, span) => {
+            let mut ast_alternatives = Vec::new();
+            collect_disjunction(expr, &mut ast_alternatives);
             let mut alternatives = Vec::new();
-            collect_disjunction(expr, &mut alternatives);
-            if let Some(Expr::Default(inner, _)) = alternatives
-                .iter()
-                .find(|alternative| matches!(alternative, Expr::Default(_, _)))
-            {
-                return eval_expr(inner, frame);
+            let mut defaults = Vec::new();
+            for alternative in ast_alternatives {
+                let (inner, is_default) = match alternative {
+                    Expr::Default(inner, _) => (&**inner, true),
+                    other => (other, false),
+                };
+                let value = eval_expr(inner, frame)?;
+                push_disjunction_alternative(&mut alternatives, &mut defaults, value, is_default)?;
             }
-            let mut result: Option<Value> = None;
-            for alternative in alternatives {
-                let value = eval_expr(alternative, frame)?;
-                result = Some(match result {
-                    None => value,
-                    Some(current) => combine_disjunction(&current, &value, *span)?,
-                });
+            if alternatives.is_empty() {
+                return Err(LangError::eval(span.line, span.col, "empty disjunction"));
             }
-            result.ok_or_else(|| LangError::eval(span.line, span.col, "empty disjunction"))
+            Ok(Value::Disjunction(alternatives, defaults))
         }
         Expr::Default(inner, _) => eval_expr(inner, frame),
         Expr::Binary(op, left, right, span) => {
@@ -1155,12 +1212,12 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 }
                 return Ok(Value::Bool(eval_expr(right, frame)?.truthy()));
             }
-            let left = eval_expr(left, frame)?;
-            let right = eval_expr(right, frame)?;
+            let left = eval_expr(left, frame)?.concretize().clone();
+            let right = eval_expr(right, frame)?.concretize().clone();
             binary(op, &left, &right, *span)
         }
         Expr::Unary(op, inner, span) => {
-            let value = eval_expr(inner, frame)?;
+            let value = eval_expr(inner, frame)?.concretize().clone();
             match (op, value) {
                 (UnOp::Not, value) => Ok(Value::Bool(!value.truthy())),
                 (UnOp::Neg, Value::Int(value)) => value
@@ -1273,6 +1330,12 @@ fn values_equal(left: &Value, right: &Value) -> bool {
         }
         (Value::List(a), Value::List(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| values_equal(a, b))
+        }
+        (Value::Disjunction(_, _), _) | (_, Value::Disjunction(_, _)) => {
+            match (left.to_json(), right.to_json()) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            }
         }
         (Value::Conflict(_), _) | (_, Value::Conflict(_)) => false,
         _ => left == right,
@@ -1661,6 +1724,12 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             Err(LangError::eval(span.line, span.col, message.clone()))
         }
         (Value::Bottom, value) | (value, Value::Bottom) => Ok(value.clone()),
+        (Value::Disjunction(a, da), Value::Disjunction(b, db)) => {
+            unify_disjunctions(a, da, b, db, span)
+        }
+        (Value::Disjunction(a, da), other) | (other, Value::Disjunction(a, da)) => {
+            unify_disjunction_with(a, da, other, span)
+        }
         (Value::Type(a), Value::Type(b)) => unify_types(*a, *b, span),
         (Value::Type(kind), value) | (value, Value::Type(kind)) => {
             if type_matches(*kind, value) {
@@ -1763,6 +1832,42 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 optional,
                 definitions,
             })
+        }
+        (Value::Null, Value::Null) => Ok(Value::Null),
+        (Value::Bool(a), Value::Bool(b)) => {
+            if a == b {
+                Ok(Value::Bool(*a))
+            } else {
+                Err(conflict(span))
+            }
+        }
+        (Value::Int(a), Value::Int(b)) => {
+            if a == b {
+                Ok(Value::Int(*a))
+            } else {
+                Err(conflict(span))
+            }
+        }
+        (Value::Float(a), Value::Float(b)) => {
+            if (a - b).abs() <= f64::EPSILON {
+                Ok(Value::Float(*a))
+            } else {
+                Err(conflict(span))
+            }
+        }
+        (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
+            if (*a as f64 - b).abs() <= f64::EPSILON {
+                Ok(Value::Float(*b))
+            } else {
+                Err(conflict(span))
+            }
+        }
+        (Value::String(a), Value::String(b)) => {
+            if a == b {
+                Ok(Value::String(a.clone()))
+            } else {
+                Err(conflict(span))
+            }
         }
         (Value::Struct(a), Value::Struct(b)) => {
             let mut out = a.clone();
@@ -1919,43 +2024,8 @@ fn eval_with_override(
     override_value: &Value,
     span: Span,
 ) -> Result<Value, LangError> {
-    let mut alternatives = Vec::new();
-    collect_disjunction(expr, &mut alternatives);
-    if alternatives.len() == 1 {
-        let declared = eval_expr(expr, frame)?;
-        return unify_values(&declared, override_value, span);
-    }
-    // Prefer non-default alternatives so an explicit override can select a
-    // branch that differs from the default.
-    let mut ordered: Vec<&Expr> = alternatives
-        .iter()
-        .copied()
-        .filter(|alternative| !matches!(alternative, Expr::Default(_, _)))
-        .collect();
-    ordered.extend(
-        alternatives
-            .iter()
-            .copied()
-            .filter(|alternative| matches!(alternative, Expr::Default(_, _))),
-    );
-    let mut last_error = None;
-    for alternative in ordered {
-        let candidate = match alternative {
-            Expr::Default(inner, _) => eval_expr(inner, frame),
-            other => eval_expr(other, frame),
-        };
-        match candidate.and_then(|candidate| unify_values(&candidate, override_value, span)) {
-            Ok(value) => return Ok(value),
-            Err(err) => last_error = Some(err),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| {
-        LangError::eval(
-            span.line,
-            span.col,
-            "no parameter alternative matched the override",
-        )
-    }))
+    let declared = eval_expr(expr, frame)?;
+    unify_values(&declared, override_value, span)
 }
 
 fn collect_disjunction<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
@@ -1967,33 +2037,110 @@ fn collect_disjunction<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
-fn combine_disjunction(left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
-    match (left, right) {
-        (Value::Conflict(message), _) | (_, Value::Conflict(message)) => {
-            Err(LangError::eval(span.line, span.col, message.clone()))
-        }
-        (Value::Bottom, value) | (value, Value::Bottom) => Ok(value.clone()),
-        (Value::Definition { .. }, Value::Definition { .. })
-        | (Value::Definition { .. }, Value::Struct(_))
-        | (Value::Struct(_), Value::Definition { .. }) => unify_values(left, right, span),
-        (Value::Type(a), Value::Type(b)) => unify_types(*a, *b, span),
-        (Value::Type(kind), value) | (value, Value::Type(kind)) => {
-            if type_matches(*kind, value) {
-                Ok(value.clone())
-            } else {
-                Err(LangError::eval(
-                    span.line,
-                    span.col,
-                    format!("disjunction has no value satisfying {}", kind_name(*kind)),
-                ))
+fn conflict(span: Span) -> LangError {
+    LangError::eval(span.line, span.col, "conflicting values")
+}
+
+fn push_disjunction_alternative(
+    alternatives: &mut Vec<Value>,
+    defaults: &mut Vec<usize>,
+    value: Value,
+    is_default: bool,
+) -> Result<(), LangError> {
+    match value {
+        Value::Bottom => Ok(()),
+        Value::Disjunction(inner, inner_defaults) => {
+            for (index, alternative) in inner.into_iter().enumerate() {
+                let index_default = is_default || inner_defaults.contains(&index);
+                push_disjunction_alternative(alternatives, defaults, alternative, index_default)?;
             }
+            Ok(())
         }
-        (a, b) if a == b => Ok(a.clone()),
-        _ => Err(LangError::eval(
+        other => {
+            if let Some(index) = alternatives
+                .iter()
+                .position(|existing| values_equal(existing, &other))
+            {
+                if is_default && !defaults.contains(&index) {
+                    defaults.push(index);
+                }
+                return Ok(());
+            }
+            let index = alternatives.len();
+            alternatives.push(other);
+            if is_default {
+                defaults.push(index);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn disjunction_to_json(alternatives: &[Value], defaults: &[usize]) -> Option<Json> {
+    if alternatives.len() == 1 {
+        return alternatives[0].to_json();
+    }
+    if defaults.len() == 1 {
+        return alternatives.get(defaults[0])?.to_json();
+    }
+    None
+}
+
+fn unify_disjunction_with(
+    alternatives: &[Value],
+    defaults: &[usize],
+    other: &Value,
+    span: Span,
+) -> Result<Value, LangError> {
+    let mut out = Vec::new();
+    let mut out_defaults = Vec::new();
+    for (index, alternative) in alternatives.iter().enumerate() {
+        if let Ok(value) = unify_values(alternative, other, span) {
+            push_disjunction_alternative(
+                &mut out,
+                &mut out_defaults,
+                value,
+                defaults.contains(&index),
+            )?;
+        }
+    }
+    match out.len() {
+        0 => Err(LangError::eval(
             span.line,
             span.col,
-            "disjunction is not concrete; add a default with `*`",
+            "disjunction has no value satisfying the constraint",
         )),
+        1 => Ok(out.remove(0)),
+        _ => Ok(Value::Disjunction(out, out_defaults)),
+    }
+}
+
+fn unify_disjunctions(
+    left: &[Value],
+    left_defaults: &[usize],
+    right: &[Value],
+    right_defaults: &[usize],
+    span: Span,
+) -> Result<Value, LangError> {
+    let mut out = Vec::new();
+    let mut out_defaults = Vec::new();
+    for (left_index, left_value) in left.iter().enumerate() {
+        for (right_index, right_value) in right.iter().enumerate() {
+            if let Ok(value) = unify_values(left_value, right_value, span) {
+                let is_default =
+                    left_defaults.contains(&left_index) || right_defaults.contains(&right_index);
+                push_disjunction_alternative(&mut out, &mut out_defaults, value, is_default)?;
+            }
+        }
+    }
+    match out.len() {
+        0 => Err(LangError::eval(
+            span.line,
+            span.col,
+            "disjunction has no value satisfying the other disjunction",
+        )),
+        1 => Ok(out.remove(0)),
+        _ => Ok(Value::Disjunction(out, out_defaults)),
     }
 }
 

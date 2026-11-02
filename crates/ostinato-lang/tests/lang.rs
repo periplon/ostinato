@@ -920,3 +920,128 @@ workflow: #W
 "#;
     assert!(ostinato_lang::compile(source).is_err());
 }
+
+#[test]
+fn disjunction_defaults_narrow_and_export() {
+    let source = r#"
+package demo
+a: *1 | 2
+a: 2
+b: int | *3
+b: 4
+c: (*"x" | "y") & ("x" | "y")
+d: *1 | 2
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 2);
+    assert_eq!(json["b"], 4);
+    assert_eq!(json["c"], "x");
+    assert_eq!(json["d"], 1);
+}
+
+#[test]
+fn unresolved_and_ambiguous_disjunctions_are_not_concrete() {
+    let unresolved = r#"
+package demo
+a: 1 | 2
+"#;
+    let file = ostinato_lang::parse(unresolved).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert!(value.to_json().is_none());
+
+    let ambiguous = r#"
+package demo
+a: *1 | *2
+"#;
+    let file = ostinato_lang::parse(ambiguous).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert!(value.to_json().is_none());
+}
+
+#[test]
+fn scalar_unification_is_symmetric_and_strict() {
+    let ok = r#"
+package demo
+a: 1 & 1
+b: 1.5 & 1.5
+c: "x" & "x"
+d: true & true
+"#;
+    let file = ostinato_lang::parse(ok).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["a"], 1);
+
+    for expression in ["1 & 2", "1.5 & 2.5", "\"x\" & \"y\"", "true & false"] {
+        let source = format!("package demo\na: {expression}\n");
+        let file = ostinato_lang::parse(&source).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "expected conflict for {expression}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_disjunction_defaults_collapse() {
+    let source = r#"
+package demo
+a: *1 | *1
+b: 1 | 1
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 1);
+    assert_eq!(json["b"], 1);
+}
+
+#[test]
+fn interpolation_rejects_incomplete_disjunctions() {
+    let source = r#"
+package demo
+a: "x-\(1 | 2)"
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("incomplete interpolation");
+    assert!(error.to_string().contains("non-concrete value"));
+}
+
+#[test]
+fn arithmetic_uses_a_disjunction_default() {
+    let source = r#"
+package demo
+a: (*1 | 2) + 1
+b: -(*3 | 4)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 2);
+    assert_eq!(json["b"], -3);
+}
+
+#[test]
+fn disjunction_intersection_and_narrowing_match_cue() {
+    let source = r#"
+package demo
+a: (*1 | 2) & 2
+b: (int | *1) & 3
+c: (*1 | 2) & (*2 | 3)
+d: (*1 | 2) & (*1 | 3)
+e: (int | string) & 1
+f: (*1 | 2) & number
+g: (number | *1) & 2.5
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 2);
+    assert_eq!(json["b"], 3);
+    assert_eq!(json["c"], 2);
+    assert_eq!(json["d"], 1);
+    assert_eq!(json["e"], 1);
+    assert_eq!(json["f"], 1);
+    assert_eq!(json["g"], 2.5);
+}
