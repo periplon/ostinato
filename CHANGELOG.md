@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.0
+
+CUE field aliases.
+
+- `X=field: value` binds `X` to the field value in the enclosing struct.
+- Aliases work in definitions, nested structs, dynamic labels, and split
+  packages (file-scoped aliases are renamed before package merging).
+- Alias references are lazy; aliases to optional fields and alias/field name
+  conflicts are rejected.
+- 124 tests (23 CLI E2E, 1 conformance, 90 language, 6 domain, 3 store, 1 unit).
+
 ## v0.3.6
 
 Closedness/pattern fourth review correction.

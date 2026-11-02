@@ -49,6 +49,7 @@ pub struct Field {
     pub value: Expr,
     pub optional: bool,
     pub definition: bool,
+    pub alias: Option<String>,
     pub span: Span,
 }
 

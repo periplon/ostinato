@@ -20,8 +20,16 @@ pub fn rename_file_locals(file: &mut File, file_index: usize) {
         );
     }
     for item in &file.items {
-        if let StructItem::Let { name, .. } = item {
-            locals.insert(name.clone(), format!("{prefix}let_{name}"));
+        match item {
+            StructItem::Let { name, .. } => {
+                locals.insert(name.clone(), format!("{prefix}let_{name}"));
+            }
+            StructItem::Field(field) => {
+                if let Some(alias) = &field.alias {
+                    locals.insert(alias.clone(), format!("{prefix}alias_{alias}"));
+                }
+            }
+            _ => {}
         }
     }
     if locals.is_empty() {
@@ -44,6 +52,11 @@ fn rename_items(
     for item in items {
         match item {
             StructItem::Field(field) => {
+                if let Some(alias) = &mut field.alias
+                    && let Some(renamed) = locals.get(alias)
+                {
+                    alias.clone_from(renamed);
+                }
                 if let Label::Dynamic(expr, _) = &mut field.label {
                     rename_expr(expr, locals, shadowed);
                 }

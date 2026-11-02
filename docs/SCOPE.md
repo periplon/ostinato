@@ -19,7 +19,8 @@ workflow outside the Rust surface has a supported escape hatch.
 - `for`/`if` struct comprehensions, clause sequences (`for ... if ...`,
   nested `for`), dynamic labels, list comprehensions;
 - nested field shorthand, **closed definitions by default**, `...` open,
-  nested closedness, `[string]` / `[=~"regex"]` patterns, unification,
+  nested closedness, `[string]` / `[=~"regex"]` patterns, field aliases
+  (`X=field: value`), unification,
   defaults, disjunctions with defaults and narrowing, optional fields,
   type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
@@ -42,7 +43,6 @@ workflow outside the Rust surface has a supported escape hatch.
 | Self-selection inside a definition (`#D: {a: #D.b, b: 1}`) | Resolving a definition's own selector against its in-progress body is not implemented. Use the oracle |
 | Tool packages (`tool/...`) and `cue` commands | Ostinato has its own execution engine |
 | Bytes, regexp/math/time builtins beyond `strings`/`list`/`len` | Not used by workflow declarations |
-| CUE aliases (`X=field: value`) | Not implemented; the workflow language uses named fields and `let` |
 | Arbitrary CUE packages with package-level patterns | Oracle territory |
 
 ## What this means
