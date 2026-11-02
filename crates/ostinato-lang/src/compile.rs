@@ -269,7 +269,7 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
         }
     };
 
-    let needs = match map.get("needs") {
+    let needs = match map.get("needs").map(Value::concretize) {
         None => Vec::new(),
         Some(Value::String(need)) => vec![need.clone()],
         Some(Value::List(list)) => {
@@ -298,15 +298,15 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
     let continue_on_error =
         opt_bool(map, "continueOnError", &format!("{path}.continueOnError"))?.unwrap_or(false);
 
-    let exec = match map.get("exec") {
+    let exec = match map.get("exec").map(Value::concretize) {
         Some(value) => Some(extract_exec(value, &format!("{path}.exec"))?),
         None => None,
     };
-    let agent = match map.get("agent") {
+    let agent = match map.get("agent").map(Value::concretize) {
         Some(value) => Some(extract_agent(value, &format!("{path}.agent"))?),
         None => None,
     };
-    let improve = match map.get("improve") {
+    let improve = match map.get("improve").map(Value::concretize) {
         Some(value) => Some(extract_improve(value, &format!("{path}.improve"))?),
         None => None,
     };
@@ -360,7 +360,7 @@ fn extract_retry(value: Option<&Value>, path: &str) -> Result<RetryPolicy, LangE
     let Some(value) = value else {
         return Ok(RetryPolicy::default());
     };
-    if let Value::Int(max_retries) = value {
+    if let Value::Int(max_retries) = value.concretize() {
         let max_retries = u32::try_from(*max_retries)
             .map_err(|_| LangError::Workflow(format!("{path} must be non-negative")))?;
         if max_retries > 100 {
@@ -447,7 +447,7 @@ fn extract_exec(value: &Value, path: &str) -> Result<ExecSpec, LangError> {
                 .map_err(|_| LangError::Workflow(format!("{path}.timeoutMs must be non-negative")))
         })
         .transpose()?;
-    let env = match map.get("env") {
+    let env = match map.get("env").map(Value::concretize) {
         None => BTreeMap::new(),
         Some(value) => {
             let env_map = expect_struct(value, &format!("{path}.env"))?;
@@ -473,7 +473,7 @@ fn extract_agent(value: &Value, path: &str) -> Result<AgentSpec, LangError> {
         .ok_or_else(|| LangError::Workflow(format!("{path}.prompt is required")))?;
     let system = opt_string(map, "system", &format!("{path}.system"))?;
     let model = opt_string(map, "model", &format!("{path}.model"))?;
-    let command = match map.get("command") {
+    let command = match map.get("command").map(Value::concretize) {
         None => None,
         Some(Value::List(list)) => {
             let mut command = Vec::with_capacity(list.len());
@@ -556,6 +556,10 @@ fn dummy_value(value: &Value) -> Json {
         ),
         Value::Type(TypeKind::String) => Json::String(String::new()),
         Value::Type(TypeKind::Bool) => Json::Bool(false),
+        Value::Disjunction(alternatives, defaults) => {
+            let index = defaults.first().copied().unwrap_or(0);
+            alternatives.get(index).map_or(Json::Null, dummy_value)
+        }
         Value::Null | Value::Bottom | Value::Builtin(_) | Value::Conflict(_) => Json::Null,
     }
 }
@@ -585,7 +589,7 @@ fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangErr
 }
 
 fn expect_struct<'a>(value: &'a Value, path: &str) -> Result<&'a Struct, LangError> {
-    match value {
+    match value.concretize() {
         Value::Struct(map) | Value::Definition { fields: map, .. } => Ok(map),
         other => Err(LangError::Workflow(format!(
             "{path} must be a struct, found {}",
@@ -595,7 +599,7 @@ fn expect_struct<'a>(value: &'a Value, path: &str) -> Result<&'a Struct, LangErr
 }
 
 fn as_string(value: &Value, path: &str) -> Result<String, LangError> {
-    match value {
+    match value.concretize() {
         Value::String(text) => Ok(text.clone()),
         other => Err(LangError::Workflow(format!(
             "{path} must be a string, found {}",
@@ -612,7 +616,7 @@ fn opt_string(map: &Struct, key: &str, path: &str) -> Result<Option<String>, Lan
 }
 
 fn opt_int(map: &Struct, key: &str, path: &str) -> Result<Option<i64>, LangError> {
-    match map.get(key) {
+    match map.get(key).map(Value::concretize) {
         None => Ok(None),
         Some(Value::Int(value)) => Ok(Some(*value)),
         Some(other) => Err(LangError::Workflow(format!(
@@ -623,7 +627,7 @@ fn opt_int(map: &Struct, key: &str, path: &str) -> Result<Option<i64>, LangError
 }
 
 fn opt_float(map: &Struct, key: &str, path: &str) -> Result<Option<f64>, LangError> {
-    match map.get(key) {
+    match map.get(key).map(Value::concretize) {
         None => Ok(None),
         Some(Value::Float(value)) => Ok(Some(*value)),
         Some(Value::Int(value)) => Ok(Some(*value as f64)),
@@ -635,7 +639,7 @@ fn opt_float(map: &Struct, key: &str, path: &str) -> Result<Option<f64>, LangErr
 }
 
 fn opt_bool(map: &Struct, key: &str, path: &str) -> Result<Option<bool>, LangError> {
-    match map.get(key) {
+    match map.get(key).map(Value::concretize) {
         None => Ok(None),
         Some(Value::Bool(value)) => Ok(Some(*value)),
         Some(other) => Err(LangError::Workflow(format!(

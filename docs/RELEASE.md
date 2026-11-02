@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.2.3
+
+- Disjunction lattice phase: alternative sets, defaults/narrowing,
+  disjunction intersection and scalar unification.
+- 89 tests (23 CLI E2E, 1 conformance, 55 language, 6 domain, 3 store, 1 unit).
+- CI gate unchanged: `fmt / clippy / test` and `dependency audit`.
+
 ## v0.2.2
 
 - Code merge: `165a6c6` (PR [#20](https://github.com/periplon/ostinato/pull/20))

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.3
+
+Disjunction lattice phase.
+
+- Disjunctions now evaluate to a real alternative set instead of picking the
+  first default eagerly: `Value::Disjunction`.
+- Defaults select at export; `&` narrows defaults (`(int | *1) & 3` → 3).
+- Disjunction × disjunction intersection, duplicate-alternative/default
+  collapsing, and ambiguous multiple defaults (`*1 | *2`) as incomplete.
+- Strict symmetric scalar unification for null, bool, int, float/int and string.
+- String interpolation and builtin arguments use the selected default.
+- 89 tests (23 CLI E2E, 1 conformance, 55 language, 6 domain, 3 store, 1 unit).
+
 ## v0.2.2
 
 Scope correction: closedness removed from the Rust evaluator.
