@@ -1510,3 +1510,68 @@ x: #D & {k: {b: 2}}
     let json = value.to_json();
     assert!(json.is_none(), "a is an incomplete int in x.k");
 }
+
+#[test]
+fn optional_pattern_conflicts_are_deferred_until_materialized() {
+    let unmaterialized = r#"
+package demo
+#D: {[string]: string, k?: 1}
+x: #D
+"#;
+    let file = ostinato_lang::parse(unmaterialized).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"], serde_json::json!({}));
+
+    let materialized = r#"
+package demo
+#D: {[string]: string, k?: 1}
+x: #D & {k: 1}
+"#;
+    let file = ostinato_lang::parse(materialized).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn multiple_matching_patterns_merge_before_closing() {
+    let source = r#"
+package demo
+#D: {[string]: {a: int}, [=~"^k"]: {b: int}}
+x: #D & {k: {a: 1, b: 2}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["k"]["b"], 2);
+}
+
+#[test]
+fn derived_definitions_keep_referenced_closedness() {
+    let source = r#"
+package demo
+#Base: {name: string}
+#Derived: #Base & {extra: int}
+d: #Derived & {name: "n", extra: 1}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn promoted_optional_fields_are_closed_by_other_patterns() {
+    let source = r#"
+package demo
+#Pattern: {[string]: {label: string}}
+#Opt: {k?: {note: string, ...}}
+v: #Pattern & #Opt & {k: {label: "l", note: "n"}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let reverse = r#"
+package demo
+#Opt: {k?: {note: string, ...}}
+#Pattern: {[string]: {label: string}}
+v: #Opt & #Pattern & {k: {label: "l", note: "n"}}
+"#;
+    let file = ostinato_lang::parse(reverse).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
