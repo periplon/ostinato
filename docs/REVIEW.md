@@ -110,9 +110,9 @@ were fixed before release:
 | Missing field separators were accepted | Struct/top-level/list/import separators are enforced |
 | Conformance corpus did not cover params, scope, hidden files, versioned modules, open lists | Corpus expanded; `scripts/conformance.sh` exercises them |
 
-Clause sequences (`for ... if`, nested `for`) and list comprehensions remain
-unsupported and are documented as such; they fail with a parse error rather
-than silently doing something different.
+At v0.2.0, clause sequences (`for ... if`, nested `for`) and list
+comprehensions were still unsupported and failed with a parse error. v0.2.1
+added them; see `CHANGELOG.md`.
 
 ## Fourth-pass review (v0.2.2)
 
@@ -137,6 +137,7 @@ unified with `{name: 1}` was accepted). Fixed before the final PR:
 | Optional fields were referenceable by bare name after being cached | Optional values are removed from the cache after constraint collection; bare/selector access reports `cannot reference optional field` |
 | Recursive definition materialization and self-selection inside a definition | Explicitly documented as out of scope in `docs/SCOPE.md`; the non-materialized recursive definition still loads |
 | Required field expressions that depend on optional fields were rejected eagerly | Explicitly documented as out of scope; optional fields must be materialized through a named definition that flattens the unification, or the oracle must be used |
+| A generated optional constraint could shadow/delete a matching required field | Generated constraints are unified into the required field when one exists; only generated-only optionals remain optional |
 
 ## Deliberately deferred / residual risks
 

@@ -12,8 +12,12 @@ Scope correction: closedness removed from the Rust evaluator.
   field is materialized.
 - `docs/SCOPE.md` states the limitation explicitly; `--evaluator cue` remains
   the escape hatch for workflows that need true closedness.
-- No other language or runtime changes.
-- 76 tests (23 CLI E2E, 1 conformance, 42 language, 6 domain, 3 store, 1 unit).
+- Language fixes in the same release: optional constraints preserved across
+  definition materialization; nested definitions selectable; quoted `"#h"`
+  labels treated as regular fields; recursive optional definitions guarded;
+  optional field references rejected unless materialized; generated optional
+  constraints applied to matching required fields.
+- 79 tests (23 CLI E2E, 1 conformance, 45 language, 6 domain, 3 store, 1 unit).
 
 ## v0.2.1
 

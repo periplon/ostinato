@@ -812,3 +812,51 @@ workflow: {name: "\(params.greeting)", steps: {s: {kind: "noop"}}}
     let compiled = ostinato_lang::compile(source).expect("named flattening");
     assert_eq!(compiled.spec.name, "Hello Alice");
 }
+
+#[test]
+fn generated_optional_constraint_applies_to_a_required_field() {
+    let source = r#"
+package demo
+#W: {
+    name: "real-name"
+    steps: {s: {kind: "noop"}}
+    for k in ["name"] {
+        "\(k)"?: string
+    }
+}
+workflow: #W
+"#;
+    let compiled = ostinato_lang::compile(source).expect("compatible generated optional");
+    assert_eq!(compiled.spec.name, "real-name");
+}
+
+#[test]
+fn generated_optional_constraint_conflicts_with_a_required_field() {
+    let source = r#"
+package demo
+#W: {
+    name: "real-name"
+    steps: {s: {kind: "noop"}}
+    for k in ["name"] {
+        "\(k)"?: int
+    }
+}
+workflow: #W
+"#;
+    assert!(ostinato_lang::compile(source).is_err());
+}
+
+#[test]
+fn generated_only_optional_fields_are_not_materialized() {
+    let source = r#"
+package demo
+#D: {
+    a: 1
+    if true { b?: int }
+}
+params: #D
+workflow: {name: "len-\(len(params))", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile(source).expect("generated optional");
+    assert_eq!(compiled.spec.name, "len-1");
+}
