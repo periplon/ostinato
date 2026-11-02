@@ -114,6 +114,19 @@ Clause sequences (`for ... if`, nested `for`) and list comprehensions remain
 unsupported and are documented as such; they fail with a parse error rather
 than silently doing something different.
 
+## Fourth-pass review (v0.2.2)
+
+After closedness removal, the post-merge review found that definition
+optional-field constraints were silently dropped (a `#D: {name?: string}`
+unified with `{name: 1}` was accepted). Fixed before the final PR:
+
+| Finding | Fix |
+|---|---|
+| Definition literals lost optional constraints | Added a `Definition { fields, optional }` value that preserves optional constraints, unifies them when the field is materialized, and omits them from export |
+| Open definitions rejected extra fields | Definitions remain open: undeclared fields are accepted |
+| Optional conflict handling | Conflicting optional constraints are deferred and fail only when the field is materialized |
+| Regression coverage | Conformance case `definition-optional.cue` plus unit tests for preservation, non-materialization and deferred conflicts |
+
 ## Deliberately deferred / residual risks
 
 | Item | Status |

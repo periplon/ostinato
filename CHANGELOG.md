@@ -7,11 +7,13 @@ Scope correction: closedness removed from the Rust evaluator.
 - Definitions are evaluated as **open structs**. No allowed-field enforcement.
   The earlier closedness implementation had unresolved edge cases (optional
   fields, generated optionals, open/closed intersection) and could diverge
-  from CUE. It is removed from both behavior and claims.
+  from CUE. It is removed from both behavior and claims. Optional-field
+  constraints declared by a definition are preserved and unified when the
+  field is materialized.
 - `docs/SCOPE.md` states the limitation explicitly; `--evaluator cue` remains
   the escape hatch for workflows that need true closedness.
 - No other language or runtime changes.
-- 62 tests (23 CLI E2E, 1 conformance, 28 language, 6 domain, 3 store, 1 unit).
+- 65 tests (23 CLI E2E, 1 conformance, 31 language, 6 domain, 3 store, 1 unit).
 
 ## v0.2.1
 

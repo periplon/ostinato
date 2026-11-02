@@ -526,7 +526,8 @@ fn reject_unknown(map: &Struct, path: &str, allowed: &[&str]) -> Result<(), Lang
 }
 
 fn dummy_params(root: &Struct) -> Json {
-    let Some(Value::Struct(params)) = root.get("params") else {
+    let Some(Value::Struct(params) | Value::Definition { fields: params, .. }) = root.get("params")
+    else {
         return Json::Object(Map::new());
     };
     let mut out = Map::new();
@@ -548,7 +549,7 @@ fn dummy_value(value: &Value) -> Json {
         Value::List(_) | Value::OpenList(_) | Value::OpenListPrefix(_, _) => {
             Json::Array(Vec::new())
         }
-        Value::Struct(map) => Json::Object(
+        Value::Struct(map) | Value::Definition { fields: map, .. } => Json::Object(
             map.iter()
                 .map(|(key, value)| (key.clone(), dummy_value(value)))
                 .collect(),
@@ -585,7 +586,7 @@ fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangErr
 
 fn expect_struct<'a>(value: &'a Value, path: &str) -> Result<&'a Struct, LangError> {
     match value {
-        Value::Struct(map) => Ok(map),
+        Value::Struct(map) | Value::Definition { fields: map, .. } => Ok(map),
         other => Err(LangError::Workflow(format!(
             "{path} must be a struct, found {}",
             other.type_name()
