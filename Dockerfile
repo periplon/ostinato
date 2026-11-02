@@ -8,15 +8,12 @@ FROM debian:bookworm-slim
 ARG CUE_VERSION=v0.17.1
 ARG TARGETARCH
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && case "${TARGETARCH:-amd64}" in \
-         arm64) ARCH=arm64 ;; \
-         *) ARCH=amd64 ;; \
-       esac \
-    && curl -fsSL "https://github.com/cue-lang/cue/releases/download/${CUE_VERSION}/cue_${CUE_VERSION}_linux_${ARCH}.tar.gz" \
-       | tar -xz -C /usr/local/bin cue \
-    && cue version
+    && apt-get install -y --no-install-recommends bash ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/install-cue.sh /tmp/install-cue.sh
+RUN bash /tmp/install-cue.sh "${CUE_VERSION}" /usr/local/bin \
+    && rm /tmp/install-cue.sh
 
 COPY --from=build /src/target/release/ostinato /usr/local/bin/ostinato
 WORKDIR /work

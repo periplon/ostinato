@@ -835,12 +835,14 @@ impl Engine {
                 }
             }
         }
+        let env_keys: Vec<&String> = env.keys().collect();
         let input = json!({
             "kind": "exec",
             "program": program,
             "args": args,
             "cwd": cwd.clone(),
-            "env": env.clone(),
+            // Never persist rendered environment *values* in the trial log.
+            "envKeys": env_keys,
         });
         let timeout = spec
             .timeout_ms

@@ -103,7 +103,8 @@ with the sequence number and exits 1. Appending to a truncated chain is refused.
 
 ## Trials
 
-One row per attempt:
+One row per attempt. Rendered `exec.env` values are redacted to key names; params,
+prompts and outputs are stored, so keep secrets out of them.
 
 ```sh
 ostinato trials <run-id>

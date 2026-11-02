@@ -35,9 +35,10 @@ Do not run untrusted workflow files on a privileged machine.
   clamped to `[0, 1]`; no eval of agent output.
 - **CUE evaluation**: delegated to the official `cue` binary, not to an ad-hoc
   eval of untrusted strings.
-- **No secrets stored**: params, outputs and prompts are stored in SQLite. If a
-  prompt contains a secret, it is persisted. Use a wrapper that injects secrets
-  only into the agent process.
+- **Trial input minimisation**: rendered `exec.env` values are not written to the
+  trial log (only their key names). Params, prompts, command output and the
+  evaluated spec are stored in SQLite, so secrets placed there are persisted.
+  Use a wrapper that injects secrets only into the agent process.
 
 ### Known limits
 
