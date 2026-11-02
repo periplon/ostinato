@@ -12,12 +12,18 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.2.2
+
+- Closedness removed from the Rust evaluator after review found unresolved
+  semantic edge cases; definitions are documented as open in `docs/SCOPE.md`.
+- 62 tests (23 CLI E2E, 1 conformance, 28 language, 6 domain, 3 store, 1 unit).
+- CI gate unchanged: `fmt / clippy / test` and `dependency audit`.
+
 ## v0.2.1
 
-- Closed definitions with optional-field allowed sets and top-level `...`.
 - Comprehension clause sequences and list comprehensions.
 - Explicit scope narrowing: `docs/SCOPE.md` (workflow-oriented CUE, not a full
-  constraint solver). CUE aliases and pattern constraints are out of scope.
+  constraint solver). Closedness, CUE aliases and pattern constraints are out of scope.
 - CI gate: `fmt / clippy / test` and `dependency audit`; auto-merge after green.
 - 70 tests (23 CLI E2E, 1 conformance, 36 language, 6 domain, 3 store, 1 unit).
 

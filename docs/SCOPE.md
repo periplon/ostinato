@@ -18,8 +18,7 @@ workflow outside the Rust surface has a supported escape hatch.
 - file-scoped `let`, lazy/forward bindings;
 - `for`/`if` struct comprehensions, clause sequences (`for ... if ...`,
   nested `for`), dynamic labels, list comprehensions;
-- nested field shorthand, definitions/unification, **closed definitions**
-  (top-level allowed/optional names; nested closedness is not enforced), defaults,
+- nested field shorthand, definitions/unification (**definitions are open**), defaults,
   optional fields, type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - string interpolation, including nested quoted expressions;
@@ -33,7 +32,8 @@ workflow outside the Rust surface has a supported escape hatch.
 | Feature | Why |
 |---|---|
 | Pattern constraints `[string]: T`, `[=~"re"]: T` | Not required by the workflow schema; closedness-with-patterns is a full lattice feature |
-| Nested closedness enforcement | Closed definitions enforce allowed/optional names at their top level; nested structs and list elements remain open |
+| Closedness / closed structs | Definitions are treated as open structs; no allowed-field enforcement |
+| Nested closedness enforcement | N/A; closedness is out of scope |
 | Optional/open metadata on non-definition struct literals | `base: {b?: int}; #D: base` and `{b?: string} & {b: 1}` are out of scope; use a definition literal or the oracle |
 | Full disjunction lattice and `&` over disjunctions | A constraint solver, not a workflow language feature |
 | Multiple defaults / default-set semantics | Workflow parameters use one default; official oracle for the rest |
