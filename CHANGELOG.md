@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.2
+
+Alias scoping correction.
+
+- Inner aliases correctly shadow an enclosing `let`; aliases in nested
+  structs/if/definition scopes are no longer reported as unreferenced.
+- 128 tests (23 CLI E2E, 1 conformance, 94 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.1
 
 Alias validation corrections.
