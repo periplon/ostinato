@@ -752,3 +752,47 @@ workflow: {
     let error = ostinato_lang::compile(source).expect_err("optional definition");
     assert!(error.to_string().contains("not found"));
 }
+
+#[test]
+fn optional_fields_cannot_be_referenced_by_bare_name() {
+    let field = r#"
+package demo
+#D: {a?: 1, y: a}
+x: #D
+"#;
+    let file = ostinato_lang::parse(field).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("optional field reference");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot reference optional field")
+    );
+
+    let definition = r#"
+package demo
+#D: {#X?: {a: 1}, y: #X}
+x: #D
+"#;
+    let file = ostinato_lang::parse(definition).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("optional definition reference");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot reference optional field")
+    );
+}
+
+#[test]
+fn optional_fields_cannot_be_selected_from_a_definition() {
+    let source = r#"
+package demo
+#D: {a?: 1}
+workflow: {name: "x", steps: {s: #D.a}}
+"#;
+    let error = ostinato_lang::compile(source).expect_err("optional selector");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot reference optional field")
+    );
+}

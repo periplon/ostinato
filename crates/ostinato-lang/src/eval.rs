@@ -537,6 +537,18 @@ impl<'a> Frame<'a> {
         if let Some(value) = self.values.borrow().get(name) {
             return Ok(value.clone());
         }
+        let optional = self
+            .fields
+            .borrow()
+            .get(name)
+            .is_some_and(|definition| definition.optional);
+        if optional {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("cannot reference optional field `{name}`"),
+            ));
+        }
         if self.fields.borrow().contains_key(name) {
             return self.eval_field(name, span);
         }
@@ -720,6 +732,7 @@ impl<'a> Frame<'a> {
                         Err(err) => Value::Conflict(err.to_string()),
                     };
                 }
+                child.values.borrow_mut().remove(&name);
                 optional.insert(name, value);
             } else {
                 let mut value = child.eval_field(&name, span)?;
@@ -949,18 +962,29 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 Value::Definition {
                     fields,
                     definitions,
+                    optional,
                     ..
-                } => fields
-                    .get(field)
-                    .or_else(|| definitions.get(field))
-                    .cloned()
-                    .ok_or_else(|| {
-                        LangError::eval(
+                } => {
+                    if let Some(value) = fields
+                        .get(field)
+                        .or_else(|| definitions.get(field))
+                        .cloned()
+                    {
+                        Ok(value)
+                    } else if optional.contains_key(field) {
+                        Err(LangError::eval(
+                            span.line,
+                            span.col,
+                            format!("cannot reference optional field `{field}`"),
+                        ))
+                    } else {
+                        Err(LangError::eval(
                             span.line,
                             span.col,
                             format!("field `{field}` not found in struct"),
-                        )
-                    }),
+                        ))
+                    }
+                }
                 other => Err(LangError::eval(
                     span.line,
                     span.col,

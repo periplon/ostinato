@@ -13,7 +13,7 @@ Scope correction: closedness removed from the Rust evaluator.
 - `docs/SCOPE.md` states the limitation explicitly; `--evaluator cue` remains
   the escape hatch for workflows that need true closedness.
 - No other language or runtime changes.
-- 73 tests (23 CLI E2E, 1 conformance, 39 language, 6 domain, 3 store, 1 unit).
+- 75 tests (23 CLI E2E, 1 conformance, 41 language, 6 domain, 3 store, 1 unit).
 
 ## v0.2.1
 

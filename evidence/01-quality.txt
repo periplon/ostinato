@@ -2,7 +2,7 @@
 exit=0
 
 ### cargo clippy --all-targets --all-features -- -D warnings
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
 exit=0
 
 ### cargo test --all
@@ -23,21 +23,21 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests/e2e.rs (target/debug/deps/e2e-ed2327ab07f0d75b)
 
 running 23 tests
-test package_underscore_files_are_file_local ... ok
 test non_struct_params_are_rejected ... ok
 test package_less_cue_file_is_loaded_by_filename ... ok
 test background_grandchild_does_not_extend_a_successful_step ... ok
 test native_evaluator_supports_the_offline_subset ... ok
-test split_package_and_sibling_conflicts_follow_cue_semantics ... ok
+test package_underscore_files_are_file_local ... ok
 test unknown_fields_are_rejected ... ok
+test split_package_and_sibling_conflicts_follow_cue_semantics ... ok
 test recomputed_state_hash_is_still_rejected_by_the_chain_anchor ... ok
-test read_only_commands_do_not_require_cue ... ok
 test audit_verification_detects_tampering ... ok
 test audit_detects_tail_truncation_via_persisted_head ... ok
-test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
+test read_only_commands_do_not_require_cue ... ok
 test cleared_integrity_hashes_are_not_silently_repaired ... ok
-test state_tampering_is_detected_and_resume_refuses_it ... ok
 test bad_template_is_a_durable_failure ... ok
+test state_tampering_is_detected_and_resume_refuses_it ... ok
+test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
 test truncation_blocks_resume_and_appends ... ok
 test retries_are_attempted_and_logged_as_trials ... ok
 test official_cue_runs_and_audit_verifies ... ok
@@ -45,11 +45,11 @@ test resume_skips_completed_steps_and_finishes ... ok
 test cycles_stop_when_until_becomes_true ... ok
 test recursive_improvement_creates_child_runs ... ok
 test exec_timeout_kills_the_process_group ... ok
-run=8dde35b0-049d-49c1-afab-017c8714999a workflow=cancel status=cancelled durationMs=4027
+run=22ebae14-b616-4529-9507-f86f78f1b08c workflow=cancel status=cancelled durationMs=4028
 STEP                     STATUS     VISITS ATTEMPTS
 test cancel_stops_a_running_run_and_blocks_resume ... ok
 
-test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.15s
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.10s
 
      Running unittests src/lib.rs (target/debug/deps/ostinato_adapters-811ba340f51f40fc)
 
@@ -99,48 +99,50 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
      Running tests/lang.rs (target/debug/deps/lang-010052e624538b88)
 
-running 39 tests
-test evaluates_conditions ... ok
+running 41 tests
 test missing_field_separators_are_rejected ... ok
 test native_defaults_work_in_multibranch_disjunctions ... ok
+test evaluates_conditions ... ok
 test definitions_can_be_used_in_conditions_and_selectors ... ok
 test forward_let_references_are_lazy ... ok
-test dependent_parameter_overrides_are_order_independent ... ok
 test definition_optional_conflicts_error_only_when_materialized ... ok
-test definitions_preserve_optional_constraints_while_open ... ok
 test open_list_element_types_are_enforced ... ok
+test definitions_preserve_optional_constraints_while_open ... ok
+test dependent_parameter_overrides_are_order_independent ... ok
 test list_comprehensions_are_supported ... ok
 test definition_optional_constraint_applies_to_required_fields_in_both_orders ... ok
-test optional_nested_definitions_are_not_selectable ... ok
-test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
-test invalid_until_is_rejected_at_validation_time ... ok
+test optional_fields_cannot_be_referenced_by_bare_name ... ok
 test optional_definition_fields_are_not_materialized ... ok
+test optional_fields_cannot_be_selected_from_a_definition ... ok
 test nested_definitions_are_selectable ... ok
+test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
 test open_list_prefix_unifies_with_a_concrete_list ... ok
-test parameter_overrides_narrow_a_default_free_disjunction ... ok
-test comprehension_clause_sequences_are_supported ... ok
-test quoted_hash_labels_are_regular_fields ... ok
 test native_overrides_apply_before_top_level_comprehensions ... ok
-test renders_templates ... ok
-test parameter_overrides_respect_fixed_values_and_types ... ok
-test parameters_can_be_backed_by_a_definition_or_split_struct ... ok
-test evaluates_structs_defaults_unification_and_interpolation ... ok
 test native_parameter_overrides_are_injected_before_interpolation ... ok
-test rejects_missing_required_parameter ... ok
-test retry_int_shorthand_respects_the_cap ... ok
-test recursive_nested_definitions_do_not_overflow ... ok
-test definitions_behave_like_structs_in_comprehensions_and_equality ... ok
-test step_level_unknown_fields_are_rejected ... ok
-test parameter_overrides_are_constraints_and_dependent_fields_see_them ... ok
-test compiles_workflow_and_resolves_parameters ... ok
-test unknown_workflow_fields_are_rejected ... ok
+test invalid_until_is_rejected_at_validation_time ... ok
+test evaluates_structs_defaults_unification_and_interpolation ... ok
 test nested_definitions_are_not_exported_as_fields ... ok
-test versioned_imports_use_the_unversioned_alias ... ok
+test optional_nested_definitions_are_not_selectable ... ok
+test parameter_overrides_narrow_a_default_free_disjunction ... ok
+test definitions_behave_like_structs_in_comprehensions_and_equality ... ok
+test comprehension_clause_sequences_are_supported ... ok
+test parameter_overrides_respect_fixed_values_and_types ... ok
+test quoted_hash_labels_are_regular_fields ... ok
+test compiles_workflow_and_resolves_parameters ... ok
+test parameter_overrides_are_constraints_and_dependent_fields_see_them ... ok
+test renders_templates ... ok
+test parameters_can_be_backed_by_a_definition_or_split_struct ... ok
+test rejects_missing_required_parameter ... ok
+test recursive_nested_definitions_do_not_overflow ... ok
 test parenthesized_dynamic_labels_and_if_clause_sequences_work ... ok
+test retry_int_shorthand_respects_the_cap ... ok
+test step_level_unknown_fields_are_rejected ... ok
+test versioned_imports_use_the_unversioned_alias ... ok
+test unknown_workflow_fields_are_rejected ... ok
 test unicode_string_builtins_match_go_semantics ... ok
 test until_accepts_nested_json_provider_and_hyphenated_steps ... ok
 
-test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
    Doc-tests ostinato_adapters
 

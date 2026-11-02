@@ -27,7 +27,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | `for` / `if` struct comprehensions | ✅ | Including clause sequences and nested `for` |
 | List comprehensions (`[for ... { expr }]`) | ✅ | |
 | Nested field shorthand (`exec: cmd: [...]`) | ✅ | |
-| Definitions (`#Foo`) and unification (`&`) | ✅ | References and structural unification; optional constraints are preserved; definitions are open (closedness is out of scope) |
+| Definitions (`#Foo`) and unification (`&`) | ✅ | References and structural unification; optional constraints are preserved; definitions are open. Recursive materialization and self-selection are out of scope |
 | Defaults and multi-branch disjunctions | ✅ | First default wins; narrowing a defaulted constraint with `&` is out of scope |
 | Optional fields (`foo?:`) | ✅ | Omitted from the concrete export, matching `cue export` |
 | Open lists (`[...T]`, `[x, ...T]`) | ✅ | Prefix and element constraints are unified |

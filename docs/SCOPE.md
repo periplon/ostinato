@@ -38,6 +38,8 @@ workflow outside the Rust surface has a supported escape hatch.
 | Full disjunction lattice and `&` over disjunctions | A constraint solver, not a workflow language feature |
 | Multiple defaults / default-set semantics | Workflow parameters use one default; official oracle for the rest |
 | Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |
+| Recursive definition materialization (`#Tree: {children?: [...#Tree]}`) | Definitions are evaluated eagerly; self-referential constraints are not solved. Use `--evaluator cue` for recursive types |
+| Self-selection inside a definition (`#D: {a: #D.b, b: 1}`) | Resolving a definition's own selector against its in-progress body is not implemented. Use the oracle |
 | Tool packages (`tool/...`) and `cue` commands | Ostinato has its own execution engine |
 | Bytes, regexp/math/time builtins beyond `strings`/`list`/`len` | Not used by workflow declarations |
 | CUE aliases (`X=field: value`) | Not implemented; the workflow language uses named fields and `let` |
