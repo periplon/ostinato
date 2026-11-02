@@ -510,3 +510,65 @@ workflow: {
     assert!(compiled.spec.step("x-1").is_some());
     assert!(compiled.spec.step("x-2").is_some());
 }
+
+#[test]
+fn definitions_preserve_optional_constraints_while_open() {
+    let bad = r#"
+package demo
+#D: {name?: string}
+params: #D & {name: 1}
+workflow: {name: "x", steps: {a: {kind: "noop"}}}
+"#;
+    assert!(ostinato_lang::compile(bad).is_err());
+
+    let open = r#"
+package demo
+#W: {}
+workflow: #W & {name: "ok", steps: {a: {kind: "noop"}}}
+"#;
+    assert!(ostinato_lang::compile(open).is_ok());
+}
+
+#[test]
+fn optional_definition_fields_are_not_materialized() {
+    let source = r#"
+package demo
+#D: {a: 1, b?: 2}
+x: #D
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(
+        value.to_json().expect("json")["x"],
+        serde_json::json!({"a": 1})
+    );
+
+    let source = r#"
+package demo
+#D: {a: 1, b?: int}
+x: #D & {b: 3}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["b"], 3);
+}
+
+#[test]
+fn definition_optional_conflicts_error_only_when_materialized() {
+    let source = r#"
+package demo
+#D: {b?: int, b?: string}
+x: #D
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"], serde_json::json!({}));
+
+    let bad = r#"
+package demo
+#D: {b?: int, b?: string}
+x: #D & {b: 1}
+"#;
+    let file = ostinato_lang::parse(bad).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}

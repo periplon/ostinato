@@ -303,7 +303,7 @@ fn find_module(start: &Path) -> Option<(PathBuf, String)> {
             let text = std::fs::read_to_string(&module_file).ok()?;
             let file = parse(&text).ok()?;
             let value = ostinato_lang::eval_file(&file).ok()?;
-            if let Value::Struct(map) = value
+            if let Value::Struct(map) | Value::Definition { fields: map, .. } = value
                 && let Some(Value::String(path)) = map.get("module")
             {
                 return Some((current.to_path_buf(), path.clone()));
@@ -339,7 +339,7 @@ fn parameters_json(
             "parameters were supplied with -p, but the workflow has no `params` struct".to_owned(),
         ));
     };
-    let Value::Struct(params) = params_value else {
+    let (Value::Struct(params) | Value::Definition { fields: params, .. }) = params_value else {
         return Err(ostinato_lang::LangError::Workflow(format!(
             "`params` must be a struct, found {}",
             params_value.type_name()
@@ -369,7 +369,7 @@ fn parameters_json(
 
 fn root_value<'a>(root: &'a Value, name: &str) -> Option<&'a Value> {
     match root {
-        Value::Struct(map) => map.get(name),
+        Value::Struct(map) | Value::Definition { fields: map, .. } => map.get(name),
         _ => None,
     }
 }
