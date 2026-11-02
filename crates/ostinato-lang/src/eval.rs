@@ -478,6 +478,41 @@ impl<'a> Frame<'a> {
             });
     }
 
+    fn merge_generated_constraint(&self, name: String, value: Value) -> Result<(), LangError> {
+        let declared = self
+            .fields
+            .borrow()
+            .get(&name)
+            .map(|definition| (definition.optional, definition.definition));
+        let forced_required = match declared {
+            Some((false, false)) => true,
+            Some(_) => false,
+            None => {
+                self.materialized.borrow().contains(&name)
+                    || self.values.borrow().contains_key(&name)
+            }
+        };
+        eprintln!(
+            "  declared={:?} forced={forced_required} vals={} mats={}",
+            declared,
+            self.values.borrow().len(),
+            self.materialized.borrow().len()
+        );
+        if forced_required {
+            let cached = self.values.borrow().get(&name).cloned();
+            let current = match cached {
+                Some(value) => value,
+                None => self.eval_field(&name, Span::default())?,
+            };
+            let merged = unify_values(&current, &value, Span::default())?;
+            self.values.borrow_mut().insert(name.clone(), merged);
+            self.materialized.borrow_mut().insert(name);
+        } else {
+            merge_generated_optional(&self.generated_optionals, &name, value)?;
+        }
+        Ok(())
+    }
+
     fn expand_body(
         &self,
         body: &[StructItem],
@@ -513,7 +548,7 @@ impl<'a> Frame<'a> {
             .collect();
         for name in optional_names {
             let value = child.eval_field(&name, Span::default())?;
-            merge_generated_optional(&self.generated_optionals, &name, value)?;
+            self.merge_generated_constraint(name, value)?;
         }
         let generated: Vec<(String, Value)> = child
             .generated_optionals
@@ -522,7 +557,7 @@ impl<'a> Frame<'a> {
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
         for (name, value) in generated {
-            merge_generated_optional(&self.generated_optionals, &name, value)?;
+            self.merge_generated_constraint(name, value)?;
         }
         Ok(())
     }

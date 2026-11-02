@@ -50,8 +50,10 @@ workflow outside the Rust surface has a supported escape hatch.
 
 - The default runtime is self-contained: no Go binary is needed.
 - The conformance corpus compares Rust and CUE on the in-scope surface.
-- Unsupported constructs fail with a parse/eval error, not a silent semantic
-  change.
+- In-scope unsupported syntax fails with a parse/eval error. Constructs listed
+  under "Explicitly out of scope" are not evaluated by the Rust path and may be
+  ignored or resolved differently; use `--evaluator cue` whenever one is
+  present.
 - `--evaluator cue` evaluates the full CUE package with CUE v0.17.1.
 
 This scope decision is part of the product, not a temporary gap: the workflow
