@@ -270,9 +270,7 @@ impl Parser {
             Tok::If => {
                 self.bump();
                 let cond = self.parse_expr()?;
-                self.skip_newlines();
-                self.expect(&Tok::LBrace, "`{`")?;
-                let body = self.parse_struct_body()?;
+                let body = self.parse_comprehension_body(span)?;
                 Ok(Some(StructItem::If { cond, body, span }))
             }
             Tok::Ellipsis => {
@@ -316,6 +314,12 @@ impl Parser {
                 self.bump();
                 let expr = self.parse_expr()?;
                 self.expect(&Tok::RBracket, "`]`")?;
+                Ok(Label::Dynamic(Box::new(expr), span))
+            }
+            Tok::LParen => {
+                self.bump();
+                let expr = self.parse_expr()?;
+                self.expect(&Tok::RParen, "`)`")?;
                 Ok(Label::Dynamic(Box::new(expr), span))
             }
             other => Err(self.error(format!("expected field label, found {other:?}"))),

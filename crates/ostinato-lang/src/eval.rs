@@ -272,6 +272,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         lets: RefCell::new(BTreeMap::new()),
         fields: RefCell::new(BTreeMap::new()),
         values: RefCell::new(BTreeMap::new()),
+        generated_optionals: RefCell::new(BTreeMap::new()),
         overrides: RefCell::new(BTreeMap::new()),
         evaluating: RefCell::new(HashSet::new()),
     };
@@ -319,6 +320,7 @@ struct Frame<'a> {
     lets: RefCell<BTreeMap<String, Expr>>,
     fields: RefCell<BTreeMap<String, FieldDef>>,
     values: RefCell<BTreeMap<String, Value>>,
+    generated_optionals: RefCell<BTreeMap<String, Value>>,
     overrides: RefCell<BTreeMap<String, Value>>,
     evaluating: RefCell<HashSet<String>>,
 }
@@ -345,6 +347,7 @@ impl<'a> Frame<'a> {
             lets: RefCell::new(BTreeMap::new()),
             fields: RefCell::new(BTreeMap::new()),
             values: RefCell::new(BTreeMap::new()),
+            generated_optionals: RefCell::new(BTreeMap::new()),
             overrides: RefCell::new(BTreeMap::new()),
             evaluating: RefCell::new(HashSet::new()),
         };
@@ -483,6 +486,26 @@ impl<'a> Frame<'a> {
             };
             self.values.borrow_mut().insert(key, merged);
         }
+        let optional_names: Vec<String> = child
+            .fields
+            .borrow()
+            .iter()
+            .filter(|(_, definition)| definition.optional)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in optional_names {
+            let value = child.eval_field(&name, Span::default())?;
+            merge_generated_optional(&self.generated_optionals, &name, value)?;
+        }
+        let generated: Vec<(String, Value)> = child
+            .generated_optionals
+            .borrow()
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        for (name, value) in generated {
+            merge_generated_optional(&self.generated_optionals, &name, value)?;
+        }
         Ok(())
     }
 
@@ -604,6 +627,7 @@ impl<'a> Frame<'a> {
         child.expand(items)?;
         let mut names: Vec<String> = child.fields.borrow().keys().cloned().collect();
         names.extend(child.values.borrow().keys().cloned());
+        names.extend(child.generated_optionals.borrow().keys().cloned());
         names.sort();
         names.dedup();
         let allowed: BTreeSet<String> = names.iter().cloned().collect();
@@ -614,8 +638,14 @@ impl<'a> Frame<'a> {
                 .fields
                 .borrow()
                 .get(&name)
-                .is_some_and(|definition| definition.optional);
-            let value = child.eval_field(&name, span)?;
+                .is_some_and(|definition| definition.optional)
+                || child.generated_optionals.borrow().contains_key(&name);
+            let value = if let Some(value) = child.generated_optionals.borrow().get(&name).cloned()
+            {
+                value
+            } else {
+                child.eval_field(&name, span)?
+            };
             if optional_field {
                 optional.insert(name, value);
             } else {
@@ -775,11 +805,15 @@ impl<'a> Frame<'a> {
     }
 
     fn to_struct_value_mode(&self, include_definitions: bool) -> Result<Value, LangError> {
+        let generated = self.generated_optionals.borrow().clone();
         let names: Vec<String> = {
             let fields = self.fields.borrow();
             fields
                 .keys()
-                .filter(|name| include_definitions || !name.starts_with('#'))
+                .filter(|name| {
+                    (include_definitions || !name.starts_with('#'))
+                        && !generated.contains_key(*name)
+                })
                 .cloned()
                 .collect()
         };
@@ -799,7 +833,9 @@ impl<'a> Frame<'a> {
             out.insert(name, value);
         }
         for (name, value) in self.values.borrow().iter() {
-            if include_definitions || !name.starts_with('#') {
+            if (include_definitions || !name.starts_with('#'))
+                && !self.generated_optionals.borrow().contains_key(name)
+            {
                 out.insert(name.clone(), value.clone());
             }
         }
@@ -1092,6 +1128,20 @@ fn item_contains_ident(item: &StructItem) -> bool {
         }
         StructItem::Ellipsis(_) => false,
     }
+}
+
+fn merge_generated_optional(
+    optionals: &RefCell<BTreeMap<String, Value>>,
+    name: &str,
+    value: Value,
+) -> Result<(), LangError> {
+    let existing = optionals.borrow().get(name).cloned();
+    let merged = match existing {
+        Some(existing) => unify_values(&existing, &value, Span::default())?,
+        None => value,
+    };
+    optionals.borrow_mut().insert(name.to_owned(), merged);
+    Ok(())
 }
 
 fn values_equal(left: &Value, right: &Value) -> bool {
@@ -1604,8 +1654,13 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     optional.insert(key.clone(), value.clone());
                 }
             }
-            for key in fields.keys() {
-                optional.remove(key);
+            let keys: Vec<String> = fields.keys().cloned().collect();
+            for key in keys {
+                if let Some(constraint) = optional.remove(&key)
+                    && let Some(existing) = fields.get(&key).cloned()
+                {
+                    fields.insert(key, unify_values(&existing, &constraint, span)?);
+                }
             }
             let open = *open_a && *open_b;
             let allowed: BTreeSet<String> = match (*open_a, *open_b) {

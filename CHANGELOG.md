@@ -11,7 +11,7 @@ Closedness and remaining workflow-language semantics.
   Pattern constraints, the full disjunction lattice, tool packages and CUE
   aliases are out of scope and documented in `docs/SCOPE.md`; the official
   oracle remains the escape hatch.
-- 67 tests (23 CLI E2E, 1 conformance, 33 language, 6 domain, 3 store, 1 unit).
+- 70 tests (23 CLI E2E, 1 conformance, 36 language, 6 domain, 3 store, 1 unit).
 
 ## v0.2.0
 
