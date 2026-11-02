@@ -45,7 +45,12 @@ deferred: #Deferred
 #Alt: #AltA | *{b: 1}
 alt: #Alt
 
+#ClosedAlt: {a: int}
+#OpenAlt: {a: int, ...}
+#AltMeta: #ClosedAlt | #OpenAlt
+altMeta: #AltMeta & {a: 1, extra: 2}
+
 workflow: {
-	name: "\(closed.name)-\(open.extra)-\(pattern.x2)-\(all.b)-\(nested.inner.b)-\(composed.inner.b)-\(ref.inner.b)-\(both.a)-\(map.alice.name)-\(seq[0].name)-\(kind.a)-\(optionalPattern.k.b)-\(multi.k.b)-\(len(deferred))-\(alt.b)"
+	name: "\(closed.name)-\(open.extra)-\(pattern.x2)-\(all.b)-\(nested.inner.b)-\(composed.inner.b)-\(ref.inner.b)-\(both.a)-\(map.alice.name)-\(seq[0].name)-\(kind.a)-\(optionalPattern.k.b)-\(multi.k.b)-\(len(deferred))-\(alt.b)-\(altMeta.extra)"
 	steps: {s: {kind: "noop"}}
 }

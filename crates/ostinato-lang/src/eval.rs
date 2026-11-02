@@ -747,7 +747,7 @@ impl<'a> Frame<'a> {
                 let mut result = Value::Bottom;
                 let mut error = None;
                 for expr in &exprs {
-                    match self.eval_definition_expr(expr, span) {
+                    match self.eval_definition_part(expr) {
                         Ok(value) => {
                             result = if matches!(result, Value::Bottom) {
                                 value
@@ -769,7 +769,7 @@ impl<'a> Frame<'a> {
                 }
                 match error {
                     Some(err) => Err(err),
-                    None => Ok(result),
+                    None => Ok(close_composed_definition(&result)),
                 }
             };
             self.evaluating.borrow_mut().remove(name);
@@ -940,6 +940,14 @@ impl<'a> Frame<'a> {
             })
         } else {
             Ok(Value::Struct(fields))
+        }
+    }
+
+    fn eval_definition_part(&self, expr: &Expr) -> Result<Value, LangError> {
+        match expr {
+            Expr::Paren(inner, _) => self.eval_definition_part(inner),
+            Expr::Struct(items, struct_span) => self.eval_struct_items(items, *struct_span, false),
+            _ => eval_expr(expr, self),
         }
     }
 
@@ -1453,6 +1461,57 @@ fn collect_definition_references(expr: &Expr, out: &mut Vec<String>) {
     }
 }
 
+fn close_composed_definition(value: &Value) -> Value {
+    match value {
+        Value::Disjunction(alternatives, defaults) => Value::Disjunction(
+            alternatives.iter().map(close_composed_definition).collect(),
+            defaults.clone(),
+        ),
+        Value::Definition {
+            fields,
+            optional,
+            definitions,
+            patterns,
+            open,
+            ..
+        } => {
+            let fields: BTreeMap<String, Value> = fields
+                .iter()
+                .map(|(key, value)| (key.clone(), close_nested(value)))
+                .collect();
+            let optional: BTreeMap<String, Value> = optional
+                .iter()
+                .map(|(key, value)| (key.clone(), close_nested(value)))
+                .collect();
+            let closed = !*open;
+            let admissions = if *open {
+                Vec::new()
+            } else {
+                let mut names: BTreeSet<String> = fields.keys().cloned().collect();
+                names.extend(optional.keys().cloned());
+                names.extend(definitions.keys().cloned());
+                vec![Admission {
+                    names,
+                    patterns: patterns
+                        .iter()
+                        .map(|(pattern, _)| pattern.clone())
+                        .collect(),
+                }]
+            };
+            Value::Definition {
+                fields,
+                optional,
+                definitions: definitions.clone(),
+                patterns: patterns.clone(),
+                closed,
+                open: *open,
+                admissions,
+            }
+        }
+        other => close_nested(other),
+    }
+}
+
 fn close_nested(value: &Value) -> Value {
     match value {
         Value::Struct(fields) => {
@@ -1631,6 +1690,9 @@ fn apply_optional_patterns(
     span: Span,
 ) -> Result<(), LangError> {
     for (key, value) in optional.iter_mut() {
+        for (pattern, _) in patterns {
+            pattern_matches(pattern, key, span)?;
+        }
         if matches!(value, Value::Conflict(_)) {
             continue;
         }
@@ -2475,10 +2537,17 @@ enum DefaultMode {
     Inherited,
 }
 
+fn same_disjunction_alternative(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Definition { .. }, _) | (_, Value::Definition { .. }) => left == right,
+        _ => values_equal(left, right),
+    }
+}
+
 fn push_unique_disjunction_value(alternatives: &mut Vec<Value>, value: Value) -> usize {
     if let Some(index) = alternatives
         .iter()
-        .position(|existing| values_equal(existing, &value))
+        .position(|existing| same_disjunction_alternative(existing, &value))
     {
         return index;
     }

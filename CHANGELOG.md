@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.5
+
+Closedness/pattern third review corrections.
+
+- Invalid pattern regexes are validated even when an optional value is a
+  deferred conflict.
+- Disjunction dedupe is metadata-aware: closed/open/pattern/optional
+  definition alternatives are not collapsed.
+- Multi-expression definitions compose as open parts and close once, so
+  `#D: #A | #B` plus `#D: {c?: int}` keeps `a` admitted.
+- 119 tests (23 CLI E2E, 1 conformance, 85 language, 6 domain, 3 store, 1 unit).
+
 ## v0.3.4
 
 Closedness/pattern final corrections.
