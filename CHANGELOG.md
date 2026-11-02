@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.2
+
+Closedness/pattern review corrections.
+
+- Pattern value structs are closed for fields entering from outside a
+  definition, while same-definition fields keep the CUE exemption.
+- Non-struct definition values (lists, open lists, disjunctions) close nested
+  structs recursively.
+- Patterns apply to optional values before the closing pass.
+- 109 tests (23 CLI E2E, 1 conformance, 75 language, 6 domain, 3 store, 1 unit).
+
 ## v0.3.1
 
 Closedness review corrections.

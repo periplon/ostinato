@@ -1,8 +1,8 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.4tymRByUEV/agent.sqlite runs
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.DAPibNrhxu/agent.sqlite runs
 
 RUN                                    WORKFLOW         STATUS     STEPS    CREATED                 
-8c1a98d9-2f25-4a9c-8dfc-18eb67dd4aaa   agentic          succeeded  3        2026-11-02T21:28:26.584Z
-aee19153-5919-4120-aa35-0af126a086ff   agentic          succeeded  3        2026-11-02T21:28:26.541Z
-b72f83f4-b762-4738-8bc7-702459d8f25e   agentic          succeeded  3        2026-11-02T21:28:26.472Z
+df76e6b5-2a89-4ed5-bc95-3c3ded6850ac   agentic          succeeded  3        2026-11-02T21:41:17.206Z
+a25519de-4d86-443a-93b5-1950b8bc6841   agentic          succeeded  3        2026-11-02T21:41:17.163Z
+c4d02947-f2c8-4ed9-9dfe-33710878664b   agentic          succeeded  3        2026-11-02T21:41:17.095Z
 
 exit=0

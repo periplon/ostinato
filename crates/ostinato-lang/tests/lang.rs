@@ -1459,3 +1459,54 @@ x: #D & #E & {a: 1}
     let file = ostinato_lang::parse(valid).expect("parse");
     assert!(ostinato_lang::eval_file(&file).is_ok());
 }
+
+#[test]
+fn pattern_value_structs_are_closed_for_external_fields() {
+    for source in [
+        "#D: {[string]: {a: int}}\nx: #D & {k: {a: 1, b: 2}}",
+        "#D: {[string]: {a: int}, ...}\nx: #D & {k: {a: 1, b: 2}}",
+        "#D: {[string]: [{a: int}]}\nx: #D & {k: [{a: 1, b: 2}]}",
+        "#D: {[string]: {a: int} & {b: int}}\nx: #D & {k: {a: 1, b: 2, c: 3}}",
+    ] {
+        let source = format!("package demo\n{source}\n");
+        let file = ostinato_lang::parse(&source).expect("parse");
+        assert!(ostinato_lang::eval_file(&file).is_err(), "{source}");
+    }
+
+    let same_definition = r#"
+package demo
+#D: {[string]: {a: int}, k: {a: 1, b: 2}}
+x: #D
+"#;
+    let file = ostinato_lang::parse(same_definition).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["k"]["b"], 2);
+}
+
+#[test]
+fn non_struct_definition_values_close_nested_structs() {
+    for source in [
+        "#D: [{a: int}]\nx: #D & [{a: 1, b: 2}]",
+        "#D: [...{a: int}]\nx: #D & [{a: 1, b: 2}]",
+        "#D: [{a: int}, ...{a: int}]\nx: #D & [{a: 1, b: 2}]",
+        "#D: {a: int} | {b: int}\nx: #D & {a: 1, c: 2}",
+        "#D: *{a: int} | {b: int}\nx: #D & {a: 1, c: 2}",
+    ] {
+        let source = format!("package demo\n{source}\n");
+        let file = ostinato_lang::parse(&source).expect("parse");
+        assert!(ostinato_lang::eval_file(&file).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn optional_values_get_patterns_before_closing() {
+    let source = r#"
+package demo
+#D: {[string]: {a: int}, k?: {b: 2}}
+x: #D & {k: {b: 2}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json();
+    assert!(json.is_none(), "a is an incomplete int in x.k");
+}
