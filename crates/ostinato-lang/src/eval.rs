@@ -478,6 +478,30 @@ impl<'a> Frame<'a> {
             });
     }
 
+    fn reconcile_generated_required_fields(&self) -> Result<(), LangError> {
+        let names: Vec<String> = self
+            .generated_optionals
+            .borrow()
+            .keys()
+            .filter(|name| {
+                self.fields
+                    .borrow()
+                    .get(*name)
+                    .is_some_and(|field| !field.optional)
+            })
+            .cloned()
+            .collect();
+        for name in names {
+            if let Some(constraint) = self.generated_optionals.borrow_mut().remove(&name) {
+                let value = self.eval_field(&name, Span::default())?;
+                let merged = unify_values(&value, &constraint, Span::default())?;
+                self.values.borrow_mut().insert(name.clone(), merged);
+                self.materialized.borrow_mut().insert(name);
+            }
+        }
+        Ok(())
+    }
+
     fn merge_generated_constraint(&self, name: String, value: Value) -> Result<(), LangError> {
         let declared = self
             .fields
@@ -492,12 +516,6 @@ impl<'a> Frame<'a> {
                     || self.values.borrow().contains_key(&name)
             }
         };
-        eprintln!(
-            "  declared={:?} forced={forced_required} vals={} mats={}",
-            declared,
-            self.values.borrow().len(),
-            self.materialized.borrow().len()
-        );
         if forced_required {
             let cached = self.values.borrow().get(&name).cloned();
             let current = match cached {
@@ -523,6 +541,10 @@ impl<'a> Frame<'a> {
             return Ok(());
         };
         for (key, value) in values {
+            let value = match self.generated_optionals.borrow_mut().remove(&key) {
+                Some(constraint) => unify_values(&value, &constraint, Span::default())?,
+                None => value,
+            };
             let existing = self.values.borrow().get(&key).cloned();
             let existing = match existing {
                 Some(existing) => Some(existing),
@@ -536,7 +558,6 @@ impl<'a> Frame<'a> {
                 None => value,
             };
             self.materialized.borrow_mut().insert(key.clone());
-            self.generated_optionals.borrow_mut().remove(&key);
             self.values.borrow_mut().insert(key, merged);
         }
         let optional_names: Vec<String> = child
@@ -713,6 +734,7 @@ impl<'a> Frame<'a> {
     fn eval_definition_items(&self, items: &[StructItem], span: Span) -> Result<Value, LangError> {
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
         child.expand(items)?;
+        child.reconcile_generated_required_fields()?;
         let mut definition_names = BTreeSet::new();
         for item in items {
             if let StructItem::Field(field) = item
@@ -924,6 +946,7 @@ impl<'a> Frame<'a> {
     }
 
     fn to_struct_value_mode(&self, include_definitions: bool) -> Result<Value, LangError> {
+        self.reconcile_generated_required_fields()?;
         let generated = self.generated_optionals.borrow().clone();
         let names: Vec<String> = {
             let fields = self.fields.borrow();

@@ -1,5 +1,5 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.cW2P0v2JgQ/db.sqlite audit verify 148757c9-19db-4d0a-bac0-f66341318343
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.dnkK1rV6st/db.sqlite audit verify 0d50d568-a6e1-4186-9647-6f8b10dddae5
 
-OK run=148757c9-19db-4d0a-bac0-f66341318343 events=19 head=b64089c878c2fe9e0da16e313f32bb476a7eaca7cfa04d15db868daf8dfe9ac0
+OK run=0d50d568-a6e1-4186-9647-6f8b10dddae5 events=19 head=0c5b28d1615f42e543cafdd3f9bc6ebac59e6b15c3b40a8700e6aedf5f5b6e5c
 
 exit=0
