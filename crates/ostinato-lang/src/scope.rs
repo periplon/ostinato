@@ -54,7 +54,10 @@ struct AliasScope {
     parent: Option<usize>,
     fields: HashSet<String>,
     lets: HashSet<String>,
+    let_spans: HashMap<String, Span>,
+    let_used: HashSet<String>,
     bindings: HashSet<String>,
+    binding_spans: Vec<(String, Span)>,
     aliases: HashMap<String, usize>,
 }
 
@@ -95,14 +98,19 @@ impl AliasCtx {
             parent,
             fields: HashSet::new(),
             lets: HashSet::new(),
+            let_spans: HashMap::new(),
+            let_used: HashSet::new(),
             bindings: HashSet::new(),
+            binding_spans: Vec::new(),
             aliases: HashMap::new(),
         });
 
         for item in items {
             match item {
                 StructItem::Field(field) => {
-                    if let Label::Name(name, _) = &field.label {
+                    if let Label::Name(name, _) = &field.label
+                        && !field.quoted
+                    {
                         self.scopes[id].fields.insert(name.clone());
                     }
                     if let Some(alias) = &field.alias {
@@ -130,11 +138,22 @@ impl AliasCtx {
                         self.scopes[id].aliases.insert(alias.clone(), alias_id);
                     }
                 }
-                StructItem::Let { name, .. } => {
+                StructItem::Let { name, span, .. } => {
                     if name == "_" {
-                        return Err(LangError::eval(1, 1, "cannot use _ as alias or let clause"));
+                        return Err(LangError::eval(
+                            span.line,
+                            span.col,
+                            "cannot use _ as alias or let clause",
+                        ));
                     }
-                    self.scopes[id].lets.insert(name.clone());
+                    if !self.scopes[id].lets.insert(name.clone()) {
+                        return Err(LangError::eval(
+                            span.line,
+                            span.col,
+                            format!("alias `{name}` redeclared in same scope"),
+                        ));
+                    }
+                    self.scopes[id].let_spans.insert(name.clone(), *span);
                 }
                 _ => {}
             }
@@ -163,7 +182,7 @@ impl AliasCtx {
                     value,
                     source,
                     body,
-                    ..
+                    span,
                 } => {
                     self.expr(source, &chain, &local_shadow)?;
                     let mut body_shadow = local_shadow.clone();
@@ -174,8 +193,14 @@ impl AliasCtx {
                     let body_id = self.scope(body, Some(id), &chain, &body_shadow)?;
                     if let Some(key) = key {
                         self.scopes[body_id].bindings.insert(key.clone());
+                        self.scopes[body_id]
+                            .binding_spans
+                            .push((key.clone(), *span));
                     }
                     self.scopes[body_id].bindings.insert(value.clone());
+                    self.scopes[body_id]
+                        .binding_spans
+                        .push((value.clone(), *span));
                 }
                 StructItem::If { cond, body, .. } => {
                     self.expr(cond, &chain, &local_shadow)?;
@@ -200,6 +225,7 @@ impl AliasCtx {
                 }
                 for scope in chain.iter().rev() {
                     if self.scopes[*scope].lets.contains(name) {
+                        self.scopes[*scope].let_used.insert(name.clone());
                         return Ok(());
                     }
                     if let Some(alias) = self.scopes[*scope].aliases.get(name) {
@@ -250,7 +276,10 @@ impl AliasCtx {
                     parent: chain.last().copied(),
                     fields: HashSet::new(),
                     lets: HashSet::new(),
+                    let_spans: HashMap::new(),
+                    let_used: HashSet::new(),
                     bindings: HashSet::new(),
+                    binding_spans: Vec::new(),
                     aliases: HashMap::new(),
                 });
                 let mut comp_chain = chain.to_vec();
@@ -259,15 +288,24 @@ impl AliasCtx {
                 for clause in clauses {
                     match clause {
                         CompClause::For {
-                            key, value, source, ..
+                            key,
+                            value,
+                            source,
+                            span,
                         } => {
                             self.expr(source, chain, shadowed)?;
                             if let Some(key) = key {
                                 body_shadow.insert(key.clone());
                                 self.scopes[comp_id].bindings.insert(key.clone());
+                                self.scopes[comp_id]
+                                    .binding_spans
+                                    .push((key.clone(), *span));
                             }
                             body_shadow.insert(value.clone());
                             self.scopes[comp_id].bindings.insert(value.clone());
+                            self.scopes[comp_id]
+                                .binding_spans
+                                .push((value.clone(), *span));
                         }
                         CompClause::If { cond, .. } => {
                             self.expr(cond, &comp_chain, &body_shadow)?;
@@ -314,6 +352,16 @@ pub fn validate_aliases(items: &[StructItem], import_aliases: &[String]) -> Resu
     }
 
     for alias in &ctx.aliases {
+        if ctx.scopes[alias.scope].lets.contains(&alias.name) {
+            return Err(LangError::eval(
+                alias.span.line,
+                alias.span.col,
+                format!(
+                    "cannot have both alias and field with name `{}` in the same scope",
+                    alias.name
+                ),
+            ));
+        }
         for (scope_id, scope) in ctx.scopes.iter().enumerate() {
             if (scope.fields.contains(&alias.name) || scope.bindings.contains(&alias.name))
                 && (ctx.is_ancestor(alias.scope, scope_id)
@@ -339,15 +387,54 @@ pub fn validate_aliases(items: &[StructItem], import_aliases: &[String]) -> Resu
     }
     for (scope_id, scope) in ctx.scopes.iter().enumerate() {
         for name in &scope.lets {
+            let span = scope
+                .let_spans
+                .get(name)
+                .copied()
+                .unwrap_or(Span::default());
             if import_aliases.contains(name) {
-                let _ = scope_id;
                 return Err(LangError::eval(
-                    1,
-                    1,
+                    span.line,
+                    span.col,
                     format!(
                         "cannot have both alias and field with name `{name}` in the same scope"
                     ),
                 ));
+            }
+            for (other_id, other) in ctx.scopes.iter().enumerate() {
+                if (ctx.is_ancestor(scope_id, other_id) || ctx.is_ancestor(other_id, scope_id))
+                    && other.fields.contains(name)
+                {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!(
+                            "cannot have both alias and field with name `{name}` in the same scope"
+                        ),
+                    ));
+                }
+            }
+            if !scope.let_used.contains(name) {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("unreferenced alias or let clause `{name}`"),
+                ));
+            }
+        }
+        for (name, span) in &scope.binding_spans {
+            for (other_id, other) in ctx.scopes.iter().enumerate() {
+                if (ctx.is_ancestor(scope_id, other_id) || ctx.is_ancestor(other_id, scope_id))
+                    && other.lets.contains(name)
+                {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!(
+                            "cannot have both alias and field with name `{name}` in the same scope"
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -439,22 +526,22 @@ fn rename_expr(expr: &mut Expr, locals: &HashMap<String, String>, shadowed: &Has
             }
         }
         Expr::ListComp { clauses, body, .. } => {
+            let mut scoped = shadowed.clone();
             for clause in clauses {
                 match clause {
                     CompClause::For {
                         key, value, source, ..
                     } => {
-                        rename_expr(source, locals, shadowed);
-                        let mut scoped = shadowed.clone();
+                        rename_expr(source, locals, &scoped);
                         if let Some(key) = key {
                             scoped.insert(key.clone());
                         }
                         scoped.insert(value.clone());
-                        rename_expr(body, locals, &scoped);
                     }
-                    CompClause::If { cond, .. } => rename_expr(cond, locals, shadowed),
+                    CompClause::If { cond, .. } => rename_expr(cond, locals, &scoped),
                 }
             }
+            rename_expr(body, locals, &scoped);
         }
         Expr::OpenListPrefix(prefix, tail, _) => {
             for item in prefix {

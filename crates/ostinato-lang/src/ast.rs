@@ -50,6 +50,7 @@ pub struct Field {
     pub optional: bool,
     pub definition: bool,
     pub alias: Option<String>,
+    pub quoted: bool,
     pub span: Span,
 }
 
