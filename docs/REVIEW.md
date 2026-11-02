@@ -132,6 +132,8 @@ unified with `{name: 1}` was accepted). Fixed before the final PR:
 | Nested definitions became unreachable by selector (`#Lib.#Step`) | Definition now carries a `definitions` map resolved by select/index but excluded from export/iteration/len/equality |
 | Quoted `"#h"` labels were treated as definitions | Definition-ness comes from the AST identifier flag; quoted labels remain regular exported fields |
 | Definition-only caches could leak into the root export | Export filters cached values by their field definition flag |
+| Recursive nested definition (`#Node: {next?: #Node}`) stack-overflowed | Definition evaluation participates in the cycle guard; optional nested errors are deferred |
+| Optional nested definitions were selectable (`#D.#X`) | Optional definitions are excluded from the selectable definitions map |
 
 ## Deliberately deferred / residual risks
 

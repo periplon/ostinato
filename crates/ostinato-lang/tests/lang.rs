@@ -716,3 +716,39 @@ workflow: {
     let compiled = ostinato_lang::compile(source).expect("definition condition");
     assert_eq!(compiled.spec.name, "yes");
 }
+
+#[test]
+fn recursive_nested_definitions_do_not_overflow() {
+    let source = r#"
+package demo
+#W: {
+    #Node: {
+        value: int
+        next?: #Node
+    }
+    name: "recursive"
+    steps: {s: {kind: "noop"}}
+}
+workflow: #W
+"#;
+    let compiled = ostinato_lang::compile(source).expect("recursive definition");
+    assert_eq!(compiled.spec.name, "recursive");
+    assert!(compiled.spec.step("s").is_some());
+}
+
+#[test]
+fn optional_nested_definitions_are_not_selectable() {
+    let source = r#"
+package demo
+#D: {
+    #X?: {kind: "noop"}
+    a: 1
+}
+workflow: {
+    name: "optional"
+    steps: {s: #D.#X}
+}
+"#;
+    let error = ostinato_lang::compile(source).expect_err("optional definition");
+    assert!(error.to_string().contains("not found"));
+}
