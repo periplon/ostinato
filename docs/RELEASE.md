@@ -16,7 +16,7 @@ for non-draft PRs and therefore waits for these checks before squashing.
 
 - Closedness removed from the Rust evaluator after review found unresolved
   semantic edge cases; definitions are documented as open in `docs/SCOPE.md`.
-- 68 tests (23 CLI E2E, 1 conformance, 34 language, 6 domain, 3 store, 1 unit).
+- 71 tests (23 CLI E2E, 1 conformance, 37 language, 6 domain, 3 store, 1 unit).
 - CI gate unchanged: `fmt / clippy / test` and `dependency audit`.
 
 ## v0.2.1

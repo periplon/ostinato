@@ -20,6 +20,7 @@ pub enum Value {
     Definition {
         fields: BTreeMap<String, Value>,
         optional: BTreeMap<String, Value>,
+        definitions: BTreeMap<String, Value>,
     },
     /// An open list type `[...T]`; `None` means any element.
     OpenList(Option<Box<Value>>),
@@ -317,6 +318,7 @@ fn json_to_value(value: &Json) -> Option<Value> {
 struct FieldDef {
     exprs: Vec<Expr>,
     optional: bool,
+    definition: bool,
 }
 
 struct Frame<'a> {
@@ -364,7 +366,12 @@ impl<'a> Frame<'a> {
             match item {
                 StructItem::Field(field) => {
                     if let crate::ast::Label::Name(name, _) = &field.label {
-                        frame.insert_field(name.clone(), field.value.clone(), field.optional);
+                        frame.insert_field(
+                            name.clone(),
+                            field.value.clone(),
+                            field.optional,
+                            field.definition,
+                        );
                     }
                 }
                 StructItem::Let { name, value, .. } => {
@@ -390,7 +397,7 @@ impl<'a> Frame<'a> {
                                 "dynamic field label must evaluate to a string",
                             ));
                         };
-                        self.insert_field(key, field.value.clone(), field.optional);
+                        self.insert_field(key, field.value.clone(), field.optional, false);
                     }
                 }
                 StructItem::For {
@@ -455,17 +462,19 @@ impl<'a> Frame<'a> {
         Ok(())
     }
 
-    fn insert_field(&self, name: String, expr: Expr, optional: bool) {
+    fn insert_field(&self, name: String, expr: Expr, optional: bool, definition: bool) {
         let mut fields = self.fields.borrow_mut();
         fields
             .entry(name)
             .and_modify(|def| {
                 def.exprs.push(expr.clone());
                 def.optional = def.optional && optional;
+                def.definition = def.definition || definition;
             })
             .or_insert(FieldDef {
                 exprs: vec![expr],
                 optional,
+                definition,
             });
     }
 
@@ -571,7 +580,7 @@ impl<'a> Frame<'a> {
                 format!("cyclic reference while evaluating `{name}`"),
             ));
         }
-        let exprs = {
+        let (exprs, is_definition) = {
             let fields = self.fields.borrow();
             let Some(def) = fields.get(name) else {
                 return Err(LangError::eval(
@@ -580,7 +589,7 @@ impl<'a> Frame<'a> {
                     format!("undefined reference `{name}`"),
                 ));
             };
-            def.exprs.clone()
+            (def.exprs.clone(), def.definition)
         };
         if name == "params"
             && !self.overrides.borrow().is_empty()
@@ -588,7 +597,7 @@ impl<'a> Frame<'a> {
         {
             return self.eval_params_struct(&items, span);
         }
-        if name.starts_with('#') {
+        if is_definition {
             let result = if let Some(items) = self.params_items(&exprs) {
                 self.eval_definition_items(&items, span)?
             } else if exprs.len() == 1 {
@@ -630,15 +639,28 @@ impl<'a> Frame<'a> {
     fn eval_definition_items(&self, items: &[StructItem], span: Span) -> Result<Value, LangError> {
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
         child.expand(items)?;
+        let mut definition_names = BTreeSet::new();
+        for item in items {
+            if let StructItem::Field(field) = item
+                && field.definition
+                && let crate::ast::Label::Name(name, _) = &field.label
+            {
+                definition_names.insert(name.clone());
+            }
+        }
         let mut names: Vec<String> = child.fields.borrow().keys().cloned().collect();
         names.extend(child.values.borrow().keys().cloned());
         names.extend(child.generated_optionals.borrow().keys().cloned());
         names.sort();
         names.dedup();
-        names.retain(|name| !name.starts_with('#'));
         let mut fields = BTreeMap::new();
         let mut optional = BTreeMap::new();
+        let mut definitions = BTreeMap::new();
         for name in names {
+            if definition_names.contains(&name) {
+                definitions.insert(name.clone(), child.eval_field(&name, span)?);
+                continue;
+            }
             let declared_optional = child
                 .fields
                 .borrow()
@@ -673,7 +695,11 @@ impl<'a> Frame<'a> {
                 fields.insert(name, value);
             }
         }
-        Ok(Value::Definition { fields, optional })
+        Ok(Value::Definition {
+            fields,
+            optional,
+            definitions,
+        })
     }
 
     fn eval_definition_expr(&self, expr: &Expr, span: Span) -> Result<Value, LangError> {
@@ -686,6 +712,7 @@ impl<'a> Frame<'a> {
             return Ok(Value::Definition {
                 fields,
                 optional: BTreeMap::new(),
+                definitions: BTreeMap::new(),
             });
         }
         Ok(value)
@@ -819,12 +846,12 @@ impl<'a> Frame<'a> {
         let names: Vec<String> = {
             let fields = self.fields.borrow();
             fields
-                .keys()
-                .filter(|name| {
-                    (include_definitions || !name.starts_with('#'))
+                .iter()
+                .filter(|(name, definition)| {
+                    (include_definitions || !definition.definition)
                         && !generated.contains_key(*name)
                 })
-                .cloned()
+                .map(|(name, _)| name.clone())
                 .collect()
         };
         let mut out = BTreeMap::new();
@@ -843,7 +870,12 @@ impl<'a> Frame<'a> {
             out.insert(name, value);
         }
         for (name, value) in self.values.borrow().iter() {
-            if (include_definitions || !name.starts_with('#'))
+            let definition = self
+                .fields
+                .borrow()
+                .get(name)
+                .is_some_and(|definition| definition.definition);
+            if (include_definitions || !definition)
                 && !self.generated_optionals.borrow().contains_key(name)
             {
                 out.insert(name.clone(), value.clone());
@@ -873,15 +905,28 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         Expr::Select(base, field, span) => {
             let base = eval_expr(base, frame)?;
             match base {
-                Value::Struct(map) | Value::Definition { fields: map, .. } => {
-                    map.get(field).cloned().ok_or_else(|| {
+                Value::Struct(map) => map.get(field).cloned().ok_or_else(|| {
+                    LangError::eval(
+                        span.line,
+                        span.col,
+                        format!("field `{field}` not found in struct"),
+                    )
+                }),
+                Value::Definition {
+                    fields,
+                    definitions,
+                    ..
+                } => fields
+                    .get(field)
+                    .or_else(|| definitions.get(field))
+                    .cloned()
+                    .ok_or_else(|| {
                         LangError::eval(
                             span.line,
                             span.col,
                             format!("field `{field}` not found in struct"),
                         )
-                    })
-                }
+                    }),
                 other => Err(LangError::eval(
                     span.line,
                     span.col,
@@ -1520,6 +1565,7 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             Value::Definition {
                 fields: a,
                 optional: optional_a,
+                definitions: definitions_a,
             },
             Value::Struct(b),
         )
@@ -1528,6 +1574,7 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             Value::Definition {
                 fields: a,
                 optional: optional_a,
+                definitions: definitions_a,
             },
         ) => {
             let mut fields = a.clone();
@@ -1541,16 +1588,22 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     fields.insert(key.clone(), value.clone());
                 }
             }
-            Ok(Value::Definition { fields, optional })
+            Ok(Value::Definition {
+                fields,
+                optional,
+                definitions: definitions_a.clone(),
+            })
         }
         (
             Value::Definition {
                 fields: a,
                 optional: optional_a,
+                definitions: definitions_a,
             },
             Value::Definition {
                 fields: b,
                 optional: optional_b,
+                definitions: definitions_b,
             },
         ) => {
             let mut fields = a.clone();
@@ -1581,7 +1634,19 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     optional.insert(key.clone(), value.clone());
                 }
             }
-            Ok(Value::Definition { fields, optional })
+            let mut definitions = definitions_a.clone();
+            for (key, value) in definitions_b {
+                if let Some(existing) = definitions.get(key).cloned() {
+                    definitions.insert(key.clone(), unify_values(&existing, value, span)?);
+                } else {
+                    definitions.insert(key.clone(), value.clone());
+                }
+            }
+            Ok(Value::Definition {
+                fields,
+                optional,
+                definitions,
+            })
         }
         (Value::Struct(a), Value::Struct(b)) => {
             let mut out = a.clone();

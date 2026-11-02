@@ -129,6 +129,9 @@ unified with `{name: 1}` was accepted). Fixed before the final PR:
 | Optional constraint dropped when the other operand makes the field required | Both `Definition x Definition` directions now unify the optional constraint with the required field |
 | Nested definitions leaked into definition values | Definition field collection excludes names starting with `#` |
 | Definitions rejected as comprehension sources / compared unequal to structs | Definition is handled as a struct in both comprehension paths and semantic equality |
+| Nested definitions became unreachable by selector (`#Lib.#Step`) | Definition now carries a `definitions` map resolved by select/index but excluded from export/iteration/len/equality |
+| Quoted `"#h"` labels were treated as definitions | Definition-ness comes from the AST identifier flag; quoted labels remain regular exported fields |
+| Definition-only caches could leak into the root export | Export filters cached values by their field definition flag |
 
 ## Deliberately deferred / residual risks
 

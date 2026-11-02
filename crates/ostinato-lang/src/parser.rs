@@ -278,11 +278,14 @@ impl Parser {
                 Ok(Some(StructItem::Ellipsis(span)))
             }
             _ => {
+                let definition = matches!(
+                    self.peek_tok(),
+                    Tok::Ident(name) if name.starts_with('#')
+                );
                 let label = self.parse_label()?;
                 let optional = self.eat(&Tok::Question);
                 self.expect(&Tok::Colon, "`:`")?;
                 let value = self.parse_field_value()?;
-                let definition = matches!(&label, Label::Name(name, _) if name.starts_with('#'));
                 Ok(Some(StructItem::Field(Field {
                     label,
                     value,
@@ -398,11 +401,14 @@ impl Parser {
             );
         if nested {
             let span = self.span();
+            let definition = matches!(
+                self.peek_tok(),
+                Tok::Ident(name) if name.starts_with('#')
+            );
             let label = self.parse_label()?;
             let optional = self.eat(&Tok::Question);
             self.expect(&Tok::Colon, "`:`")?;
             let value = self.parse_field_value()?;
-            let definition = matches!(&label, Label::Name(name, _) if name.starts_with('#'));
             Ok(Expr::Struct(
                 vec![StructItem::Field(Field {
                     label,
