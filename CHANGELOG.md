@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.4
+
+Closedness/pattern final corrections.
+
+- Referenced-definition unification only runs for flattened definitions, so
+  definition disjunctions keep their alternatives and defaults.
+- Invalid pattern regexes fail eagerly even on optional fields; value conflicts
+  on unmaterialized optionals remain deferred.
+- 116 tests (23 CLI E2E, 1 conformance, 82 language, 6 domain, 3 store, 1 unit).
+
 ## v0.3.3
 
 Closedness/pattern second review corrections.
