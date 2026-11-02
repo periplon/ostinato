@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.5
+
+Parenthesized-expression fix.
+
+- `Expr::Paren` is transparent to struct-item collection and definition
+  evaluation, so `params: ({...})` keeps `-p` overrides and `#P: ({...})` keeps
+  optional constraints.
+- 97 tests (23 CLI E2E, 1 conformance, 63 language, 6 domain, 3 store, 1 unit).
+
 ## v0.2.4
 
 Disjunction review phase.

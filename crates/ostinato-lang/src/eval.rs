@@ -848,6 +848,9 @@ impl<'a> Frame<'a> {
     }
 
     fn eval_definition_expr(&self, expr: &Expr, span: Span) -> Result<Value, LangError> {
+        if let Expr::Paren(inner, _) = expr {
+            return self.eval_definition_expr(inner, span);
+        }
         if let Expr::Struct(items, struct_span) = expr {
             return self.eval_definition_items(items, *struct_span);
         }
@@ -884,7 +887,7 @@ impl<'a> Frame<'a> {
         }
         match expr {
             Expr::Struct(items, _) => out.extend(items.iter().cloned()),
-            Expr::Default(inner, _) => {
+            Expr::Default(inner, _) | Expr::Paren(inner, _) => {
                 self.collect_struct_items(inner, out, seen, depth + 1)?;
             }
             Expr::Unify(left, right, _) => {
