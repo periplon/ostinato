@@ -21,7 +21,7 @@ for non-draft PRs and therefore waits for these checks before squashing.
 - Second-pass hardening: integrity anchoring, one-time migrations, lifecycle
   invariant, snapshot verification, process-group reaping, private sidecars,
   package-less CUE, lenient `until`, validation caps, native override ordering.
-- 44 tests (21 CLI E2E, 14 language, 6 domain, 3 store).
+- 45 tests (21 CLI E2E, 14 language, 6 domain, 3 store, 1 unit).
 
 ## Auto-merge proof
 
