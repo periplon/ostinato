@@ -667,3 +667,52 @@ params: #P
     assert!(compiled.spec.step("p-b").is_some());
     assert_eq!(compiled.spec.name, "iter-true");
 }
+
+#[test]
+fn nested_definitions_are_selectable() {
+    let source = r#"
+package demo
+#Library: {
+    #Step: {kind: "noop"}
+}
+workflow: {
+    name: "nested"
+    steps: {s: #Library.#Step}
+}
+"#;
+    let compiled = ostinato_lang::compile(source).expect("nested selector");
+    assert_eq!(
+        compiled.spec.step("s").expect("s").kind,
+        ostinato_domain::StepKind::Noop
+    );
+}
+
+#[test]
+fn quoted_hash_labels_are_regular_fields() {
+    let source = r##"
+package demo
+#P: {"#h": 9, a: 2}
+x: #P
+"##;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["#h"], 9);
+    assert_eq!(json["x"]["a"], 2);
+}
+
+#[test]
+fn definitions_can_be_used_in_conditions_and_selectors() {
+    let source = r#"
+package demo
+#P: {#Flag: true}
+workflow: {
+    if #P.#Flag {
+        name: "yes"
+    }
+    steps: {s: {kind: "noop"}}
+}
+"#;
+    let compiled = ostinato_lang::compile(source).expect("definition condition");
+    assert_eq!(compiled.spec.name, "yes");
+}

@@ -163,6 +163,7 @@ fn rust_matches_official_cue_on_the_conformance_corpus() {
     );
     compare(&cue, &root.join("hidden").join("a.cue"), &[]);
     compare(&cue, &root.join("module"), &[]);
+    compare(&cue, &root.join("nestedmodule").join("main.cue"), &[]);
     compare(&cue, &root.join("versioned").join("main.cue"), &[]);
     compare(&cue, &root.join("module").join("complex.cue"), &[]);
 }
