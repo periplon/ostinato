@@ -19,6 +19,10 @@ pub enum DomainError {
     InvalidCycleLimit(String),
     #[error("workflow must contain at least one step")]
     EmptyWorkflow,
+    #[error("cycle policy on step `{0}` has no graph cycle; remove it or add a back-edge")]
+    CycleOnAcyclicStep(String),
+    #[error("materialised plan exceeds the limit of {max} nodes")]
+    PlanTooLarge { max: usize },
     #[error("maxParallel must be >= 1")]
     InvalidParallelism,
     #[error("invalid audit chain at sequence {seq}: {reason}")]

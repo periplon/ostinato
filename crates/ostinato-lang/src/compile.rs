@@ -6,6 +6,7 @@ use ostinato_domain::{
 };
 use serde_json::{Map, Value as Json};
 
+use crate::condition::eval_condition;
 use crate::error::LangError;
 use crate::eval::{TypeKind, Value, eval_file, value_from_json};
 use crate::parser::parse;
@@ -76,6 +77,39 @@ pub fn compile(src: &str) -> Result<CompiledWorkflow, LangError> {
     Ok(CompiledWorkflow { spec, params })
 }
 
+/// Compile with concrete CLI overrides injected before evaluation, so that
+/// compile-time interpolation sees the same values as runtime templates.
+///
+/// # Errors
+/// Returns parse/eval/workflow errors.
+pub fn compile_with_params(
+    src: &str,
+    overrides: &BTreeMap<String, String>,
+) -> Result<CompiledWorkflow, LangError> {
+    let file = parse(src)?;
+    let mut injected = BTreeMap::new();
+    for (key, raw) in overrides {
+        let trimmed = raw.trim();
+        let value = if trimmed.starts_with('{')
+            || trimmed.starts_with('[')
+            || trimmed.starts_with('"')
+            || matches!(trimmed, "true" | "false" | "null")
+            || trimmed.parse::<f64>().is_ok()
+        {
+            serde_json::from_str::<Json>(trimmed)
+                .ok()
+                .map_or_else(|| Value::String(raw.clone()), |json| value_from_json(&json))
+        } else {
+            Value::String(raw.clone())
+        };
+        injected.insert(key.clone(), value);
+    }
+    let root = crate::eval::eval_file_with_overrides(&file, &injected)?;
+    let params = extract_params_from_value(&root)?;
+    let spec = compile_value(&root)?;
+    Ok(CompiledWorkflow { spec, params })
+}
+
 /// Compile an already-evaluated value into a validated workflow specification.
 ///
 /// # Errors
@@ -91,6 +125,7 @@ pub fn compile_value(root: &Value) -> Result<WorkflowSpec, LangError> {
         .ok_or_else(|| LangError::Workflow("missing top-level `workflow` struct".to_owned()))?;
     let spec = extract_workflow(workflow)?;
     build_plan(&spec).map_err(|err| LangError::Workflow(err.to_string()))?;
+    validate_conditions(&spec, &dummy_params(root))?;
     Ok(spec)
 }
 
@@ -113,15 +148,13 @@ fn extract_params_from_value(root: &Value) -> Result<Vec<ParamSpec>, LangError> 
 
 fn parse_override(raw: &str) -> Json {
     let trimmed = raw.trim();
-    if trimmed.starts_with('{')
+    let looks_like_json = trimmed.starts_with('{')
         || trimmed.starts_with('[')
         || trimmed.starts_with('"')
         || matches!(trimmed, "true" | "false" | "null")
-        || trimmed.parse::<f64>().is_ok()
-    {
-        if let Ok(value) = serde_json::from_str(trimmed) {
-            return value;
-        }
+        || trimmed.parse::<f64>().is_ok();
+    if looks_like_json {
+        return serde_json::from_str(trimmed).unwrap_or_else(|_| Json::String(raw.to_owned()));
     }
     Json::String(raw.to_owned())
 }
@@ -165,11 +198,17 @@ fn extract_params(root: &Struct) -> Result<Vec<ParamSpec>, LangError> {
 
 fn extract_workflow(value: &Value) -> Result<WorkflowSpec, LangError> {
     let map = expect_struct(value, "workflow")?;
+    reject_unknown(map, "workflow", &["name", "maxParallel", "steps"])?;
     let name = opt_string(map, "name", "workflow.name")?.unwrap_or_else(|| "workflow".to_owned());
     let max_parallel = opt_int(map, "maxParallel", "workflow.maxParallel")?.unwrap_or(4);
     if max_parallel < 1 {
         return Err(LangError::Workflow(
             "workflow.maxParallel must be >= 1".to_owned(),
+        ));
+    }
+    if max_parallel > 256 {
+        return Err(LangError::Workflow(
+            "workflow.maxParallel must be <= 256".to_owned(),
         ));
     }
     let max_parallel = usize::try_from(max_parallel)
@@ -315,9 +354,13 @@ fn extract_retry(value: Option<&Value>, path: &str) -> Result<RetryPolicy, LangE
         });
     }
     let map = expect_struct(value, path)?;
+    reject_unknown(map, path, &["max", "baseMs", "factor", "maxMs", "jitter"])?;
     let max_retries = opt_int(map, "max", &format!("{path}.max"))?.unwrap_or(0);
     let max_retries = u32::try_from(max_retries)
         .map_err(|_| LangError::Workflow(format!("{path}.max must be non-negative")))?;
+    if max_retries > 100 {
+        return Err(LangError::Workflow(format!("{path}.max must be <= 100")));
+    }
     let base_delay_ms = opt_int(map, "baseMs", &format!("{path}.baseMs"))?.unwrap_or(100);
     let base_delay_ms = u64::try_from(base_delay_ms)
         .map_err(|_| LangError::Workflow(format!("{path}.baseMs must be non-negative")))?;
@@ -343,11 +386,15 @@ fn extract_cycle(value: Option<&Value>, path: &str) -> Result<Option<CycleSpec>,
         return Ok(None);
     };
     let map = expect_struct(value, path)?;
+    reject_unknown(map, path, &["max", "until"])?;
     let max = opt_int(map, "max", &format!("{path}.max"))?.unwrap_or(3);
     let max_rounds = u32::try_from(max)
         .map_err(|_| LangError::Workflow(format!("{path}.max must be non-negative")))?;
     if max_rounds == 0 {
         return Err(LangError::Workflow(format!("{path}.max must be >= 1")));
+    }
+    if max_rounds > 1000 {
+        return Err(LangError::Workflow(format!("{path}.max must be <= 1000")));
     }
     let until = opt_string(map, "until", &format!("{path}.until"))?;
     Ok(Some(CycleSpec { max_rounds, until }))
@@ -355,6 +402,7 @@ fn extract_cycle(value: Option<&Value>, path: &str) -> Result<Option<CycleSpec>,
 
 fn extract_exec(value: &Value, path: &str) -> Result<ExecSpec, LangError> {
     let map = expect_struct(value, path)?;
+    reject_unknown(map, path, &["cmd", "cwd", "env", "timeoutMs"])?;
     let cmd_value = map
         .get("cmd")
         .ok_or_else(|| LangError::Workflow(format!("{path}.cmd is required")))?;
@@ -402,6 +450,7 @@ fn extract_exec(value: &Value, path: &str) -> Result<ExecSpec, LangError> {
 
 fn extract_agent(value: &Value, path: &str) -> Result<AgentSpec, LangError> {
     let map = expect_struct(value, path)?;
+    reject_unknown(map, path, &["prompt", "system", "model", "command"])?;
     let prompt = opt_string(map, "prompt", &format!("{path}.prompt"))?
         .ok_or_else(|| LangError::Workflow(format!("{path}.prompt is required")))?;
     let system = opt_string(map, "system", &format!("{path}.system"))?;
@@ -435,6 +484,7 @@ fn extract_agent(value: &Value, path: &str) -> Result<AgentSpec, LangError> {
 
 fn extract_improve(value: &Value, path: &str) -> Result<ImproveSpec, LangError> {
     let map = expect_struct(value, path)?;
+    reject_unknown(map, path, &["prompt", "maxSamples"])?;
     let prompt = opt_string(map, "prompt", &format!("{path}.prompt"))?;
     let max_samples = opt_int(map, "maxSamples", &format!("{path}.maxSamples"))?.unwrap_or(20);
     let max_samples = usize::try_from(max_samples)
@@ -443,6 +493,84 @@ fn extract_improve(value: &Value, path: &str) -> Result<ImproveSpec, LangError> 
         prompt,
         max_samples,
     })
+}
+
+fn reject_unknown(map: &Struct, path: &str, allowed: &[&str]) -> Result<(), LangError> {
+    for key in map.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(LangError::Workflow(format!(
+                "{path}: unknown field `{key}` (allowed: {})",
+                allowed.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn dummy_params(root: &Struct) -> Json {
+    let Some(Value::Struct(params)) = root.get("params") else {
+        return Json::Object(Map::new());
+    };
+    let mut out = Map::new();
+    for (key, value) in params {
+        out.insert(key.clone(), dummy_value(value));
+    }
+    Json::Object(out)
+}
+
+fn dummy_value(value: &Value) -> Json {
+    match value {
+        Value::String(_) => Json::String(String::new()),
+        Value::Bool(_) => Json::Bool(false),
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::Type(TypeKind::Int | TypeKind::Float | TypeKind::Number) => {
+            Json::Number(serde_json::Number::from(0))
+        }
+        Value::List(_) => Json::Array(Vec::new()),
+        Value::Struct(map) => Json::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), dummy_value(value)))
+                .collect(),
+        ),
+        Value::Type(TypeKind::String) => Json::String(String::new()),
+        Value::Type(TypeKind::Bool) => Json::Bool(false),
+        Value::Null | Value::Bottom => Json::Null,
+    }
+}
+
+fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangError> {
+    let mut steps = Map::new();
+    for name in spec.steps.keys() {
+        steps.insert(
+            name.clone(),
+            serde_json::json!({
+                "score": 0.0,
+                "stdout": "",
+                "stderr": "",
+                "text": "",
+                "exitCode": 0,
+                "json": {},
+            }),
+        );
+    }
+    let context = serde_json::json!({
+        "run_id": "validate",
+        "workflow": spec.name,
+        "round": 0,
+        "params": params,
+        "steps": steps,
+    });
+    for (name, step) in &spec.steps {
+        if let Some(until) = step.cycle.as_ref().and_then(|cycle| cycle.until.as_ref()) {
+            eval_condition(until, &context).map_err(|err| {
+                LangError::Workflow(format!(
+                    "workflow.steps.{name}.cycle.until is invalid: {err}"
+                ))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn expect_struct<'a>(value: &'a Value, path: &str) -> Result<&'a Struct, LangError> {

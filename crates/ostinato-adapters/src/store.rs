@@ -22,22 +22,21 @@ impl SqliteStore {
     /// # Errors
     /// Returns a store error when the file cannot be opened or migrated.
     pub fn open(path: &Path) -> PortResult<Self> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|err| {
-                    PortError::Io(format!("cannot create store directory: {err}"))
-                })?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| PortError::Io(format!("cannot create store directory: {err}")))?;
         }
         let connection = Connection::open(path)
             .map_err(|err| PortError::Store(format!("cannot open database: {err}")))?;
         connection
             .execute_batch(
                 r#"
+                PRAGMA busy_timeout = 5000;
                 PRAGMA journal_mode = WAL;
                 PRAGMA synchronous = FULL;
                 PRAGMA foreign_keys = ON;
-                PRAGMA busy_timeout = 5000;
 
                 CREATE TABLE IF NOT EXISTS runs (
                     id             TEXT PRIMARY KEY,
@@ -50,7 +49,9 @@ impl SqliteStore {
                     parent_run_id  TEXT,
                     error          TEXT,
                     created_at     TEXT NOT NULL,
-                    updated_at     TEXT NOT NULL
+                    updated_at     TEXT NOT NULL,
+                    audit_head     TEXT NOT NULL DEFAULT '',
+                    state_hash     TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS steps (
@@ -115,12 +116,27 @@ impl SqliteStore {
                 "#,
             )
             .map_err(|err| PortError::Store(format!("migration failed: {err}")))?;
-        // Additive migration for databases created before audit_head existed.
-        let _ = connection.execute(
-            "ALTER TABLE runs ADD COLUMN audit_head TEXT NOT NULL DEFAULT '\
-             0000000000000000000000000000000000000000000000000000000000000000'",
-            [],
-        );
+        // Additive migrations for databases created by older versions.
+        ensure_column(
+            &connection,
+            "runs",
+            "audit_head",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &connection,
+            "runs",
+            "state_hash",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        backfill_audit_head(&connection)?;
+        backfill_state_hash(&connection)?;
+        // Restrict database permissions on Unix (best effort).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -144,8 +160,9 @@ impl Store for SqliteStore {
             .execute(
                 "INSERT INTO runs
                  (id, workflow_name, source_file, spec_json, params_json, status,
-                  resume_index, parent_run_id, error, created_at, updated_at, audit_head)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                  resume_index, parent_run_id, error, created_at, updated_at,
+                  audit_head, state_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     run.id,
                     run.workflow_name,
@@ -159,6 +176,7 @@ impl Store for SqliteStore {
                     run.created_at,
                     run.updated_at,
                     run.audit_head,
+                    run.state_hash,
                 ],
             )
             .map_err(|err| PortError::Store(format!("insert run: {err}")))?;
@@ -170,7 +188,7 @@ impl Store for SqliteStore {
         connection
             .query_row(
                 "SELECT id, workflow_name, source_file, spec_json, params_json, status,
-                        resume_index, parent_run_id, error, created_at, updated_at, audit_head
+                        resume_index, parent_run_id, error, created_at, updated_at, audit_head, state_hash
                  FROM runs WHERE id = ?1",
                 params![run_id],
                 run_from_row,
@@ -184,7 +202,7 @@ impl Store for SqliteStore {
         let mut statement = connection
             .prepare(
                 "SELECT id, workflow_name, source_file, spec_json, params_json, status,
-                        resume_index, parent_run_id, error, created_at, updated_at, audit_head
+                        resume_index, parent_run_id, error, created_at, updated_at, audit_head, state_hash
                  FROM runs ORDER BY created_at DESC LIMIT ?1",
             )
             .map_err(|err| PortError::Store(format!("prepare list runs: {err}")))?;
@@ -289,11 +307,12 @@ impl Store for SqliteStore {
             Some(event) => event.hash.clone(),
             None => current_head_tx(&transaction, &completion.run_id)?,
         };
-        transaction
+        let state_hash = state_hash_tx(&transaction, &completion.run_id, completion.resume_index)?;
+        let changed = transaction
             .execute(
                 "UPDATE runs SET status = ?2, resume_index = ?3, error = ?4,
-                        updated_at = ?5, audit_head = ?6
-                 WHERE id = ?1",
+                        updated_at = ?5, audit_head = ?6, state_hash = ?7
+                 WHERE id = ?1 AND status != 'cancelled'",
                 params![
                     completion.run_id,
                     completion.status.as_str(),
@@ -301,9 +320,13 @@ impl Store for SqliteStore {
                     completion.error,
                     completion.updated_at,
                     head,
+                    state_hash,
                 ],
             )
             .map_err(|err| PortError::Store(format!("update run: {err}")))?;
+        if changed == 0 {
+            return Err(PortError::Cancelled(completion.run_id));
+        }
         transaction
             .commit()
             .map_err(|err| PortError::Store(format!("commit completion: {err}")))?;
@@ -328,10 +351,11 @@ impl Store for SqliteStore {
             )
             .map_err(|err| PortError::Store(format!("advance run: {err}")))?;
         let event = append_event_tx(&transaction, run_id, &event, updated_at)?;
+        let state_hash = state_hash_tx(&transaction, run_id, resume_index)?;
         transaction
             .execute(
-                "UPDATE runs SET audit_head = ?2 WHERE id = ?1",
-                params![run_id, event.hash],
+                "UPDATE runs SET audit_head = ?2, state_hash = ?3 WHERE id = ?1",
+                params![run_id, event.hash, state_hash],
             )
             .map_err(|err| PortError::Store(format!("advance audit head: {err}")))?;
         transaction
@@ -480,13 +504,34 @@ impl Store for SqliteStore {
         let transaction = connection
             .transaction()
             .map_err(|err| PortError::Store(format!("begin cancel: {err}")))?;
-        transaction
+        let current: Option<String> = transaction
+            .query_row(
+                "SELECT status FROM runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| PortError::Store(format!("read run status: {err}")))?;
+        let Some(current) = current else {
+            return Err(PortError::Config(format!("run not found: {run_id}")));
+        };
+        if matches!(current.as_str(), "succeeded" | "failed" | "cancelled") {
+            return Err(PortError::Config(format!(
+                "run {run_id} is already {current} and cannot be cancelled"
+            )));
+        }
+        let changed = transaction
             .execute(
-                "UPDATE runs SET status = 'cancelled', error = NULL, updated_at = ?2
-                 WHERE id = ?1",
+                "UPDATE runs SET status = 'cancelled', updated_at = ?2
+                 WHERE id = ?1 AND status IN ('pending','running','interrupted')",
                 params![run_id, updated_at],
             )
             .map_err(|err| PortError::Store(format!("cancel run: {err}")))?;
+        if changed == 0 {
+            return Err(PortError::Config(format!(
+                "run {run_id} changed state and cannot be cancelled"
+            )));
+        }
         let event = append_event_tx(
             &transaction,
             run_id,
@@ -569,6 +614,145 @@ impl Store for SqliteStore {
     }
 }
 
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> PortResult<()> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|err| PortError::Store(format!("inspect schema: {err}")))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| PortError::Store(format!("inspect schema: {err}")))?;
+    let mut exists = false;
+    for row in rows {
+        if row.map_err(|err| PortError::Store(format!("inspect schema: {err}")))? == column {
+            exists = true;
+            break;
+        }
+    }
+    drop(statement);
+    if !exists {
+        connection
+            .execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                [],
+            )
+            .map_err(|err| PortError::Store(format!("add column {table}.{column}: {err}")))?;
+    }
+    Ok(())
+}
+
+fn backfill_audit_head(connection: &Connection) -> PortResult<()> {
+    let missing: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM runs WHERE audit_head = '' OR audit_head IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|err| PortError::Store(format!("check audit heads: {err}")))?;
+    if missing == 0 {
+        return Ok(());
+    }
+    connection
+        .execute(
+            "UPDATE runs SET audit_head = COALESCE(
+                 (SELECT hash FROM events WHERE events.run_id = runs.id
+                  ORDER BY seq DESC LIMIT 1), ?1)
+             WHERE audit_head = '' OR audit_head IS NULL",
+            params![audit::GENESIS_HASH],
+        )
+        .map_err(|err| PortError::Store(format!("backfill audit head: {err}")))?;
+    Ok(())
+}
+
+fn backfill_state_hash(connection: &Connection) -> PortResult<()> {
+    let candidates: Vec<(String, String, String, i64)> = {
+        let mut statement = connection
+            .prepare(
+                "SELECT id, spec_json, params_json, resume_index FROM runs
+                 WHERE state_hash = '' OR state_hash IS NULL",
+            )
+            .map_err(|err| PortError::Store(format!("find state hashes: {err}")))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .map_err(|err| PortError::Store(format!("find state hashes: {err}")))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|err| PortError::Store(format!("find state hashes: {err}")))?);
+        }
+        out
+    };
+    for (run_id, spec_json, params_json, resume_index) in candidates {
+        let spec: WorkflowSpec = serde_json::from_str(&spec_json)
+            .map_err(|err| PortError::Store(format!("parse spec for state hash: {err}")))?;
+        let params: Json = serde_json::from_str(&params_json)
+            .map_err(|err| PortError::Store(format!("parse params for state hash: {err}")))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT run_id, name, status, visits, attempts, output_json, error, updated_at
+                 FROM steps WHERE run_id = ?1 ORDER BY name",
+            )
+            .map_err(|err| PortError::Store(format!("load steps for state hash: {err}")))?;
+        let rows = statement
+            .query_map(params![run_id], step_from_row)
+            .map_err(|err| PortError::Store(format!("load steps for state hash: {err}")))?;
+        let mut steps = Vec::new();
+        for row in rows {
+            steps.push(
+                row.map_err(|err| PortError::Store(format!("load steps for state hash: {err}")))?,
+            );
+        }
+        drop(statement);
+        let digest = audit::state_digest(&spec, &params, resume_index, &steps);
+        connection
+            .execute(
+                "UPDATE runs SET state_hash = ?2 WHERE id = ?1",
+                params![run_id, digest],
+            )
+            .map_err(|err| PortError::Store(format!("backfill state hash: {err}")))?;
+    }
+    Ok(())
+}
+
+fn state_hash_tx(
+    transaction: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    resume_index: i64,
+) -> PortResult<String> {
+    let (spec_json, params_json): (String, String) = transaction
+        .query_row(
+            "SELECT spec_json, params_json FROM runs WHERE id = ?1",
+            params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|err| PortError::Store(format!("read run for state hash: {err}")))?;
+    let spec: WorkflowSpec = serde_json::from_str(&spec_json)
+        .map_err(|err| PortError::Store(format!("parse spec for state hash: {err}")))?;
+    let params: Json = serde_json::from_str(&params_json)
+        .map_err(|err| PortError::Store(format!("parse params for state hash: {err}")))?;
+    let mut statement = transaction
+        .prepare(
+            "SELECT run_id, name, status, visits, attempts, output_json, error, updated_at
+             FROM steps WHERE run_id = ?1 ORDER BY name",
+        )
+        .map_err(|err| PortError::Store(format!("load steps for state hash: {err}")))?;
+    let rows = statement
+        .query_map(params![run_id], step_from_row)
+        .map_err(|err| PortError::Store(format!("load steps for state hash: {err}")))?;
+    let mut steps = Vec::new();
+    for row in rows {
+        steps.push(
+            row.map_err(|err| PortError::Store(format!("load steps for state hash: {err}")))?,
+        );
+    }
+    Ok(audit::state_digest(&spec, &params, resume_index, &steps))
+}
+
 fn current_head_tx(transaction: &rusqlite::Transaction<'_>, run_id: &str) -> PortResult<String> {
     transaction
         .query_row(
@@ -593,9 +777,24 @@ fn append_event_tx(
         )
         .optional()
         .map_err(|err| PortError::Store(format!("read audit head: {err}")))?;
+    let expected_head = current_head_tx(transaction, run_id)?;
     let (seq, prev_hash) = match previous {
-        Some((seq, hash)) => (u64::try_from(seq).unwrap_or(0) + 1, hash),
-        None => (0, audit::GENESIS_HASH.to_owned()),
+        Some((seq, hash)) => {
+            if hash != expected_head {
+                return Err(PortError::Store(format!(
+                    "audit chain for run {run_id} is truncated or corrupt; refusing to append"
+                )));
+            }
+            (u64::try_from(seq).unwrap_or(0) + 1, hash)
+        }
+        None => {
+            if expected_head != audit::GENESIS_HASH {
+                return Err(PortError::Store(format!(
+                    "audit chain for run {run_id} is missing events; refusing to append"
+                )));
+            }
+            (0, audit::GENESIS_HASH.to_owned())
+        }
     };
     let sealed = audit::seal(
         run_id,
@@ -625,6 +824,12 @@ fn append_event_tx(
             ],
         )
         .map_err(|err| PortError::Store(format!("insert audit event: {err}")))?;
+    transaction
+        .execute(
+            "UPDATE runs SET audit_head = ?2 WHERE id = ?1",
+            params![run_id, sealed.hash],
+        )
+        .map_err(|err| PortError::Store(format!("update audit head: {err}")))?;
     Ok(sealed)
 }
 
@@ -651,6 +856,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
         audit_head: row.get(11)?,
+        state_hash: row.get(12)?,
     })
 }
 

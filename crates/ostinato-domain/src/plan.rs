@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::error::DomainError;
 use crate::workflow::WorkflowSpec;
 
+/// Hard cap on materialised plan nodes. Cycles expand eagerly; this prevents
+/// a workflow file from exhausting memory during planning.
+pub const MAX_PLAN_NODES: usize = 100_000;
+
 /// One scheduled execution of a step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanNode {
@@ -149,10 +153,19 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
 
         if !acyclic.is_empty() {
             for &comp_id in &acyclic {
+                let member = comp_nodes[comp_id][0];
+                if spec.steps[&names[member]].cycle.is_some() {
+                    return Err(DomainError::CycleOnAcyclicStep(names[member].clone()));
+                }
+                if nodes.len() >= MAX_PLAN_NODES {
+                    return Err(DomainError::PlanTooLarge {
+                        max: MAX_PLAN_NODES,
+                    });
+                }
                 nodes.push(PlanNode {
                     index: nodes.len(),
                     group,
-                    step: names[comp_nodes[comp_id][0]].clone(),
+                    step: names[member].clone(),
                     scc: comp_id,
                     round: 0,
                     is_round_end: true,
@@ -171,6 +184,11 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
             for round in 0..max_rounds {
                 for (level_idx, inner) in levels.iter().enumerate() {
                     for &node in inner {
+                        if nodes.len() >= MAX_PLAN_NODES {
+                            return Err(DomainError::PlanTooLarge {
+                                max: MAX_PLAN_NODES,
+                            });
+                        }
                         nodes.push(PlanNode {
                             index: nodes.len(),
                             group,
@@ -346,10 +364,10 @@ fn strongly_connected(adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
             if state.indices[next].is_none() {
                 connect(next, adj, state);
                 state.low[node] = state.low[node].min(state.low[next]);
-            } else if state.on_stack[next] {
-                if let Some(next_index) = state.indices[next] {
-                    state.low[node] = state.low[node].min(next_index);
-                }
+            } else if state.on_stack[next]
+                && let Some(next_index) = state.indices[next]
+            {
+                state.low[node] = state.low[node].min(next_index);
             }
         }
 

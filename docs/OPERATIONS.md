@@ -8,7 +8,7 @@ cargo build --release -p ostinato
 install -m 0755 target/release/ostinato ~/.local/bin/ostinato
 ```
 
-`ostinato doctor` must report the official CUE version and `store OK`. Use `--cue /path/to/cue` or `CUE_BIN` to pin a binary per invocation.
+`ostinato doctor` must report official CUE **>= v0.17.1** and `store OK`. Use `--cue /path/to/cue` or `CUE_BIN` to pin a binary per invocation.
 
 ## Database
 
@@ -16,7 +16,7 @@ Default: `.ostinato/ostinato.db` (override with `--db` or `OSTINATO_DB`).
 
 ```text
 runs(id, workflow_name, source_file, spec_json, params_json, status, resume_index,
-     parent_run_id, error, created_at, updated_at)
+     parent_run_id, error, created_at, updated_at, audit_head, state_hash)
 steps(run_id, name, status, visits, attempts, output_json, error, updated_at)
 events(run_id, seq, ts, kind, step, data_json, prev_hash, hash)
 trials(id, run_id, node_index, step, round, attempt, status, score, duration_ms,
@@ -25,6 +25,7 @@ improvements(id, run_id, parent_id, round, diagnosis, proposal_json, created_at)
 ```
 
 Pragmas: WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`.
+The database is created with mode `0600` on Unix.
 
 ### Backup
 
@@ -41,6 +42,7 @@ Restore by stopping writers and replacing the file. `runs` stores the full evalu
 There is no automatic pruning. Suggested:
 
 ```sql
+PRAGMA foreign_keys = ON;
 DELETE FROM runs WHERE status = 'succeeded' AND created_at < date('now','-90 day');
 VACUUM;
 ```
@@ -56,8 +58,10 @@ pending → running → succeeded
 ```
 
 `ostinato cancel <run>` marks the run cancelled and appends `run.cancelled`. The
-scheduler checks the status between groups, so cancellation is bounded by the
-currently running group. `resume` rejects cancelled runs.
+scheduler checks the status between groups and the group commit is conditional,
+so a cancellation that lands during a group cannot be overwritten. Cancellation
+is bounded by the currently running group. Terminal runs cannot be cancelled,
+and `resume` rejects cancelled runs.
 
 A process killed mid-run leaves `running`; the next `resume` continues from `resume_index`. Only one writer per run should be active at a time. Use `ostinato status` before resuming in automation. Exec and agent steps run in the workflow file's directory unless `exec.cwd` is set.
 
@@ -88,9 +92,11 @@ To verify externally, recompute:
 SHA256(run_id 0x1f seq_be_u64 0x1f ts 0x1f kind 0x1f step 0x1f prev_hash 0x1f json(data))
 ```
 
-`runs.audit_head` stores the latest hash. Verification also compares the computed
-head with that persisted value, so truncating the tail is detected. Any mismatch
-is reported as `AUDIT FAILED` with the sequence number and exits 1.
+`runs.audit_head` stores the latest hash and `runs.state_hash` digests the
+execution-relevant state (`spec`, `params`, `resume_index`, step status/output).
+Verification compares both, so payload edits, spec/checkpoint/output tampering
+and tail truncation are detected. Any mismatch is reported as `AUDIT FAILED`
+with the sequence number and exits 1. Appending to a truncated chain is refused.
 
 ## Trials
 

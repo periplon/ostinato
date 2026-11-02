@@ -20,9 +20,13 @@ pub mod lexer;
 pub mod parser;
 pub mod template;
 
-pub use compile::{CompiledWorkflow, ParamSpec, compile, compile_json, compile_value};
+pub use compile::{
+    CompiledWorkflow, ParamSpec, compile, compile_json, compile_value, compile_with_params,
+};
 pub use condition::eval_condition;
 pub use error::LangError;
-pub use eval::{TypeKind, Value, eval_expr_with_json, eval_file, value_from_json};
+pub use eval::{
+    TypeKind, Value, eval_expr_with_json, eval_file, eval_file_with_overrides, value_from_json,
+};
 pub use parser::{parse, parse_expr_fragment};
 pub use template::{lookup_path, render};

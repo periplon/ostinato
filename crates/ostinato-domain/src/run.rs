@@ -77,6 +77,8 @@ pub struct RunRecord {
     pub updated_at: String,
     /// Latest audit hash, persisted so tail truncation is detectable.
     pub audit_head: String,
+    /// Digest of the execution-relevant state (spec, params, checkpoint, steps).
+    pub state_hash: String,
 }
 
 /// Durable record for a step.

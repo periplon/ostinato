@@ -1,4 +1,4 @@
-package examples
+package cycle
 
 // A real cycle: review depends on refine and refine depends on review.
 // The cycle is bounded and stops as soon as the score reaches 0.8.

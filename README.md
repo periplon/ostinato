@@ -2,7 +2,7 @@
 
 **Durable, observable, agentic workflows written 100% in CUE — executed by a Rust engine.**
 
-Ostinato is a CLI-first workflow runtime that treats the **official CUE implementation as its normative language front-end**. You write ordinary CUE; Ostinato adds durable execution, retries, cycles, audit, trials, metrics, agent steps and recursive improvement.
+Ostinato is a CLI-first workflow runtime that treats the **official CUE implementation as its normative language front-end**. You write ordinary CUE; Ostinato exports the containing package with `cue`, then adds durable execution, retries, cycles, audit, trials, metrics, agent steps and recursive improvement.
 
 ```text
 CUE source ──► official `cue export` ──► typed workflow spec ──► Rust scheduler
@@ -31,17 +31,17 @@ CUE source ──► official `cue export` ──► typed workflow spec ──�
 
 ## Status
 
-`v0.1.0` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
+`v0.1.1` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
 
 ## Features
 
-- **CUE-native**: official CUE `v0.17.1` evaluates every file, including modules, imports, builtins, `let`, comprehensions, definitions, disjunctions and `@tag` injection.
+- **CUE-native**: official CUE `v0.17.1` evaluates the containing package, including modules, imports, builtins, `let`, comprehensions, definitions, disjunctions and `@tag` injection.
 - **Durable**: SQLite WAL + `synchronous=FULL`; each parallel group commits atomically with its audit events.
 - **Resumable**: `ostinato resume <run>` skips completed work using a stable plan index.
 - **Retries**: bounded exponential backoff, deterministic jitter, per-attempt timeouts.
 - **Cycles**: strongly-connected components execute as bounded rounds; `until` conditions stop early.
 - **Agentic + deterministic**: `exec`, `agent`, `improve`, `noop` step kinds share one scheduler.
-- **Audit**: SHA-256 hash chain per run with a persisted head; `ostinato audit verify` detects tampering and tail truncation.
+- **Audit**: SHA-256 hash chain per run with a persisted head **and a state digest**; `ostinato audit verify` detects payload tampering, tail truncation and edits to the spec/checkpoint/step outputs.
 - **Trials**: append-only log of every attempt with input/output hashes, score, duration and error.
 - **Observability**: structured tracing, `status`, `logs --follow`, run metrics, Prometheus text output.
 - **Recursive improvement**: an `improve` step persists proposals; the CLI can spawn child runs from `params_patch` recursively.
@@ -53,8 +53,8 @@ CUE source ──► official `cue export` ──► typed workflow spec ──�
 
 Requirements:
 
-- Rust stable (edition 2024; `rust-version = 1.85`)
-- Official CUE **v0.17.1** on `PATH` (or `--cue <path>`)
+- Rust stable (edition 2024; `rust-version = 1.88`)
+- Official CUE **>= v0.17.1** on `PATH` (or `--cue <path>`)
 
 ```sh
 # CUE
@@ -72,7 +72,7 @@ Verify:
 ostinato doctor
 # ostinato 0.1.0
 # evaluator cue (official, fully compliant)
-# cue cue version v0.17.1
+# cue version v0.17.1
 # db .ostinato/ostinato.db
 # store OK
 ```
@@ -127,7 +127,7 @@ workflow: {
 |---|---|
 | `ostinato init [dir]` | Write a starter workflow and `.gitignore` |
 | `ostinato validate <file> [-p k=v]` | Evaluate with CUE and validate the workflow |
-| `ostinato graph <file> [--format dot\|json]` | Show the materialised plan (including cycle rounds) |
+| `ostinato graph <file> [--format dot\|json]` | Show the dependency graph (DOT) or materialised plan (JSON) |
 | `ostinato run <file> [-p k=v] [--agent-cmd CMD]` | Start a durable run |
 | `ostinato cancel <run>` | Cancel between groups |
 | `ostinato resume <run>` | Resume after failure or crash |
@@ -233,9 +233,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and SOLID mapping.
 
 ## CUE compliance
 
-**The default evaluator is the official CUE CLI.** Ostinato does not reimplement CUE semantics for production use; it invokes `cue export` and consumes the concrete JSON. Therefore the language layer is fully compliant with the official implementation, including features Ostinato does not use.
+**The default evaluator is the official CUE CLI.** Ostinato does not reimplement CUE semantics for production use; it invokes `cue export` on the containing package (`-e workflow` and `-e params`) and consumes the concrete JSON. The language layer is therefore exactly the official implementation, version-gated at `>= v0.17.1`, including features Ostinato does not use.
 
-- Tested with CUE **v0.17.1** and **v0.16.1**.
+- Requires CUE **>= v0.17.1**; tested with **v0.17.1**.
 - CI installs and pins **v0.17.1**.
 - `--evaluator native` is an offline subset for tests and constrained environments. It is **not** advertised as compliant and is rejected in the doctor output as such.
 - There is **no silent fallback**: if `cue` is missing, the default evaluator errors with install instructions.
@@ -255,7 +255,8 @@ The committed [docs/EVIDENCE.md](docs/EVIDENCE.md) contains real command output 
 
 ## Non-goals / limits
 
-- Single-writer per run. Do not run two `resume` processes for the same run.
+- Single-writer per run. Do not run two `resume` processes for the same run; use an external lock in automation.
+- One database per run set; SQLite is the durability boundary (single host).
 - Exec and agent steps run in the workflow file's directory unless `exec.cwd` is set.
 - No distributed workers, cron scheduler, or web UI (by design: CLI only).
 - Exec/agent steps are trusted configuration; CUE files are code.

@@ -14,25 +14,40 @@ Because step 1 is the reference implementation, every CUE feature — including 
 
 ## Exact invocation
 
+The loader exports the **containing CUE package**, not a lone file, so split
+definitions, sibling conflicts and module imports behave exactly as they do in
+CUE:
+
 ```sh
-cd <directory of the source file>
-cue export <absolute path to source> --out json \
-    [-t key=value ...]
+cd <directory of the source, or the directory itself>
+cue export .:<package> --out json -e workflow [-t key=value ...]
+cue export .:<package> --out json -e params   [-t key=value ...]
 ```
 
-- `current_dir` is the source file's directory so `cue.mod/` and relative imports resolve.
-- `-p/--param` values from the CLI are passed as CUE `-t` tag injections. Declare parameters with `@tag(name)` (and `@tag(name,type=int)` if needed).
-- A nonzero exit from `cue` is surfaced verbatim; Ostinato never guesses or partially evaluates.
-- If `cue` is missing, the default evaluator fails with install instructions. There is no silent fallback to the native subset.
+- For a directory source, the instance is `.` inside that directory.
+- For a file, the package name is read from its `package` clause and the
+  instance is `.:<package>`; CUE then sees every sibling file in the package.
+- Only `workflow` and `params` are exported, so unrelated incomplete or
+  conflicting top-level fields are not evaluated.
+- `-p/--param` values are passed as CUE `-t` tag injections. Use
+  `@tag(name,type=int)`, `type=bool`, `type=number` for non-strings.
+- A nonzero exit is surfaced with the command's exit code and stderr. If
+  `params` is absent, the second export is treated as `{}` **only** when CUE
+  reports `reference "params" not found`.
+- If `cue` is missing or older than the required version, the default
+  evaluator fails with install instructions. There is no silent fallback.
 
-## Verified versions
+## Version policy
 
 | Version | Result |
 |---|---|
-| **v0.17.1** (current at time of writing) | full run, module import, `let`, comprehension, definition, optional field, `@tag`, audit |
-| v0.16.1 | same workflows pass |
+| **v0.17.1** (current at time of writing) | full run, module import, `let`, comprehension, definition, optional field, `@tag`, split packages, audit |
+| < v0.17.1 | rejected with a clear error |
 
-CI installs **v0.17.1** from the official release tarball (`scripts/install-cue.sh`). `ostinato doctor` prints the detected version. The version is also recorded in every validation report as `evaluator=official CUE (cue version vX.Y.Z)`.
+`CueCliLoader::new` parses `cue version` and requires **>= v0.17.1**. CI
+installs v0.17.1 from the official release tarball (`scripts/install-cue.sh`).
+`ostinato doctor` prints the detected version. The version is recorded in
+`validate` output as `evaluator=official CUE (cue version vX.Y.Z)`.
 
 ## What is exercised in the repository
 
@@ -84,19 +99,25 @@ evaluator native CUE subset (not fully compliant; use --evaluator cue)
 
 | Feature | Native subset | Official CUE (default) |
 |---|---|---|
-| Structs, fields, references, lists | ✅ | ✅ |
-| Defaults, unification, basic disjunctions | ✅ | ✅ |
-| String interpolation `\(...)` | ✅ | ✅ |
-| `if` / `for` struct comprehensions | ✅ (simple) | ✅ |
+| Explicit `label: value` structs, references, lists | ✅ | ✅ |
+| Single or multi-branch defaults/unification | ✅ (first default wins) | ✅ |
+| String interpolation `\(...)` | ✅ (escaped `\\(` not fully) | ✅ |
+| `if` / `for` struct comprehensions | ⚠️ simple; generated fields are readable | ✅ |
 | Type constraints (`string`, `int`, ...) | ✅ (basic) | ✅ |
 | Imports / modules / `cue.mod` | ❌ | ✅ |
 | `let` declarations | ❌ | ✅ |
 | Builtins (`strings`, `list`, `math`, `regexp`, ...) | ❌ | ✅ |
-| Definitions (`#Foo`) with closedness/constraints | ⚠️ references only | ✅ |
-| Optional fields and closed structs | ⚠️ basic | ✅ |
-| Aliases, pattern constraints, disjunction lattices | ❌ | ✅ |
-| Attributes other than being skipped | ⚠️ skipped | ✅ |
+| Definitions (`#Foo`) with closedness/constraints | ⚠️ references only; closedness not enforced | ✅ |
+| Optional fields | ⚠️ always omitted, matching `cue export` | ✅ |
+| Nested field shorthand (`exec: cmd: [...]`) | ❌ | ✅ |
+| Attributes | ✅ simple attributes skipped, including `@tag(n,type=int)` | ✅ |
+| Aliases, pattern constraints, full disjunction lattices | ❌ | ✅ |
 | Bytes, tool packages, `cue` commands | ❌ | ✅ |
+
+Native `-p` overrides are injected before evaluation (so compile-time
+interpolation sees them), but values are JSON-coerced rather than CUE
+`@tag`-typed. This difference is explicit; use the official evaluator for
+compliance.
 
 ### Rules for contributors
 

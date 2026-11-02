@@ -1,4 +1,4 @@
-package examples
+package retry
 
 // Retry with exponential backoff. The counter is stored under .ostinato so
 // the example is reproducible without touching global state.
