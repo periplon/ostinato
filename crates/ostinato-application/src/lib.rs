@@ -15,5 +15,5 @@ pub use improve::{ImproveRequest, params_patch, propose_improvement};
 pub use ports::{
     AgentOutcome, AgentRequest, AgentRunner, Clock, CommandExecutor, Completion, ExecOutcome,
     ExecRequest, IdGenerator, LoadRequest, LoadedWorkflow, MetricsSummary, NoTelemetry, PortError,
-    PortResult, SpecLoader, Store, Telemetry,
+    PortResult, RunSnapshot, SpecLoader, Store, Telemetry,
 };

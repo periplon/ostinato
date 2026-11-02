@@ -218,9 +218,15 @@ fn cue_instance(path: &Path) -> PortResult<(PathBuf, String)> {
     let directory = path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let package = package_name(path)?;
-    let instance = package.map_or_else(|| ".".to_owned(), |name| format!(".:{name}"));
-    Ok((directory, instance))
+    match package_name(path)? {
+        Some(name) if name != "_" => Ok((directory, format!(".:{name}"))),
+        _ => {
+            let file = path.file_name().ok_or_else(|| {
+                PortError::Loader(format!("invalid source path: {}", path.display()))
+            })?;
+            Ok((directory, file.to_string_lossy().into_owned()))
+        }
+    }
 }
 
 fn package_name(path: &Path) -> PortResult<Option<String>> {
@@ -228,9 +234,11 @@ fn package_name(path: &Path) -> PortResult<Option<String>> {
         .map_err(|err| PortError::Loader(format!("cannot read {}: {err}", path.display())))?;
     for line in source.lines() {
         let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("package ") {
+        if let Some(rest) = trimmed.strip_prefix("package")
+            && rest.starts_with(char::is_whitespace)
+        {
             let name = rest
-                .trim()
+                .trim_start()
                 .split(|c: char| c.is_whitespace() || c == '{' || c == ';')
                 .next()
                 .unwrap_or("");
@@ -246,7 +254,8 @@ fn parse_version(version: &str) -> Option<(u32, u32, u32)> {
     let token = version
         .split_whitespace()
         .find(|token| token.starts_with('v') && token.contains('.'))?;
-    let mut parts = token.trim_start_matches('v').split('.');
+    let core = token.trim_start_matches('v').split(['-', '+']).next()?;
+    let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
     let patch = parts.next()?.parse().ok()?;
@@ -261,5 +270,22 @@ fn json_type_name(value: &Json) -> &'static str {
         Json::String(_) => "string",
         Json::Array(_) => "list",
         Json::Object(_) => "struct",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_version;
+
+    #[test]
+    fn parses_release_pre_release_and_build_metadata() {
+        assert_eq!(parse_version("cue version v0.17.1"), Some((0, 17, 1)));
+        assert_eq!(
+            parse_version("CUE language version v0.17.1"),
+            Some((0, 17, 1))
+        );
+        assert_eq!(parse_version("cue version v0.17.1+meta"), Some((0, 17, 1)));
+        assert_eq!(parse_version("cue version v0.18.0-rc.1"), Some((0, 18, 0)));
+        assert_eq!(parse_version("cue version v0.16.1"), Some((0, 16, 1)));
     }
 }

@@ -886,3 +886,263 @@ workflow: {
         .expect("count");
     assert_eq!(after, before - 1, "resume must not append after truncation");
 }
+
+#[test]
+fn package_less_cue_file_is_loaded_by_filename() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let workflow = directory.path().join("anonymous.cue");
+    write(
+        &workflow,
+        r#"
+workflow: {
+    name: "anonymous"
+    steps: { a: { kind: "exec", exec: { cmd: ["sh", "-c", "echo hi"] } } }
+}
+"#,
+    );
+    // A sibling package must not be selected instead of the anonymous file.
+    write(
+        &directory.path().join("sibling.cue"),
+        r#"
+package sibling
+workflow: { name: "wrong", steps: { a: { kind: "noop" } } }
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "--cue",
+        &cue,
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("anonymous"));
+}
+
+#[test]
+fn background_grandchild_does_not_extend_a_successful_step() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let workflow = directory.path().join("bg.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    name: "background"
+    steps: {
+        bg: {
+            kind: "exec"
+            timeoutMs: 1000
+            exec: { cmd: ["sh", "-c", "sleep 30 & echo started"] }
+        }
+    }
+}
+"#,
+    );
+    let started = std::time::Instant::now();
+    let output = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    let elapsed = started.elapsed();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "background grandchild held the pipes for {elapsed:?}"
+    );
+}
+
+#[test]
+fn cleared_integrity_hashes_are_not_silently_repaired() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    name: "no-repair"
+    steps: { a: { kind: "exec", exec: { cmd: ["sh", "-c", "echo hi"] } } }
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(output.status.success());
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    connection
+        .execute("UPDATE runs SET state_hash = '' WHERE id = ?1", [&run])
+        .expect("clear state hash");
+    let verified = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(
+        !verified.status.success(),
+        "cleared state_hash must not be repaired"
+    );
+
+    connection
+        .execute("UPDATE runs SET audit_head = '' WHERE id = ?1", [&run])
+        .expect("clear head");
+    connection
+        .execute(
+            "DELETE FROM events WHERE run_id = ?1 AND seq = (SELECT MAX(seq) FROM events WHERE run_id = ?1)",
+            [&run],
+        )
+        .expect("truncate");
+    let verified = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(
+        !verified.status.success(),
+        "cleared audit_head must not be repaired"
+    );
+}
+
+#[test]
+fn status_row_tampering_is_detected_by_the_lifecycle_invariant() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    name: "status"
+    steps: { a: { kind: "exec", exec: { cmd: ["sh", "-c", "exit 9"] } } }
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    connection
+        .execute(
+            "UPDATE runs SET status = 'succeeded', error = NULL WHERE id = ?1",
+            [&run],
+        )
+        .expect("flip status");
+    let verified = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(!verified.status.success());
+    assert!(String::from_utf8_lossy(&verified.stderr).contains("audit chain ends in"));
+}
+
+#[test]
+fn recomputed_state_hash_is_still_rejected_by_the_chain_anchor() {
+    use ostinato_domain::{StepRecord, StepStatus, WorkflowSpec, state_digest};
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    name: "anchor"
+    steps: { a: { kind: "exec", exec: { cmd: ["sh", "-c", "echo hi"] } } }
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(output.status.success());
+    let run = run_id(&db);
+
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    let (spec_json, params_json, source_file, resume_index): (String, String, String, i64) =
+        connection
+            .query_row(
+                "SELECT spec_json, params_json, source_file, resume_index FROM runs WHERE id = ?1",
+                [&run],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("run row");
+    let mut spec: WorkflowSpec = serde_json::from_str(&spec_json).expect("spec");
+    let step = spec.steps.get_mut("a").expect("step a");
+    step.exec.as_mut().expect("exec").cmd = vec!["sh".into(), "-c".into(), "echo forged".into()];
+    let params: Value = serde_json::from_str(&params_json).expect("params");
+
+    let mut statement = connection
+        .prepare(
+            "SELECT run_id, name, status, visits, attempts, output_json, error, updated_at
+             FROM steps WHERE run_id = ?1",
+        )
+        .expect("prepare steps");
+    let rows = statement
+        .query_map([&run], |row| {
+            let status: String = row.get(2)?;
+            let output: Option<String> = row.get(5)?;
+            Ok(StepRecord {
+                run_id: row.get(0)?,
+                name: row.get(1)?,
+                status: match status.as_str() {
+                    "succeeded" => StepStatus::Succeeded,
+                    "failed" => StepStatus::Failed,
+                    "skipped" => StepStatus::Skipped,
+                    "running" => StepStatus::Running,
+                    _ => StepStatus::Pending,
+                },
+                visits: row.get::<_, i64>(3)? as u32,
+                attempts: row.get::<_, i64>(4)? as u32,
+                output: output.map(|text| serde_json::from_str(&text).expect("output")),
+                error: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })
+        .expect("query steps");
+    let steps: Vec<StepRecord> = rows.map(|row| row.expect("step")).collect();
+    drop(statement);
+
+    let digest = state_digest(&spec, &params, &source_file, resume_index, &steps);
+    connection
+        .execute(
+            "UPDATE runs SET spec_json = ?2, state_hash = ?3 WHERE id = ?1",
+            rusqlite::params![
+                run,
+                serde_json::to_string(&spec).expect("serialize"),
+                digest
+            ],
+        )
+        .expect("tamper spec and recompute digest");
+
+    let verified = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(!verified.status.success());
+    assert!(String::from_utf8_lossy(&verified.stderr).contains("not anchored"));
+}

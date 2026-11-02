@@ -60,17 +60,45 @@ Evidence: `docs/EVIDENCE.md`, `evidence/`, `cargo test --all`, `cargo clippy --a
 - `metrics --json`, `validate --json` and `doctor` output contracts corrected.
 - `logs --follow` stops on terminal runs and errors for unknown runs.
 
+## Second-pass review (v0.1.2)
+
+A red-team pass over v0.1.1 found that the integrity protections could be
+laundered by clearing the persisted hashes, that status rows were not covered
+by the digest, that WAL files were world-readable, and that background
+grandchildren could still hold pipes after a successful child exit. Those were
+fixed before v0.1.2:
+
+| Finding | Fix |
+|---|---|
+| Opening the DB auto-repaired blank `audit_head`/`state_hash` | One-time migration gated by `PRAGMA user_version`; blank hashes after migration are tampering |
+| `runs.status` could be flipped without detection | Last lifecycle event must match status; cancelled events permanently block resume |
+| `state_hash` was only in the mutable row | `state.committed` events embed and chain the digest |
+| WAL/SHM created `0644` | Main DB chmodded before WAL; sidecars forced to `0600` |
+| Successful child with a background grandchild hung the step | Process group reaped after every wait; readers use a bounded receive |
+| Cancel/resume races and `SQLITE_BUSY_SNAPSHOT` | Immediate transactions, guarded status updates, guarded append/advance |
+| `audit verify` false positives on live runs | One-transaction snapshot of run + steps + events |
+| Package-less/`package _` files fell back to `.` | Fall back to filename export; accept any whitespace after `package` |
+| `until` rejected `json.*`, `provider`, `improvementId`, hyphens | Structural root validation instead of fabricated-value evaluation |
+| Step-level typos and `retry: 101` bypassed validation | Step key allowlist and cap on the int shorthand |
+| Native overrides applied after top-level comprehensions | Two-phase frame: static fields, inject params, then expand |
+| `v0.18.0-rc.1` / `v0.17.1+meta` rejected | Strip pre-release/build before semver comparison |
+
+New regression tests cover cleared hashes, status flips, lifecycle mismatches,
+private sidecars, package-less files, background grandchildren, nested
+`until`, step-level typos, retry caps, version suffixes, native top-level
+comprehensions and snapshot-based verification.
+
 ## Deliberately deferred / residual risks
 
 | Item | Status |
 |---|---|
 | Distributed or multi-host execution | Out of scope; SQLite is the single-host durability boundary |
-| A run lease/fencing token | Not implemented; docs require one writer per run. Use an external lock if automation may race. |
+| A run lease/fencing token | Not implemented; docs require one writer per run. Guarded transitions prevent status resurrection, but two writers can still duplicate side effects. Use an external lock if automation may race. |
 | Retention/pruning command | Documented SQL with `PRAGMA foreign_keys=ON`; no built-in scheduler |
 | Trial payload retention/redaction policy | Full input/output JSON is stored (capped); secrets in prompts/env remain an operator responsibility |
 | Native evaluator completeness | Explicitly a subset; not a compliance target |
 | Embedded CUE library | Subprocess integration chosen for exact compliance and simple static builds |
-| Full state attestation of trials/improvements | `state_hash` covers execution state; trial/improvement history is append-only but not in the digest |
+| Full state attestation of trials/improvements | `state_hash` covers execution state and is anchored in `state.committed`; trial/improvement history is append-only but not in the digest |
 | Windows support | Process-group/timeout code is Unix-first; CI targets Linux/macOS |
 
 ## Review outcome

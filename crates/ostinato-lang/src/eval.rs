@@ -151,7 +151,7 @@ pub fn eval_file_with_overrides(
     file: &File,
     overrides: &BTreeMap<String, Value>,
 ) -> Result<Value, LangError> {
-    let frame = Frame::new(&file.items, None, HashMap::new())?;
+    let frame = Frame::from_static(&file.items, None, HashMap::new())?;
     if !overrides.is_empty() {
         let Value::Struct(mut params) = frame.eval_field("params", Span::default())? else {
             return Err(LangError::eval(
@@ -168,6 +168,7 @@ pub fn eval_file_with_overrides(
             .borrow_mut()
             .insert("params".to_owned(), Value::Struct(params));
     }
+    frame.expand(&file.items)?;
     frame.to_struct_value()
 }
 
@@ -231,6 +232,16 @@ impl<'a> Frame<'a> {
         parent: Option<&'a Frame<'a>>,
         vars: HashMap<String, Value>,
     ) -> Result<Self, LangError> {
+        let frame = Self::from_static(items, parent, vars)?;
+        frame.expand(items)?;
+        Ok(frame)
+    }
+
+    fn from_static(
+        items: &[StructItem],
+        parent: Option<&'a Frame<'a>>,
+        vars: HashMap<String, Value>,
+    ) -> Result<Self, LangError> {
         let frame = Self {
             parent,
             vars,
@@ -247,13 +258,16 @@ impl<'a> Frame<'a> {
                 frame.insert_field(name.clone(), field.value.clone(), field.optional);
             }
         }
+        Ok(frame)
+    }
 
+    fn expand(&self, items: &[StructItem]) -> Result<(), LangError> {
         // Pass 2: dynamic labels, comprehensions and conditionals.
         for item in items {
             match item {
                 StructItem::Field(field) => {
                     if let crate::ast::Label::Dynamic(expr, span) = &field.label {
-                        let key = eval_expr(expr, &frame)?;
+                        let key = eval_expr(expr, self)?;
                         let Value::String(key) = key else {
                             return Err(LangError::eval(
                                 span.line,
@@ -261,7 +275,7 @@ impl<'a> Frame<'a> {
                                 "dynamic field label must evaluate to a string",
                             ));
                         };
-                        frame.insert_field(key, field.value.clone(), field.optional);
+                        self.insert_field(key, field.value.clone(), field.optional);
                     }
                 }
                 StructItem::For {
@@ -271,7 +285,7 @@ impl<'a> Frame<'a> {
                     body,
                     span,
                 } => {
-                    let source_value = eval_expr(source, &frame)?;
+                    let source_value = eval_expr(source, self)?;
                     match source_value {
                         Value::Struct(map) => {
                             for (entry_key, entry_value) in map {
@@ -280,7 +294,7 @@ impl<'a> Frame<'a> {
                                     bindings.insert(key.clone(), Value::String(entry_key));
                                 }
                                 bindings.insert(value.clone(), entry_value);
-                                frame.expand_body(body, bindings)?;
+                                self.expand_body(body, bindings)?;
                             }
                         }
                         Value::List(list) => {
@@ -293,7 +307,7 @@ impl<'a> Frame<'a> {
                                     );
                                 }
                                 bindings.insert(value.clone(), entry_value);
-                                frame.expand_body(body, bindings)?;
+                                self.expand_body(body, bindings)?;
                             }
                         }
                         other => {
@@ -309,9 +323,9 @@ impl<'a> Frame<'a> {
                     }
                 }
                 StructItem::If { cond, body, span } => {
-                    let condition = eval_expr(cond, &frame)?;
+                    let condition = eval_expr(cond, self)?;
                     if condition.truthy() {
-                        frame.expand_body(body, HashMap::new())?;
+                        self.expand_body(body, HashMap::new())?;
                     } else if !condition.is_concrete() {
                         return Err(LangError::eval(
                             span.line,
@@ -323,8 +337,7 @@ impl<'a> Frame<'a> {
                 StructItem::Ellipsis(_) => {}
             }
         }
-
-        Ok(frame)
+        Ok(())
     }
 
     fn insert_field(&self, name: String, expr: Expr, optional: bool) {
@@ -350,14 +363,20 @@ impl<'a> Frame<'a> {
         let Value::Struct(values) = child.to_struct_value()? else {
             return Ok(());
         };
-        let mut current = self.values.borrow_mut();
         for (key, value) in values {
-            if let Some(existing) = current.get(&key).cloned() {
-                let unified = unify_values(&existing, &value, Span::default())?;
-                current.insert(key, unified);
-            } else {
-                current.insert(key, value);
-            }
+            let existing = self.values.borrow().get(&key).cloned();
+            let existing = match existing {
+                Some(existing) => Some(existing),
+                None if self.fields.borrow().contains_key(&key) => {
+                    Some(self.eval_field(&key, Span::default())?)
+                }
+                None => None,
+            };
+            let merged = match existing {
+                Some(existing) => unify_values(&existing, &value, Span::default())?,
+                None => value,
+            };
+            self.values.borrow_mut().insert(key, merged);
         }
         Ok(())
     }

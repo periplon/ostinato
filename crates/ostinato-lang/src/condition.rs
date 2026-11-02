@@ -12,6 +12,7 @@ pub fn eval_condition(expr: &str, context: &Json) -> Result<bool, LangError> {
         tokens,
         pos: 0,
         expr,
+        strict: true,
     };
     let value = parser.parse_or(context)?;
     if !matches!(parser.peek(), CTok::Eof) {
@@ -21,6 +22,32 @@ pub fn eval_condition(expr: &str, context: &Json) -> Result<bool, LangError> {
         });
     }
     Ok(truthy(&value))
+}
+
+/// Validate condition syntax and reference roots without executing it.
+///
+/// Missing nested output fields (`steps.x.json.any`, `provider`, ...) are
+/// accepted because they only exist at runtime; unknown step or parameter
+/// names are rejected.
+///
+/// # Errors
+/// Returns [`LangError::Condition`] for syntax errors or unknown roots.
+pub fn validate_condition(expr: &str, context: &Json) -> Result<(), LangError> {
+    let tokens = tokenize(expr)?;
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        expr,
+        strict: false,
+    };
+    parser.parse_or(context)?;
+    if !matches!(parser.peek(), CTok::Eof) {
+        return Err(LangError::Condition {
+            expr: expr.to_owned(),
+            message: "unexpected token after expression".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn truthy(value: &Json) -> bool {
@@ -118,7 +145,10 @@ fn tokenize(expr: &str) -> Result<Vec<CTok>, LangError> {
             }
             c if c.is_alphabetic() || c == '_' => {
                 let start = index;
-                while index < chars.len() && (chars[index].is_alphanumeric() || chars[index] == '_')
+                while index < chars.len()
+                    && (chars[index].is_alphanumeric()
+                        || chars[index] == '_'
+                        || chars[index] == '-')
                 {
                     index += 1;
                 }
@@ -204,6 +234,7 @@ struct Parser<'a> {
     tokens: Vec<CTok>,
     pos: usize,
     expr: &'a str,
+    strict: bool,
 }
 
 impl Parser<'_> {
@@ -256,6 +287,9 @@ impl Parser<'_> {
         };
         self.bump();
         let right = self.parse_unary(context)?;
+        if !self.strict {
+            return Ok(Json::Bool(false));
+        }
         compare(self.expr, &op, &left, &right)
     }
 
@@ -302,15 +336,41 @@ impl Parser<'_> {
                         _ => return Err(cond_error(self.expr, "expected identifier after `.`")),
                     }
                 }
-                resolve(context, &path)
-                    .cloned()
-                    .ok_or_else(|| cond_error(self.expr, &format!("unknown reference `{path}`")))
+                match resolve(context, &path) {
+                    Some(value) => Ok(value.clone()),
+                    None if !self.strict && valid_reference(context, &path) => Ok(Json::Null),
+                    None => Err(cond_error(
+                        self.expr,
+                        &format!("unknown reference `{path}`"),
+                    )),
+                }
             }
             other => Err(cond_error(
                 self.expr,
                 &format!("unexpected token {other:?}"),
             )),
         }
+    }
+}
+
+fn valid_reference(context: &Json, path: &str) -> bool {
+    let mut segments = path.split('.');
+    let root = segments.next().unwrap_or("");
+    match root {
+        "steps" => segments.next().is_some_and(|step| {
+            context
+                .get("steps")
+                .and_then(|steps| steps.get(step))
+                .is_some()
+        }),
+        "params" => segments.next().is_some_and(|param| {
+            context
+                .get("params")
+                .and_then(|params| params.get(param))
+                .is_some()
+        }),
+        "run_id" | "workflow" | "round" => true,
+        _ => false,
     }
 }
 

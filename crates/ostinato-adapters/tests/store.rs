@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use ostinato_adapters::SqliteStore;
 use ostinato_application::{Completion, Store};
@@ -33,7 +34,7 @@ fn run_record(id: &str) -> RunRecord {
         steps,
     };
     let params = json!({"x": 1});
-    let state_hash = audit::state_digest(&spec, &params, 0, &[]);
+    let state_hash = audit::state_digest(&spec, &params, "test.cue", 0, &[]);
     RunRecord {
         id: id.to_owned(),
         workflow_name: "store".to_owned(),
@@ -95,7 +96,7 @@ fn sqlite_store_roundtrip_is_atomic_and_hash_chained() {
             )],
         })
         .expect("complete");
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.len(), 2);
 
     let loaded = store.load_run("run-1").expect("load").expect("present");
     assert_eq!(loaded.status, RunStatus::Succeeded);
@@ -105,13 +106,19 @@ fn sqlite_store_roundtrip_is_atomic_and_hash_chained() {
     assert_eq!(steps[0].status, StepStatus::Succeeded);
 
     let events = store.events("run-1").expect("events");
-    assert_eq!(events.len(), 2);
+    assert_eq!(events.len(), 3);
     audit::verify_chain(&events).expect("audit chain");
     let loaded = store.load_run("run-1").expect("load").expect("present");
     let steps = store.steps("run-1").expect("steps");
     assert_eq!(
         loaded.state_hash,
-        audit::state_digest(&loaded.spec, &loaded.params, loaded.resume_index, &steps)
+        audit::state_digest(
+            &loaded.spec,
+            &loaded.params,
+            &loaded.source_file,
+            loaded.resume_index,
+            &steps,
+        )
     );
 
     store
@@ -150,4 +157,58 @@ fn sqlite_store_roundtrip_is_atomic_and_hash_chained() {
     assert_eq!(metrics.runs_total, 1);
     assert_eq!(metrics.runs_succeeded, 1);
     assert_eq!(metrics.attempts_total, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn database_and_wal_files_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("db.sqlite");
+    let store = SqliteStore::open(&path).expect("open");
+    let run = run_record("private");
+    store.create_run(&run).expect("create");
+    store
+        .append_event(
+            "private",
+            NewEvent::new("run.started", None, json!({})),
+            "2026-01-01T00:00:00Z",
+        )
+        .expect("event");
+    for suffix in ["", "-wal", "-shm"] {
+        let candidate = PathBuf::from(format!("{}{suffix}", path.display()));
+        if candidate.exists() {
+            let mode = std::fs::metadata(&candidate)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "{} mode is {mode:o}", candidate.display());
+        }
+    }
+}
+
+#[test]
+fn reopened_store_does_not_repair_blank_integrity_hashes() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("db.sqlite");
+    {
+        let store = SqliteStore::open(&path).expect("open");
+        let run = run_record("no-repair");
+        store.create_run(&run).expect("create");
+    }
+    let connection = rusqlite::Connection::open(&path).expect("open sqlite");
+    connection
+        .execute(
+            "UPDATE runs SET state_hash = '', audit_head = '' WHERE id = 'no-repair'",
+            [],
+        )
+        .expect("clear hashes");
+    drop(connection);
+
+    let store = SqliteStore::open(&path).expect("reopen");
+    let run = store.load_run("no-repair").expect("load").expect("present");
+    assert!(run.state_hash.is_empty());
+    assert!(run.audit_head.is_empty());
 }

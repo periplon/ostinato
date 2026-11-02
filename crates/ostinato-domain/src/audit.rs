@@ -132,6 +132,7 @@ pub fn verify_chain(events: &[AuditEvent]) -> Result<(), DomainError> {
 pub fn state_digest(
     spec: &wf::WorkflowSpec,
     params: &Value,
+    source_file: &str,
     resume_index: i64,
     steps: &[StepRecord],
 ) -> String {
@@ -139,6 +140,8 @@ pub fn state_digest(
     hasher.update(serde_json::to_vec(spec).unwrap_or_default());
     hasher.update(b"\x1f");
     hasher.update(serde_json::to_vec(params).unwrap_or_default());
+    hasher.update(b"\x1f");
+    hasher.update(source_file.as_bytes());
     hasher.update(b"\x1f");
     hasher.update(resume_index.to_be_bytes());
     let mut ordered: Vec<&StepRecord> = steps.iter().collect();
@@ -163,4 +166,24 @@ pub fn state_digest(
         );
     }
     hex::encode(hasher.finalize())
+}
+
+/// The lifecycle status implied by the last lifecycle event in the chain.
+///
+/// Group events do not change this; only `run.started`, `run.resumed`,
+/// `run.succeeded`, `run.failed` and `run.cancelled` do. It is used to detect
+/// status-row edits that are not reflected in the tamper-evident history.
+#[must_use]
+pub fn lifecycle_status(events: &[AuditEvent]) -> Option<&'static str> {
+    let mut status = None;
+    for event in events {
+        status = match event.kind.as_str() {
+            "run.started" | "run.resumed" => Some("running"),
+            "run.succeeded" => Some("succeeded"),
+            "run.failed" => Some("failed"),
+            "run.cancelled" => Some("cancelled"),
+            _ => status,
+        };
+    }
+    status
 }

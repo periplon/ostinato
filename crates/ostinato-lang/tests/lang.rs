@@ -198,3 +198,67 @@ workflow: {
     let error = compile(source).expect_err("must reject unknown reference");
     assert!(error.to_string().contains("until is invalid"));
 }
+
+#[test]
+fn until_accepts_nested_json_provider_and_hyphenated_steps() {
+    let source = r#"
+package demo
+workflow: {
+    steps: {
+        review: {
+            kind: "exec"
+            needs: ["refine"]
+            cycle: {max: 3, until: "steps.review.json.confidence >= 0.9"}
+            exec: {cmd: ["sh", "-c", "echo '{\"confidence\": 0.5}'"]}
+        }
+        refine: {kind: "noop", needs: ["review"]}
+        "job-one": {
+            kind: "noop"
+            needs: ["job-one"]
+            cycle: {max: 2, until: "steps.job-one.score >= 0.5"}
+        }
+    }
+}
+"#;
+    ostinato_lang::compile(source).expect("nested/hyphenated until must validate");
+}
+
+#[test]
+fn step_level_unknown_fields_are_rejected() {
+    let source = r#"
+package demo
+workflow: { steps: { a: { kind: "noop", timeoutMS: 1 } } }
+"#;
+    let error = ostinato_lang::compile(source).expect_err("must reject step typo");
+    assert!(error.to_string().contains("unknown field"));
+}
+
+#[test]
+fn retry_int_shorthand_respects_the_cap() {
+    let source = r#"
+package demo
+workflow: { steps: { a: { kind: "noop", retry: 101 } } }
+"#;
+    let error = ostinato_lang::compile(source).expect_err("must reject large retry");
+    assert!(error.to_string().contains("<= 100"));
+}
+
+#[test]
+fn native_overrides_apply_before_top_level_comprehensions() {
+    let source = r#"
+package demo
+params: { env: string | *"dev" }
+base: { steps: { a: { kind: "noop" } } }
+if params.env == "prod" {
+    base: { steps: { b: { kind: "noop" } } }
+}
+workflow: base
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([("env".to_owned(), "prod".to_owned())]),
+    )
+    .expect("compile");
+    assert_eq!(compiled.spec.steps.len(), 2);
+    assert!(compiled.spec.step("b").is_some());
+}

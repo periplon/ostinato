@@ -135,7 +135,7 @@ impl Engine {
     ) -> Result<RunReport> {
         let id = self.ids.new_run_id();
         let now = self.clock.now();
-        let state_hash = audit::state_digest(&spec, &params, 0, &[]);
+        let state_hash = audit::state_digest(&spec, &params, &source_file, 0, &[]);
         let run = RunRecord {
             id,
             workflow_name: spec.name.clone(),
@@ -149,7 +149,7 @@ impl Engine {
             created_at: now.clone(),
             updated_at: now.clone(),
             audit_head: audit::GENESIS_HASH.to_owned(),
-            state_hash,
+            state_hash: state_hash.clone(),
         };
         self.store.create_run(&run)?;
         let event = self.store.append_event(
@@ -157,7 +157,11 @@ impl Engine {
             NewEvent::new(
                 "run.started",
                 None,
-                json!({"workflow": run.workflow_name.clone(), "params": run.params.clone()}),
+                json!({
+                    "workflow": run.workflow_name.clone(),
+                    "params": run.params.clone(),
+                    "stateHash": state_hash,
+                }),
             ),
             &now,
         )?;
@@ -170,18 +174,31 @@ impl Engine {
     /// # Errors
     /// Fails for unknown/cancelled runs or infrastructure errors.
     pub fn resume(&self, run_id: &str) -> Result<RunReport> {
-        let mut run = self
+        let snapshot = self
             .store
-            .load_run(run_id)?
+            .snapshot(run_id)?
             .ok_or_else(|| EngineError::RunNotFound(run_id.to_owned()))?;
+        let mut run = snapshot.run;
         if run.status == RunStatus::Succeeded {
             return self.report(&run, Instant::now());
         }
         if run.status == RunStatus::Cancelled {
             return Err(EngineError::Cancelled(run.id));
         }
-        let events = self.store.events(&run.id)?;
+        let events = snapshot.events;
         audit::verify_chain(&events)?;
+        if let Some(expected) = audit::lifecycle_status(&events)
+            && run.status.as_str() != expected
+        {
+            return Err(EngineError::InvalidState(format!(
+                "status row is `{}` but the audit chain ends in `{expected}` for run {}",
+                run.status.as_str(),
+                run.id
+            )));
+        }
+        if events.iter().any(|event| event.kind == "run.cancelled") {
+            return Err(EngineError::Cancelled(run.id));
+        }
         let head = events.last().map_or_else(
             || audit::GENESIS_HASH.to_owned(),
             |event| event.hash.clone(),
@@ -192,8 +209,14 @@ impl Engine {
                 run.id
             )));
         }
-        let steps = self.store.steps(&run.id)?;
-        let digest = audit::state_digest(&run.spec, &run.params, run.resume_index, &steps);
+        let steps = snapshot.steps;
+        let digest = audit::state_digest(
+            &run.spec,
+            &run.params,
+            &run.source_file,
+            run.resume_index,
+            &steps,
+        );
         if digest != run.state_hash {
             return Err(EngineError::InvalidState(format!(
                 "state digest mismatch for run {}; refusing to resume a tampered or stale run",
@@ -423,7 +446,7 @@ impl Engine {
                         skip += 1;
                     }
                     let now = self.clock.now();
-                    let event = self.store.advance(
+                    let event = match self.store.advance(
                         &run.id,
                         i64::try_from(skip).unwrap_or(i64::MAX),
                         &now,
@@ -436,14 +459,22 @@ impl Engine {
                                 "resumeIndex": skip,
                             }),
                         ),
-                    )?;
+                    ) {
+                        Ok(event) => event,
+                        Err(PortError::Cancelled(_)) => {
+                            run.status = RunStatus::Cancelled;
+                            run.updated_at = now;
+                            return self.report(&run, started);
+                        }
+                        Err(err) => return Err(err.into()),
+                    };
                     self.telemetry.event(&event);
                     skipped_to = Some(skip);
                     break;
                 }
                 if node.round + 1 >= node.cycle_max_rounds {
                     let now = self.clock.now();
-                    let event = self.store.append_event(
+                    let event = match self.store.append_event(
                         &run.id,
                         NewEvent::new(
                             "cycle.exhausted",
@@ -455,7 +486,15 @@ impl Engine {
                             }),
                         ),
                         &now,
-                    )?;
+                    ) {
+                        Ok(event) => event,
+                        Err(PortError::Cancelled(_)) => {
+                            run.status = RunStatus::Cancelled;
+                            run.updated_at = now;
+                            return self.report(&run, started);
+                        }
+                        Err(err) => return Err(err.into()),
+                    };
                     self.telemetry.event(&event);
                 }
             }

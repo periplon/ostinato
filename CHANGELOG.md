@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.1.2
+
+Second-pass hardening after a red-team review of v0.1.1.
+
+- Integrity fields are migrated once (`PRAGMA user_version`) and **never**
+  auto-repaired. Clearing `audit_head`/`state_hash` is treated as tampering.
+- `state.committed` events anchor the execution-state digest inside the audit
+  chain; `audit verify` checks both the digest and the anchor.
+- The last lifecycle event must match `runs.status`; a failed run cannot be
+  flipped to succeeded, and a cancelled run cannot be resurrected.
+- `resume` uses a guarded/Immediate status transition; `cancel`, `complete`,
+  `advance` and event appends use Immediate transactions and guarded updates.
+- Snapshot reads (run + steps + events) make `audit verify` and `resume`
+  consistent while a run is active.
+- Exec/agent output readers are drained with a bounded grace and the process
+  group is reaped even on success; background grandchildren cannot hang a step.
+- WAL/SHM files are `0600`; the database main file is chmodded before WAL mode.
+- Package-less and `package _` CUE files fall back to filename export; package
+  clause parsing accepts any whitespace.
+- Version parsing accepts pre-release/build metadata (`v0.18.0-rc.1`,
+  `v0.17.1+meta`).
+- `until` validation checks reference roots without rejecting runtime-only
+  `json.*`, `provider`, `improvementId` or hyphenated step names.
+- Step-level unknown fields and the integer `retry` cap are enforced.
+- Native `-p` overrides are injected before top-level comprehensions.
+- 44 tests (21 CLI E2E, 14 language, 6 domain, 3 store) and regenerated evidence.
+
 ## v0.1.1
 
 Hardening release driven by architecture, CUE, reliability/security and Rust reviews.
