@@ -737,7 +737,9 @@ impl<'a> Frame<'a> {
                 ));
             }
             self.evaluating.borrow_mut().insert(name.to_owned());
+            let mut flattened = false;
             let result = if let Some(items) = self.params_items(&exprs) {
+                flattened = true;
                 self.eval_definition_items(&items, span)
             } else if exprs.len() == 1 {
                 self.eval_definition_expr(&exprs[0], span)
@@ -773,8 +775,10 @@ impl<'a> Frame<'a> {
             self.evaluating.borrow_mut().remove(name);
             let mut result = result?;
             let mut references = Vec::new();
-            for expr in &exprs {
-                collect_definition_references(expr, &mut references);
+            if flattened {
+                for expr in &exprs {
+                    collect_definition_references(expr, &mut references);
+                }
             }
             for reference in references {
                 if reference == name {
@@ -893,7 +897,7 @@ impl<'a> Frame<'a> {
             patterns.push((pattern.clone(), eval_expr(expr, &child)?));
         }
         apply_patterns(&patterns, &mut fields, span)?;
-        apply_optional_patterns(&patterns, &mut optional, span);
+        apply_optional_patterns(&patterns, &mut optional, span)?;
         let open = items
             .iter()
             .any(|item| matches!(item, StructItem::Ellipsis(_)));
@@ -1625,7 +1629,7 @@ fn apply_optional_patterns(
     patterns: &[(Pattern, Value)],
     optional: &mut BTreeMap<String, Value>,
     span: Span,
-) {
+) -> Result<(), LangError> {
     for (key, value) in optional.iter_mut() {
         if matches!(value, Value::Conflict(_)) {
             continue;
@@ -1633,9 +1637,11 @@ fn apply_optional_patterns(
         match pattern_constraint(patterns, key, value, span) {
             Ok(Some(constrained)) => *value = constrained,
             Ok(None) => {}
+            Err(err) if err.to_string().contains("invalid pattern regex") => return Err(err),
             Err(err) => *value = Value::Conflict(err.to_string()),
         }
     }
+    Ok(())
 }
 
 fn values_equal(left: &Value, right: &Value) -> bool {
@@ -2194,6 +2200,9 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     match pattern_constraint_closed(patterns_a, key, &current, span) {
                         Ok(Some(constrained)) => current = constrained,
                         Ok(None) => {}
+                        Err(err) if err.to_string().contains("invalid pattern regex") => {
+                            return Err(err);
+                        }
                         Err(err) => conflict = Some(err),
                     }
                 }
@@ -2201,6 +2210,9 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     match pattern_constraint_closed(patterns_b, key, &current, span) {
                         Ok(Some(constrained)) => current = constrained,
                         Ok(None) => {}
+                        Err(err) if err.to_string().contains("invalid pattern regex") => {
+                            return Err(err);
+                        }
                         Err(err) => conflict = Some(err),
                     }
                 }

@@ -1575,3 +1575,78 @@ v: #Opt & #Pattern & {k: {label: "l", note: "n"}}
     let file = ostinato_lang::parse(reverse).expect("parse");
     assert!(ostinato_lang::eval_file(&file).is_err());
 }
+
+#[test]
+fn definition_disjunctions_keep_alternatives() {
+    let source = r#"
+package demo
+#A: {a: int}
+#B: {b: int}
+#D: #A | #B
+x: #D & {a: 1}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["a"], 1);
+
+    let default = r#"
+package demo
+#A: {a: int}
+#D: #A | *{b: 1}
+x: #D
+"#;
+    let file = ostinato_lang::parse(default).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["b"], 1);
+
+    let intersection = r#"
+package demo
+#A: {a: int}
+#B: {a: int, b: int}
+#D: (#A | #B) & {a: 1}
+x: #D
+"#;
+    let file = ostinato_lang::parse(intersection).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert!(
+        value.to_json().is_none(),
+        "intersection is incomplete in CUE"
+    );
+}
+
+#[test]
+fn invalid_regex_on_optional_fields_is_eager() {
+    let source = r#"
+package demo
+#D: {[=~"("]: int, k?: 1}
+x: #D
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("invalid regex");
+    assert!(error.to_string().contains("invalid pattern regex"));
+
+    let promoted = r#"
+package demo
+#A: {[=~"("]: int}
+#B: {k?: 1}
+x: #A & #B
+"#;
+    let file = ostinato_lang::parse(promoted).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn optional_value_conflicts_are_still_deferred() {
+    let source = r#"
+package demo
+#D: {[string]: string, k?: 1}
+x: #D
+#L: {[string]: [int, int], j?: [1, 2, 3]}
+y: #L
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"], serde_json::json!({}));
+    assert_eq!(json["y"], serde_json::json!({}));
+}

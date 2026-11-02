@@ -41,7 +41,11 @@ multi: #Multi & {k: {a: 1, b: 2}}
 #Deferred: {[string]: string, k?: 1}
 deferred: #Deferred
 
+#AltA: {a: int}
+#Alt: #AltA | *{b: 1}
+alt: #Alt
+
 workflow: {
-	name: "\(closed.name)-\(open.extra)-\(pattern.x2)-\(all.b)-\(nested.inner.b)-\(composed.inner.b)-\(ref.inner.b)-\(both.a)-\(map.alice.name)-\(seq[0].name)-\(kind.a)-\(optionalPattern.k.b)-\(multi.k.b)-\(len(deferred))"
+	name: "\(closed.name)-\(open.extra)-\(pattern.x2)-\(all.b)-\(nested.inner.b)-\(composed.inner.b)-\(ref.inner.b)-\(both.a)-\(map.alice.name)-\(seq[0].name)-\(kind.a)-\(optionalPattern.k.b)-\(multi.k.b)-\(len(deferred))-\(alt.b)"
 	steps: {s: {kind: "noop"}}
 }
