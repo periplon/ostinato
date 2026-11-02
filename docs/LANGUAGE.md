@@ -64,7 +64,7 @@ exec: {
 }
 ```
 
-The command runs in `exec.cwd` when set, otherwise in **the workflow file's directory**. It inherits the engine's environment plus `env`. Standard output, standard error and the exit code are captured. Success means `exit code == 0` and no timeout.
+The command runs in `exec.cwd` when set, otherwise in **the workflow file's directory**. When the direct command exits, Ostinato reaps its process group; background daemons are not supported (use a service manager). It inherits the engine's environment plus `env`. Standard output, standard error and the exit code are captured. Success means `exit code == 0` and no timeout.
 
 ### `agent`
 

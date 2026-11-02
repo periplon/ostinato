@@ -226,9 +226,22 @@ impl Engine {
         let now = self.clock.now();
         run.status = RunStatus::Running;
         run.updated_at.clone_from(&now);
-        self.store
-            .update_run_status(&run.id, RunStatus::Running, run.resume_index, None, &now)?;
-        let event = self.store.append_event(
+        if let Err(err) =
+            self.store
+                .update_run_status(&run.id, RunStatus::Running, run.resume_index, None, &now)
+        {
+            match err {
+                PortError::Cancelled(_) => {
+                    let current = self
+                        .store
+                        .load_run(&run.id)?
+                        .ok_or_else(|| EngineError::RunNotFound(run.id.clone()))?;
+                    return self.report(&current, Instant::now());
+                }
+                other => return Err(other.into()),
+            }
+        }
+        let event = match self.store.append_event(
             &run.id,
             NewEvent::new(
                 "run.resumed",
@@ -236,7 +249,17 @@ impl Engine {
                 json!({"resumeIndex": run.resume_index}),
             ),
             &now,
-        )?;
+        ) {
+            Ok(event) => event,
+            Err(PortError::Cancelled(_)) => {
+                let current = self
+                    .store
+                    .load_run(&run.id)?
+                    .ok_or_else(|| EngineError::RunNotFound(run.id.clone()))?;
+                return self.report(&current, Instant::now());
+            }
+            Err(err) => return Err(err.into()),
+        };
         self.telemetry.event(&event);
         self.drive(run)
     }
