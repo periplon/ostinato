@@ -1,6 +1,6 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.9ssj90QuZm/resume.sqlite resume 4dcfd4fe-1cbb-4623-8703-336efcfece17
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.4tymRByUEV/resume.sqlite resume 2573afaa-0a90-4abc-b857-eb652ad4231e
 
-run=4dcfd4fe-1cbb-4623-8703-336efcfece17 workflow=resume-evidence status=succeeded durationMs=6
+run=2573afaa-0a90-4abc-b857-eb652ad4231e workflow=resume-evidence status=succeeded durationMs=6
 STEP                     STATUS     VISITS ATTEMPTS
 a                        succeeded  1      1       
 b                        succeeded  1      1       

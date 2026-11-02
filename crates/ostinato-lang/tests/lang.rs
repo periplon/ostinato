@@ -1380,3 +1380,82 @@ y: #D
     assert_eq!(json["x"]["a"], 2);
     assert_eq!(json["y"], serde_json::json!({}));
 }
+
+#[test]
+fn nested_struct_unification_is_closed_after_composition() {
+    let ok = r#"
+package demo
+#D: {inner: {a: int} & {b: int}}
+x: #D & {inner: {a: 1, b: 2}}
+"#;
+    let file = ostinato_lang::parse(ok).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["inner"]["b"], 2);
+
+    let referenced = r#"
+package demo
+base: {a: 1}
+#D: {inner: base}
+x: #D & {inner: {a: 1, b: 2}}
+"#;
+    let file = ostinato_lang::parse(referenced).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let referenced_open = r#"
+package demo
+base: {a: 1, ...}
+#D: {inner: base}
+x: #D & {inner: {a: 1, b: 2}}
+"#;
+    let file = ostinato_lang::parse(referenced_open).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["inner"]["b"], 2);
+}
+
+#[test]
+fn closed_definition_intersections_check_every_operand() {
+    let optional = r#"
+package demo
+#D: {a?: int}
+#E: {}
+x: #D & #E & {a: 1}
+"#;
+    let file = ostinato_lang::parse(optional).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let pattern = r#"
+package demo
+#D: {[=~"^x"]: int}
+#E: {}
+x: #D & #E & {x1: 1}
+"#;
+    let file = ostinato_lang::parse(pattern).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let overlap = r#"
+package demo
+#D: {[string]: int}
+#E: {a: int}
+x: #D & #E & {a: 1, b: 2}
+"#;
+    let file = ostinato_lang::parse(overlap).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let disjoint = r#"
+package demo
+#D: {[=~"^x"]: int}
+#E: {[=~"^y"]: int}
+x: #D & #E & {x1: 1}
+"#;
+    let file = ostinato_lang::parse(disjoint).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let valid = r#"
+package demo
+#D: {[string]: int}
+#E: {a: int}
+x: #D & #E & {a: 1}
+"#;
+    let file = ostinato_lang::parse(valid).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_ok());
+}

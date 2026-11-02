@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.1
+
+Closedness review corrections.
+
+- Nested structs are closed after the field expression is composed, so
+  `{a: int} & {b: int}` inside a definition is accepted and closed as a whole.
+- Explicit `...` is preserved across references (`base: {a: 1, ...}`).
+- Closed definition intersections keep per-operand admissions: optional or
+  pattern-admitted fields cannot bypass a different closed operand.
+- 106 tests (23 CLI E2E, 1 conformance, 72 language, 6 domain, 3 store, 1 unit).
+
 ## v0.3.0
 
 Closedness and pattern constraints.

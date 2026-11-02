@@ -7,6 +7,12 @@ use crate::ast::{BinOp, CompClause, Expr, File, Pattern, Span, StrPart, StructIt
 use crate::error::LangError;
 
 /// Runtime value produced by the CUE-compatible evaluator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Admission {
+    pub names: BTreeSet<String>,
+    pub patterns: Vec<Pattern>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
@@ -25,6 +31,8 @@ pub enum Value {
         definitions: BTreeMap<String, Value>,
         patterns: Vec<(Pattern, Value)>,
         closed: bool,
+        open: bool,
+        admissions: Vec<Admission>,
     },
     /// An open list type `[...T]`; `None` means any element.
     OpenList(Option<Box<Value>>),
@@ -872,13 +880,46 @@ impl<'a> Frame<'a> {
         let open = items
             .iter()
             .any(|item| matches!(item, StructItem::Ellipsis(_)));
-        Ok(Value::Definition {
-            fields,
-            optional,
-            definitions,
-            patterns,
-            closed: closed_by_default && !open,
-        })
+        if closed_by_default {
+            for value in fields.values_mut() {
+                *value = close_nested(value);
+            }
+            for value in optional.values_mut() {
+                *value = close_nested(value);
+            }
+        }
+        let admissions = if closed_by_default && !open {
+            let mut names: BTreeSet<String> = fields.keys().cloned().collect();
+            names.extend(optional.keys().cloned());
+            names.extend(definitions.keys().cloned());
+            vec![Admission {
+                names,
+                patterns: patterns
+                    .iter()
+                    .map(|(pattern, _)| pattern.clone())
+                    .collect(),
+            }]
+        } else {
+            Vec::new()
+        };
+        if closed_by_default
+            || open
+            || !patterns.is_empty()
+            || !optional.is_empty()
+            || !definitions.is_empty()
+        {
+            Ok(Value::Definition {
+                fields,
+                optional,
+                definitions,
+                patterns,
+                closed: closed_by_default && !open,
+                open,
+                admissions,
+            })
+        } else {
+            Ok(Value::Struct(fields))
+        }
     }
 
     fn eval_definition_expr(&self, expr: &Expr, span: Span) -> Result<Value, LangError> {
@@ -891,12 +932,22 @@ impl<'a> Frame<'a> {
         let value = eval_expr(expr, self)?;
         let _ = span;
         if let Value::Struct(fields) = value {
+            let names = fields.keys().cloned().collect();
+            let mut fields = fields;
+            for value in fields.values_mut() {
+                *value = close_nested(value);
+            }
             return Ok(Value::Definition {
                 fields,
                 optional: BTreeMap::new(),
                 definitions: BTreeMap::new(),
                 patterns: Vec::new(),
                 closed: true,
+                open: false,
+                admissions: vec![Admission {
+                    names,
+                    patterns: Vec::new(),
+                }],
             });
         }
         Ok(value)
@@ -1179,17 +1230,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 )),
             }
         }
-        Expr::Struct(items, span) => {
-            if frame.closed.get()
-                || items
-                    .iter()
-                    .any(|item| matches!(item, StructItem::Pattern { .. }))
-            {
-                frame.eval_struct_items(items, *span, frame.closed.get())
-            } else {
-                Frame::new(items, Some(frame), HashMap::new())?.to_struct_value()
-            }
-        }
+        Expr::Struct(items, span) => frame.eval_struct_items(items, *span, false),
         Expr::List(items, _) => {
             let mut out = Vec::with_capacity(items.len());
             for item in items {
@@ -1394,6 +1435,115 @@ fn merge_generated_optional(
     };
     optionals.borrow_mut().insert(name.to_owned(), merged);
     Ok(())
+}
+
+fn close_nested(value: &Value) -> Value {
+    match value {
+        Value::Struct(fields) => {
+            let fields: BTreeMap<String, Value> = fields
+                .iter()
+                .map(|(key, value)| (key.clone(), close_nested(value)))
+                .collect();
+            let names = fields.keys().cloned().collect();
+            Value::Definition {
+                fields,
+                optional: BTreeMap::new(),
+                definitions: BTreeMap::new(),
+                patterns: Vec::new(),
+                closed: true,
+                open: false,
+                admissions: vec![Admission {
+                    names,
+                    patterns: Vec::new(),
+                }],
+            }
+        }
+        Value::Definition {
+            fields,
+            optional,
+            definitions,
+            patterns,
+            closed,
+            open,
+            admissions,
+        } => {
+            let fields: BTreeMap<String, Value> = fields
+                .iter()
+                .map(|(key, value)| (key.clone(), close_nested(value)))
+                .collect();
+            let optional: BTreeMap<String, Value> = optional
+                .iter()
+                .map(|(key, value)| (key.clone(), close_nested(value)))
+                .collect();
+            let admissions = if *open {
+                Vec::new()
+            } else if admissions.is_empty() {
+                let mut names: BTreeSet<String> = fields.keys().cloned().collect();
+                names.extend(optional.keys().cloned());
+                names.extend(definitions.keys().cloned());
+                vec![Admission {
+                    names,
+                    patterns: patterns
+                        .iter()
+                        .map(|(pattern, _)| pattern.clone())
+                        .collect(),
+                }]
+            } else {
+                admissions.clone()
+            };
+            Value::Definition {
+                fields,
+                optional,
+                definitions: definitions.clone(),
+                patterns: patterns.clone(),
+                closed: *closed || !*open,
+                open: *open,
+                admissions,
+            }
+        }
+        Value::List(values) => Value::List(values.iter().map(close_nested).collect()),
+        Value::OpenList(Some(element)) => Value::OpenList(Some(Box::new(close_nested(element)))),
+        Value::OpenList(None) => Value::OpenList(None),
+        Value::OpenListPrefix(prefix, tail) => Value::OpenListPrefix(
+            prefix.iter().map(close_nested).collect(),
+            tail.as_ref().map(|tail| Box::new(close_nested(tail))),
+        ),
+        Value::Disjunction(alternatives, defaults) => Value::Disjunction(
+            alternatives.iter().map(close_nested).collect(),
+            defaults.clone(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn admitted(admissions: &[Admission], key: &str, span: Span) -> Result<bool, LangError> {
+    if admissions.is_empty() {
+        return Ok(true);
+    }
+    for admission in admissions {
+        if admission.names.contains(key) {
+            continue;
+        }
+        let mut matched = false;
+        for pattern in &admission.patterns {
+            if pattern_matches(pattern, key, span)? {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn closed_error(span: Span, key: &str) -> LangError {
+    LangError::eval(
+        span.line,
+        span.col,
+        format!("field `{key}` is not allowed by the closed definition"),
+    )
 }
 
 fn pattern_matches(pattern: &Pattern, key: &str, span: Span) -> Result<bool, LangError> {
@@ -1872,6 +2022,8 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 definitions: definitions_a,
                 patterns,
                 closed,
+                open,
+                admissions,
             },
             Value::Struct(b),
         )
@@ -1883,6 +2035,8 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 definitions: definitions_a,
                 patterns,
                 closed,
+                open,
+                admissions,
             },
         ) => {
             let mut fields = a.clone();
@@ -1891,17 +2045,14 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 if let Some(existing) = fields.get(key).cloned() {
                     fields.insert(key.clone(), unify_values(&existing, value, span)?);
                 } else if let Some(constraint) = optional.remove(key) {
+                    if !admitted(admissions, key, span)? {
+                        return Err(closed_error(span, key));
+                    }
                     fields.insert(key.clone(), unify_values(&constraint, value, span)?);
-                } else if let Some(value) = pattern_constraint(patterns, key, value, span)? {
-                    fields.insert(key.clone(), value);
-                } else if *closed {
-                    return Err(LangError::eval(
-                        span.line,
-                        span.col,
-                        format!("field `{key}` is not allowed by the closed definition"),
-                    ));
-                } else {
+                } else if admitted(admissions, key, span)? {
                     fields.insert(key.clone(), value.clone());
+                } else {
+                    return Err(closed_error(span, key));
                 }
             }
             apply_patterns(patterns, &mut fields, span)?;
@@ -1911,6 +2062,8 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 definitions: definitions_a.clone(),
                 patterns: patterns.clone(),
                 closed: *closed,
+                open: *open,
+                admissions: admissions.clone(),
             })
         }
         (
@@ -1920,6 +2073,8 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 definitions: definitions_a,
                 patterns: patterns_a,
                 closed: closed_a,
+                open: open_a,
+                admissions: admissions_a,
             },
             Value::Definition {
                 fields: b,
@@ -1927,6 +2082,8 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 definitions: definitions_b,
                 patterns: patterns_b,
                 closed: closed_b,
+                open: open_b,
+                admissions: admissions_b,
             },
         ) => {
             let mut fields = a.clone();
@@ -1935,30 +2092,25 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 if let Some(existing) = fields.get(key).cloned() {
                     fields.insert(key.clone(), unify_values(&existing, value, span)?);
                 } else if let Some(constraint) = optional.remove(key) {
+                    if !admitted(admissions_a, key, span)? {
+                        return Err(closed_error(span, key));
+                    }
                     fields.insert(key.clone(), unify_values(&constraint, value, span)?);
-                } else if let Some(value) = pattern_constraint(patterns_a, key, value, span)? {
-                    fields.insert(key.clone(), value);
-                } else if *closed_a {
-                    return Err(LangError::eval(
-                        span.line,
-                        span.col,
-                        format!("field `{key}` is not allowed by the closed definition"),
-                    ));
-                } else {
+                } else if admitted(admissions_a, key, span)? {
                     fields.insert(key.clone(), value.clone());
+                } else {
+                    return Err(closed_error(span, key));
                 }
             }
             for (key, value) in a {
                 if !b.contains_key(key)
                     && !optional_b.contains_key(key)
-                    && *closed_b
-                    && pattern_constraint(patterns_b, key, value, span)?.is_none()
+                    && !admitted(admissions_b, key, span)?
                 {
-                    return Err(LangError::eval(
-                        span.line,
-                        span.col,
-                        format!("field `{key}` is not allowed by the closed definition"),
-                    ));
+                    return Err(closed_error(span, key));
+                }
+                if !b.contains_key(key) && !optional_b.contains_key(key) {
+                    let _ = value;
                 }
             }
             for (key, value) in optional_b {
@@ -1985,12 +2137,18 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             let mut patterns = patterns_a.clone();
             patterns.extend(patterns_b.clone());
             apply_patterns(&patterns, &mut fields, span)?;
+            let mut admissions = admissions_a.clone();
+            admissions.extend(admissions_b.clone());
+            let closed = *closed_a || *closed_b;
+            let open = !closed && (*open_a || *open_b);
             Ok(Value::Definition {
                 fields,
                 optional,
                 definitions,
                 patterns,
-                closed: *closed_a || *closed_b,
+                closed,
+                open,
+                admissions,
             })
         }
         (Value::Null, Value::Null) => Ok(Value::Null),
