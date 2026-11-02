@@ -605,3 +605,55 @@ x: #M & {a: 1, extra: 2}
     let file = ostinato_lang::parse(source).expect("parse");
     assert!(ostinato_lang::eval_file(&file).is_err());
 }
+
+#[test]
+fn closed_intersection_checks_concrete_against_optional_constraints() {
+    let source = r#"
+package demo
+#A: {k: int}
+#B: {k?: string}
+#M: #A & #B
+x: #M & {k: 1}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn generated_optional_fields_are_kept_in_definitions() {
+    let source = r#"
+package demo
+#D: {if true {b?: int}}
+x: #D & {b: 2}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["b"], 2);
+
+    let source = r#"
+package demo
+#D: {for k in ["b"] {"\(k)"?: int}}
+x: #D & {b: 3}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["b"], 3);
+}
+
+#[test]
+fn parenthesized_dynamic_labels_and_if_clause_sequences_work() {
+    let source = r#"
+package demo
+let name = "a"
+workflow: {
+    steps: {
+        (name): {kind: "noop"}
+        if true for _, x in [1, 2] { "x-\(x)": {kind: "noop"} }
+    }
+}
+"#;
+    let compiled = ostinato_lang::compile(source).expect("compile");
+    assert!(compiled.spec.step("a").is_some());
+    assert!(compiled.spec.step("x-1").is_some());
+    assert!(compiled.spec.step("x-2").is_some());
+}
