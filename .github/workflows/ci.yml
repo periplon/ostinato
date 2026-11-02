@@ -62,3 +62,25 @@ jobs:
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  merge:
+    name: auto-merge when green
+    needs: [test, audit]
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Squash-merge when all required checks are green
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.html_url }}
+        run: |
+          for attempt in 1 2 3; do
+            if gh pr merge "$PR" --squash --delete-branch; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1

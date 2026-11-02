@@ -34,7 +34,7 @@ gh pr create --fill
 scripts/auto-merge.sh <pr>
 ```
 
-CI must be green. The repository also enables GitHub auto-merge for non-draft PRs.
+CI must be green. The `merge` job in `ci.yml` squash-merges non-draft PRs after `fmt / clippy / test` and `dependency audit` succeed.
 
 ## What to test
 
