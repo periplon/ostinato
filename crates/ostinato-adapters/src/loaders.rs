@@ -82,7 +82,7 @@ fn evaluate_path(
             ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
         })?;
         let mut parsed = parse(&text)?;
-        rename_file_locals(&mut parsed, index);
+        rename_file_locals(&mut parsed, index)?;
         if combined.package.is_none() {
             combined.package = parsed.package.clone();
         }
