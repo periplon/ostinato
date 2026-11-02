@@ -88,6 +88,7 @@ fn rename_expr(expr: &mut Expr, locals: &HashMap<String, String>, shadowed: &Has
                 name.clone_from(renamed);
             }
         }
+        Expr::Paren(inner, _) => rename_expr(inner, locals, shadowed),
         Expr::Select(base, _, _) => rename_expr(base, locals, shadowed),
         Expr::Index(base, index, _) => {
             rename_expr(base, locals, shadowed);

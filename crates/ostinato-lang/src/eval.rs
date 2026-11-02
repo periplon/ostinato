@@ -454,7 +454,7 @@ impl<'a> Frame<'a> {
                     body,
                     span,
                 } => {
-                    let source_value = eval_expr(source, self)?;
+                    let source_value = eval_expr(source, self)?.concretize().clone();
                     match source_value {
                         Value::Struct(map) | Value::Definition { fields: map, .. } => {
                             for (entry_key, entry_value) in map {
@@ -492,15 +492,9 @@ impl<'a> Frame<'a> {
                     }
                 }
                 StructItem::If { cond, body, span } => {
-                    let condition = eval_expr(cond, self)?;
-                    if condition.truthy() {
+                    let condition = require_bool(&eval_expr(cond, self)?, *span)?;
+                    if condition {
                         self.expand_body(body, HashMap::new())?;
-                    } else if !condition.is_concrete() {
-                        return Err(LangError::eval(
-                            span.line,
-                            span.col,
-                            "`if` condition is not concrete",
-                        ));
                     }
                 }
                 StructItem::Let { .. } | StructItem::Ellipsis(_) => {}
@@ -1066,7 +1060,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         }
         Expr::Ident(name, span) => frame.lookup(name, *span),
         Expr::Select(base, field, span) => {
-            let base = eval_expr(base, frame)?;
+            let base = eval_expr(base, frame)?.concretize().clone();
             match base {
                 Value::Struct(map) => map.get(field).cloned().ok_or_else(|| {
                     LangError::eval(
@@ -1108,6 +1102,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 )),
             }
         }
+        Expr::Paren(inner, _) => eval_expr(inner, frame),
         Expr::Call(callee, arguments, span) => {
             let callee = eval_expr(callee, frame)?;
             let mut values = Vec::with_capacity(arguments.len());
@@ -1117,8 +1112,8 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             apply_builtin(&callee, &values, *span)
         }
         Expr::Index(base, index, span) => {
-            let base = eval_expr(base, frame)?;
-            let index = eval_expr(index, frame)?;
+            let base = eval_expr(base, frame)?.concretize().clone();
+            let index = eval_expr(index, frame)?.concretize().clone();
             match (base, index) {
                 (Value::List(list), Value::Int(index)) => {
                     let index = usize::try_from(index).map_err(|_| {
@@ -1182,50 +1177,84 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             let mut ast_alternatives = Vec::new();
             collect_disjunction(expr, &mut ast_alternatives);
             let mut alternatives = Vec::new();
-            let mut defaults = Vec::new();
+            let mut direct = Vec::new();
+            let mut inherited = Vec::new();
             for alternative in ast_alternatives {
-                let (inner, is_default) = match alternative {
-                    Expr::Default(inner, _) => (&**inner, true),
-                    other => (other, false),
-                };
-                let value = eval_expr(inner, frame)?;
-                push_disjunction_alternative(&mut alternatives, &mut defaults, value, is_default)?;
+                match alternative {
+                    Expr::Default(inner, _) => {
+                        let value = match eval_expr(inner, frame) {
+                            Ok(value) => value,
+                            Err(err) if err.is_conflict() => continue,
+                            Err(err) => return Err(err),
+                        };
+                        collect_disjunction_value(
+                            &mut alternatives,
+                            &mut direct,
+                            &mut inherited,
+                            value,
+                            DefaultMode::Direct,
+                        );
+                    }
+                    other => {
+                        let value = match eval_expr(other, frame) {
+                            Ok(value) => value,
+                            Err(err) if err.is_conflict() => continue,
+                            Err(err) => return Err(err),
+                        };
+                        let mode = if matches!(value, Value::Disjunction(_, _)) {
+                            DefaultMode::Inherited
+                        } else {
+                            DefaultMode::None
+                        };
+                        collect_disjunction_value(
+                            &mut alternatives,
+                            &mut direct,
+                            &mut inherited,
+                            value,
+                            mode,
+                        );
+                    }
+                }
             }
             if alternatives.is_empty() {
                 return Err(LangError::eval(span.line, span.col, "empty disjunction"));
             }
+            let defaults = if direct.is_empty() { inherited } else { direct };
             Ok(Value::Disjunction(alternatives, defaults))
         }
         Expr::Default(inner, _) => eval_expr(inner, frame),
         Expr::Binary(op, left, right, span) => {
-            if matches!(op, BinOp::And) {
-                let left = eval_expr(left, frame)?;
-                if !left.truthy() {
-                    return Ok(Value::Bool(false));
-                }
-                return Ok(Value::Bool(eval_expr(right, frame)?.truthy()));
-            }
-            if matches!(op, BinOp::Or) {
-                let left = eval_expr(left, frame)?;
-                if left.truthy() {
-                    return Ok(Value::Bool(true));
-                }
-                return Ok(Value::Bool(eval_expr(right, frame)?.truthy()));
+            if matches!(op, BinOp::And | BinOp::Or) {
+                let left = require_bool(&eval_expr(left, frame)?, *span)?;
+                let right = require_bool(&eval_expr(right, frame)?, *span)?;
+                return Ok(Value::Bool(if matches!(op, BinOp::And) {
+                    left && right
+                } else {
+                    left || right
+                }));
             }
             let left = eval_expr(left, frame)?.concretize().clone();
             let right = eval_expr(right, frame)?.concretize().clone();
+            require_concrete(&left, *span)?;
+            require_concrete(&right, *span)?;
             binary(op, &left, &right, *span)
         }
         Expr::Unary(op, inner, span) => {
             let value = eval_expr(inner, frame)?.concretize().clone();
+            require_concrete(&value, *span)?;
             match (op, value) {
-                (UnOp::Not, value) => Ok(Value::Bool(!value.truthy())),
+                (UnOp::Not, Value::Bool(value)) => Ok(Value::Bool(!value)),
+                (UnOp::Not, other) => Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    format!("cannot negate {}", other.type_name()),
+                )),
                 (UnOp::Neg, Value::Int(value)) => value
                     .checked_neg()
                     .map(Value::Int)
                     .ok_or_else(|| LangError::eval(span.line, span.col, "integer overflow")),
                 (UnOp::Neg, Value::Float(value)) => Ok(Value::Float(-value)),
-                (UnOp::Neg, other) => Err(LangError::eval(
+                (UnOp::Neg, other) => Err(LangError::conflict(
                     span.line,
                     span.col,
                     format!("cannot negate {}", other.type_name()),
@@ -1253,7 +1282,7 @@ fn eval_list_comp(
             source,
             span,
         } => {
-            let source = eval_expr(source, frame)?;
+            let source = eval_expr(source, frame)?.concretize().clone();
             let entries: Vec<(Option<Value>, Value)> = match source {
                 Value::Struct(map) | Value::Definition { fields: map, .. } => map
                     .into_iter()
@@ -1292,8 +1321,8 @@ fn eval_list_comp(
                 eval_list_comp(clauses, index + 1, body, &child, out)?;
             }
         }
-        CompClause::If { cond, .. } => {
-            if eval_expr(cond, frame)?.truthy() {
+        CompClause::If { cond, span } => {
+            if require_bool(&eval_expr(cond, frame)?, *span)? {
                 eval_list_comp(clauses, index + 1, body, frame, out)?;
             }
         }
@@ -1388,7 +1417,7 @@ pub fn builtin_module(path: &str) -> Option<Value> {
 
 fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Value, LangError> {
     let Value::Builtin(builtin) = callee else {
-        return Err(LangError::eval(
+        return Err(LangError::conflict(
             span.line,
             span.col,
             "attempted to call a non-function value",
@@ -1397,14 +1426,14 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
     match builtin {
         Builtin::StringsToUpper | Builtin::StringsToLower | Builtin::StringsTrimSpace => {
             if arguments.len() != 1 {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "string function requires exactly one argument",
                 ));
             }
             let Some(Value::String(text)) = arguments.first() else {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "string function requires a string argument",
@@ -1419,7 +1448,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
         }
         Builtin::StringsJoin => {
             if arguments.len() != 2 {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "strings.Join requires exactly two arguments",
@@ -1428,7 +1457,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
             let (Some(Value::List(values)), Some(Value::String(separator))) =
                 (arguments.first(), arguments.get(1))
             else {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "strings.Join requires a list and a separator",
@@ -1437,7 +1466,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
             let mut pieces = Vec::with_capacity(values.len());
             for value in values {
                 let Value::String(text) = value else {
-                    return Err(LangError::eval(
+                    return Err(LangError::conflict(
                         span.line,
                         span.col,
                         "strings.Join requires a list of strings",
@@ -1449,7 +1478,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
         }
         Builtin::StringsSplit => {
             if arguments.len() != 2 {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "strings.Split requires exactly two arguments",
@@ -1458,7 +1487,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
             let (Some(Value::String(text)), Some(Value::String(separator))) =
                 (arguments.first(), arguments.get(1))
             else {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "strings.Split requires two strings",
@@ -1479,7 +1508,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
         }
         Builtin::StringsHasPrefix | Builtin::StringsHasSuffix => {
             if arguments.len() != 2 {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "string predicate requires exactly two arguments",
@@ -1488,7 +1517,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
             let (Some(Value::String(text)), Some(Value::String(needle))) =
                 (arguments.first(), arguments.get(1))
             else {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "string predicate requires two strings",
@@ -1501,7 +1530,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
         }
         Builtin::ListRange => {
             if arguments.len() != 3 {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "list.Range requires exactly three arguments",
@@ -1510,14 +1539,14 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
             let (Some(Value::Int(start)), Some(Value::Int(end)), Some(Value::Int(step))) =
                 (arguments.first(), arguments.get(1), arguments.get(2))
             else {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "list.Range requires three integers",
                 ));
             };
             if *step == 0 {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "list.Range step is zero",
@@ -1533,14 +1562,14 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
         }
         Builtin::ListConcat => {
             if arguments.len() != 1 {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "list.Concat requires exactly one list of lists",
                 ));
             }
             let Some(Value::List(outer)) = arguments.first() else {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "list.Concat requires a list of lists",
@@ -1549,7 +1578,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
             let mut values = Vec::new();
             for inner in outer {
                 let Value::List(inner) = inner else {
-                    return Err(LangError::eval(
+                    return Err(LangError::conflict(
                         span.line,
                         span.col,
                         "list.Concat requires a list of lists",
@@ -1561,7 +1590,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
         }
         Builtin::Len => {
             if arguments.len() != 1 {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "len requires exactly one argument",
@@ -1577,7 +1606,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                 Some(Value::String(value)) => {
                     Ok(Value::Int(i64::try_from(value.len()).unwrap_or(i64::MAX)))
                 }
-                _ => Err(LangError::eval(
+                _ => Err(LangError::conflict(
                     span.line,
                     span.col,
                     "len requires a list, struct or string",
@@ -1627,14 +1656,14 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
         BinOp::Mul => numeric(op, left, right, span, |a, b| a * b, |a, b| a * b),
         BinOp::Div => match (left, right) {
             (Value::Int(_), Value::Int(0)) => {
-                Err(LangError::eval(span.line, span.col, "division by zero"))
+                Err(LangError::conflict(span.line, span.col, "division by zero"))
             }
             (Value::Int(a), Value::Int(b)) => Ok(Value::Float(*a as f64 / *b as f64)),
             _ => numeric(op, left, right, span, |a, b| a / b, |a, b| a / b),
         },
         BinOp::Mod => match (left, right) {
             (Value::Int(_), Value::Int(0)) => {
-                Err(LangError::eval(span.line, span.col, "modulo by zero"))
+                Err(LangError::conflict(span.line, span.col, "modulo by zero"))
             }
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a % b)),
             _ => type_error("mod", left, right, span),
@@ -1707,11 +1736,11 @@ fn op_name(op: &BinOp) -> &'static str {
 }
 
 fn overflow(span: Span) -> LangError {
-    LangError::eval(span.line, span.col, "integer overflow")
+    LangError::conflict(span.line, span.col, "integer overflow")
 }
 
 fn type_error(op: &str, left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
-    Err(LangError::eval(
+    Err(LangError::conflict(
         span.line,
         span.col,
         format!("cannot {op} {} and {}", left.type_name(), right.type_name()),
@@ -1721,7 +1750,7 @@ fn type_error(op: &str, left: &Value, right: &Value, span: Span) -> Result<Value
 fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
     match (left, right) {
         (Value::Conflict(message), _) | (_, Value::Conflict(message)) => {
-            Err(LangError::eval(span.line, span.col, message.clone()))
+            Err(LangError::conflict(span.line, span.col, message.clone()))
         }
         (Value::Bottom, value) | (value, Value::Bottom) => Ok(value.clone()),
         (Value::Disjunction(a, da), Value::Disjunction(b, db)) => {
@@ -1735,7 +1764,7 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             if type_matches(*kind, value) {
                 Ok(value.clone())
             } else {
-                Err(LangError::eval(
+                Err(LangError::conflict(
                     span.line,
                     span.col,
                     format!(
@@ -1849,15 +1878,8 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             }
         }
         (Value::Float(a), Value::Float(b)) => {
-            if (a - b).abs() <= f64::EPSILON {
+            if a == b {
                 Ok(Value::Float(*a))
-            } else {
-                Err(conflict(span))
-            }
-        }
-        (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
-            if (*a as f64 - b).abs() <= f64::EPSILON {
-                Ok(Value::Float(*b))
             } else {
                 Err(conflict(span))
             }
@@ -1968,7 +1990,7 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             Ok(Value::List(out))
         }
         (a, b) if values_equal(a, b) => Ok(a.clone()),
-        (a, b) => Err(LangError::eval(
+        (a, b) => Err(LangError::conflict(
             span.line,
             span.col,
             format!(
@@ -1988,7 +2010,7 @@ fn unify_types(left: TypeKind, right: TypeKind, span: Span) -> Result<Value, Lan
             TypeKind::Float
         }
         _ => {
-            return Err(LangError::eval(
+            return Err(LangError::conflict(
                 span.line,
                 span.col,
                 "incompatible type constraints",
@@ -2037,41 +2059,107 @@ fn collect_disjunction<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
-fn conflict(span: Span) -> LangError {
-    LangError::eval(span.line, span.col, "conflicting values")
+fn require_concrete(value: &Value, span: Span) -> Result<&Value, LangError> {
+    let concrete = value.concretize();
+    if concrete.to_json().is_none() {
+        return Err(LangError::eval(
+            span.line,
+            span.col,
+            "unresolved disjunction or non-concrete value",
+        ));
+    }
+    Ok(concrete)
 }
 
-fn push_disjunction_alternative(
+fn require_bool(value: &Value, span: Span) -> Result<bool, LangError> {
+    let concrete = require_concrete(value, span)?;
+    match concrete {
+        Value::Bool(value) => Ok(*value),
+        other => Err(LangError::conflict(
+            span.line,
+            span.col,
+            format!("expected bool, found {}", other.type_name()),
+        )),
+    }
+}
+
+fn conflict(span: Span) -> LangError {
+    LangError::conflict(span.line, span.col, "conflicting values")
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DefaultMode {
+    None,
+    Direct,
+    Inherited,
+}
+
+fn push_unique_disjunction_value(alternatives: &mut Vec<Value>, value: Value) -> usize {
+    if let Some(index) = alternatives
+        .iter()
+        .position(|existing| values_equal(existing, &value))
+    {
+        return index;
+    }
+    let index = alternatives.len();
+    alternatives.push(value);
+    index
+}
+
+fn collect_disjunction_value(
+    alternatives: &mut Vec<Value>,
+    direct: &mut Vec<usize>,
+    inherited: &mut Vec<usize>,
+    value: Value,
+    mode: DefaultMode,
+) {
+    match value {
+        Value::Disjunction(inner, inner_defaults) => {
+            for (index, alternative) in inner.into_iter().enumerate() {
+                let child_mode = match mode {
+                    DefaultMode::Direct if inner_defaults.is_empty() => DefaultMode::Direct,
+                    DefaultMode::Direct if inner_defaults.contains(&index) => DefaultMode::Direct,
+                    DefaultMode::Inherited if inner_defaults.contains(&index) => {
+                        DefaultMode::Inherited
+                    }
+                    _ => DefaultMode::None,
+                };
+                collect_disjunction_value(alternatives, direct, inherited, alternative, child_mode);
+            }
+        }
+        other => {
+            let index = push_unique_disjunction_value(alternatives, other);
+            match mode {
+                DefaultMode::Direct if !direct.contains(&index) => direct.push(index),
+                DefaultMode::Inherited if !inherited.contains(&index) => inherited.push(index),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn push_disjunction_result(
     alternatives: &mut Vec<Value>,
     defaults: &mut Vec<usize>,
     value: Value,
     is_default: bool,
-) -> Result<(), LangError> {
-    match value {
-        Value::Bottom => Ok(()),
-        Value::Disjunction(inner, inner_defaults) => {
-            for (index, alternative) in inner.into_iter().enumerate() {
-                let index_default = is_default || inner_defaults.contains(&index);
-                push_disjunction_alternative(alternatives, defaults, alternative, index_default)?;
-            }
-            Ok(())
-        }
-        other => {
-            if let Some(index) = alternatives
-                .iter()
-                .position(|existing| values_equal(existing, &other))
-            {
-                if is_default && !defaults.contains(&index) {
-                    defaults.push(index);
-                }
-                return Ok(());
-            }
-            let index = alternatives.len();
-            alternatives.push(other);
-            if is_default {
-                defaults.push(index);
-            }
-            Ok(())
+) {
+    let mut direct = Vec::new();
+    let mut inherited = Vec::new();
+    collect_disjunction_value(
+        alternatives,
+        &mut direct,
+        &mut inherited,
+        value,
+        if is_default {
+            DefaultMode::Direct
+        } else {
+            DefaultMode::None
+        },
+    );
+    for index in direct {
+        if !defaults.contains(&index) {
+            defaults.push(index);
         }
     }
 }
@@ -2096,16 +2184,16 @@ fn unify_disjunction_with(
     let mut out_defaults = Vec::new();
     for (index, alternative) in alternatives.iter().enumerate() {
         if let Ok(value) = unify_values(alternative, other, span) {
-            push_disjunction_alternative(
+            push_disjunction_result(
                 &mut out,
                 &mut out_defaults,
                 value,
                 defaults.contains(&index),
-            )?;
+            );
         }
     }
     match out.len() {
-        0 => Err(LangError::eval(
+        0 => Err(LangError::conflict(
             span.line,
             span.col,
             "disjunction has no value satisfying the constraint",
@@ -2129,12 +2217,12 @@ fn unify_disjunctions(
             if let Ok(value) = unify_values(left_value, right_value, span) {
                 let is_default =
                     left_defaults.contains(&left_index) || right_defaults.contains(&right_index);
-                push_disjunction_alternative(&mut out, &mut out_defaults, value, is_default)?;
+                push_disjunction_result(&mut out, &mut out_defaults, value, is_default);
             }
         }
     }
     match out.len() {
-        0 => Err(LangError::eval(
+        0 => Err(LangError::conflict(
             span.line,
             span.col,
             "disjunction has no value satisfying the other disjunction",
