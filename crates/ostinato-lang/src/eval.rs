@@ -143,6 +143,34 @@ pub fn eval_expr_with_json(expr: &Expr, context: &Json) -> Result<Value, LangErr
     eval_expr(expr, &frame)
 }
 
+/// Evaluate a file after injecting concrete parameter overrides.
+///
+/// # Errors
+/// Returns an error when `params` is missing or not a struct.
+pub fn eval_file_with_overrides(
+    file: &File,
+    overrides: &BTreeMap<String, Value>,
+) -> Result<Value, LangError> {
+    let frame = Frame::new(&file.items, None, HashMap::new())?;
+    if !overrides.is_empty() {
+        let Value::Struct(mut params) = frame.eval_field("params", Span::default())? else {
+            return Err(LangError::eval(
+                1,
+                1,
+                "parameters were supplied but `params` is not a struct",
+            ));
+        };
+        for (key, value) in overrides {
+            params.insert(key.clone(), value.clone());
+        }
+        frame
+            .values
+            .borrow_mut()
+            .insert("params".to_owned(), Value::Struct(params));
+    }
+    frame.to_struct_value()
+}
+
 fn json_frame(context: &Json) -> Frame<'static> {
     let frame = Frame {
         parent: None,
@@ -213,10 +241,10 @@ impl<'a> Frame<'a> {
 
         // Pass 1: static fields.
         for item in items {
-            if let StructItem::Field(field) = item {
-                if let crate::ast::Label::Name(name, _) = &field.label {
-                    frame.insert_field(name.clone(), field.value.clone(), field.optional);
-                }
+            if let StructItem::Field(field) = item
+                && let crate::ast::Label::Name(name, _) = &field.label
+            {
+                frame.insert_field(name.clone(), field.value.clone(), field.optional);
             }
         }
 
@@ -338,13 +366,16 @@ impl<'a> Frame<'a> {
         if let Some(value) = self.vars.get(name) {
             return Ok(value.clone());
         }
+        if let Some(value) = self.values.borrow().get(name) {
+            return Ok(value.clone());
+        }
         if self.fields.borrow().contains_key(name) {
             return self.eval_field(name, span);
         }
-        if let Some(parent) = self.parent {
-            if parent.has_name(name) {
-                return parent.lookup(name, span);
-            }
+        if let Some(parent) = self.parent
+            && parent.has_name(name)
+        {
+            return parent.lookup(name, span);
         }
         match name {
             "string" => Ok(Value::Type(TypeKind::String)),
@@ -362,8 +393,8 @@ impl<'a> Frame<'a> {
     }
 
     fn has_name(&self, name: &str) -> bool {
-        self.fields.borrow().contains_key(name)
-            || self.values.borrow().contains_key(name)
+        self.values.borrow().contains_key(name)
+            || self.fields.borrow().contains_key(name)
             || self.vars.contains_key(name)
             || self.parent.is_some_and(|parent| parent.has_name(name))
     }
@@ -423,10 +454,12 @@ impl<'a> Frame<'a> {
                 .borrow()
                 .get(&name)
                 .is_some_and(|def| def.optional);
-            let value = self.eval_field(&name, Span::default())?;
-            if optional && !value.is_concrete() {
+            if optional {
+                // Match `cue export`: optional fields are not part of the
+                // concrete export, even when their value is known.
                 continue;
             }
+            let value = self.eval_field(&name, Span::default())?;
             out.insert(name, value);
         }
         for (name, value) in self.values.borrow().iter() {
@@ -513,15 +546,25 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             let right = eval_expr(right, frame)?;
             unify_values(&left, &right, *span)
         }
-        Expr::Disjunction(left, right, span) => match (&**left, &**right) {
-            (Expr::Default(inner, _), _) => eval_expr(inner, frame),
-            (_, Expr::Default(inner, _)) => eval_expr(inner, frame),
-            _ => {
-                let left = eval_expr(left, frame)?;
-                let right = eval_expr(right, frame)?;
-                combine_disjunction(&left, &right, *span)
+        Expr::Disjunction(_, _, span) => {
+            let mut alternatives = Vec::new();
+            collect_disjunction(expr, &mut alternatives);
+            if let Some(Expr::Default(inner, _)) = alternatives
+                .iter()
+                .find(|alternative| matches!(alternative, Expr::Default(_, _)))
+            {
+                return eval_expr(inner, frame);
             }
-        },
+            let mut result: Option<Value> = None;
+            for alternative in alternatives {
+                let value = eval_expr(alternative, frame)?;
+                result = Some(match result {
+                    None => value,
+                    Some(current) => combine_disjunction(&current, &value, *span)?,
+                });
+            }
+            result.ok_or_else(|| LangError::eval(span.line, span.col, "empty disjunction"))
+        }
         Expr::Default(inner, _) => eval_expr(inner, frame),
         Expr::Binary(op, left, right, span) => {
             if matches!(op, BinOp::And) {
@@ -766,6 +809,15 @@ fn kind_name(kind: TypeKind) -> &'static str {
         TypeKind::Float => "float",
         TypeKind::Number => "number",
         TypeKind::Bool => "bool",
+    }
+}
+
+fn collect_disjunction<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
+    if let Expr::Disjunction(left, right, _) = expr {
+        collect_disjunction(left, out);
+        collect_disjunction(right, out);
+    } else {
+        out.push(expr);
     }
 }
 

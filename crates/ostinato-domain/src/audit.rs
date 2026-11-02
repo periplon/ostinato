@@ -3,6 +3,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::error::DomainError;
+use crate::run::StepRecord;
+use crate::workflow as wf;
 
 /// The hash-chained audit event. Every run has its own chain starting at
 /// [`GENESIS_HASH`].
@@ -119,4 +121,46 @@ pub fn verify_chain(events: &[AuditEvent]) -> Result<(), DomainError> {
         prev.clone_from(&event.hash);
     }
     Ok(())
+}
+
+/// Digest of the execution-relevant state of a run.
+///
+/// The audit chain protects event history; this digest protects the mutable
+/// rows that drive execution (`spec`, `params`, checkpoint and step outputs)
+/// against edits that would otherwise be invisible to `audit verify`.
+#[must_use]
+pub fn state_digest(
+    spec: &wf::WorkflowSpec,
+    params: &Value,
+    resume_index: i64,
+    steps: &[StepRecord],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(spec).unwrap_or_default());
+    hasher.update(b"\x1f");
+    hasher.update(serde_json::to_vec(params).unwrap_or_default());
+    hasher.update(b"\x1f");
+    hasher.update(resume_index.to_be_bytes());
+    let mut ordered: Vec<&StepRecord> = steps.iter().collect();
+    ordered.sort_by(|a, b| a.name.cmp(&b.name));
+    for step in ordered {
+        hasher.update(b"\x1f");
+        hasher.update(step.name.as_bytes());
+        hasher.update(b"\x1f");
+        hasher.update(step.status.as_str().as_bytes());
+        hasher.update(b"\x1f");
+        hasher.update(step.visits.to_be_bytes());
+        hasher.update(b"\x1f");
+        hasher.update(step.attempts.to_be_bytes());
+        hasher.update(b"\x1f");
+        hasher.update(step.error.as_deref().unwrap_or("").as_bytes());
+        hasher.update(b"\x1f");
+        hasher.update(
+            step.output
+                .as_ref()
+                .map(|value| serde_json::to_vec(value).unwrap_or_default())
+                .unwrap_or_default(),
+        );
+    }
+    hex::encode(hasher.finalize())
 }

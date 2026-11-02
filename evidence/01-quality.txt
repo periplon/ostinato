@@ -2,95 +2,109 @@
 exit=0
 
 ### cargo clippy --all-targets --all-features -- -D warnings
-    Checking ostinato-domain v0.1.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-domain)
-    Checking ostinato-lang v0.1.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-lang)
-    Checking ostinato-application v0.1.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-application)
-    Checking ostinato-adapters v0.1.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-adapters)
-    Checking ostinato v0.1.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-cli)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.96s
+    Checking ostinato-domain v0.1.1 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-domain)
+    Checking ostinato-lang v0.1.1 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-lang)
+    Checking ostinato-application v0.1.1 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-application)
+    Checking ostinato-adapters v0.1.1 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-adapters)
+    Checking ostinato v0.1.1 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.32s
 exit=0
 
 ### cargo test --all
-   Compiling ostinato-domain v0.1.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-domain)
-   Compiling ostinato-lang v0.1.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-lang)
-   Compiling ostinato-application v0.1.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-application)
-   Compiling ostinato-adapters v0.1.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-adapters)
-   Compiling ostinato v0.1.0 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-cli)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
-     Running unittests src/main.rs (target/debug/deps/ostinato-930f286f528e51dc)
+   Compiling ostinato-domain v0.1.1 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-domain)
+   Compiling ostinato-lang v0.1.1 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-lang)
+   Compiling ostinato-application v0.1.1 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-application)
+   Compiling ostinato-adapters v0.1.1 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-adapters)
+   Compiling ostinato v0.1.1 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.26s
+     Running unittests src/main.rs (target/debug/deps/ostinato-8713e0f5eff547c5)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/e2e.rs (target/debug/deps/e2e-fae06c75f8e37548)
+     Running tests/e2e.rs (target/debug/deps/e2e-5ed7ce006617feb0)
 
-running 9 tests
+running 16 tests
+test unknown_fields_are_rejected ... ok
 test native_evaluator_supports_the_offline_subset ... ok
+test truncation_blocks_resume_and_appends ... ok
+test read_only_commands_do_not_require_cue ... ok
+test bad_template_is_a_durable_failure ... ok
 test audit_detects_tail_truncation_via_persisted_head ... ok
 test audit_verification_detects_tampering ... ok
 test official_cue_runs_and_audit_verifies ... ok
 test retries_are_attempted_and_logged_as_trials ... ok
 test resume_skips_completed_steps_and_finishes ... ok
-test cancel_marks_run_and_blocks_resume ... ok
+test split_package_and_sibling_conflicts_follow_cue_semantics ... ok
 test cycles_stop_when_until_becomes_true ... ok
 test recursive_improvement_creates_child_runs ... ok
+test exec_timeout_kills_the_process_group ... ok
+run=c89e27fc-ef33-40cf-93bd-a572703f5265 workflow=cancel status=cancelled durationMs=2015
+STEP                     STATUS     VISITS ATTEMPTS
+test state_tampering_is_detected_and_resume_refuses_it ... ok
+test cancel_stops_a_running_run_and_blocks_resume ... ok
 
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.33s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_adapters-4464669f05044096)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_adapters-c4bee0b51d7ff1fb)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/store.rs (target/debug/deps/store-3fe9a857b1525233)
+     Running tests/store.rs (target/debug/deps/store-71aabbf53a081d69)
 
 running 1 test
 test sqlite_store_roundtrip_is_atomic_and_hash_chained ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_application-11593ec82368f27c)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_application-c832c150afe8db4e)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_domain-d76e4ded0227c5a7)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_domain-dca9720420e0e9e4)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/domain.rs (target/debug/deps/domain-b0f7361e99c280e5)
+     Running tests/domain.rs (target/debug/deps/domain-afaa23c7eef32ae8)
 
 running 6 tests
 test new_event_helper_is_ergonomic ... ok
 test retry_backoff_is_capped_and_deterministic ... ok
-test independent_steps_share_a_parallel_group ... ok
 test cycles_require_an_explicit_policy ... ok
+test independent_steps_share_a_parallel_group ... ok
 test cycles_expand_into_bounded_rounds ... ok
 test audit_chain_detects_tampering ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_lang-efab779e20498d71)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_lang-1bca59fe3f08ba0f)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/lang.rs (target/debug/deps/lang-851ecff0e9077e73)
+     Running tests/lang.rs (target/debug/deps/lang-c70b85f6f732466d)
 
-running 5 tests
+running 10 tests
 test renders_templates ... ok
 test evaluates_conditions ... ok
-test evaluates_structs_defaults_unification_and_interpolation ... ok
+test native_defaults_work_in_multibranch_disjunctions ... ok
+test unknown_workflow_fields_are_rejected ... ok
+test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
 test rejects_missing_required_parameter ... ok
+test invalid_until_is_rejected_at_validation_time ... ok
+test native_parameter_overrides_are_injected_before_interpolation ... ok
 test compiles_workflow_and_resolves_parameters ... ok
+test evaluates_structs_defaults_unification_and_interpolation ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
    Doc-tests ostinato_adapters
 

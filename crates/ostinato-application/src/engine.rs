@@ -15,7 +15,7 @@ use crate::error::{EngineError, Result};
 use crate::improve::{ImproveRequest, propose_improvement};
 use crate::ports::{
     AgentRequest, AgentRunner, Clock, CommandExecutor, Completion, ExecRequest, IdGenerator,
-    LoadedWorkflow, MetricsSummary, SpecLoader, Store, Telemetry,
+    LoadedWorkflow, MetricsSummary, PortError, SpecLoader, Store, Telemetry,
 };
 
 /// Dependencies injected into the engine (hexagonal ports).
@@ -135,6 +135,7 @@ impl Engine {
     ) -> Result<RunReport> {
         let id = self.ids.new_run_id();
         let now = self.clock.now();
+        let state_hash = audit::state_digest(&spec, &params, 0, &[]);
         let run = RunRecord {
             id,
             workflow_name: spec.name.clone(),
@@ -148,6 +149,7 @@ impl Engine {
             created_at: now.clone(),
             updated_at: now.clone(),
             audit_head: audit::GENESIS_HASH.to_owned(),
+            state_hash,
         };
         self.store.create_run(&run)?;
         let event = self.store.append_event(
@@ -177,6 +179,26 @@ impl Engine {
         }
         if run.status == RunStatus::Cancelled {
             return Err(EngineError::Cancelled(run.id));
+        }
+        let events = self.store.events(&run.id)?;
+        audit::verify_chain(&events)?;
+        let head = events.last().map_or_else(
+            || audit::GENESIS_HASH.to_owned(),
+            |event| event.hash.clone(),
+        );
+        if head != run.audit_head {
+            return Err(EngineError::InvalidState(format!(
+                "audit head mismatch for run {}; refusing to resume",
+                run.id
+            )));
+        }
+        let steps = self.store.steps(&run.id)?;
+        let digest = audit::state_digest(&run.spec, &run.params, run.resume_index, &steps);
+        if digest != run.state_hash {
+            return Err(EngineError::InvalidState(format!(
+                "state digest mismatch for run {}; refusing to resume a tampered or stale run",
+                run.id
+            )));
         }
         let now = self.clock.now();
         run.status = RunStatus::Running;
@@ -246,10 +268,24 @@ impl Engine {
     fn drive(&self, mut run: RunRecord) -> Result<RunReport> {
         let started = Instant::now();
         let plan = build_plan(&run.spec)?;
-        let mut index = usize::try_from(run.resume_index.max(0)).unwrap_or(usize::MAX);
-        if index >= plan.nodes.len() {
+        let index = usize::try_from(run.resume_index).map_err(|_| {
+            EngineError::InvalidState(format!(
+                "negative resume index {} for run {}",
+                run.resume_index, run.id
+            ))
+        })?;
+        if index > plan.nodes.len() {
+            return Err(EngineError::InvalidState(format!(
+                "resume index {} is beyond the plan ({} nodes) for run {}",
+                index,
+                plan.nodes.len(),
+                run.id
+            )));
+        }
+        if index == plan.nodes.len() {
             return self.finish_success(run, plan.nodes.len(), started);
         }
+        let mut index = index;
 
         let mut outputs: BTreeMap<String, Json> = self
             .store
@@ -259,12 +295,12 @@ impl Engine {
             .collect();
 
         while index < plan.nodes.len() {
-            if let Some(current) = self.store.load_run(&run.id)? {
-                if current.status == RunStatus::Cancelled {
-                    run.status = RunStatus::Cancelled;
-                    run.updated_at = current.updated_at;
-                    return self.report(&run, started);
-                }
+            if let Some(current) = self.store.load_run(&run.id)?
+                && current.status == RunStatus::Cancelled
+            {
+                run.status = RunStatus::Cancelled;
+                run.updated_at = current.updated_at;
+                return self.report(&run, started);
             }
             let group_id = plan.nodes[index].group;
             let mut end = index + 1;
@@ -294,6 +330,18 @@ impl Engine {
                 RunStatus::Running
             };
             let now = self.clock.now();
+            let mut group_events: Vec<NewEvent> =
+                results.iter().map(|result| result.event.clone()).collect();
+            if aborting {
+                group_events.push(NewEvent::new(
+                    "run.failed",
+                    results
+                        .iter()
+                        .find(|result| result.hard_failure && !result.continue_on_error)
+                        .map(|result| result.step.name.clone()),
+                    json!({"error": first_error, "resumeIndex": resume_index}),
+                ));
+            }
             let completion = Completion {
                 run_id: run.id.clone(),
                 resume_index,
@@ -301,9 +349,17 @@ impl Engine {
                 error: first_error.clone(),
                 updated_at: now.clone(),
                 steps: results.iter().map(|result| result.step.clone()).collect(),
-                events: results.iter().map(|result| result.event.clone()).collect(),
+                events: group_events,
             };
-            let events = self.store.complete(completion)?;
+            let events = match self.store.complete(completion) {
+                Ok(events) => events,
+                Err(PortError::Cancelled(_)) => {
+                    run.status = RunStatus::Cancelled;
+                    run.updated_at = now;
+                    return self.report(&run, started);
+                }
+                Err(err) => return Err(err.into()),
+            };
             for event in &events {
                 self.telemetry.event(event);
             }
@@ -340,15 +396,27 @@ impl Engine {
             run.resume_index = i64::try_from(index).unwrap_or(i64::MAX);
 
             let mut skipped_to: Option<usize> = None;
+            let mut round_checked = false;
             for node in &group {
-                if !node.is_round_end {
+                if !node.is_round_end || round_checked {
                     continue;
                 }
                 let Some(until) = &node.cycle_until else {
                     continue;
                 };
+                round_checked = true;
                 let context = self.context(&run, node.round, &outputs);
-                let done = eval_condition(until, &context)?;
+                let done = match eval_condition(until, &context) {
+                    Ok(done) => done,
+                    Err(err) => {
+                        return self.fail_run(
+                            run,
+                            node.index,
+                            format!("invalid cycle condition `{until}`: {err}"),
+                            started,
+                        );
+                    }
+                };
                 if done {
                     let mut skip = end;
                     while skip < plan.nodes.len() && plan.nodes[skip].scc == node.scc {
@@ -420,13 +488,62 @@ impl Engine {
                 json!({"resumeIndex": total_nodes}),
             )],
         };
-        let events = self.store.complete(completion)?;
+        let events = match self.store.complete(completion) {
+            Ok(events) => events,
+            Err(PortError::Cancelled(_)) => {
+                run.status = RunStatus::Cancelled;
+                return self.report(&run, started);
+            }
+            Err(err) => return Err(err.into()),
+        };
         for event in &events {
             self.telemetry.event(event);
         }
         run.status = RunStatus::Succeeded;
         run.error = None;
         run.resume_index = i64::try_from(total_nodes).unwrap_or(i64::MAX);
+        run.updated_at = now;
+        self.report(&run, started)
+    }
+
+    fn fail_run(
+        &self,
+        mut run: RunRecord,
+        resume_index: usize,
+        error: String,
+        started: Instant,
+    ) -> Result<RunReport> {
+        let now = self.clock.now();
+        let resume_index = i64::try_from(resume_index).unwrap_or(i64::MAX);
+        let completion = Completion {
+            run_id: run.id.clone(),
+            resume_index,
+            status: RunStatus::Failed,
+            error: Some(error.clone()),
+            updated_at: now.clone(),
+            steps: Vec::new(),
+            events: vec![NewEvent::new(
+                "run.failed",
+                None,
+                json!({"error": error, "resumeIndex": resume_index}),
+            )],
+        };
+        match self.store.complete(completion) {
+            Ok(events) => {
+                for event in &events {
+                    self.telemetry.event(event);
+                }
+            }
+            Err(PortError::Cancelled(_)) => {
+                run.status = RunStatus::Cancelled;
+                run.updated_at = now;
+                return self.report(&run, started);
+            }
+            Err(err) => return Err(err.into()),
+        }
+        run.status = RunStatus::Failed;
+        run.error = Some(error);
+        run.resume_index = resume_index;
         run.updated_at = now;
         self.report(&run, started)
     }
@@ -633,7 +750,16 @@ impl Engine {
         };
         let mut rendered: Vec<String> = Vec::with_capacity(exec.cmd.len());
         for argument in &exec.cmd {
-            rendered.push(render(argument, context)?);
+            match render(argument, context) {
+                Ok(argument) => rendered.push(argument),
+                Err(err) => {
+                    return Ok(failure(
+                        json!({"kind": "exec", "renderError": err.to_string()}),
+                        err.to_string(),
+                        0.0,
+                    ));
+                }
+            }
         }
         let Some(program) = rendered.first().cloned() else {
             return Err(EngineError::InvalidState(format!(
@@ -643,12 +769,32 @@ impl Engine {
         };
         let args = rendered.into_iter().skip(1).collect();
         let cwd = match &exec.cwd {
-            Some(path) => Some(PathBuf::from(render(path, context)?)),
+            Some(path) => match render(path, context) {
+                Ok(path) => Some(PathBuf::from(path)),
+                Err(err) => {
+                    return Ok(failure(
+                        json!({"kind": "exec", "renderError": err.to_string()}),
+                        err.to_string(),
+                        0.0,
+                    ));
+                }
+            },
             None => workflow_dir(run),
         };
         let mut env = BTreeMap::new();
         for (key, value) in &exec.env {
-            env.insert(key.clone(), render(value, context)?);
+            match render(value, context) {
+                Ok(value) => {
+                    env.insert(key.clone(), value);
+                }
+                Err(err) => {
+                    return Ok(failure(
+                        json!({"kind": "exec", "renderError": err.to_string()}),
+                        err.to_string(),
+                        0.0,
+                    ));
+                }
+            }
         }
         let input = json!({
             "kind": "exec",
@@ -729,16 +875,34 @@ impl Engine {
                 node.step
             )));
         };
-        let prompt = render(&agent.prompt, context)?;
+        let render_or_fail = |value: &str| -> std::result::Result<String, AttemptOutcome> {
+            render(value, context).map_err(|err| {
+                failure(
+                    json!({"kind": "agent", "renderError": err.to_string()}),
+                    err.to_string(),
+                    0.0,
+                )
+            })
+        };
+        let prompt = match render_or_fail(&agent.prompt) {
+            Ok(prompt) => prompt,
+            Err(failed) => return Ok(failed),
+        };
         let system = match &agent.system {
-            Some(system) => Some(render(system, context)?),
+            Some(system) => match render_or_fail(system) {
+                Ok(system) => Some(system),
+                Err(failed) => return Ok(failed),
+            },
             None => None,
         };
         let command = match &agent.command {
             Some(command) => {
                 let mut rendered = Vec::with_capacity(command.len());
                 for argument in command {
-                    rendered.push(render(argument, context)?);
+                    match render_or_fail(argument) {
+                        Ok(argument) => rendered.push(argument),
+                        Err(failed) => return Ok(failed),
+                    }
                 }
                 Some(rendered)
             }
@@ -769,7 +933,7 @@ impl Engine {
                 let score = parsed
                     .as_ref()
                     .and_then(extract_score_from_json)
-                    .unwrap_or(1.0);
+                    .unwrap_or(0.0);
                 let mut output = Map::new();
                 output.insert("text".to_owned(), Json::String(outcome.text.clone()));
                 output.insert("stdout".to_owned(), Json::String(outcome.text.clone()));
@@ -817,13 +981,10 @@ impl Engine {
             max_samples: improve.max_samples,
             command: None,
             cwd: workflow_dir(run),
+            timeout: spec.timeout_ms.map(Duration::from_millis),
         }) {
             Ok(improvement) => {
-                let score = improvement
-                    .proposal
-                    .get("confidence")
-                    .and_then(Json::as_f64)
-                    .unwrap_or(1.0);
+                let score = extract_score_from_json(&improvement.proposal).unwrap_or(0.0);
                 let mut output = Map::new();
                 output.insert(
                     "text".to_owned(),
@@ -847,8 +1008,11 @@ impl Engine {
 }
 
 fn workflow_dir(run: &RunRecord) -> Option<PathBuf> {
-    Path::new(&run.source_file)
-        .parent()
+    let path = Path::new(&run.source_file);
+    if path.is_dir() {
+        return Some(path.to_path_buf());
+    }
+    path.parent()
         .filter(|path| !path.as_os_str().is_empty())
         .map(Path::to_path_buf)
 }

@@ -196,7 +196,14 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                 params: parse_params(&params)?,
             })?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&loaded.spec)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "workflow": loaded.spec,
+                        "params": loaded.params,
+                        "evaluator": loaded.evaluator,
+                    }))?
+                );
             } else {
                 println!(
                     "OK {} ({} steps, maxParallel={}, evaluator={})",
@@ -231,7 +238,8 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             max_parallel,
             agent_cmd,
         } => {
-            let (loader, engine, _) = build_engine(&cli, agent_cmd, max_parallel)?;
+            let (loader, _) = build_loader(&cli)?;
+            let (engine, _) = build_runtime(&cli, agent_cmd, max_parallel)?;
             let loaded = loader.load(&LoadRequest {
                 source: file,
                 params: parse_params(&params)?,
@@ -241,7 +249,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             Ok(exit_for_status(report.status))
         }
         Command::Cancel { run } => {
-            let (_, engine, _) = build_engine(&cli, None, None)?;
+            let (engine, _) = build_runtime(&cli, None, None)?;
             let event = engine.cancel(&run)?;
             println!("cancelled run={run} seq={} hash={}", event.seq, event.hash);
             Ok(ExitCode::SUCCESS)
@@ -251,13 +259,13 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             agent_cmd,
             max_parallel,
         } => {
-            let (_, engine, _) = build_engine(&cli, agent_cmd, max_parallel)?;
+            let (engine, _) = build_runtime(&cli, agent_cmd, max_parallel)?;
             let report = engine.resume(&run)?;
             print_report(&report, json)?;
             Ok(exit_for_status(report.status))
         }
         Command::Status { run } => {
-            let (_, engine, _) = build_engine(&cli, None, None)?;
+            let (engine, _) = build_runtime(&cli, None, None)?;
             let record = engine
                 .store()
                 .load_run(&run)?
@@ -266,7 +274,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Runs { limit } => {
-            let (_, engine, _) = build_engine(&cli, None, None)?;
+            let (engine, _) = build_runtime(&cli, None, None)?;
             let runs = engine.store().list_runs(limit)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&runs)?);
@@ -289,7 +297,11 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Logs { run, follow } => {
-            let (_, engine, _) = build_engine(&cli, None, None)?;
+            let (engine, _) = build_runtime(&cli, None, None)?;
+            let mut record = engine
+                .store()
+                .load_run(&run)?
+                .with_context(|| format!("run not found: {run}"))?;
             let mut last_seq: i64 = -1;
             loop {
                 let events = engine.store().events(&run)?;
@@ -313,19 +325,20 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                 if !follow {
                     break;
                 }
-                if let Some(record) = engine.store().load_run(&run)? {
-                    if record.status.is_terminal() {
-                        break;
-                    }
+                if record.status.is_terminal() {
+                    break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(500));
+                if let Some(current) = engine.store().load_run(&run)? {
+                    record = current;
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
         Command::Audit {
             command: AuditCommand::Verify { run },
         } => {
-            let (_, engine, _) = build_engine(&cli, None, None)?;
+            let (engine, _) = build_runtime(&cli, None, None)?;
             let events = engine.store().events(&run)?;
             match audit::verify_chain(&events) {
                 Ok(()) => {
@@ -343,6 +356,19 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                         );
                         return Ok(ExitCode::FAILURE);
                     }
+                    let steps = engine.store().steps(&run)?;
+                    let digest = ostinato_domain::state_digest(
+                        &record.spec,
+                        &record.params,
+                        record.resume_index,
+                        &steps,
+                    );
+                    if digest != record.state_hash {
+                        eprintln!(
+                            "AUDIT FAILED run={run}: execution state does not match the persisted digest"
+                        );
+                        return Ok(ExitCode::FAILURE);
+                    }
                     println!("OK run={run} events={} head={head}", events.len());
                     Ok(ExitCode::SUCCESS)
                 }
@@ -353,7 +379,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             }
         }
         Command::Trials { run, limit } => {
-            let (_, engine, _) = build_engine(&cli, None, None)?;
+            let (engine, _) = build_runtime(&cli, None, None)?;
             let mut trials = engine.store().trials(&run)?;
             if let Some(limit) = limit {
                 let start = trials.len().saturating_sub(limit);
@@ -387,28 +413,30 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             agent_cmd,
             prompt,
         } => {
-            let (_, engine, _) = build_engine(&cli, agent_cmd, None)?;
+            let (loader, _) = build_loader(&cli)?;
+            let (engine, _) = build_runtime(&cli, agent_cmd, None)?;
             let mut current_run = run;
+            let mut last_improvement_id: Option<i64> = None;
+            let mut improvements_json = Vec::new();
+            let mut children_json = Vec::new();
             for round in 0..rounds.max(1) {
                 let record = engine
                     .store()
                     .load_run(&current_run)?
                     .with_context(|| format!("run not found: {current_run}"))?;
-                let cwd = std::path::Path::new(&record.source_file)
-                    .parent()
-                    .filter(|path| !path.as_os_str().is_empty())
-                    .map(std::path::Path::to_path_buf);
                 let improvement = engine.improve(&ImproveRequest {
                     run_id: current_run.clone(),
-                    parent_id: None,
+                    parent_id: last_improvement_id,
                     round,
                     prompt: prompt.clone(),
                     max_samples: 20,
                     command: None,
-                    cwd,
+                    cwd: workflow_cwd(&record.source_file),
+                    timeout: None,
                 })?;
+                last_improvement_id = Some(improvement.id);
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&improvement)?);
+                    improvements_json.push(serde_json::to_value(&improvement)?);
                 } else {
                     println!(
                         "improvement #{} run={} diagnosis={}",
@@ -416,35 +444,86 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     );
                     println!("{}", serde_json::to_string_pretty(&improvement.proposal)?);
                 }
+
                 let patch = params_patch(&improvement.proposal)?;
                 if patch.is_empty() {
-                    println!("no params_patch in proposal; stopping recursion");
+                    if !json {
+                        println!("no params_patch in proposal; stopping recursion");
+                    }
                     break;
                 }
                 let mut params = record.params.as_object().cloned().unwrap_or_default();
                 for (key, value) in patch {
                     params.insert(key, value);
                 }
+                let merged = serde_json::Value::Object(params);
+                // Re-evaluate CUE with the patched parameters so that both
+                // compile-time interpolation and runtime templates see it.
+                let loaded = loader.load(&LoadRequest {
+                    source: PathBuf::from(&record.source_file),
+                    params: json_param_strings(&merged),
+                })?;
                 let child = engine.start_with(
-                    record.source_file.clone(),
-                    record.spec.clone(),
-                    serde_json::Value::Object(params),
+                    loaded.source_file,
+                    loaded.spec,
+                    loaded.params,
                     Some(record.id.clone()),
                 )?;
-                println!(
-                    "child run {} status={} parent={}",
-                    child.run_id,
-                    child.status.as_str(),
-                    record.id
-                );
+                let child_json = serde_json::json!({
+                    "run": child.run_id,
+                    "status": child.status.as_str(),
+                    "parent": record.id,
+                });
+                if json {
+                    children_json.push(child_json);
+                } else {
+                    println!(
+                        "child run {} status={} parent={}",
+                        child.run_id,
+                        child.status.as_str(),
+                        record.id
+                    );
+                }
+                let child_failed = !matches!(child.status, RunStatus::Succeeded);
                 current_run = child.run_id;
+                if child_failed {
+                    if !json {
+                        println!("child run did not succeed; stopping recursion");
+                    }
+                    break;
+                }
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "improvements": improvements_json,
+                        "children": children_json,
+                    }))?
+                );
             }
             Ok(ExitCode::SUCCESS)
         }
         Command::Metrics { run, format } => {
-            let (_, engine, _) = build_engine(&cli, None, None)?;
+            let (engine, _) = build_runtime(&cli, None, None)?;
             let metrics = engine.metrics(run.as_deref())?;
             match format {
+                MetricFormat::Text if json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "runsTotal": metrics.runs_total,
+                            "runsSucceeded": metrics.runs_succeeded,
+                            "runsFailed": metrics.runs_failed,
+                            "runsRunning": metrics.runs_running,
+                            "stepsTotal": metrics.steps_total,
+                            "stepsFailed": metrics.steps_failed,
+                            "attemptsTotal": metrics.attempts_total,
+                            "retriesTotal": metrics.retries_total,
+                            "avgAttemptMs": metrics.avg_attempt_ms,
+                        }))?
+                    );
+                }
                 MetricFormat::Text => {
                     println!("runs_total        {}", metrics.runs_total);
                     println!("runs_succeeded    {}", metrics.runs_succeeded);
@@ -506,12 +585,37 @@ fn build_loader(cli: &Cli) -> Result<(Arc<dyn SpecLoader>, String)> {
     }
 }
 
-fn build_engine(
+fn workflow_cwd(source: &str) -> Option<PathBuf> {
+    let path = Path::new(source);
+    if path.is_dir() {
+        return Some(path.to_path_buf());
+    }
+    path.parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+}
+
+fn json_param_strings(value: &serde_json::Value) -> BTreeMap<String, String> {
+    match value {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(key, value)| {
+                let raw = match value {
+                    serde_json::Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                };
+                (key.clone(), raw)
+            })
+            .collect(),
+        _ => BTreeMap::new(),
+    }
+}
+
+fn build_runtime(
     cli: &Cli,
     agent_cmd: Option<String>,
     max_parallel: Option<usize>,
-) -> Result<(Arc<dyn SpecLoader>, Engine, Arc<SqliteStore>)> {
-    let (loader, _) = build_loader(cli)?;
+) -> Result<(Engine, Arc<SqliteStore>)> {
     let store = Arc::new(SqliteStore::open(&cli.db)?);
     let engine = Engine::new(
         EngineDeps {
@@ -527,7 +631,7 @@ fn build_engine(
             ..EngineOptions::default()
         },
     );
-    Ok((loader, engine, store))
+    Ok((engine, store))
 }
 
 fn parse_params(values: &[String]) -> Result<BTreeMap<String, String>> {
@@ -698,7 +802,7 @@ fn doctor(cli: &Cli) -> Result<ExitCode> {
     );
     if cli.evaluator == Evaluator::Cue {
         match CueCliLoader::new(cli.cue.clone()) {
-            Ok(loader) => println!("cue {}", loader.version()),
+            Ok(loader) => println!("{}", loader.version()),
             Err(err) => {
                 eprintln!("cue unavailable: {err}");
                 return Ok(ExitCode::FAILURE);

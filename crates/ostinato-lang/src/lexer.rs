@@ -36,6 +36,7 @@ pub enum Tok {
     Amp,
     Pipe,
     EqEq,
+    Equals,
     NotEq,
     Lt,
     Le,
@@ -267,11 +268,7 @@ impl Lexer {
                     self.bump();
                     Tok::EqEq
                 } else {
-                    return Err(LangError::parse(
-                        line,
-                        col,
-                        "single `=` is not valid; use `==` or `:`",
-                    ));
+                    Tok::Equals
                 }
             }
             '!' => {

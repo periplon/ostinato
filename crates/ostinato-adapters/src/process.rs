@@ -5,6 +5,8 @@ use std::thread;
 use ostinato_application::{CommandExecutor, ExecOutcome, ExecRequest, PortError, PortResult};
 use wait_timeout::ChildExt;
 
+const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Executes deterministic commands with bounded timeouts and captured output.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ProcessExecutor;
@@ -21,6 +23,11 @@ impl CommandExecutor for ProcessExecutor {
         if let Some(cwd) = &request.cwd {
             command.current_dir(cwd);
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         let mut child = command.spawn().map_err(|err| {
             PortError::Executor(format!("cannot spawn `{}`: {err}", request.program))
         })?;
@@ -32,8 +39,8 @@ impl CommandExecutor for ProcessExecutor {
             .stderr
             .take()
             .ok_or_else(|| PortError::Executor("stderr pipe unavailable".to_owned()))?;
-        let stdout_reader = thread::spawn(move || read_all(stdout));
-        let stderr_reader = thread::spawn(move || read_all(stderr));
+        let stdout_reader = thread::spawn(move || read_limited(stdout));
+        let stderr_reader = thread::spawn(move || read_limited(stderr));
 
         let status = match request.timeout {
             Some(timeout) => child.wait_timeout(timeout).map_err(|err| {
@@ -45,8 +52,7 @@ impl CommandExecutor for ProcessExecutor {
         };
         let timed_out = status.is_none();
         if timed_out {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_group(&mut child);
         }
         let exit_code = status.and_then(|status| status.code()).unwrap_or(-1);
         let stdout = join_reader(stdout_reader);
@@ -60,10 +66,47 @@ impl CommandExecutor for ProcessExecutor {
     }
 }
 
-fn read_all(mut stream: impl Read) -> Vec<u8> {
+fn read_limited(mut stream: impl Read) -> Vec<u8> {
     let mut buffer = Vec::new();
-    let _ = stream.read_to_end(&mut buffer);
+    let mut chunk = [0u8; 16 * 1024];
+    let mut truncated = false;
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                if buffer.len() < MAX_CAPTURE_BYTES {
+                    let remaining = MAX_CAPTURE_BYTES - buffer.len();
+                    let take = read.min(remaining);
+                    buffer.extend_from_slice(&chunk[..take]);
+                    if take < read {
+                        truncated = true;
+                    }
+                } else {
+                    truncated = true;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if truncated {
+        buffer.extend_from_slice(b"\n[output truncated]");
+    }
     buffer
+}
+
+#[cfg(unix)]
+fn kill_group(child: &mut std::process::Child) {
+    let _ = Command::new("kill")
+        .args(["-KILL", &format!("-{}", child.id())])
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn kill_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn join_reader(handle: thread::JoinHandle<Vec<u8>>) -> String {
@@ -133,6 +176,11 @@ impl ostinato_application::AgentRunner for CommandAgent {
         if let Some(cwd) = &request.cwd {
             process.current_dir(cwd);
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            process.process_group(0);
+        }
         let mut child = process
             .spawn()
             .map_err(|err| PortError::Agent(format!("cannot spawn agent `{program}`: {err}")))?;
@@ -141,11 +189,6 @@ impl ostinato_application::AgentRunner for CommandAgent {
             Some(system) => format!("SYSTEM:\n{system}\n\nUSER:\n{}", request.prompt),
             None => request.prompt.clone(),
         };
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .map_err(|err| PortError::Agent(format!("cannot write prompt: {err}")))?;
-        }
         let stdout = child
             .stdout
             .take()
@@ -154,20 +197,33 @@ impl ostinato_application::AgentRunner for CommandAgent {
             .stderr
             .take()
             .ok_or_else(|| PortError::Agent("agent stderr pipe unavailable".to_owned()))?;
-        let stdout_reader = thread::spawn(move || read_all(stdout));
-        let stderr_reader = thread::spawn(move || read_all(stderr));
+        let stdout_reader = thread::spawn(move || read_limited(stdout));
+        let stderr_reader = thread::spawn(move || read_limited(stderr));
+
+        // Write stdin from a separate thread: an agent that writes output
+        // before reading stdin must not deadlock before the timeout applies.
+        let stdin_writer = child.stdin.take().map(|mut stdin| {
+            thread::spawn(move || {
+                let _ = stdin.write_all(prompt.as_bytes());
+            })
+        });
 
         let timeout = request.timeout.unwrap_or(self.timeout);
         let status = child
             .wait_timeout(timeout)
             .map_err(|err| PortError::Agent(format!("agent wait failed: {err}")))?;
         if status.is_none() {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_group(&mut child);
+            if let Some(writer) = stdin_writer {
+                let _ = writer.join();
+            }
             return Err(PortError::Agent(format!(
                 "agent timed out after {}s",
                 timeout.as_secs()
             )));
+        }
+        if let Some(writer) = stdin_writer {
+            let _ = writer.join();
         }
         let stdout = join_reader(stdout_reader);
         let stderr = join_reader(stderr_reader);
@@ -181,7 +237,7 @@ impl ostinato_application::AgentRunner for CommandAgent {
         }
         Ok(ostinato_application::AgentOutcome {
             text: stdout,
-            provider: argv.join(" "),
+            provider: program.clone(),
         })
     }
 }

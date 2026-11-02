@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_if)]
 #![allow(clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
@@ -331,6 +332,11 @@ workflow: {
     name: "improve"
     steps: {
         assess: { kind: "agent", agent: { prompt: "score {{ params.name }}" } }
+        report: {
+            kind: "exec"
+            needs: ["assess"]
+            exec: {cmd: ["sh", "-c", "echo \(params.name) > param.txt"]}
+        }
     }
 }
 "#,
@@ -377,6 +383,20 @@ workflow: {
         .find(|entry| entry["parent_run_id"].is_string())
         .expect("child run");
     assert!(child["parent_run_id"].as_str().is_some());
+    // Recursive improvement re-evaluates CUE, not just runtime templates.
+    let cmd = child["spec"]["steps"]["report"]["exec"]["cmd"][2]
+        .as_str()
+        .expect("cmd");
+    assert!(
+        cmd.contains("v2"),
+        "child spec still has baked params: {cmd}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("param.txt"))
+            .expect("param.txt")
+            .trim(),
+        "v2"
+    );
 }
 
 #[test]
@@ -455,7 +475,7 @@ workflow: {
 }
 
 #[test]
-fn cancel_marks_run_and_blocks_resume() {
+fn cancel_stops_a_running_run_and_blocks_resume() {
     let directory = tempfile::tempdir().expect("tempdir");
     let db = directory.path().join("db.sqlite");
     let workflow = directory.path().join("workflow.cue");
@@ -466,7 +486,122 @@ package demo
 workflow: {
     name: "cancel"
     steps: {
-        a: { kind: "exec", exec: { cmd: ["sh", "-c", "exit 9"] } }
+        slow: { kind: "exec", exec: { cmd: ["sh", "-c", "sleep 2; echo done"] } }
+        after: { kind: "exec", needs: ["slow"], exec: { cmd: ["sh", "-c", "echo after"] } }
+    }
+}
+"#,
+    );
+    let mut child = std::process::Command::new(bin())
+        .args([
+            "--db",
+            db.to_str().expect("db"),
+            "--evaluator",
+            "native",
+            "run",
+            workflow.to_str().expect("workflow"),
+        ])
+        .spawn()
+        .expect("spawn run");
+    let mut run = None;
+    for _ in 0..40 {
+        if let Ok(output) = std::process::Command::new(bin())
+            .args(["--db", db.to_str().expect("db"), "--json", "runs"])
+            .output()
+        {
+            if let Ok(runs) = serde_json::from_slice::<Value>(&output.stdout) {
+                if let Some(first) = runs.as_array().and_then(|runs| runs.first()) {
+                    run = first["id"].as_str().map(ToOwned::to_owned);
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let run = run.expect("run id");
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let cancelled = ost(&["--db", db.to_str().expect("db"), "cancel", &run]);
+    assert!(
+        cancelled.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&cancelled.stderr)
+    );
+    let _ = child.wait();
+    let status = ost(&["--db", db.to_str().expect("db"), "--json", "status", &run]);
+    assert_eq!(json(&status)["run"]["status"], "cancelled");
+    let resumed = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "resume",
+        &run,
+    ]);
+    assert!(!resumed.status.success());
+    let verified = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(verified.status.success());
+
+    // Cancelling a terminal run is rejected and must not rewrite its outcome.
+    let again = ost(&["--db", db.to_str().expect("db"), "cancel", &run]);
+    assert!(!again.status.success());
+}
+
+#[test]
+fn bad_template_is_a_durable_failure() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    name: "bad-template"
+    steps: {
+        a: { kind: "exec", exec: { cmd: ["sh", "-c", "echo a"] } }
+        b: { kind: "exec", needs: ["a"], exec: { cmd: ["sh", "-c", "echo {{ steps.missing.stdout }}"] } }
+    }
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    let run = run_id(&db);
+    let status = ost(&["--db", db.to_str().expect("db"), "--json", "status", &run]);
+    let status = json(&status);
+    assert_eq!(status["run"]["status"], "failed");
+    assert!(
+        status["run"]["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unknown template reference")
+    );
+    let logs = ost(&["--db", db.to_str().expect("db"), "logs", &run]);
+    assert!(String::from_utf8_lossy(&logs.stdout).contains("run.failed"));
+    let verified = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(verified.status.success());
+}
+
+#[test]
+fn state_tampering_is_detected_and_resume_refuses_it() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    name: "state"
+    steps: {
+        a: { kind: "exec", exec: { cmd: ["sh", "-c", "exit 5"] } }
     }
 }
 "#,
@@ -481,14 +616,12 @@ workflow: {
     ]);
     assert_eq!(first.status.code(), Some(1));
     let run = run_id(&db);
-    let cancelled = ost(&["--db", db.to_str().expect("db"), "cancel", &run]);
-    assert!(
-        cancelled.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&cancelled.stderr)
-    );
-    let status = ost(&["--db", db.to_str().expect("db"), "--json", "status", &run]);
-    assert_eq!(json(&status)["run"]["status"], "cancelled");
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    connection
+        .execute("UPDATE runs SET resume_index = 999 WHERE id = ?1", [&run])
+        .expect("tamper checkpoint");
+    let verified = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(!verified.status.success());
     let resumed = ost(&[
         "--db",
         db.to_str().expect("db"),
@@ -498,6 +631,258 @@ workflow: {
         &run,
     ]);
     assert!(!resumed.status.success());
-    let verified = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
-    assert!(verified.status.success());
+    assert!(String::from_utf8_lossy(&resumed.stderr).contains("state digest mismatch"));
+}
+
+#[test]
+fn read_only_commands_do_not_require_cue() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    name: "read-only"
+    steps: { a: { kind: "exec", exec: { cmd: ["sh", "-c", "echo hi"] } } }
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(output.status.success());
+    let run = run_id(&db);
+    let status = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--cue",
+        "/nonexistent/cue",
+        "--json",
+        "status",
+        &run,
+    ]);
+    assert!(
+        status.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let runs = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--cue",
+        "/nonexistent/cue",
+        "runs",
+    ]);
+    assert!(runs.status.success());
+}
+
+#[test]
+fn split_package_and_sibling_conflicts_follow_cue_semantics() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(directory.path().join("pkg")).expect("mkdir");
+    let pkg = directory.path().join("pkg");
+    write(
+        &pkg.join("schema.cue"),
+        r#"
+package split
+#W: {
+    name: string
+    steps: { a: { kind: "noop" } }
+}
+"#,
+    );
+    write(
+        &pkg.join("workflow.cue"),
+        r#"
+package split
+workflow: #W & { name: "split" }
+"#,
+    );
+    let validated = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "--cue",
+        &cue,
+        "validate",
+        pkg.join("workflow.cue").to_str().expect("workflow"),
+    ]);
+    assert!(
+        validated.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&validated.stderr)
+    );
+
+    // Directory input works too (package mode).
+    let directory_validated = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "--cue",
+        &cue,
+        "validate",
+        pkg.to_str().expect("pkg"),
+    ]);
+    assert!(directory_validated.status.success());
+
+    // A conflicting sibling must invalidate the package, not be ignored.
+    write(
+        &pkg.join("conflict.cue"),
+        r#"
+package split
+workflow: { name: "other", steps: { a: { kind: "noop" } } }
+"#,
+    );
+    let conflicted = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "--cue",
+        &cue,
+        "validate",
+        pkg.join("workflow.cue").to_str().expect("workflow"),
+    ]);
+    assert!(!conflicted.status.success());
+}
+
+#[test]
+fn unknown_fields_are_rejected() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let workflow = directory.path().join("typo.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    maxparallel: 2
+    steps: {
+        a: { kind: "exec", exec: { cmd: ["true"], timeoutMS: 1 } }
+    }
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown field"), "stderr: {stderr}");
+}
+
+#[test]
+fn exec_timeout_kills_the_process_group() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let workflow = directory.path().join("timeout.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    name: "timeout"
+    steps: {
+        slow: {
+            kind: "exec"
+            timeoutMs: 500
+            exec: { cmd: ["sh", "-c", "sleep 3 & wait"] }
+        }
+    }
+}
+"#,
+    );
+    let started = std::time::Instant::now();
+    let output = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    let elapsed = started.elapsed();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "timeout took {elapsed:?}"
+    );
+    let run = run_id(&directory.path().join("db.sqlite"));
+    let trials = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "--json",
+        "trials",
+        &run,
+    ]);
+    let trials = json(&trials);
+    assert_eq!(trials[0]["status"], "timed_out");
+}
+
+#[test]
+fn truncation_blocks_resume_and_appends() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    name: "launder"
+    steps: { a: { kind: "exec", exec: { cmd: ["sh", "-c", "exit 3"] } } }
+}
+"#,
+    );
+    let first = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert_eq!(first.status.code(), Some(1));
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    let before: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE run_id = ?1",
+            [&run],
+            |row| row.get(0),
+        )
+        .expect("count");
+    connection
+        .execute(
+            "DELETE FROM events WHERE run_id = ?1 AND seq = ?2",
+            rusqlite::params![run, before - 1],
+        )
+        .expect("truncate");
+    let resumed = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "resume",
+        &run,
+    ]);
+    assert!(!resumed.status.success());
+    let after: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE run_id = ?1",
+            [&run],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(after, before - 1, "resume must not append after truncation");
 }

@@ -24,6 +24,8 @@ pub enum PortError {
     Io(String),
     #[error("configuration error: {0}")]
     Config(String),
+    #[error("run was cancelled: {0}")]
+    Cancelled(String),
 }
 
 pub type PortResult<T> = Result<T, PortError>;

@@ -9,9 +9,7 @@ description = "Use cases, ports and execution engine for Ostinato (hexagonal cor
 [dependencies]
 ostinato-domain = { path = "../ostinato-domain" }
 ostinato-lang = { path = "../ostinato-lang" }
-serde = { workspace = true }
 serde_json = { workspace = true }
-chrono = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }

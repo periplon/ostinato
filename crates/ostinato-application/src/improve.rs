@@ -16,6 +16,7 @@ pub struct ImproveRequest {
     pub max_samples: usize,
     pub command: Option<Vec<String>>,
     pub cwd: Option<std::path::PathBuf>,
+    pub timeout: Option<Duration>,
 }
 
 /// Summarise trials, ask an agent for an improvement proposal, persist it.
@@ -40,7 +41,7 @@ pub fn propose_improvement(
             ),
             model: None,
             command: request.command.clone(),
-            timeout: Some(Duration::from_secs(300)),
+            timeout: Some(request.timeout.unwrap_or(Duration::from_secs(300))),
             cwd: request.cwd.clone(),
         })
         .map_err(EngineError::from)?;
@@ -133,10 +134,10 @@ fn parse_proposal(text: &str) -> Json {
     } else {
         trimmed
     };
-    if let Ok(value) = serde_json::from_str::<Json>(candidate) {
-        if value.is_object() {
-            return value;
-        }
+    if let Ok(value) = serde_json::from_str::<Json>(candidate)
+        && value.is_object()
+    {
+        return value;
     }
     let mut fallback = Map::new();
     fallback.insert("diagnosis".to_owned(), Json::String(trimmed.to_owned()));

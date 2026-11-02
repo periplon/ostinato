@@ -1,4 +1,4 @@
-package examples
+package hello
 
 // A deterministic DAG with a typed parameter.
 // Run: ostinato run examples/hello.cue -p name=Ostinato

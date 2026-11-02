@@ -45,6 +45,7 @@ enum CTok {
     Dot,
     LParen,
     RParen,
+    Minus,
     Not,
     And,
     Or,
@@ -75,6 +76,10 @@ fn tokenize(expr: &str) -> Result<Vec<CTok>, LangError> {
             }
             '.' => {
                 out.push(CTok::Dot);
+                index += 1;
+            }
+            '-' => {
+                out.push(CTok::Minus);
                 index += 1;
             }
             '"' => {
@@ -259,6 +264,14 @@ impl Parser<'_> {
             self.bump();
             let value = self.parse_unary(context)?;
             return Ok(Json::Bool(!truthy(&value)));
+        }
+        if matches!(self.peek(), CTok::Minus) {
+            self.bump();
+            let value = self.parse_unary(context)?;
+            let number = value
+                .as_f64()
+                .ok_or_else(|| cond_error(self.expr, "unary `-` requires a number"))?;
+            return Ok(Number::from_f64(-number).map_or(Json::Null, Json::Number));
         }
         self.parse_primary(context)
     }

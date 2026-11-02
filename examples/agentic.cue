@@ -1,4 +1,4 @@
-package examples
+package agentic
 
 // Agentic steps share the same scheduler as deterministic ones.
 // Run:

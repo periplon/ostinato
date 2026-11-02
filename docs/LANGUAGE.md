@@ -10,7 +10,7 @@ package myapp
 params: {
 	repo:  string | *"." @tag(repo)
 	goal:  string         @tag(goal)
-	debug: bool   | *false @tag(debug)
+	debug: bool   | *false @tag(debug,type=bool)
 }
 
 workflow: {
@@ -21,6 +21,7 @@ workflow: {
 ```
 
 - `params` is optional. Concrete values become defaults. A parameter with no default must be supplied with `-p name=value`; CUE's `@tag` injection enforces this.
+- Tag injection is string-typed by default. Use `@tag(name,type=int)`, `type=number`, or `type=bool` for typed parameters.
 - Definitions, templates, imports, `let`, comprehensions and builtins are ordinary CUE and work normally.
 - Only the evaluated concrete `workflow` value is read; anything else in the file is ignored by the engine.
 
@@ -29,7 +30,7 @@ workflow: {
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `name` | `string` | `"workflow"` | Name stored with each run |
-| `maxParallel` | `int >= 1` | `4` | Max concurrent steps inside a plan group |
+| `maxParallel` | `int 1..=256` | `4` | Max concurrent steps inside a plan group |
 | `steps` | map of step | required | Non-empty map keyed by step name |
 
 ## Step fields
@@ -39,12 +40,12 @@ workflow: {
 | `kind` | `"exec"`, `"agent"`, `"improve"`, `"noop"` | `"exec"` | Step implementation |
 | `needs` | `[...string]` or `string` | `[]` | Dependencies |
 | `retry` | object or int | `{}` | Retry policy; an int is shorthand for `max` |
-| `retry.max` | `int >= 0` | `0` | Retries **after** the first attempt |
+| `retry.max` | `int 0..=100` | `0` | Retries **after** the first attempt |
 | `retry.baseMs` | `int >= 0` | `100` | Base backoff |
 | `retry.factor` | `number >= 1` | `2.0` | Exponential factor |
 | `retry.maxMs` | `int >= 0` | `30000` | Backoff cap |
 | `retry.jitter` | `bool` | `true` | Deterministic jitter in `[0.5, 1.5)` |
-| `cycle` | `{max: int, until?: string}` | none | Bounded cycle policy |
+| `cycle` | `{max: int 1..=1000, until?: string}` | none | Bounded cycle policy (default `max: 3` if omitted) |
 | `exec` | object | none | Required for `kind: "exec"` |
 | `agent` | object | none | Required for `kind: "agent"` |
 | `improve` | object | none | Required for `kind: "improve"` |
@@ -82,7 +83,7 @@ The agent command receives the prompt on **stdin**, runs in the workflow file's 
 2. `--agent-cmd` / `OSTINATO_AGENT` (global);
 3. otherwise the step fails with a configuration error.
 
-If stdout parses as JSON and contains a numeric `score` (or `confidence`), that value is clamped to `[0, 1]` and becomes `steps.<name>.score`. This is how agent loops express quality.
+If stdout parses as JSON and contains a numeric `score` (or `confidence`), that value is clamped to `[0, 1]` and becomes `steps.<name>.score`. If no score is present the score is `0.0`, so a score-based `until` cannot terminate early on malformed agent output. This is how agent loops express quality.
 
 ### `improve`
 
@@ -112,7 +113,7 @@ The same primitive is exposed as `ostinato improve <run> --rounds N`, which crea
 
 ## Cycles
 
-A directed cycle is allowed only when at least one member declares `cycle`. Validation rejects unguarded cycles.
+A directed cycle is allowed only when at least one member declares `cycle`. Validation rejects unguarded cycles **and rejects a `cycle` policy on a step that is not part of a graph cycle**.
 
 ```cue
 review: {
@@ -182,7 +183,7 @@ Unknown paths fail the step. Template substitution happens at execution time, so
 | `improve` | `text`, `json`, `score`, `improvementId` |
 | `noop` | `text=""`, `score=1.0`, `exitCode=0` |
 
-If stdout is valid JSON it is exposed under `json` (and also parsed for `score`). On failure the output is not stored for downstream steps; the step's `error` is stored instead.
+If stdout is valid JSON it is exposed under `json` (and also parsed for `score`). On failure the output is not stored for downstream steps; the step's `error` is stored instead. Optional fields are omitted from the concrete export, matching `cue export`.
 
 ## Failure semantics
 
@@ -191,14 +192,17 @@ If stdout is valid JSON it is exposed under `json` (and also parsed for `score`)
 - By default the run fails and `resume_index` points at the failed group, so `resume` retries the whole group (at-least-once).
 - With `continueOnError: true` the run continues. The failed step has no output; dependants still execute and may fail.
 - A crash between a side effect and the group commit causes that group to run again on resume. Use idempotent commands or a guard file.
+- `ostinato cancel <run>` is observed at group boundaries; a terminal run cannot be cancelled.
 
 ## Validation rules
 
 - Workflow must contain at least one step.
 - `maxParallel >= 1`.
 - `needs` must reference existing steps.
-- A cycle must have a `cycle` policy with `max >= 1`.
+- A cycle must have a `cycle` policy with `1 <= max <= 1000`; a policy on an acyclic step is rejected.
 - All `until` conditions in one SCC must be identical (one condition per cycle).
+- `until` syntax and references are validated at load time against the declared steps and params.
+- Unknown fields at every level (`workflow`, step, `retry`, `cycle`, `exec`, `agent`, `improve`) are rejected, so typos cannot silently change behavior.
 - `exec` requires a non-empty `cmd`.
 - `agent` requires a non-empty `prompt`.
 - `improve` requires an `improve` object.

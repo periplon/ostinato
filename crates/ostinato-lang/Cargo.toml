@@ -8,12 +8,8 @@ description = "CUE-compatible language front-end and workflow compiler for Ostin
 
 [dependencies]
 ostinato-domain = { path = "../ostinato-domain" }
-serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

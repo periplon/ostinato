@@ -108,3 +108,93 @@ fn renders_templates() {
         "goal=ship plan=do it n=3"
     );
 }
+
+#[test]
+fn native_parameter_overrides_are_injected_before_interpolation() {
+    let source = r#"
+package demo
+params: { name: string | *"world" @tag(name) }
+workflow: {
+    name: "params"
+    steps: {
+        a: {
+            kind: "exec"
+            exec: {cmd: ["sh", "-c", "echo \(params.name)"]}
+        }
+    }
+}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([("name".to_owned(), "ostinato".to_owned())]),
+    )
+    .expect("compile");
+    let cmd = &compiled
+        .spec
+        .step("a")
+        .expect("a")
+        .exec
+        .as_ref()
+        .expect("exec")
+        .cmd;
+    assert_eq!(cmd[2], "echo ostinato");
+}
+
+#[test]
+fn native_skips_attributes_with_equals_and_omits_optional_fields() {
+    let source = r#"
+package demo
+params: { n: int | *1 @tag(n, type=int) }
+workflow: {
+    name: "attrs"
+    steps: {
+        a: {
+            kind: "noop"
+            optional?: "omitted"
+        }
+    }
+}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([("n".to_owned(), "7".to_owned())]),
+    )
+    .expect("compile");
+    let step = compiled.spec.step("a").expect("a");
+    assert_eq!(step.kind, ostinato_domain::StepKind::Noop);
+    assert_eq!(
+        compiled.resolve_params(&BTreeMap::new()).expect("params")["n"],
+        7
+    );
+}
+
+#[test]
+fn native_defaults_work_in_multibranch_disjunctions() {
+    let file = parse("package p\nx: *1 | 2 | 3\n").expect("parse");
+    let value = eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"], 1);
+}
+
+#[test]
+fn unknown_workflow_fields_are_rejected() {
+    let source = r#"
+package demo
+workflow: { maxparallel: 2, steps: { a: { kind: "noop" } } }
+"#;
+    let error = compile(source).expect_err("must reject typo");
+    assert!(error.to_string().contains("unknown field"));
+}
+
+#[test]
+fn invalid_until_is_rejected_at_validation_time() {
+    let source = r#"
+package demo
+workflow: {
+    steps: {
+        a: { kind: "noop", needs: ["a"], cycle: {max: 2, until: "steps.missing.score >= 0.9"} }
+    }
+}
+"#;
+    let error = compile(source).expect_err("must reject unknown reference");
+    assert!(error.to_string().contains("until is invalid"));
+}

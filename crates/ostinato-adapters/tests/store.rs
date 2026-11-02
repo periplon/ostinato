@@ -27,16 +27,19 @@ fn run_record(id: &str) -> RunRecord {
             timeout_ms: None,
         },
     );
+    let spec = WorkflowSpec {
+        name: "store".to_owned(),
+        max_parallel: 1,
+        steps,
+    };
+    let params = json!({"x": 1});
+    let state_hash = audit::state_digest(&spec, &params, 0, &[]);
     RunRecord {
         id: id.to_owned(),
         workflow_name: "store".to_owned(),
         source_file: "test.cue".to_owned(),
-        spec: WorkflowSpec {
-            name: "store".to_owned(),
-            max_parallel: 1,
-            steps,
-        },
-        params: json!({"x": 1}),
+        spec,
+        params,
         status: RunStatus::Running,
         resume_index: 0,
         parent_run_id: None,
@@ -44,6 +47,7 @@ fn run_record(id: &str) -> RunRecord {
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
         audit_head: audit::GENESIS_HASH.to_owned(),
+        state_hash,
     }
 }
 
@@ -103,6 +107,12 @@ fn sqlite_store_roundtrip_is_atomic_and_hash_chained() {
     let events = store.events("run-1").expect("events");
     assert_eq!(events.len(), 2);
     audit::verify_chain(&events).expect("audit chain");
+    let loaded = store.load_run("run-1").expect("load").expect("present");
+    let steps = store.steps("run-1").expect("steps");
+    assert_eq!(
+        loaded.state_hash,
+        audit::state_digest(&loaded.spec, &loaded.params, loaded.resume_index, &steps)
+    );
 
     store
         .record_trial(&NewTrial {
