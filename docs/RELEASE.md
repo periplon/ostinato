@@ -12,6 +12,14 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.2.4
+
+- Disjunction review fixes: conflict alternatives, parenthesized/default
+  precedence, top, exact int/float separation, concrete requirements in
+  boolean/index/select/for contexts.
+- 95 tests (23 CLI E2E, 1 conformance, 61 language, 6 domain, 3 store, 1 unit).
+- CI gate unchanged: `fmt / clippy / test` and `dependency audit`.
+
 ## v0.2.3
 
 - Disjunction lattice phase: alternative sets, defaults/narrowing,

@@ -686,7 +686,7 @@ impl Parser {
                 self.bump();
                 let inner = self.parse_expr()?;
                 self.expect(&Tok::RParen, "`)`")?;
-                Ok(inner)
+                Ok(Expr::Paren(Box::new(inner), span))
             }
             other => Err(self.error(format!("unexpected token in expression: {other:?}"))),
         }

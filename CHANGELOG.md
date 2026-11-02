@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.4
+
+Disjunction review phase.
+
+- Conflicting/bottom disjunction alternatives are dropped instead of aborting;
+  bad references still abort.
+- Parentheses are preserved in the AST; direct defaults take precedence over
+  inherited nested defaults (`(*1|2)|*3` → 3, `*1|(2|*3)` → 1).
+- Top `_` remains a disjunction alternative.
+- `int` and `float` concrete values no longer unify; float equality is exact.
+- Boolean/equality/index/select/for contexts require concrete (or defaulted)
+  values.
+- Defaulted disjunctions work in select/index/for positions.
+- 95 tests (23 CLI E2E, 1 conformance, 61 language, 6 domain, 3 store, 1 unit).
+
 ## v0.2.3
 
 Disjunction lattice phase.
@@ -9,7 +24,7 @@ Disjunction lattice phase.
 - Defaults select at export; `&` narrows defaults (`(int | *1) & 3` → 3).
 - Disjunction × disjunction intersection, duplicate-alternative/default
   collapsing, and ambiguous multiple defaults (`*1 | *2`) as incomplete.
-- Strict symmetric scalar unification for null, bool, int, float/int and string.
+- Strict symmetric scalar unification for null, bool, int, float and string.
 - String interpolation and builtin arguments use the selected default.
 - 89 tests (23 CLI E2E, 1 conformance, 55 language, 6 domain, 3 store, 1 unit).
 

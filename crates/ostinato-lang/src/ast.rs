@@ -119,6 +119,7 @@ pub enum Expr {
     Select(Box<Expr>, String, Span),
     Index(Box<Expr>, Box<Expr>, Span),
     Call(Box<Expr>, Vec<Expr>, Span),
+    Paren(Box<Expr>, Span),
     Struct(Vec<StructItem>, Span),
     List(Vec<Expr>, Span),
     OpenList(Option<Box<Expr>>, Span),
@@ -148,6 +149,7 @@ impl Expr {
             | Self::Select(_, _, span)
             | Self::Index(_, _, span)
             | Self::Call(_, _, span)
+            | Self::Paren(_, span)
             | Self::Struct(_, span)
             | Self::List(_, span)
             | Self::OpenList(_, span)

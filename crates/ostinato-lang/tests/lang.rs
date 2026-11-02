@@ -1045,3 +1045,147 @@ g: (number | *1) & 2.5
     assert_eq!(json["f"], 1);
     assert_eq!(json["g"], 2.5);
 }
+
+#[test]
+fn disjunction_drops_conflicting_alternatives_but_not_bad_references() {
+    let source = r#"
+package demo
+a: (1 & 2) | 3
+b: *1 | (2 & 3)
+c: (int & string) | 1
+d: (1 / 0) | 3
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    eprintln!("DEBUG {value:?}");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 3);
+    assert_eq!(json["b"], 1);
+    assert_eq!(json["c"], 1);
+    assert_eq!(json["d"], 3);
+
+    let bad = r#"
+package demo
+a: missing | 3
+"#;
+    let file = ostinato_lang::parse(bad).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn nested_disjunction_defaults_respect_direct_precedence() {
+    let source = r#"
+package demo
+a: (*1 | 2) | *3
+b: *1 | (2 | *3)
+x: *1 | 2
+c: x | *3
+d: (x | *3) + 1
+y: *1 | 2
+e: *y | 3
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    eprintln!("DEBUG {value:?}");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 3);
+    assert_eq!(json["b"], 1);
+    assert_eq!(json["c"], 3);
+    assert_eq!(json["d"], 4);
+    assert_eq!(json["e"], 1);
+
+    let incomplete = r#"
+package demo
+f: (*1 | (2 | *3)) & (2 | 3)
+"#;
+    let file = ostinato_lang::parse(incomplete).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert!(value.to_json().is_none());
+}
+
+#[test]
+fn top_in_disjunctions_is_preserved() {
+    let source = r#"
+package demo
+a: _ | 1
+b: (_ | 1) & 2
+c: (_ | *1) & 2
+d: _ | _
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json();
+    assert!(
+        json.is_none(),
+        "a/d are incomplete and b/c cannot be exported with a"
+    );
+}
+
+#[test]
+fn int_and_float_do_not_unify() {
+    for expression in ["1 & 1.0", "(int | *1) & 1.0", "(*1 | 2) & 2.0"] {
+        let source = format!("package demo\na: {expression}\n");
+        let file = ostinato_lang::parse(&source).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "expected conflict for {expression}"
+        );
+    }
+    let ok = r#"
+package demo
+a: (int | *1.0) & 1
+b: number & 1.0
+"#;
+    let file = ostinato_lang::parse(ok).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 1);
+    assert_eq!(json["b"], 1.0);
+}
+
+#[test]
+fn unresolved_disjunctions_are_rejected_in_boolean_contexts() {
+    for expression in [
+        "(1 | 2) == 1",
+        "!(1 | 2)",
+        "false && (1 | 2)",
+        "true || (1 | 2)",
+    ] {
+        let source = format!("package demo\na: {expression}\n");
+        let file = ostinato_lang::parse(&source).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "expected unresolved error for {expression}"
+        );
+    }
+    let ok = r#"
+package demo
+a: (*1 | 2) == 1
+"#;
+    let file = ostinato_lang::parse(ok).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["a"], true);
+}
+
+#[test]
+fn defaulted_disjunctions_work_in_select_index_and_for() {
+    let source = r#"
+package demo
+a: (*{x: 1} | {x: 2}).x
+b: (*[1, 2] | [3])[0]
+c: [10, 20][*0 | 1]
+x: *{a: 1} | {a: 2}
+r: {
+    for k, v in x {
+        "\(k)": v
+    }
+}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 1);
+    assert_eq!(json["b"], 1);
+    assert_eq!(json["c"], 10);
+    assert_eq!(json["r"]["a"], 1);
+}

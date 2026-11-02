@@ -15,6 +15,13 @@ pub enum LangError {
         col: u32,
         message: String,
     },
+    /// A value conflict that behaves as bottom inside a disjunction.
+    #[error("evaluation error at {line}:{col}: {message}")]
+    Conflict {
+        line: u32,
+        col: u32,
+        message: String,
+    },
     #[error("workflow error: {0}")]
     Workflow(String),
     #[error("invalid condition `{expr}`: {message}")]
@@ -40,5 +47,18 @@ impl LangError {
             col,
             message: message.into(),
         }
+    }
+
+    pub(crate) fn conflict(line: u32, col: u32, message: impl Into<String>) -> Self {
+        Self::Conflict {
+            line,
+            col,
+            message: message.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, Self::Conflict { .. })
     }
 }
