@@ -1,0 +1,9 @@
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.cAa90d08bv/agent.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/agentic.cue --agent-cmd /Users/joanmarc/dailywork/jmca/ostinato/examples/agent.sh
+
+run=ef4c02cc-6ad4-419b-8150-fe54b5448704 workflow=agentic status=succeeded durationMs=30
+STEP                     STATUS     VISITS ATTEMPTS
+assess                   succeeded  1      1       
+improve                  succeeded  1      1       
+report                   succeeded  1      1       
+
+exit=0

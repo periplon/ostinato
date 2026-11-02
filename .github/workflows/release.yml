@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-amd64
+            arch: amd64
+          - os: macos-14
+            target: darwin-arm64
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install CUE
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          ./scripts/install-cue.sh v0.17.1 "$HOME/.local/bin"
+      - name: Build
+        run: cargo build --release -p ostinato
+      - name: Package
+        run: |
+          mkdir -p dist
+          tar -czf "dist/ostinato-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" \
+            -C target/release ostinato
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz

@@ -1,0 +1,38 @@
+[package]
+name = "ostinato"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CLI for the Ostinato CUE-compatible durable agentic workflow engine."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "ostinato"
+path = "src/main.rs"
+
+[dependencies]
+ostinato-domain = { path = "../ostinato-domain" }
+ostinato-lang = { path = "../ostinato-lang" }
+ostinato-application = { path = "../ostinato-application" }
+ostinato-adapters = { path = "../ostinato-adapters" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+rusqlite = { workspace = true }
+
+[lints]
+workspace = true

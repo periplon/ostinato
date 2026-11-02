@@ -1,0 +1,30 @@
+[package]
+name = "ostinato-adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Infrastructure adapters for Ostinato: SQLite journal, processes, agents, telemetry."
+
+[dependencies]
+ostinato-domain = { path = "../ostinato-domain" }
+ostinato-application = { path = "../ostinato-application" }
+ostinato-lang = { path = "../ostinato-lang" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { workspace = true }
+wait-timeout = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

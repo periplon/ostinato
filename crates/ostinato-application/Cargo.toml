@@ -1,0 +1,23 @@
+[package]
+name = "ostinato-application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Use cases, ports and execution engine for Ostinato (hexagonal core)."
+
+[dependencies]
+ostinato-domain = { path = "../ostinato-domain" }
+ostinato-lang = { path = "../ostinato-lang" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
