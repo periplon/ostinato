@@ -1650,3 +1650,67 @@ y: #L
     assert_eq!(json["x"], serde_json::json!({}));
     assert_eq!(json["y"], serde_json::json!({}));
 }
+
+#[test]
+fn invalid_regex_fails_even_when_optional_value_conflicts() {
+    for source in [
+        "#D: {[=~\"(\"]: int, k?: 1 & 2}",
+        "#D: {[=~\"(\"]: int, k?: 1, k?: 2}",
+    ] {
+        let source = format!("package demo\n{source}\nx: #D\n");
+        let file = ostinato_lang::parse(&source).expect("parse");
+        let error = ostinato_lang::eval_file(&file).expect_err("invalid regex");
+        assert!(error.to_string().contains("invalid pattern regex"));
+    }
+}
+
+#[test]
+fn disjunction_dedupe_preserves_definition_metadata() {
+    let source = r#"
+package demo
+#A: {a: int}
+#B: {a: int, ...}
+#D: #A | #B
+x: #D & {a: 1, extra: 2}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["extra"], 2);
+
+    let reverse = r#"
+package demo
+#A: {a: int}
+#B: {a: int, ...}
+#D: #B | #A
+x: #D & {a: 1, extra: 2}
+"#;
+    let file = ostinato_lang::parse(reverse).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["extra"], 2);
+
+    let optional = r#"
+package demo
+#A: {a: 1}
+#B: {a: 1, o?: 1}
+#D: #A | #B
+x: #D
+"#;
+    let file = ostinato_lang::parse(optional).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert!(value.to_json().is_none());
+}
+
+#[test]
+fn multi_expression_definitions_close_after_composition() {
+    let source = r#"
+package demo
+#A: {a: int}
+#B: {b: int}
+#D: #A | #B
+#D: {c?: int}
+x: #D & {a: 1}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"]["a"], 1);
+}
