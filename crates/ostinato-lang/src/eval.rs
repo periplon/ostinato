@@ -402,7 +402,7 @@ impl<'a> Frame<'a> {
                 } => {
                     let source_value = eval_expr(source, self)?;
                     match source_value {
-                        Value::Struct(map) => {
+                        Value::Struct(map) | Value::Definition { fields: map, .. } => {
                             for (entry_key, entry_value) in map {
                                 let mut bindings = HashMap::new();
                                 if let Some(key) = key {
@@ -635,6 +635,7 @@ impl<'a> Frame<'a> {
         names.extend(child.generated_optionals.borrow().keys().cloned());
         names.sort();
         names.dedup();
+        names.retain(|name| !name.starts_with('#'));
         let mut fields = BTreeMap::new();
         let mut optional = BTreeMap::new();
         for name in names {
@@ -1036,7 +1037,7 @@ fn eval_list_comp(
         } => {
             let source = eval_expr(source, frame)?;
             let entries: Vec<(Option<Value>, Value)> = match source {
-                Value::Struct(map) => map
+                Value::Struct(map) | Value::Definition { fields: map, .. } => map
                     .into_iter()
                     .map(|(key, value)| (Some(Value::String(key)), value))
                     .collect(),
@@ -1101,7 +1102,10 @@ fn merge_generated_optional(
 
 fn values_equal(left: &Value, right: &Value) -> bool {
     match (left, right) {
-        (Value::Struct(a), Value::Struct(b)) => {
+        (
+            Value::Struct(a) | Value::Definition { fields: a, .. },
+            Value::Struct(b) | Value::Definition { fields: b, .. },
+        ) => {
             a.len() == b.len()
                 && a.iter()
                     .all(|(key, value)| b.get(key).is_some_and(|other| values_equal(value, other)))
@@ -1550,16 +1554,24 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             },
         ) => {
             let mut fields = a.clone();
+            let mut optional = optional_a.clone();
             for (key, value) in b {
                 if let Some(existing) = fields.get(key).cloned() {
                     fields.insert(key.clone(), unify_values(&existing, value, span)?);
+                } else if let Some(constraint) = optional.remove(key) {
+                    // `b` makes the field required; `a`'s optional constraint
+                    // still applies.
+                    fields.insert(key.clone(), unify_values(&constraint, value, span)?);
                 } else {
                     fields.insert(key.clone(), value.clone());
                 }
             }
-            let mut optional = optional_a.clone();
             for (key, value) in optional_b {
-                if let Some(existing) = optional.get(key).cloned() {
+                if let Some(existing) = fields.get(key).cloned() {
+                    // `a` makes the field required; `b`'s optional constraint
+                    // still applies.
+                    fields.insert(key.clone(), unify_values(&existing, value, span)?);
+                } else if let Some(existing) = optional.get(key).cloned() {
                     let merged = match unify_values(&existing, value, span) {
                         Ok(value) => value,
                         Err(err) => Value::Conflict(err.to_string()),
@@ -1568,9 +1580,6 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 } else {
                     optional.insert(key.clone(), value.clone());
                 }
-            }
-            for key in fields.keys() {
-                optional.remove(key);
             }
             Ok(Value::Definition { fields, optional })
         }

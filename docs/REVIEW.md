@@ -125,7 +125,10 @@ unified with `{name: 1}` was accepted). Fixed before the final PR:
 | Definition literals lost optional constraints | Added a `Definition { fields, optional }` value that preserves optional constraints, unifies them when the field is materialized, and omits them from export |
 | Open definitions rejected extra fields | Definitions remain open: undeclared fields are accepted |
 | Optional conflict handling | Conflicting optional constraints are deferred and fail only when the field is materialized |
-| Regression coverage | Conformance case `definition-optional.cue` plus unit tests for preservation, non-materialization and deferred conflicts |
+| Regression coverage | Conformance cases `definition-optional.cue`, `definition-nested.cue`, `definition-behaviour.cue` plus unit tests for preservation, non-materialization, deferred conflicts, nested definitions, iteration and equality |
+| Optional constraint dropped when the other operand makes the field required | Both `Definition x Definition` directions now unify the optional constraint with the required field |
+| Nested definitions leaked into definition values | Definition field collection excludes names starting with `#` |
+| Definitions rejected as comprehension sources / compared unequal to structs | Definition is handled as a struct in both comprehension paths and semantic equality |
 
 ## Deliberately deferred / residual risks
 
