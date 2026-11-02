@@ -14,10 +14,26 @@ for non-draft PRs and therefore waits for these checks before squashing.
 
 ## v0.1.2
 
-- CI and dependency audit pass on PR #3.
+- PR: [#3](https://github.com/periplon/ostinato/pull/3)
+- Merge commit: `70f3b49` (squash)
+- CI run: `41483995108` — **success** (`fmt / clippy / test`, release build,
+  doctor, dependency audit)
 - Second-pass hardening: integrity anchoring, one-time migrations, lifecycle
   invariant, snapshot verification, process-group reaping, private sidecars,
   package-less CUE, lenient `until`, validation caps, native override ordering.
+- 44 tests (21 CLI E2E, 14 language, 6 domain, 3 store).
+
+## Auto-merge proof
+
+- PR: [#4](https://github.com/periplon/ostinato/pull/4) — CI merge job
+- Merge commit: `fd82dbd` (squash)
+- CI run: `41484579424` — `fmt / clippy / test` pass, `dependency audit` pass,
+  `auto-merge when green` pass
+- Merged automatically at `2026-11-02T16:49:24Z` with **no manual merge**.
+- Branch protection requires both strict checks; the merge job runs only after
+  `needs: [test, audit]` succeeds.
+
+Main push CI for the v0.1.2 merge (`41484502924`) also passed.
 
 ## Merge automation
 
