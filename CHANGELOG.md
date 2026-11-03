@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.7.0
+
+Params scoping, closedness and RE2 quantifiers.
+
+- `params.<field>` resolves through nested groups, outer lets/fields and
+  quoted fields; optional references and lexical shadowing follow CUE.
+- Closed definitions stay closed through the flattened `params` path
+  (`#P & {c: 2}` rejects undeclared fields).
+- RE2 quantifier grammar matches Go: nested quantifiers are rejected, invalid
+  brace sequences are literals, and lazy quantifiers are allowed once.
+- 203 tests (34 CLI E2E, 1 conformance, 158 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.9
 
 Regex, params and numeric edge corrections.

@@ -676,7 +676,11 @@ impl AliasCtx {
                 self.expr(inner, chain, shadowed, from)?;
             }
             Expr::Bound(_, inner, _) => self.expr(inner, chain, shadowed, from)?,
-            Expr::Select(base, _, _) => self.expr(base, chain, shadowed, from)?,
+            Expr::Select(base, _, _) => {
+                if !matches!(&**base, Expr::Ident(name, _) if name == "params") {
+                    self.expr(base, chain, shadowed, from)?;
+                }
+            }
             Expr::Index(base, index, _) => {
                 self.expr(base, chain, shadowed, from)?;
                 self.expr(index, chain, shadowed, from)?;
