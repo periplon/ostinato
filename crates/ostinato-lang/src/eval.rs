@@ -432,6 +432,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         overrides: RefCell::new(BTreeMap::new()),
         evaluating: RefCell::new(HashSet::new()),
         self_rhs: RefCell::new(None),
+        params_scope: Cell::new(false),
     };
     if let Json::Object(map) = context {
         let mut values = BTreeMap::new();
@@ -499,6 +500,7 @@ struct Frame<'a> {
     overrides: RefCell<BTreeMap<String, Value>>,
     evaluating: RefCell<HashSet<String>>,
     self_rhs: RefCell<Option<String>>,
+    params_scope: Cell<bool>,
 }
 
 impl<'a> Frame<'a> {
@@ -531,6 +533,7 @@ impl<'a> Frame<'a> {
             overrides: RefCell::new(BTreeMap::new()),
             evaluating: RefCell::new(HashSet::new()),
             self_rhs: RefCell::new(None),
+            params_scope: Cell::new(false),
         };
 
         // Pass 1: static fields and lazy let bindings.
@@ -985,29 +988,32 @@ impl<'a> Frame<'a> {
             };
             (def.exprs.clone(), def.definition)
         };
-        if name == "params" && !self.overrides.borrow().is_empty() {
-            if self.evaluating.borrow().contains(key) {
-                return Err(LangError::eval(
-                    span.line,
-                    span.col,
-                    format!("cyclic reference while evaluating `{name}`"),
-                ));
+        if name == "params" {
+            let items = self.params_items(&exprs);
+            if items.is_some() || !self.overrides.borrow().is_empty() {
+                if self.evaluating.borrow().contains(key) {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!("cyclic reference while evaluating `{name}`"),
+                    ));
+                }
+                self.evaluating.borrow_mut().insert(key.to_owned());
+                let result = match items {
+                    Some(items) => self.eval_params_struct(&items, span),
+                    None => Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        "cannot apply parameter overrides to this `params` shape",
+                    )),
+                };
+                self.evaluating.borrow_mut().remove(key);
+                let result = result?;
+                self.values
+                    .borrow_mut()
+                    .insert(key.to_owned(), result.clone());
+                return Ok(result);
             }
-            self.evaluating.borrow_mut().insert(key.to_owned());
-            let result = match self.params_items(&exprs) {
-                Some(items) => self.eval_params_struct(&items, span),
-                None => Err(LangError::eval(
-                    span.line,
-                    span.col,
-                    "cannot apply parameter overrides to this `params` shape",
-                )),
-            };
-            self.evaluating.borrow_mut().remove(key);
-            let result = result?;
-            self.values
-                .borrow_mut()
-                .insert(key.to_owned(), result.clone());
-            return Ok(result);
         }
         if is_definition {
             if self.evaluating.borrow().contains(key) {
@@ -1293,6 +1299,7 @@ impl<'a> Frame<'a> {
 
     fn eval_params_struct(&self, items: &[StructItem], span: Span) -> Result<Value, LangError> {
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
+        child.params_scope.set(true);
         child.expand(items)?;
         let overrides = self.overrides.borrow().clone();
         for (key, value) in &overrides {
@@ -1490,6 +1497,13 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         }
         Expr::Ident(name, span) => frame.lookup(name, *span),
         Expr::Select(base, field, span) => {
+            if let Expr::Ident(name, _) = &**base
+                && name == "params"
+                && frame.params_scope.get()
+                && frame.fields.borrow().contains_key(field)
+            {
+                return frame.eval_field(field, *span);
+            }
             let base = eval_expr(base, frame)?.concretize().clone();
             match base {
                 Value::Struct(map) => {
@@ -2656,7 +2670,7 @@ fn translate_re2_pattern(pattern: &str) -> Result<String, String> {
                     break;
                 };
                 match next {
-                    'Q' => {
+                    'Q' if !in_class => {
                         let mut literal = String::new();
                         while let Some(value) = chars.next() {
                             if value == '\\' && chars.peek() == Some(&'E') {
@@ -2668,21 +2682,36 @@ fn translate_re2_pattern(pattern: &str) -> Result<String, String> {
                         out.push_str(&regex::escape(&literal));
                     }
                     'd' => out.push_str(if in_class { "0-9" } else { "[0-9]" }),
-                    'D' => out.push_str(if in_class { "\\D" } else { "[^0-9]" }),
+                    'D' => out.push_str(if in_class {
+                        "\\x00-\\x2F\\x3A-\\x{10FFFF}"
+                    } else {
+                        "[^0-9]"
+                    }),
                     'w' => out.push_str(if in_class {
                         "0-9A-Za-z_"
                     } else {
                         "[0-9A-Za-z_]"
                     }),
-                    'W' => out.push_str(if in_class { "\\W" } else { "[^0-9A-Za-z_]" }),
+                    'W' => out.push_str(if in_class {
+                        "\\x00-\\x2F\\x3A-\\x40\\x5B-\\x5E\\x60\\x7B-\\x{10FFFF}"
+                    } else {
+                        "[^0-9A-Za-z_]"
+                    }),
                     's' => out.push_str(if in_class {
                         "\\t\\n\\f\\r "
                     } else {
                         "[\\t\\n\\f\\r ]"
                     }),
-                    'S' => out.push_str(if in_class { "\\S" } else { "[^\\t\\n\\f\\r ]" }),
-                    'b' => out.push_str(if in_class { "\\x08" } else { "(?-u:\\b)" }),
-                    'B' => out.push_str(if in_class { "\\B" } else { "(?-u:\\B)" }),
+                    'S' => out.push_str(if in_class {
+                        "\\x00-\\x08\\x0B\\x0E-\\x1F\\x21-\\x{10FFFF}"
+                    } else {
+                        "[^\\t\\n\\f\\r ]"
+                    }),
+                    'b' if in_class => return Err("invalid escape sequence".to_owned()),
+                    'B' if in_class => return Err("invalid escape sequence".to_owned()),
+                    'Q' if in_class => return Err("invalid escape sequence".to_owned()),
+                    'b' => out.push_str("(?-u:\\b)"),
+                    'B' => out.push_str("(?-u:\\B)"),
                     other => {
                         out.push('\\');
                         out.push(other);
@@ -2705,38 +2734,82 @@ fn translate_re2_pattern(pattern: &str) -> Result<String, String> {
 }
 
 fn check_repeat_limits(pattern: &str) -> Result<(), String> {
-    let bytes = pattern.as_bytes();
+    let chars: Vec<char> = pattern.chars().collect();
     let mut index = 0usize;
-    while index < bytes.len() {
-        if bytes[index] == b'{' {
-            let mut end = index + 1;
-            while end < bytes.len() && bytes[end] != b'}' {
-                end += 1;
+    let mut in_class = false;
+    while index < chars.len() {
+        match chars[index] {
+            '\\' => {
+                if chars.get(index + 1) == Some(&'Q') {
+                    index += 2;
+                    while index < chars.len() {
+                        if chars[index] == '\\' && chars.get(index + 1) == Some(&'E') {
+                            index += 2;
+                            break;
+                        }
+                        index += 1;
+                    }
+                    continue;
+                }
+                index += 2;
+                continue;
             }
-            if end < bytes.len() {
-                let body = &pattern[index + 1..end];
-                let mut parts = body.split(',');
-                let first = parts.next().unwrap_or("");
-                let second = parts.next();
-                if first.chars().all(|value| value.is_ascii_digit()) && !first.is_empty() {
-                    let first_value: u32 = first.parse().map_err(|_| "repeat count too large")?;
-                    if first_value > 1000 {
+            '[' => {
+                in_class = true;
+                index += 1;
+                continue;
+            }
+            ']' => {
+                in_class = false;
+                index += 1;
+                continue;
+            }
+            '{' if !in_class => {
+                let mut end = index + 1;
+                while end < chars.len() && chars[end].is_ascii_digit() {
+                    end += 1;
+                }
+                let mut valid = end > index + 1;
+                let mut max = chars[index + 1..end]
+                    .iter()
+                    .collect::<String>()
+                    .parse::<u32>()
+                    .unwrap_or(0);
+                if valid && chars.get(end) == Some(&',') {
+                    let after = end + 1;
+                    let mut close = after;
+                    while close < chars.len() && chars[close].is_ascii_digit() {
+                        close += 1;
+                    }
+                    if chars.get(close) == Some(&'}') {
+                        if close > after {
+                            let value = chars[after..close]
+                                .iter()
+                                .collect::<String>()
+                                .parse::<u32>()
+                                .unwrap_or(0);
+                            max = max.max(value);
+                        }
+                        end = close;
+                    } else {
+                        valid = false;
+                    }
+                } else if valid && chars.get(end) == Some(&'}') {
+                } else {
+                    valid = false;
+                }
+                if valid && chars.get(end) == Some(&'}') {
+                    if max > 1000 {
                         return Err("invalid repeat count".to_owned());
                     }
-                    if let Some(second) = second
-                        && !second.is_empty()
-                    {
-                        let second_value: u32 =
-                            second.parse().map_err(|_| "repeat count too large")?;
-                        if second_value > 1000 {
-                            return Err("invalid repeat count".to_owned());
-                        }
-                    }
+                    index = end + 1;
+                    continue;
                 }
-                index = end;
+                index += 1;
+                continue;
             }
+            _ => index += 1,
         }
-        index += 1;
     }
     Ok(())
 }
@@ -3404,8 +3477,8 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                     ));
                 }
                 iterations += 1;
-                let text = current.to_string();
-                if let Ok(value) = text.parse::<i64>() {
+                let normalized = current.normalized();
+                if let Ok(value) = normalized.to_string().parse::<i64>() {
                     out.push(Value::Int(value));
                 } else {
                     out.push(Value::Float(current.clone()));
@@ -3489,6 +3562,11 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float(BigDecimal::from(*a) + b)),
             (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + BigDecimal::from(*b))),
             (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
+            (Value::Bytes(a), Value::Bytes(b)) => {
+                let mut out = a.clone();
+                out.extend_from_slice(b);
+                Ok(Value::Bytes(out))
+            }
             (Value::OpenList(element), Value::List(values))
             | (Value::List(values), Value::OpenList(element)) => {
                 if let Some(element) = element {

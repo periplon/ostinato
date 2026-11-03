@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.6.9
+
+- RE2 class complements/repeat scanning, canonical decimal ranges, params
+  sibling references, shorthand numeric literals and bytes concatenation.
+- 199 tests (34 CLI E2E, 1 conformance, 154 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.8
 
 - Bare open lists, RFC3339 fraction+offset, RE2 ASCII classes, Go case
