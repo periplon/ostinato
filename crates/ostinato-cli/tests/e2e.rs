@@ -2015,3 +2015,37 @@ workflow: {name: "\(params.nested.name)", steps: {s: {kind: "noop"}}}
     );
     assert_eq!(json(&output)["params"]["nested"]["name"], "x");
 }
+
+#[test]
+fn nested_definition_tags_inject_their_declaration() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("nested-definition-tag.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+#Outer: {#Inner: {host: string | *"d" @tag(host), copy: host}, inner: #Inner}
+params: {n: #Outer}
+workflow: {name: "\(params.n.inner.host)|\(params.n.inner.copy)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "host=x",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["workflow"]["name"], "x|x");
+    assert_eq!(report["params"]["n"]["inner"]["copy"], "x");
+    assert!(report["params"]["n"].get("#Inner").is_none());
+}

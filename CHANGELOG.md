@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.2
+
+Nested definition tag origins.
+
+- Tag path segments preserve definition markers, so tags declared inside a
+  definition nested in another definition are injected into that definition
+  rather than as regular `#Inner` fields.
+- 256 tests (40 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.1
 
 Nested `@tag` review corrections.
