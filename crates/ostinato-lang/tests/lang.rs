@@ -2814,3 +2814,85 @@ a: !=5 & 5.0
     let file = ostinato_lang::parse(bound).expect("parse");
     assert!(ostinato_lang::eval_file(&file).is_err());
 }
+
+#[test]
+fn numeric_equality_is_scalar_only() {
+    let scalar = r#"
+package demo
+a: 1.0 == 1
+b: 1 == 1.0
+"#;
+    let file = ostinato_lang::parse(scalar).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], true);
+    assert_eq!(json["b"], true);
+
+    let composites = r#"
+package demo
+a: [1] == [1.0]
+b: {x: 1} == {x: 1.0}
+"#;
+    let file = ostinato_lang::parse(composites).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], false);
+    assert_eq!(json["b"], false);
+
+    let disjoint = r#"
+package demo
+a: 1 | *1.0
+b: 1.0 | *1
+"#;
+    let file = ostinato_lang::parse(disjoint).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"].to_string(), "1.0");
+    assert_eq!(json["b"].to_string(), "1");
+
+    let incomplete = r#"
+package demo
+a: 1 | 1.0
+"#;
+    let file = ostinato_lang::parse(incomplete).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert!(value.to_json().is_none());
+
+    for source in ["a: \"\\(1 | 1.0)\"", "a: (1 | 1.0) + 1"] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(ostinato_lang::eval_file(&file).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn integer_bound_intervals_respect_discreteness() {
+    for source in [
+        "a: int & >5 & <6",
+        "a: int & >=5.5 & <=5.5",
+        "a: int & >5.0 & <6.0",
+        "a: int & >=5.1 & <=5.9",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "expected empty integer interval for {source}"
+        );
+    }
+
+    for (source, expected) in [
+        ("a: int & >5 & <=6 & 6", 6),
+        ("a: int & >=5.5 & <6.5 & 6", 6),
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        let value = ostinato_lang::eval_file(&file).expect("valid integer interval");
+        assert_eq!(value.to_json().expect("json")["a"], expected);
+    }
+
+    let narrowed = r#"
+package demo
+a: (int & >5 & <6) | 7
+"#;
+    let file = ostinato_lang::parse(narrowed).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["a"], 7);
+}

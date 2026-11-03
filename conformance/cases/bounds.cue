@@ -20,9 +20,13 @@ params: {
 	q: >="a" & string & "b"
 	r: (>=5 & <3) | 7
 	s: >=true | 3
+	t: 1 | *1.0
+	u: int & >5 & <=6 & 6
+	v: (int & >5 & <6) | 7
+	w: [1] == [1.0]
 }
 
 workflow: {
-	name: "\(params.a)-\(params.b)-\(params.c)-\(params.d)-\(params.e)-\(params.f)-\(params.g)-\(params.h)-\(params.i)-\(params.j)-\(params.k)-\(params.l)-\(params.o)-\(params.p)-\(params.q)-\(params.r)-\(params.s)"
+	name: "\(params.a)-\(params.b)-\(params.c)-\(params.d)-\(params.e)-\(params.f)-\(params.g)-\(params.h)-\(params.i)-\(params.j)-\(params.k)-\(params.l)-\(params.o)-\(params.p)-\(params.q)-\(params.r)-\(params.s)-\(params.t)-\(params.u)-\(params.v)-\(params.w)"
 	steps: {s: {kind: "noop"}}
 }
