@@ -5952,6 +5952,7 @@ package demo
 greeting: #P & {name: "Alice"}
 arithmetic: #A & {n: 4}
 chain: #C & {a: 1}
+defaulted: #A & {n: *4 | int}
 "#;
     let file = ostinato_lang::parse(source).expect("parse optional-dependent fields");
     let value = ostinato_lang::eval_file(&file).expect("eval optional-dependent fields");
@@ -5960,6 +5961,7 @@ chain: #C & {a: 1}
     assert_eq!(json["arithmetic"]["total"], 5);
     assert_eq!(json["chain"]["b"], 2);
     assert_eq!(json["chain"]["c"], 3);
+    assert_eq!(json["defaulted"]["total"], 5);
 
     let unmaterialized = "package demo\n#P: {name?: string, greeting: \"Hello \\(name)\"}\nx: #P\n";
     let file = ostinato_lang::parse(unmaterialized).expect("parse");

@@ -1,2 +1,2 @@
-AUDIT FAILED run=d7b97cfd-6797-43a3-bfee-20596794565a: invalid audit chain at sequence 1: event hash does not match its content
+AUDIT FAILED run=73adbc32-f2f2-4b54-98e3-f214b4e204fa: invalid audit chain at sequence 1: event hash does not match its content
 exit= 1
