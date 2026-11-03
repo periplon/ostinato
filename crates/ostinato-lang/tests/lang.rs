@@ -2571,3 +2571,23 @@ fn unification_sources_are_live_when_either_side_is_live() {
         );
     }
 }
+
+#[test]
+fn struct_literal_shadowing_keeps_dead_bodies_dead() {
+    let dead = [
+        "let C = true\nc: C\nlet S = {let C = false, if C {a: 1}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A",
+        "let C = true\nc: C\nlet S = {C = #x: false, if C {a: 1}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A",
+    ];
+    for source in dead {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        let value = ostinato_lang::eval_file(&file).expect("dead body must stay dead");
+        assert_eq!(value.to_json().expect("json")["s"], serde_json::json!({}));
+    }
+
+    let live = "let C = false\nc: C\nlet S = {let C = true, if C {a: 1}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A";
+    let file = ostinato_lang::parse(&format!("package demo\n{live}\n")).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "inner live binding must keep the cycle"
+    );
+}

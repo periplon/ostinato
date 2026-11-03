@@ -129,6 +129,66 @@ impl Scalar {
     }
 }
 
+/// The identifier bindings a struct literal introduces for its own fields.
+///
+/// Static constant folding walks expressions before the full alias scope is
+/// built, so it needs this lightweight environment to honour shadowing by the
+/// literal's `let`s, required fields and aliases.
+#[derive(Debug, Default, Clone)]
+struct LocalEnv<'a> {
+    lets: HashMap<&'a str, &'a Expr>,
+    shadows: HashSet<&'a str>,
+    parent: Option<Box<LocalEnv<'a>>>,
+}
+
+enum LocalClass<'s, 'a> {
+    Let(&'s LocalEnv<'a>, &'a Expr),
+    Shadow,
+    Unbound,
+}
+
+impl<'a> LocalEnv<'a> {
+    fn from_items(items: &'a [StructItem], parent: Option<&'a LocalEnv<'a>>) -> Self {
+        let mut env = Self {
+            parent: parent.cloned().map(Box::new),
+            ..Self::default()
+        };
+        for item in items {
+            match item {
+                StructItem::Let { name, value, .. } => {
+                    env.lets.insert(name, value);
+                }
+                StructItem::Field(field) => {
+                    if let Some(alias) = &field.alias {
+                        env.shadows.insert(alias);
+                    }
+                    if let Label::Name(name, _) = &field.label
+                        && !field.quoted
+                        && !field.optional
+                    {
+                        env.shadows.insert(name);
+                    }
+                }
+                _ => {}
+            }
+        }
+        env
+    }
+
+    fn classify<'s>(&'s self, name: &str) -> LocalClass<'s, 'a> {
+        if let Some(value) = self.lets.get(name) {
+            return LocalClass::Let(self, value);
+        }
+        if self.shadows.contains(name) {
+            return LocalClass::Shadow;
+        }
+        match &self.parent {
+            Some(parent) => parent.classify(name),
+            None => LocalClass::Unbound,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct AliasScope {
     parent: Option<usize>,
@@ -170,7 +230,13 @@ impl AliasCtx {
         false
     }
 
-    fn const_scalar(&self, expr: &Expr, chain: &[usize], depth: usize) -> Option<Scalar> {
+    fn const_scalar(
+        &self,
+        expr: &Expr,
+        chain: &[usize],
+        local: Option<&LocalEnv<'_>>,
+        depth: usize,
+    ) -> Option<Scalar> {
         if depth > 32 {
             return None;
         }
@@ -178,20 +244,31 @@ impl AliasCtx {
             Expr::Int(value, _) => Some(Scalar::Int(*value)),
             Expr::Float(value, _) => Some(Scalar::Float(*value)),
             Expr::Bool(value, _) => Some(Scalar::Bool(*value)),
-            Expr::Paren(inner, _) => self.const_scalar(inner, chain, depth + 1),
+            Expr::Paren(inner, _) => self.const_scalar(inner, chain, local, depth + 1),
             Expr::Str(parts, _) if parts.len() == 1 => match &parts[0] {
                 StrPart::Text(text) => Some(Scalar::String(text.clone())),
                 StrPart::Interp(_) => None,
             },
-            Expr::Unary(UnOp::Neg, inner, _) => match self.const_scalar(inner, chain, depth + 1)? {
-                Scalar::Int(value) => Some(Scalar::Int(-value)),
-                Scalar::Float(value) => Some(Scalar::Float(-value)),
-                _ => None,
-            },
+            Expr::Unary(UnOp::Neg, inner, _) => {
+                match self.const_scalar(inner, chain, local, depth + 1)? {
+                    Scalar::Int(value) => Some(Scalar::Int(-value)),
+                    Scalar::Float(value) => Some(Scalar::Float(-value)),
+                    _ => None,
+                }
+            }
             Expr::Ident(name, _) => {
+                if let Some(local) = local {
+                    match local.classify(name) {
+                        LocalClass::Let(env, value) => {
+                            return self.const_scalar(value, chain, Some(env), depth + 1);
+                        }
+                        LocalClass::Shadow => return None,
+                        LocalClass::Unbound => {}
+                    }
+                }
                 for scope in chain.iter().rev() {
                     if let Some(value) = self.scopes[*scope].let_values.get(name) {
-                        return self.const_scalar(value, chain, depth + 1);
+                        return self.const_scalar(value, chain, local, depth + 1);
                     }
                     if self.scopes[*scope].required_fields.contains(name)
                         || self.scopes[*scope].aliases.contains_key(name)
@@ -205,20 +282,35 @@ impl AliasCtx {
         }
     }
 
-    fn const_bool(&self, expr: &Expr, chain: &[usize], depth: usize) -> Option<bool> {
+    fn const_bool(
+        &self,
+        expr: &Expr,
+        chain: &[usize],
+        local: Option<&LocalEnv<'_>>,
+        depth: usize,
+    ) -> Option<bool> {
         if depth > 32 {
             return None;
         }
         match expr {
             Expr::Bool(value, _) => Some(*value),
-            Expr::Paren(inner, _) => self.const_bool(inner, chain, depth + 1),
-            Expr::Unary(UnOp::Not, inner, _) => {
-                self.const_bool(inner, chain, depth + 1).map(|value| !value)
-            }
+            Expr::Paren(inner, _) => self.const_bool(inner, chain, local, depth + 1),
+            Expr::Unary(UnOp::Not, inner, _) => self
+                .const_bool(inner, chain, local, depth + 1)
+                .map(|value| !value),
             Expr::Ident(name, _) => {
+                if let Some(local) = local {
+                    match local.classify(name) {
+                        LocalClass::Let(env, value) => {
+                            return self.const_bool(value, chain, Some(env), depth + 1);
+                        }
+                        LocalClass::Shadow => return None,
+                        LocalClass::Unbound => {}
+                    }
+                }
                 for scope in chain.iter().rev() {
                     if let Some(value) = self.scopes[*scope].let_values.get(name) {
-                        return self.const_bool(value, chain, depth + 1);
+                        return self.const_bool(value, chain, local, depth + 1);
                     }
                     if self.scopes[*scope].required_fields.contains(name)
                         || self.scopes[*scope].aliases.contains_key(name)
@@ -230,16 +322,16 @@ impl AliasCtx {
             }
             Expr::Binary(op, left, right, _) => match op {
                 BinOp::And => Some(
-                    self.const_bool(left, chain, depth + 1)?
-                        && self.const_bool(right, chain, depth + 1)?,
+                    self.const_bool(left, chain, local, depth + 1)?
+                        && self.const_bool(right, chain, local, depth + 1)?,
                 ),
                 BinOp::Or => Some(
-                    self.const_bool(left, chain, depth + 1)?
-                        || self.const_bool(right, chain, depth + 1)?,
+                    self.const_bool(left, chain, local, depth + 1)?
+                        || self.const_bool(right, chain, local, depth + 1)?,
                 ),
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    let left = self.const_scalar(left, chain, depth + 1)?;
-                    let right = self.const_scalar(right, chain, depth + 1)?;
+                    let left = self.const_scalar(left, chain, local, depth + 1)?;
+                    let right = self.const_scalar(right, chain, local, depth + 1)?;
                     left.compare(*op, &right)
                 }
                 _ => None,
@@ -248,28 +340,48 @@ impl AliasCtx {
         }
     }
 
-    fn static_non_empty(&self, expr: &Expr, chain: &[usize], depth: usize) -> bool {
+    fn static_non_empty(
+        &self,
+        expr: &Expr,
+        chain: &[usize],
+        local: Option<&LocalEnv<'_>>,
+        depth: usize,
+    ) -> bool {
         if depth > 32 {
             return false;
         }
         match expr {
             Expr::List(items, _) => !items.is_empty(),
-            Expr::Struct(items, _) => self.struct_has_required(items, chain, depth + 1),
+            Expr::Struct(items, _) => {
+                let env = LocalEnv::from_items(items, local);
+                self.struct_has_required(items, chain, Some(&env), depth + 1)
+            }
             Expr::ListComp { clauses, .. } => clauses.iter().all(|clause| match clause {
-                CompClause::For { source, .. } => self.static_non_empty(source, chain, depth + 1),
+                CompClause::For { source, .. } => {
+                    self.static_non_empty(source, chain, local, depth + 1)
+                }
                 CompClause::If { cond, .. } => {
-                    self.const_bool(cond, chain, depth + 1) == Some(true)
+                    self.const_bool(cond, chain, local, depth + 1) == Some(true)
                 }
             }),
             Expr::Unify(left, right, _) => {
-                self.static_non_empty(left, chain, depth + 1)
-                    || self.static_non_empty(right, chain, depth + 1)
+                self.static_non_empty(left, chain, local, depth + 1)
+                    || self.static_non_empty(right, chain, local, depth + 1)
             }
-            Expr::Paren(inner, _) => self.static_non_empty(inner, chain, depth + 1),
+            Expr::Paren(inner, _) => self.static_non_empty(inner, chain, local, depth + 1),
             Expr::Ident(name, _) => {
+                if let Some(local) = local {
+                    match local.classify(name) {
+                        LocalClass::Let(env, value) => {
+                            return self.static_non_empty(value, chain, Some(env), depth + 1);
+                        }
+                        LocalClass::Shadow => return false,
+                        LocalClass::Unbound => {}
+                    }
+                }
                 for scope in chain.iter().rev() {
                     if let Some(value) = self.scopes[*scope].let_values.get(name) {
-                        return self.static_non_empty(value, chain, depth + 1);
+                        return self.static_non_empty(value, chain, local, depth + 1);
                     }
                     if self.scopes[*scope].required_fields.contains(name)
                         || self.scopes[*scope].aliases.contains_key(name)
@@ -283,16 +395,22 @@ impl AliasCtx {
         }
     }
 
-    fn struct_has_required(&self, items: &[StructItem], chain: &[usize], depth: usize) -> bool {
+    fn struct_has_required(
+        &self,
+        items: &[StructItem],
+        chain: &[usize],
+        local: Option<&LocalEnv<'_>>,
+        depth: usize,
+    ) -> bool {
         items.iter().any(|item| match item {
             StructItem::Field(field) => !field.definition && !field.optional,
             StructItem::If { cond, body, .. } => {
-                self.const_bool(cond, chain, depth + 1) == Some(true)
-                    && self.struct_has_required(body, chain, depth + 1)
+                self.const_bool(cond, chain, local, depth + 1) == Some(true)
+                    && self.struct_has_required(body, chain, local, depth + 1)
             }
             StructItem::For { source, body, .. } => {
-                self.static_non_empty(source, chain, depth + 1)
-                    && self.struct_has_required(body, chain, depth + 1)
+                self.static_non_empty(source, chain, local, depth + 1)
+                    && self.struct_has_required(body, chain, local, depth + 1)
             }
             _ => false,
         })
@@ -454,7 +572,7 @@ impl AliasCtx {
                         body_shadow.insert(key.clone());
                     }
                     body_shadow.insert(value.clone());
-                    let body_from = if self.static_non_empty(source, &chain, 0) {
+                    let body_from = if self.static_non_empty(source, &chain, None, 0) {
                         from
                     } else {
                         None
@@ -473,7 +591,7 @@ impl AliasCtx {
                 }
                 StructItem::If { cond, body, .. } => {
                     self.expr(cond, &chain, &local_shadow, from)?;
-                    let body_from = if self.const_bool(cond, &chain, 0) == Some(true) {
+                    let body_from = if self.const_bool(cond, &chain, None, 0) == Some(true) {
                         from
                     } else {
                         None
@@ -599,7 +717,7 @@ impl AliasCtx {
                             span,
                         } => {
                             self.expr(source, chain, shadowed, if may_run { from } else { None })?;
-                            may_run = may_run && self.static_non_empty(source, chain, 0);
+                            may_run = may_run && self.static_non_empty(source, chain, None, 0);
                             if let Some(key) = key {
                                 body_shadow.insert(key.clone());
                                 self.scopes[comp_id].bindings.insert(key.clone());
@@ -620,8 +738,8 @@ impl AliasCtx {
                                 &body_shadow,
                                 if may_run { from } else { None },
                             )?;
-                            may_run =
-                                may_run && self.const_bool(cond, &comp_chain, 0) == Some(true);
+                            may_run = may_run
+                                && self.const_bool(cond, &comp_chain, None, 0) == Some(true);
                         }
                     }
                 }

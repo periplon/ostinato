@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.17
+
+Nested struct-literal shadowing.
+
+- Static constant/liveness folding builds a local environment for struct
+  literals, so inner lets, aliases and required fields shadow outer bindings
+  even when the literal is a `let` value.
+- 159 tests (24 CLI E2E, 1 conformance, 124 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.16
 
 Constant resolution respects shadowing.
