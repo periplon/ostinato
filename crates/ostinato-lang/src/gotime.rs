@@ -149,9 +149,18 @@ fn token_at(text: &str) -> Option<(Item, usize)> {
         ("MST", Item::ZoneName),
     ];
     for (pattern, item) in SIMPLE {
-        if text.starts_with(pattern) {
-            return Some((item.clone(), pattern.len()));
+        if !text.starts_with(pattern) {
+            continue;
         }
+        if matches!(item, Item::MonthShort | Item::WeekdayShort)
+            && text[pattern.len()..]
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_lowercase())
+        {
+            continue;
+        }
+        return Some((item.clone(), pattern.len()));
     }
     let mut chars = text.chars();
     let first = chars.next()?;
@@ -183,6 +192,11 @@ fn tokenize(layout: &str) -> Vec<Item> {
     let mut index = 0;
     while index < layout.len() {
         let rest = &layout[index..];
+        if rest.starts_with("_2006") {
+            literal.push('_');
+            index += 1;
+            continue;
+        }
         if let Some((item, consumed)) = token_at(rest) {
             if !literal.is_empty() {
                 items.push(Item::Literal(std::mem::take(&mut literal)));
@@ -296,7 +310,7 @@ fn parse_name<'a>(input: &'a str, names: &[&str]) -> Option<(usize, &'a str)> {
 fn skip_literal<'a>(mut value: &'a str, mut prefix: &str) -> Option<&'a str> {
     while let Some(character) = prefix.chars().next() {
         if character == ' ' {
-            if !value.starts_with(' ') {
+            if !value.is_empty() && !value.starts_with(' ') {
                 return None;
             }
             value = value.trim_start_matches(' ');
@@ -331,6 +345,9 @@ fn parse_zone_name(input: &str) -> Option<usize> {
     let bytes = input.as_bytes();
     if bytes.len() < 3 {
         return None;
+    }
+    if bytes.starts_with(b"UTC") {
+        return Some(3);
     }
     if bytes.starts_with(b"ChST") || bytes.starts_with(b"MeST") {
         return Some(4);
@@ -411,7 +428,8 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
     let mut year = 0i32;
     let mut month = 1u32;
     let mut day = 1u32;
-    let mut saw_month_day = false;
+    let mut month_seen = false;
+    let mut day_seen = false;
     let mut yday: Option<u32> = None;
     let mut hour = 0u32;
     let mut minute = 0u32;
@@ -439,20 +457,20 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
             Item::MonthLong => {
                 let (value, next) = parse_name(rest, &MONTHS_LONG)?;
                 month = u32::try_from(value + 1).ok()?;
-                saw_month_day = true;
+                month_seen = true;
                 rest = next;
             }
             Item::MonthShort => {
                 let (value, next) = parse_name(rest, &MONTHS_SHORT)?;
                 month = u32::try_from(value + 1).ok()?;
-                saw_month_day = true;
+                month_seen = true;
                 rest = next;
             }
             Item::MonthNum | Item::MonthNum0 => {
                 let fixed = matches!(item, Item::MonthNum0);
                 let (value, next) = take_number(rest, if fixed { 2 } else { 1 }, 2)?;
                 month = value;
-                saw_month_day = true;
+                month_seen = true;
                 rest = next;
             }
             Item::Day | Item::Day0 | Item::DaySpace => {
@@ -462,7 +480,7 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
                 let fixed = matches!(item, Item::Day0);
                 let (value, next) = take_number(rest, if fixed { 2 } else { 1 }, 2)?;
                 day = value;
-                saw_month_day = true;
+                day_seen = true;
                 rest = next;
             }
             Item::YDay0 => {
@@ -583,7 +601,7 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
             return None;
         }
         let date = NaiveDate::from_yo_opt(year, yday)?;
-        if saw_month_day && (date.month() != month || date.day() != day) {
+        if (month_seen && date.month() != month) || (day_seen && date.day() != day) {
             return None;
         }
         date

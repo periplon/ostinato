@@ -36,6 +36,15 @@ params: {
 	hour_short:          time.Parse("15:04", "2:04")
 	pm_no_hour:          time.Parse("15:04PM", "15:04PM")
 	zone_24:             time.FormatString("15:04 -07:00", "2024-03-05T06:07:08+24:00")
+	yday_month:          time.Parse("2006-002 01", "2024-065 03")
+	yday_day:            time.Parse("2006-002 02", "2024-065 05")
+	literal_month:       time.FormatString("Januar", "2024-03-05T06:07:08Z")
+	literal_weekday:     time.FormatString("Monat 2006", "2024-03-05T06:07:08Z")
+	underscore_year:     time.FormatString("_2006", "2024-03-05T06:07:08Z")
+	underscore_parse:    time.Parse("_2006", "_2024")
+	trailing_space:      time.Parse("2006-01-02 ", "2024-03-05")
+	utc_shortcut:        time.Parse("MSTX", "UTCX")
+	duration_round:      time.ParseDuration("1.999999999999999999999s")
 }
 
 workflow: {
