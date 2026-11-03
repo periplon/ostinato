@@ -3319,3 +3319,49 @@ c: time.Parse("3:04PM", "3:04PM")
         assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
     }
 }
+
+#[test]
+fn open_list_prefix_values_export_their_prefix() {
+    let source = r#"
+package demo
+params: {v: [1, 2, ...int]}
+needs: ["a", ...string]
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["v"], serde_json::json!([1, 2]));
+    assert_eq!(json["needs"], serde_json::json!(["a"]));
+}
+
+#[test]
+fn time_rfc3339_and_leap_seconds_are_strict() {
+    let source = r#"
+package demo
+import "time"
+a: time.Parse("2006-01-02T15:04:05Z07:00", "2020-01-02T12:30:00Z")
+b: time.Parse("3:04PM", "0:04AM")
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "time".to_owned(),
+        ostinato_lang::builtin_module("time").expect("time"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    assert_eq!(value.to_json().expect("json")["a"], "2020-01-02T12:30:00Z");
+
+    for source in [
+        r#"a: time.Parse("2006-01-02T15:04:05Z07:00", "2020-01-02 12:30:00Z")"#,
+        r#"a: time.Parse("2006-01-02T15:04:05Z07:00", "2020-01-02t12:30:00Z")"#,
+        r#"a: time.Parse("2006-01-02T15:04:05Z07:00", "2020-01-02T12:30:00z")"#,
+        r#"a: time.Parse("2006-01-02T15:04:05Z07:00", "2020-01-02T23:59:60Z")"#,
+        r#"a: time.Parse("15:04:05", "23:59:60")"#,
+        r#"a: time.Parse("3:04PM", "13:04PM")"#,
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\nimport \"time\"\n{source}\n"))
+            .expect("parse");
+        assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
+    }
+}
