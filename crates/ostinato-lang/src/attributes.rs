@@ -694,6 +694,12 @@ pub fn assign_field_ids(file: &mut File) {
 }
 
 fn assign_item(item: &mut StructItem, next: &mut usize) {
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        assign_item_impl(item, next)
+    })
+}
+
+fn assign_item_impl(item: &mut StructItem, next: &mut usize) {
     match item {
         StructItem::Field(field) => {
             field.id = *next;
@@ -719,6 +725,12 @@ fn assign_item(item: &mut StructItem, next: &mut usize) {
 }
 
 fn assign_expr(expr: &mut Expr, next: &mut usize) {
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        assign_expr_impl(expr, next)
+    })
+}
+
+fn assign_expr_impl(expr: &mut Expr, next: &mut usize) {
     match expr {
         Expr::Select(base, _, _, _) | Expr::Bound(_, base, _) | Expr::Unary(_, base, _) => {
             assign_expr(base, next);

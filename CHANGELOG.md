@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.9.1
+
+Recursive materialization review corrections.
+
+- Open-list unification keeps the unified element values, so nested recursive
+  nodes receive defaults and required-field checks at every depth.
+- Equality has no fixed depth limit; deep values and deep recursive values
+  compare like CUE.
+- Recursive unification grows the stack on demand instead of rejecting deep
+  finite trees, and cycles are detected by slot identity.
+- Unresolved self-references are deferred and validated once the definition is
+  materialized, so structural cycles stay incomplete instead of succeeding.
+- 267 tests (47 CLI E2E, 1 conformance, 209 language, 6 domain, 3 store, 1 unit).
+
 ## v0.9.0
 
 Recursive definition materialization.

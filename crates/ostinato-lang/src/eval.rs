@@ -111,6 +111,9 @@ pub enum Value {
     Conflict(String),
     /// A self-reference to a definition that is currently being materialized.
     Recursive(Rc<RecursiveSlot>),
+    /// A self-reference constrained by a value unified before the definition
+    /// finished materializing.
+    Deferred(Rc<RecursiveSlot>, Box<Value>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,7 +184,7 @@ impl Value {
                 TypeKind::Bool => "bool",
                 TypeKind::Bytes => "bytes",
             },
-            Self::Recursive(_) => "recursive",
+            Self::Recursive(_) | Self::Deferred(_, _) => "recursive",
             Self::Bottom | Self::Conflict(_) => "_",
         }
     }
@@ -209,7 +212,9 @@ impl Value {
     #[must_use]
     pub fn is_concrete(&self) -> bool {
         match self {
-            Self::Disjunction(_, _) | Self::Recursive(_) => self.to_json().is_some(),
+            Self::Disjunction(_, _) | Self::Recursive(_) | Self::Deferred(_, _) => {
+                self.to_json().is_some()
+            }
             Self::Bounds(_) => false,
             _ => !matches!(self, Self::Type(_) | Self::Bottom | Self::Conflict(_)),
         }
@@ -222,6 +227,12 @@ impl Value {
     }
 
     fn to_json_inner(&self, stack: &mut Vec<*const RecursiveSlot>) -> Option<Json> {
+        stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+            self.to_json_inner_impl(stack)
+        })
+    }
+
+    fn to_json_inner_impl(&self, stack: &mut Vec<*const RecursiveSlot>) -> Option<Json> {
         match self {
             Self::Null => Some(Json::Null),
             Self::Bool(value) => Some(Json::Bool(*value)),
@@ -276,6 +287,20 @@ impl Value {
                 stack.pop();
                 result
             }
+            Self::Deferred(slot, constraint) => {
+                let pointer = Rc::as_ptr(slot);
+                if stack.contains(&pointer) {
+                    return None;
+                }
+                let Some(resolved) = slot.value.borrow().clone() else {
+                    return constraint.to_json_inner(stack);
+                };
+                let unified = unify_values(&resolved, constraint, Span::default()).ok()?;
+                stack.push(pointer);
+                let result = unified.to_json_inner(stack);
+                stack.pop();
+                result
+            }
             Self::Builtin(_) | Self::Conflict(_) | Self::Type(_) | Self::Bottom => None,
         }
     }
@@ -311,6 +336,11 @@ impl Value {
             Self::Bounds(_) => false,
             Self::OpenList(_) | Self::OpenListPrefix(_, _) => true,
             Self::Recursive(slot) => slot.value.borrow().as_ref().is_some_and(Value::truthy),
+            Self::Deferred(slot, constraint) => slot
+                .value
+                .borrow()
+                .as_ref()
+                .map_or_else(|| constraint.truthy(), Value::truthy),
             Self::Builtin(_) | Self::Type(_) | Self::Bottom | Self::Conflict(_) => false,
         }
     }
@@ -374,12 +404,14 @@ impl Value {
                 rendered.push(']');
                 rendered
             }
-            Self::List(_) | Self::Struct(_) | Self::Definition { .. } | Self::Recursive(_) => {
-                self.to_json().map_or_else(
-                    || format!("<{}>", self.type_name()),
-                    |json| json.to_string(),
-                )
-            }
+            Self::List(_)
+            | Self::Struct(_)
+            | Self::Definition { .. }
+            | Self::Recursive(_)
+            | Self::Deferred(_, _) => self.to_json().map_or_else(
+                || format!("<{}>", self.type_name()),
+                |json| json.to_string(),
+            ),
         }
     }
 }
@@ -2374,6 +2406,12 @@ fn params_select_path(expr: &Expr, frame: &Frame<'_>) -> Option<Vec<(String, boo
 }
 
 fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        eval_expr_impl(expr, frame)
+    })
+}
+
+fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
     match expr {
         Expr::Null(_) => Ok(Value::Null),
         Expr::Bool(value, _) => Ok(Value::Bool(*value)),
@@ -2788,6 +2826,12 @@ fn merge_generated_optional(
 }
 
 fn close_composed_definition(value: &Value) -> Value {
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        close_composed_definition_impl(value)
+    })
+}
+
+fn close_composed_definition_impl(value: &Value) -> Value {
     match value {
         Value::Disjunction(alternatives, defaults) => Value::Disjunction(
             alternatives.iter().map(close_composed_definition).collect(),
@@ -2838,6 +2882,12 @@ fn close_composed_definition(value: &Value) -> Value {
 }
 
 fn close_nested(value: &Value) -> Value {
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        close_nested_impl(value)
+    })
+}
+
+fn close_nested_impl(value: &Value) -> Value {
     match value {
         Value::Struct(fields) => {
             let fields: BTreeMap<String, Value> = fields
@@ -3495,19 +3545,18 @@ fn list_prefix(value: &Value) -> Option<&[Value]> {
 }
 
 fn values_identical(left: &Value, right: &Value) -> bool {
-    values_identical_inner(left, right, 0)
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        values_identical_impl(left, right)
+    })
 }
 
-fn values_identical_inner(left: &Value, right: &Value, depth: usize) -> bool {
-    if depth > 128 {
-        return false;
-    }
+fn values_identical_impl(left: &Value, right: &Value) -> bool {
     match (left, right) {
-        (Value::Recursive(a), Value::Recursive(b)) if Rc::ptr_eq(a, b) => true,
-        (Value::Recursive(slot), other) | (other, Value::Recursive(slot)) => {
-            match slot.value.borrow().clone() {
-                Some(resolved) => values_identical_inner(&resolved, other, depth + 1),
-                None => false,
+        (Value::Recursive(_) | Value::Deferred(_, _), _)
+        | (_, Value::Recursive(_) | Value::Deferred(_, _)) => {
+            match (left.to_json(), right.to_json()) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
             }
         }
         (
@@ -3519,16 +3568,13 @@ fn values_identical_inner(left: &Value, right: &Value, depth: usize) -> bool {
             visible_a.len() == visible_b.len()
                 && visible_a.iter().all(|(key, value)| {
                     b.get(*key)
-                        .is_some_and(|other| values_identical_inner(value, other, depth + 1))
+                        .is_some_and(|other| values_identical(value, other))
                 })
         }
         (left, right) if list_prefix(left).is_some() && list_prefix(right).is_some() => {
             let a = list_prefix(left).unwrap_or_default();
             let b = list_prefix(right).unwrap_or_default();
-            a.len() == b.len()
-                && a.iter()
-                    .zip(b)
-                    .all(|(a, b)| values_identical_inner(a, b, depth + 1))
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| values_identical(a, b))
         }
         (Value::Disjunction(_, _), _) | (_, Value::Disjunction(_, _)) => {
             match (left.to_json(), right.to_json()) {
@@ -4867,30 +4913,145 @@ fn type_error(op: &str, left: &Value, right: &Value, span: Span) -> Result<Value
 }
 
 thread_local! {
-    static RECURSIVE_UNIFY_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static RECURSIVE_PAIRS: RefCell<Vec<(*const RecursiveSlot, *const RecursiveSlot)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+fn combine_constraints(
+    left: Option<&Value>,
+    right: Option<&Value>,
+    span: Span,
+) -> Result<Option<Value>, LangError> {
+    match (left, right) {
+        (Some(left), Some(right)) => Ok(Some(unify_values(left, right, span)?)),
+        (Some(value), None) | (None, Some(value)) => Ok(Some(value.clone())),
+        (None, None) => Ok(None),
+    }
+}
+
+fn unify_one_recursive(
+    slot: &Rc<RecursiveSlot>,
+    constraint: Option<&Value>,
+    other: &Value,
+    span: Span,
+) -> Result<Value, LangError> {
+    let combined = match constraint {
+        Some(constraint) => unify_values(constraint, other, span)?,
+        None => other.clone(),
+    };
+    let resolved = slot.value.borrow().clone();
+    match resolved {
+        None => Ok(Value::Deferred(slot.clone(), Box::new(combined))),
+        Some(definition) => unify_values(&definition, &combined, span),
+    }
+}
+
+fn unify_recursive_pair(
+    left: &Rc<RecursiveSlot>,
+    left_constraint: Option<&Value>,
+    right: &Rc<RecursiveSlot>,
+    right_constraint: Option<&Value>,
+    span: Span,
+) -> Result<Value, LangError> {
+    if Rc::ptr_eq(left, right) {
+        let constraint = combine_constraints(left_constraint, right_constraint, span)?;
+        return match (constraint, left.value.borrow().clone()) {
+            (Some(constraint), Some(definition)) => unify_values(&definition, &constraint, span),
+            (Some(constraint), None) => Ok(Value::Deferred(left.clone(), Box::new(constraint))),
+            (None, Some(_)) => Ok(Value::Recursive(left.clone())),
+            (None, None) => Ok(Value::Recursive(left.clone())),
+        };
+    }
+    let (first, second) = if Rc::as_ptr(left) < Rc::as_ptr(right) {
+        (Rc::as_ptr(left), Rc::as_ptr(right))
+    } else {
+        (Rc::as_ptr(right), Rc::as_ptr(left))
+    };
+    let seen = RECURSIVE_PAIRS.with(|pairs| {
+        let pairs = pairs.borrow();
+        pairs.iter().any(|(a, b)| *a == first && *b == second)
+    });
+    if seen {
+        return Ok(Value::Bottom);
+    }
+    RECURSIVE_PAIRS.with(|pairs| pairs.borrow_mut().push((first, second)));
+    let result = (|| {
+        let left_value = left.value.borrow().clone();
+        let right_value = right.value.borrow().clone();
+        match (left_value, right_value) {
+            (Some(left_def), Some(right_def)) => {
+                let left_def = match left_constraint {
+                    Some(constraint) => unify_values(&left_def, constraint, span)?,
+                    None => left_def,
+                };
+                let right_def = match right_constraint {
+                    Some(constraint) => unify_values(&right_def, constraint, span)?,
+                    None => right_def,
+                };
+                unify_values(&left_def, &right_def, span)
+            }
+            (Some(left_def), None) => {
+                let constraint = combine_constraints(left_constraint, right_constraint, span)?
+                    .map_or_else(
+                        || Ok::<Value, LangError>(left_def.clone()),
+                        |value| unify_values(&left_def, &value, span),
+                    )?;
+                Ok(Value::Deferred(right.clone(), Box::new(constraint)))
+            }
+            (None, Some(right_def)) => {
+                let constraint = combine_constraints(left_constraint, right_constraint, span)?
+                    .map_or_else(
+                        || Ok::<Value, LangError>(right_def.clone()),
+                        |value| unify_values(&right_def, &value, span),
+                    )?;
+                Ok(Value::Deferred(left.clone(), Box::new(constraint)))
+            }
+            (None, None) => {
+                let constraint = combine_constraints(left_constraint, right_constraint, span)?;
+                match constraint {
+                    Some(constraint) => Ok(Value::Deferred(left.clone(), Box::new(constraint))),
+                    None => Ok(Value::Deferred(left.clone(), Box::new(Value::Bottom))),
+                }
+            }
+        }
+    })();
+    RECURSIVE_PAIRS.with(|pairs| {
+        pairs.borrow_mut().pop();
+    });
+    result
 }
 
 fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        unify_values_impl(left, right, span)
+    })
+}
+
+fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
     match (left, right) {
-        (Value::Recursive(a), Value::Recursive(b)) if Rc::ptr_eq(a, b) => {
-            Ok(Value::Recursive(a.clone()))
+        (Value::Recursive(left), Value::Recursive(right)) => {
+            unify_recursive_pair(left, None, right, None, span)
+        }
+        (Value::Deferred(left, left_constraint), Value::Recursive(right)) => {
+            unify_recursive_pair(left, Some(&**left_constraint), right, None, span)
+        }
+        (Value::Recursive(left), Value::Deferred(right, right_constraint)) => {
+            unify_recursive_pair(left, None, right, Some(&**right_constraint), span)
+        }
+        (Value::Deferred(left, left_constraint), Value::Deferred(right, right_constraint)) => {
+            unify_recursive_pair(
+                left,
+                Some(&**left_constraint),
+                right,
+                Some(&**right_constraint),
+                span,
+            )
         }
         (Value::Recursive(slot), other) | (other, Value::Recursive(slot)) => {
-            let depth = RECURSIVE_UNIFY_DEPTH.with(Cell::get);
-            if depth > 128 {
-                return Err(LangError::conflict(
-                    span.line,
-                    span.col,
-                    "recursive definition is too deep",
-                ));
-            }
-            let Some(resolved) = slot.value.borrow().clone() else {
-                return Ok(other.clone());
-            };
-            RECURSIVE_UNIFY_DEPTH.with(|cell| cell.set(depth + 1));
-            let result = unify_values(&resolved, other, span);
-            RECURSIVE_UNIFY_DEPTH.with(|cell| cell.set(depth));
-            result
+            unify_one_recursive(slot, None, other, span)
+        }
+        (Value::Deferred(slot, constraint), other) | (other, Value::Deferred(slot, constraint)) => {
+            unify_one_recursive(slot, Some(constraint), other, span)
         }
         (Value::Conflict(message), _) | (_, Value::Conflict(message)) => {
             Err(LangError::conflict(span.line, span.col, message.clone()))
@@ -5158,15 +5319,15 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     "list prefix is longer than the concrete list",
                 ));
             }
-            for (expected, value) in prefix.iter().zip(values) {
-                let _ = unify_values(expected, value, span)?;
+            let mut out = Vec::with_capacity(values.len());
+            for (index, value) in values.iter().enumerate() {
+                let expected = prefix.get(index).or(tail.as_deref());
+                out.push(match expected {
+                    Some(expected) => unify_values(expected, value, span)?,
+                    None => value.clone(),
+                });
             }
-            if let Some(tail) = tail {
-                for value in values.iter().skip(prefix.len()) {
-                    let _ = unify_values(tail, value, span)?;
-                }
-            }
-            Ok(Value::List(values.clone()))
+            Ok(Value::List(out))
         }
         (Value::OpenListPrefix(prefix, tail), Value::OpenList(element))
         | (Value::OpenList(element), Value::OpenListPrefix(prefix, tail)) => {
@@ -5206,12 +5367,14 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
         }
         (Value::OpenList(element), Value::List(values))
         | (Value::List(values), Value::OpenList(element)) => {
-            if let Some(element) = element {
-                for value in values {
-                    let _ = unify_values(element, value, span)?;
-                }
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(match element.as_deref() {
+                    Some(element) => unify_values(element, value, span)?,
+                    None => value.clone(),
+                });
             }
-            Ok(Value::List(values.clone()))
+            Ok(Value::List(out))
         }
         (Value::OpenList(left), Value::OpenList(right)) => match (left, right) {
             (None, None) => Ok(Value::OpenList(None)),

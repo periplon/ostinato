@@ -273,6 +273,12 @@ impl Parser {
     }
 
     fn parse_struct_item(&mut self) -> Result<Option<StructItem>, LangError> {
+        stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+            self.parse_struct_item_impl()
+        })
+    }
+
+    fn parse_struct_item_impl(&mut self) -> Result<Option<StructItem>, LangError> {
         let mut attributes = Vec::new();
         while matches!(self.peek_tok(), Tok::At) {
             attributes.push(self.parse_attribute()?);
@@ -601,6 +607,10 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, LangError> {
+        stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || self.parse_expr_impl())
+    }
+
+    fn parse_expr_impl(&mut self) -> Result<Expr, LangError> {
         self.skip_newlines();
         self.parse_disjunction()
     }

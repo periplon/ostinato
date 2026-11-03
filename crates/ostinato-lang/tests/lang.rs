@@ -4805,3 +4805,89 @@ tree: #Tree & {children: [{value: 2}]}
         );
     }
 }
+
+#[test]
+fn recursive_definitions_fill_defaults_at_every_depth() {
+    let source = r#"
+package demo
+#Node: {kind: string | *"leaf", value: int, children?: [...#Node]}
+nodes: #Node & {kind: "root", value: 1, children: [{value: 2, children: [{value: 3}]}]}
+list: [...{v: int, tags: [...string]}]
+list: [{v: 2}]
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("defaults at depth");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["nodes"]["kind"], "root");
+    assert_eq!(json["nodes"]["children"][0]["kind"], "leaf");
+    assert_eq!(json["nodes"]["children"][0]["children"][0]["kind"], "leaf");
+    assert_eq!(json["list"][0]["tags"], serde_json::json!([]));
+
+    let missing = r#"
+package demo
+#Node: {kind: string, value: int, children?: [...#Node]}
+nodes: #Node & {kind: "root", value: 1, children: [{value: 2}]}
+"#;
+    let file = ostinato_lang::parse(missing).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("deferred structural cycle");
+    assert!(
+        value.to_json().is_none(),
+        "depth >= 2 missing required fields must stay incomplete"
+    );
+
+    for source in [
+        "#N: {value: int, next: #N} & {value: 1, next: {}}\nn: #N\n",
+        "#T: {value: int, next?: #T} & {value: 1, next: {}}\nn: #T\n",
+        "#T: {children: [...#T]} & {children: [{}]}\nn: #T\n",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}")).expect("parse");
+        if let Ok(value) = ostinato_lang::eval_file(&file) {
+            assert!(
+                value.to_json().is_none(),
+                "structural cycles must stay incomplete: {source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn deep_values_compare_and_materialize_beyond_128_levels() {
+    fn nested(depth: usize) -> String {
+        let mut value = "leaf: true".to_owned();
+        for _ in 0..depth {
+            value = format!("{{inner: {value}}}");
+        }
+        value
+    }
+    let source = format!(
+        "package demo\na: {}\nb: {}\nparams: {{eq: a == b, neq: a != b}}\n",
+        nested(200),
+        nested(200)
+    );
+    let file = ostinato_lang::parse(&source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("deep equality");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["eq"], true);
+    assert_eq!(json["params"]["neq"], false);
+
+    fn tree(depth: usize) -> String {
+        let mut value = format!("{{value: {depth}}}");
+        for index in (1..depth).rev() {
+            value = format!("{{value: {index}, children: [{value}]}}");
+        }
+        value
+    }
+    let source = format!(
+        "package demo\n#Tree: {{value: int, children?: [...#Tree]}}\ntree: #Tree & {}\nparams: {{x: tree, same: tree == tree}}\n",
+        tree(300)
+    );
+    let file = ostinato_lang::parse(&source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("deep recursion");
+    let json = value.to_json().expect("deep json");
+    assert_eq!(json["params"]["same"], true);
+    let mut node = &json["params"]["x"];
+    for _ in 0..299 {
+        node = &node["children"][0];
+    }
+    assert_eq!(node["value"], 300);
+}
