@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.7.2
+
+Params resolver and hidden-field corrections.
+
+- Closedness errors inside referenced definitions/lets (`#Q: #P & {b: 2}`,
+  `let Q = #P & {b: 2}`) propagate instead of being swallowed.
+- Unquoted `_name` fields are stored as hidden metadata: admitted by closed
+  definitions but omitted from export; quoted/dynamic `"_x"` stays a regular
+  field and is still rejected by closedness.
+- Params caching is keyed by structured paths, so `params."a.b"` and
+  `params.a.b` no longer collide.
+- Optional intermediate segments (`a?: {b: 1}; c: params.a.b`) are rejected.
+- Dynamic intermediate groups and repeated segment names resolve correctly.
+- 211 tests (34 CLI E2E, 1 conformance, 166 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.1
 
 Params path resolver and closedness corrections.

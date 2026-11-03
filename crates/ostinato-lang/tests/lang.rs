@@ -3809,3 +3809,124 @@ params: Q & {c: 2}
     let file = ostinato_lang::parse(let_bound).expect("parse");
     assert!(ostinato_lang::eval_file(&file).is_err());
 }
+
+#[test]
+fn closed_definitions_are_checked_inside_referenced_bodies() {
+    for source in [
+        "#P: {a: 1}\n#Q: #P & {b: 2}\nparams: #Q",
+        "#P: {a: 1}\nlet Q = #P & {b: 2}\nparams: Q",
+        "#P: {a: 1}\n#Q: #P & {b: 2}\n#R: #Q\nparams: #R",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "closed body must be enforced: {source}"
+        );
+    }
+}
+
+#[test]
+fn hidden_fields_are_distinct_from_quoted_underscore_fields() {
+    let hidden = r#"
+package demo
+#P: {a: int}
+params: #P & {_b: 2, a: 3}
+"#;
+    let file = ostinato_lang::parse(hidden).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("hidden field is admitted");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["a"], 3);
+    assert!(
+        json["params"].get("_b").is_none(),
+        "hidden field must not export"
+    );
+
+    let quoted = r#"
+package demo
+#P: {a: 1}
+params: #P & {"_x": 2}
+"#;
+    let file = ostinato_lang::parse(quoted).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "quoted _x is a regular field"
+    );
+
+    let generated = r#"
+package demo
+#P: {a: 1}
+params: #P & {for k in ["_x"] { "\(k)": 2 }}
+"#;
+    let file = ostinato_lang::parse(generated).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "dynamic _x is a regular field"
+    );
+
+    let exported = r#"
+package demo
+params: {_hidden: 1, "_quoted": 2, a: 3}
+"#;
+    let file = ostinato_lang::parse(exported).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert!(json["params"].get("_hidden").is_none());
+    assert_eq!(json["params"]["_quoted"], 2);
+}
+
+#[test]
+fn params_cache_distinguishes_dotted_labels_from_paths() {
+    let flat = r#"
+package demo
+params: {"a.b": 1, a: {b: 2}, x: params."a.b", y: params.a.b}
+"#;
+    let file = ostinato_lang::parse(flat).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["x"], 1);
+    assert_eq!(json["params"]["y"], 2);
+
+    let nested = r#"
+package demo
+params: {"a.b": {c: 1}, a: {b: {c: 2}}, x: params."a.b".c, y: params.a.b.c}
+"#;
+    let file = ostinato_lang::parse(nested).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["x"], 1);
+    assert_eq!(json["params"]["y"], 2);
+}
+
+#[test]
+fn optional_intermediate_params_fields_are_rejected() {
+    for source in [
+        "params: {a?: {b: 1}, c: params.a.b}",
+        "params: {a?: {b: 1} | *{b: 2}, c: params.a.b}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "optional intermediate must be rejected: {source}"
+        );
+    }
+}
+
+#[test]
+fn dynamic_intermediate_and_repeated_segments_resolve() {
+    let dynamic = r#"
+package demo
+params: {for k in ["x"] {"\(k)": {v: 1}}, y: params.x.v}
+"#;
+    let file = ostinato_lang::parse(dynamic).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("dynamic intermediate");
+    assert_eq!(value.to_json().expect("json")["params"]["y"], 1);
+
+    let repeated = r#"
+package demo
+params: {a: {a: X, b: params.a.a.b}}
+X: {b: 1}
+"#;
+    let file = ostinato_lang::parse(repeated).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("repeated segment");
+    assert_eq!(value.to_json().expect("json")["params"]["a"]["b"], 1);
+}
