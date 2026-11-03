@@ -2191,17 +2191,15 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         LangError::eval(span.line, span.col, "list index out of range")
                     })
                 }
-                (Value::Struct(map), Value::String(key)) => map
-                    .get(&key)
-                    .or_else(|| map.get(&escaped_field(&key)))
-                    .cloned()
-                    .ok_or_else(|| {
+                (Value::Struct(map), Value::String(key)) => {
+                    quoted_lookup(&map, &key).cloned().ok_or_else(|| {
                         LangError::eval(
                             span.line,
                             span.col,
                             format!("field `{key}` not found in struct"),
                         )
-                    }),
+                    })
+                }
                 (Value::Definition { fields, .. }, Value::String(key)) => {
                     { quoted_lookup(&fields, &key).cloned() }.ok_or_else(|| {
                         LangError::eval(

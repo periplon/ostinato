@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.10
+
+Sentinel string indexes on structs.
+
+- String indexing into struct values follows the same escaped-only rule as
+  quoted selectors for internal-sentinel labels; hidden storage is never read.
+- 230 tests (35 CLI E2E, 1 conformance, 184 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.9
 
 Imported hidden fields and sentinel labels.
