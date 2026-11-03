@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.5.2 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.6.0 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -20,7 +20,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 |---|---|---|
 | Package selection and same-package sibling files | ✅ | File, directory, and `package _` / no-package fallbacks |
 | Split packages and sibling conflicts | ✅ | Same-directory package files are unified |
-| Imports: `strings`, `list` | ✅ | `ToUpper`, `ToLower`, `TrimSpace`, `Join`, `Split`, `HasPrefix`, `HasSuffix`; `Range`, `Concat`; global `len` |
+| Imports: `strings`, `list`, `regexp`, `math`, `time` | ✅ | String/list helpers; regexp, math and time subsets; global `len`; bytes literals |
 | Local module imports (`cue.mod/module.cue`) | ✅ | Module path prefix resolution, `@v` suffixes, comments, cycle detection |
 | Relative imports (`./pkg`) | ✅ | |
 | `let` declarations | ✅ | File-scoped, lazy (forward references work) |
@@ -36,7 +36,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | Open lists (`[...T]`, `[x, ...T]`) | ✅ | Prefix and element constraints are unified |
 | Type constraints (`string`, `int`, `number`, `bool`) | ✅ | Basic constraint checking; bounds intersect with numeric/string types |
 | String interpolation `\(...)` | ✅ | |
-| Attributes (`@tag`, `@flow`, ...) | ⚠️ | Syntactically accepted and skipped; `@tag` is not used for type-directed injection |
+| Attributes (`@tag`, `@if`, ...) | ✅ | Parsed and preserved; `@tag(name,type=...)` drives `-p` injection types; other attributes are metadata as in CUE export |
 | CUE aliases (`X=field: value`) | ✅ | Field aliases, struct-scoped and file-scoped; value aliases are not separate syntax |
 | Quoted labels (`"x": v`) | ✅ | Exported but not identifier-bindable; a quoted `"#D"` stays distinct from the definition `#D` |
 | Full disjunction lattice over patterns | ⚠️ | Alternatives, defaults, bounds, `&` narrowing and intersection work; richer pattern intersections are out of scope |

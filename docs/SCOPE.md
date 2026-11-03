@@ -26,7 +26,7 @@ workflow outside the Rust surface has a supported escape hatch.
   optional fields, type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - string interpolation, including nested quoted expressions;
-- `strings`, `list` and global `len` builtins with CUE/Go-compatible behaviour;
+- `strings`, `list`, `regexp`, `math` and `time` builtins, bytes literals and global `len`;
 - constraint-based parameter overrides for split/definition-backed params and
   dependent params;
 - CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files).
@@ -45,9 +45,8 @@ workflow outside the Rust surface has a supported escape hatch.
 | Recursive definition materialization (`#Tree: {children?: [...#Tree]}`) | Definitions are evaluated eagerly; self-referential constraints are not solved. Use `--evaluator cue` for recursive types |
 | Required fields that depend on optional fields (`#P: {name?: string, greeting: "Hello \\(name)"}`) | Definitions are evaluated eagerly; required-field expressions are not deferred until the optional field is materialized. Use a named definition that flattens the materialization (`#Q: #P & {name: "Alice"}`; `params: #Q`) or the oracle |
 | Self-selection inside a definition (`#D: {a: #D.b, b: 1}`) | Resolving a definition's own selector against its in-progress body is not implemented. Use the oracle |
-| Tool packages (`tool/...`) and `cue` commands | Ostinato has its own execution engine |
+| Tool packages (`tool/...`, `@cmd` tool commands) | Ostinato has its own workflow engine; `_tool.cue` files stay excluded by build semantics and tool commands are not run |
 | `let` cycles mediated by fields (`let X = f, f: X`) | Direct and indirect `let` cycles are rejected; a cycle routed through a field is reported as an error rather than solved as an incomplete value. Use the oracle for that shape |
-| Bytes, regexp/math/time builtins beyond `strings`/`list`/`len` | Not used by workflow declarations |
 | Arbitrary CUE packages with package-level patterns | Oracle territory |
 
 ## What this means

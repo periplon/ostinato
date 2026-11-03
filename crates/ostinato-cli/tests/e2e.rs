@@ -1236,3 +1236,52 @@ workflow: {name: "n", steps: {s: {kind: "noop"}}}
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn tag_attributes_drive_parameter_injection_types() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("tagged.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: {
+    s: string @tag(s, type=string)
+    i: int @tag(i, type=int)
+    b: bool @tag(b, type=bool)
+    f: float @tag(f, type=number)
+}
+workflow: {
+    name: "\(params.s)-\(params.i)-\(params.b)-\(params.f)"
+    steps: {s: {kind: "noop"}}
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "s=5",
+        "-p",
+        "i=5",
+        "-p",
+        "b=true",
+        "-p",
+        "f=1.5",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["s"], "5");
+    assert_eq!(report["params"]["i"], 5);
+    assert_eq!(report["params"]["b"], true);
+    assert_eq!(report["params"]["f"], 1.5);
+    assert_eq!(report["workflow"]["name"], "5-5-true-1.5");
+}

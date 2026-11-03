@@ -51,6 +51,7 @@ pub enum Value {
     Int(i64),
     Float(BigDecimal),
     String(String),
+    Bytes(Vec<u8>),
     List(Vec<Value>),
     Struct(BTreeMap<String, Value>),
     /// A disjunction with optional default alternatives (indices).
@@ -93,6 +94,26 @@ pub enum Builtin {
     ListRange,
     ListConcat,
     Len,
+    RegexpMatch,
+    RegexpFind,
+    RegexpFindAll,
+    RegexpReplaceAll,
+    RegexpQuoteMeta,
+    RegexpValid,
+    MathAbs,
+    MathFloor,
+    MathCeil,
+    MathRound,
+    MathTrunc,
+    MathSqrt,
+    MathPow,
+    MathExp,
+    MathLog,
+    TimeUnix,
+    TimeParse,
+    TimeFormat,
+    TimeParseDuration,
+    TimeDuration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +123,7 @@ pub enum TypeKind {
     Float,
     Number,
     Bool,
+    Bytes,
 }
 
 impl Value {
@@ -113,6 +135,7 @@ impl Value {
             Self::Int(_) => "int",
             Self::Float(_) => "float",
             Self::String(_) => "string",
+            Self::Bytes(_) => "bytes",
             Self::List(_) => "list",
             Self::Struct(_) | Self::Definition { .. } => "struct",
             Self::Disjunction(_, _) => "disjunction",
@@ -125,6 +148,7 @@ impl Value {
                 TypeKind::Float => "float",
                 TypeKind::Number => "number",
                 TypeKind::Bool => "bool",
+                TypeKind::Bytes => "bytes",
             },
             Self::Bottom | Self::Conflict(_) => "_",
         }
@@ -174,6 +198,7 @@ impl Value {
                 text.parse::<Number>().ok().map(Json::Number)
             }
             Self::String(value) => Some(Json::String(value.clone())),
+            Self::Bytes(value) => Some(Json::String(base64_encode(value))),
             Self::List(values) => {
                 let mut out = Vec::with_capacity(values.len());
                 for value in values {
@@ -216,6 +241,7 @@ impl Value {
             Self::Int(value) => *value != 0,
             Self::Float(value) => value != &BigDecimal::from(0),
             Self::String(value) => !value.is_empty(),
+            Self::Bytes(value) => !value.is_empty(),
             Self::List(values) => !values.is_empty(),
             Self::Struct(values) | Self::Definition { fields: values, .. } => !values.is_empty(),
             Self::Disjunction(alternatives, defaults) => {
@@ -248,12 +274,14 @@ impl Value {
                 text
             }
             Self::String(value) => value.clone(),
+            Self::Bytes(value) => format!("'{}'", String::from_utf8_lossy(value)),
             Self::Type(kind) => match kind {
                 TypeKind::String => "string",
                 TypeKind::Int => "int",
                 TypeKind::Float => "float",
                 TypeKind::Number => "number",
                 TypeKind::Bool => "bool",
+                TypeKind::Bytes => "bytes",
             }
             .to_owned(),
             Self::Builtin(_) => "<function>".to_owned(),
@@ -898,6 +926,7 @@ impl<'a> Frame<'a> {
             "string" => Ok(Value::Type(TypeKind::String)),
             "int" => Ok(Value::Type(TypeKind::Int)),
             "float" => Ok(Value::Type(TypeKind::Float)),
+            "bytes" => Ok(Value::Type(TypeKind::Bytes)),
             "number" => Ok(Value::Type(TypeKind::Number)),
             "bool" => Ok(Value::Type(TypeKind::Bool)),
             "_" => Ok(Value::Bottom),
@@ -1389,6 +1418,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         Expr::Bool(value, _) => Ok(Value::Bool(*value)),
         Expr::Int(value, _) => Ok(Value::Int(*value)),
         Expr::Float(value, _) => Ok(Value::Float(value.clone())),
+        Expr::Bytes(value, _) => Ok(Value::Bytes(value.clone())),
         Expr::Str(parts, _) => {
             let mut out = String::new();
             for part in parts {
@@ -2071,26 +2101,21 @@ fn bound_type_compatible(kind: BoundKind, ty: TypeKind, operand: &Value) -> bool
             TypeKind::Int | TypeKind::Float | TypeKind::Number => {
                 matches!(operand, Value::Int(_) | Value::Float(_))
             }
-            TypeKind::Bool => false,
+            TypeKind::Bool | TypeKind::Bytes => false,
         },
         BoundKind::Match | BoundKind::NotMatch => match ty {
             TypeKind::String => matches!(operand, Value::String(_)),
             TypeKind::Int | TypeKind::Float | TypeKind::Number => {
                 matches!(operand, Value::Int(_) | Value::Float(_))
             }
-            TypeKind::Bool => false,
+            TypeKind::Bool | TypeKind::Bytes => false,
         },
         BoundKind::Ne => match ty {
             TypeKind::String => matches!(operand, Value::String(_) | Value::Null),
             TypeKind::Int | TypeKind::Float | TypeKind::Number => {
                 matches!(operand, Value::Int(_) | Value::Float(_) | Value::Null)
             }
-            TypeKind::Bool => match operand {
-                Value::Null => true,
-                Value::Int(_) | Value::Float(_) | Value::String(_) | Value::List(_) => false,
-                Value::Struct(_) | Value::Definition { .. } => false,
-                _ => false,
-            },
+            TypeKind::Bool | TypeKind::Bytes => matches!(operand, Value::Null),
         },
     }
 }
@@ -2375,6 +2400,30 @@ fn numeric_kind_mismatch(left: &Value, right: &Value) -> bool {
     )
 }
 
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = chunk.get(1).map_or(0, |value| u32::from(*value));
+        let b2 = chunk.get(2).map_or(0, |value| u32::from(*value));
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((triple >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((triple >> 12) & 0x3f) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((triple >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(triple & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 fn values_identical(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (
@@ -2445,14 +2494,308 @@ pub fn builtin_module(path: &str) -> Option<Value> {
             ("Range", Builtin::ListRange),
             ("Concat", Builtin::ListConcat),
         ],
+        "regexp" => &[
+            ("Match", Builtin::RegexpMatch),
+            ("Find", Builtin::RegexpFind),
+            ("FindAll", Builtin::RegexpFindAll),
+            ("ReplaceAll", Builtin::RegexpReplaceAll),
+            ("QuoteMeta", Builtin::RegexpQuoteMeta),
+            ("Valid", Builtin::RegexpValid),
+        ],
+        "math" => &[
+            ("Abs", Builtin::MathAbs),
+            ("Floor", Builtin::MathFloor),
+            ("Ceil", Builtin::MathCeil),
+            ("Round", Builtin::MathRound),
+            ("Trunc", Builtin::MathTrunc),
+            ("Sqrt", Builtin::MathSqrt),
+            ("Pow", Builtin::MathPow),
+            ("Exp", Builtin::MathExp),
+            ("Log", Builtin::MathLog),
+        ],
+        "time" => &[
+            ("Unix", Builtin::TimeUnix),
+            ("Parse", Builtin::TimeParse),
+            ("Format", Builtin::TimeFormat),
+            ("ParseDuration", Builtin::TimeParseDuration),
+            ("Duration", Builtin::TimeDuration),
+        ],
         _ => return None,
     };
-    Some(Value::Struct(
-        entries
-            .iter()
-            .map(|(name, builtin)| ((*name).to_owned(), Value::Builtin(*builtin)))
-            .collect(),
-    ))
+    let mut values: BTreeMap<String, Value> = entries
+        .iter()
+        .map(|(name, builtin)| ((*name).to_owned(), Value::Builtin(*builtin)))
+        .collect();
+    if path == "math" {
+        for (name, literal) in [
+            (
+                "Pi",
+                "3.14159265358979323846264338327950288419716939937510582097494459",
+            ),
+            (
+                "E",
+                "2.71828182845904523536028747135266249775724709369995957496696763",
+            ),
+        ] {
+            if let Ok(value) = literal.parse::<BigDecimal>() {
+                values.insert(name.to_owned(), Value::Float(value));
+            }
+        }
+    }
+    Some(Value::Struct(values))
+}
+
+fn regex_arg(arguments: &[Value], index: usize, span: Span) -> Result<&str, LangError> {
+    match arguments.get(index) {
+        Some(Value::String(value)) => Ok(value),
+        _ => Err(LangError::conflict(
+            span.line,
+            span.col,
+            "regexp function requires string arguments",
+        )),
+    }
+}
+
+fn regex_compile(pattern: &str, span: Span) -> Result<regex::Regex, LangError> {
+    regex::Regex::new(pattern)
+        .map_err(|err| LangError::conflict(span.line, span.col, format!("invalid regex: {err}")))
+}
+
+fn apply_regexp_builtin(
+    builtin: Builtin,
+    arguments: &[Value],
+    span: Span,
+) -> Result<Value, LangError> {
+    match builtin {
+        Builtin::RegexpMatch => {
+            let regex = regex_compile(regex_arg(arguments, 0, span)?, span)?;
+            Ok(Value::Bool(regex.is_match(regex_arg(arguments, 1, span)?)))
+        }
+        Builtin::RegexpFind => {
+            let regex = regex_compile(regex_arg(arguments, 0, span)?, span)?;
+            Ok(Value::String(
+                regex
+                    .find(regex_arg(arguments, 1, span)?)
+                    .map_or_else(String::new, |found| found.as_str().to_owned()),
+            ))
+        }
+        Builtin::RegexpFindAll => {
+            let regex = regex_compile(regex_arg(arguments, 0, span)?, span)?;
+            let text = regex_arg(arguments, 1, span)?;
+            let Some(Value::Int(limit)) = arguments.get(2) else {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    "FindAll requires an integer limit",
+                ));
+            };
+            let values: Vec<Value> = if *limit < 0 {
+                regex
+                    .find_iter(text)
+                    .map(|found| Value::String(found.as_str().to_owned()))
+                    .collect()
+            } else {
+                regex
+                    .find_iter(text)
+                    .take(usize::try_from(*limit).unwrap_or(0))
+                    .map(|found| Value::String(found.as_str().to_owned()))
+                    .collect()
+            };
+            Ok(Value::List(values))
+        }
+        Builtin::RegexpReplaceAll => {
+            let regex = regex_compile(regex_arg(arguments, 0, span)?, span)?;
+            let text = regex_arg(arguments, 1, span)?;
+            let replacement = regex_arg(arguments, 2, span)?;
+            Ok(Value::String(
+                regex.replace_all(text, replacement).into_owned(),
+            ))
+        }
+        Builtin::RegexpQuoteMeta => {
+            Ok(Value::String(regex::escape(regex_arg(arguments, 0, span)?)))
+        }
+        Builtin::RegexpValid => {
+            regex_compile(regex_arg(arguments, 0, span)?, span)?;
+            Ok(Value::Bool(true))
+        }
+        _ => unreachable!("regexp builtin"),
+    }
+}
+
+fn numeric_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Int(value) => Some(*value as f64),
+        Value::Float(value) => value.to_string().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn math_number(value: f64) -> Value {
+    if value.is_finite() && value.fract() == 0.0 && value.abs() < 9.0e15 {
+        #[allow(clippy::cast_possible_truncation)]
+        return Value::Int(value as i64);
+    }
+    format!("{value}")
+        .parse::<BigDecimal>()
+        .map_or(Value::Bottom, Value::Float)
+}
+
+fn math_arg(arguments: &[Value], index: usize, span: Span) -> Result<f64, LangError> {
+    arguments
+        .get(index)
+        .and_then(numeric_f64)
+        .ok_or_else(|| LangError::conflict(span.line, span.col, "math function requires a number"))
+}
+
+fn apply_math_builtin(
+    builtin: Builtin,
+    arguments: &[Value],
+    span: Span,
+) -> Result<Value, LangError> {
+    match builtin {
+        Builtin::MathAbs => match arguments.first() {
+            Some(Value::Int(value)) => value
+                .checked_abs()
+                .map(Value::Int)
+                .ok_or_else(|| overflow(span)),
+            Some(Value::Float(value)) => Ok(Value::Float(value.abs())),
+            _ => Err(LangError::conflict(
+                span.line,
+                span.col,
+                "math.Abs requires a number",
+            )),
+        },
+        Builtin::MathFloor => Ok(math_number(math_arg(arguments, 0, span)?.floor())),
+        Builtin::MathCeil => Ok(math_number(math_arg(arguments, 0, span)?.ceil())),
+        Builtin::MathRound => Ok(math_number(math_arg(arguments, 0, span)?.round())),
+        Builtin::MathTrunc => Ok(math_number(math_arg(arguments, 0, span)?.trunc())),
+        Builtin::MathSqrt => Ok(math_number(math_arg(arguments, 0, span)?.sqrt())),
+        Builtin::MathPow => Ok(math_number(
+            math_arg(arguments, 0, span)?.powf(math_arg(arguments, 1, span)?),
+        )),
+        Builtin::MathExp => Ok(math_number(math_arg(arguments, 0, span)?.exp())),
+        Builtin::MathLog => Ok(math_number(math_arg(arguments, 0, span)?.ln())),
+        _ => unreachable!("math builtin"),
+    }
+}
+
+fn time_arg(arguments: &[Value], index: usize, span: Span) -> Result<&str, LangError> {
+    match arguments.get(index) {
+        Some(Value::String(value)) => Ok(value),
+        _ => Err(LangError::conflict(
+            span.line,
+            span.col,
+            "time function requires string arguments",
+        )),
+    }
+}
+
+fn parse_duration_nanos(text: &str) -> Option<i64> {
+    let mut total: i64 = 0;
+    let mut rest = text.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    while !rest.is_empty() {
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        let digits_len = digits.len();
+        if digits_len == 0 {
+            return None;
+        }
+        let number: i64 = digits.parse().ok()?;
+        rest = &rest[digits_len..];
+        let units = ["ns", "us", "µs", "ms", "s", "m", "h"];
+        let (unit, scale) = units.iter().find_map(|unit| {
+            rest.starts_with(unit).then_some((
+                *unit,
+                match *unit {
+                    "ns" => Some(1i64),
+                    "us" | "µs" => Some(1_000),
+                    "ms" => Some(1_000_000),
+                    "s" => Some(1_000_000_000),
+                    "m" => Some(60_000_000_000),
+                    "h" => Some(3_600_000_000_000),
+                    _ => None,
+                },
+            ))
+        })?;
+        rest = &rest[unit.len()..];
+        total = total.checked_add(number.checked_mul(scale?)?)?;
+    }
+    Some(total)
+}
+
+fn apply_time_builtin(
+    builtin: Builtin,
+    arguments: &[Value],
+    span: Span,
+) -> Result<Value, LangError> {
+    use chrono::{DateTime, NaiveDate, SecondsFormat, TimeZone, Utc};
+
+    match builtin {
+        Builtin::TimeUnix => {
+            let (Some(Value::Int(seconds)), Some(Value::Int(nanos))) =
+                (arguments.first(), arguments.get(1))
+            else {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    "time.Unix requires seconds and nanoseconds",
+                ));
+            };
+            let nanos = u32::try_from(*nanos)
+                .map_err(|_| LangError::conflict(span.line, span.col, "invalid nanoseconds"))?;
+            let datetime = DateTime::from_timestamp(*seconds, nanos)
+                .ok_or_else(|| LangError::conflict(span.line, span.col, "invalid timestamp"))?;
+            Ok(Value::String(
+                datetime.to_rfc3339_opts(SecondsFormat::AutoSi, true),
+            ))
+        }
+        Builtin::TimeParse => {
+            let layout = time_arg(arguments, 0, span)?;
+            let text = time_arg(arguments, 1, span)?;
+            if layout == "2006-01-02" {
+                let date = NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|err| {
+                    LangError::conflict(span.line, span.col, format!("invalid time: {err}"))
+                })?;
+                let datetime = Utc.from_utc_datetime(
+                    &date
+                        .and_hms_opt(0, 0, 0)
+                        .ok_or_else(|| LangError::conflict(span.line, span.col, "invalid time"))?,
+                );
+                return Ok(Value::String(
+                    datetime.to_rfc3339_opts(SecondsFormat::AutoSi, true),
+                ));
+            }
+            let datetime = DateTime::parse_from_rfc3339(text).map_err(|err| {
+                LangError::conflict(span.line, span.col, format!("invalid time: {err}"))
+            })?;
+            Ok(Value::String(
+                datetime
+                    .with_timezone(&Utc)
+                    .to_rfc3339_opts(SecondsFormat::AutoSi, true),
+            ))
+        }
+        Builtin::TimeFormat => {
+            let time = time_arg(arguments, 0, span)?;
+            let layout = time_arg(arguments, 1, span)?;
+            let recognized = matches!(layout, "2006-01-02" | "2006-01-02T15:04:05Z07:00");
+            let valid = DateTime::parse_from_rfc3339(time).is_ok()
+                || NaiveDate::parse_from_str(time, "%Y-%m-%d").is_ok();
+            Ok(Value::Bool(recognized && valid))
+        }
+        Builtin::TimeParseDuration => {
+            let text = time_arg(arguments, 0, span)?;
+            let nanos = parse_duration_nanos(text)
+                .ok_or_else(|| LangError::conflict(span.line, span.col, "invalid duration"))?;
+            Ok(Value::Int(nanos))
+        }
+        Builtin::TimeDuration => {
+            let text = time_arg(arguments, 0, span)?;
+            Ok(Value::Bool(parse_duration_nanos(text).is_some()))
+        }
+        _ => unreachable!("time builtin"),
+    }
 }
 
 fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Value, LangError> {
@@ -2464,6 +2807,26 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
         ));
     };
     match builtin {
+        Builtin::RegexpMatch
+        | Builtin::RegexpFind
+        | Builtin::RegexpFindAll
+        | Builtin::RegexpReplaceAll
+        | Builtin::RegexpQuoteMeta
+        | Builtin::RegexpValid => apply_regexp_builtin(*builtin, arguments, span),
+        Builtin::MathAbs
+        | Builtin::MathFloor
+        | Builtin::MathCeil
+        | Builtin::MathRound
+        | Builtin::MathTrunc
+        | Builtin::MathSqrt
+        | Builtin::MathPow
+        | Builtin::MathExp
+        | Builtin::MathLog => apply_math_builtin(*builtin, arguments, span),
+        Builtin::TimeUnix
+        | Builtin::TimeParse
+        | Builtin::TimeFormat
+        | Builtin::TimeParseDuration
+        | Builtin::TimeDuration => apply_time_builtin(*builtin, arguments, span),
         Builtin::StringsToUpper | Builtin::StringsToLower | Builtin::StringsTrimSpace => {
             if arguments.len() != 1 {
                 return Err(LangError::conflict(
@@ -2644,6 +3007,9 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                     Ok(Value::Int(i64::try_from(values.len()).unwrap_or(i64::MAX)))
                 }
                 Some(Value::String(value)) => {
+                    Ok(Value::Int(i64::try_from(value.len()).unwrap_or(i64::MAX)))
+                }
+                Some(Value::Bytes(value)) => {
                     Ok(Value::Int(i64::try_from(value.len()).unwrap_or(i64::MAX)))
                 }
                 _ => Err(LangError::conflict(
@@ -3165,6 +3531,7 @@ fn type_matches(kind: TypeKind, value: &Value) -> bool {
         TypeKind::Float => matches!(value, Value::Float(_)),
         TypeKind::Number => matches!(value, Value::Int(_) | Value::Float(_)),
         TypeKind::Bool => matches!(value, Value::Bool(_)),
+        TypeKind::Bytes => matches!(value, Value::Bytes(_)),
     }
 }
 
@@ -3175,6 +3542,7 @@ fn kind_name(kind: TypeKind) -> &'static str {
         TypeKind::Float => "float",
         TypeKind::Number => "number",
         TypeKind::Bool => "bool",
+        TypeKind::Bytes => "bytes",
     }
 }
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.0
+
+Attributes, bytes and standard builtins.
+
+- Attributes are parsed and preserved (`@tag`, `@if`, ...); `@tag(name,type=...)`
+  drives `-p` injection types (string/int/bool/number).
+- Bytes literals (`'...'`), base64 export, equality and `len`.
+- `regexp`: Match, Find, FindAll, ReplaceAll, QuoteMeta, Valid.
+- `math`: Abs, Floor, Ceil, Round, Trunc, Sqrt, Pow, Exp, Log, Pi, E.
+- `time`: Unix, Parse, Format, ParseDuration, Duration.
+- 171 tests (25 CLI E2E, 1 conformance, 135 language, 6 domain, 3 store, 1 unit).
+
 ## v0.5.2
 
 Numeric identity and integer intervals.
