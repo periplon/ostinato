@@ -700,7 +700,6 @@ impl<'a> Frame<'a> {
                     || key
                         .as_ref()
                         .is_some_and(|key| self.values.borrow().contains_key(key))
-                    || self.values.borrow().contains_key(&name)
             }
         };
         if forced_required {
