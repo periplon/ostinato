@@ -25,6 +25,10 @@ a\(1+2)b
 	multiline_escaped_cr: '''
   a\rb
   '''
+	multiline_escaped_backslash: '''
+  x\\(1 +
+  2)y
+  '''
 	multiline_indent: '''
     line1
       line2

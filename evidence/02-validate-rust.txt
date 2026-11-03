@@ -1,4 +1,4 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.YWHDEEuO8k/db.sqlite validate examples/module/complex.cue -p prefix=prod
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.BHs0O8BBd4/db.sqlite validate examples/module/complex.cue -p prefix=prod
 
 OK complex (3 steps, maxParallel=3, evaluator=rust (CUE workflow semantics))
 

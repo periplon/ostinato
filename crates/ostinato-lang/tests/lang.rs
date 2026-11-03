@@ -5268,3 +5268,20 @@ fn multiline_bytes_dedent_handles_cr_and_interpolation_lines() {
         "interpolation at column zero must reject a non-empty closing indentation"
     );
 }
+
+#[test]
+fn multiline_bytes_escaped_backslash_before_paren_is_literal() {
+    let source = "package demo\na: '''\n  x\\\\(1 +\n  2)y\n  '''\n";
+    let file = ostinato_lang::parse(source).expect("parse escaped backslash + paren");
+    let value = ostinato_lang::eval_file(&file).expect("eval escaped backslash + paren");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], "eFwoMSArCjIpeQ==");
+
+    // The continuation line is literal text, so a non-empty closing indent
+    // must reject it when the continuation is not indented.
+    let invalid = "package demo\na: '''\n  x\\\\(1 +\n2)y\n  '''\n";
+    assert!(
+        ostinato_lang::parse(invalid).is_err(),
+        "unescaped interpolation must not swallow literal continuation lines"
+    );
+}
