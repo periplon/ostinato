@@ -589,6 +589,17 @@ fn extract_retry(value: Option<&Value>, path: &str) -> Result<RetryPolicy, LangE
             ..RetryPolicy::default()
         });
     }
+    if let Value::BigInt(max_retries) = value.concretize() {
+        let max_retries = u32::try_from(max_retries)
+            .map_err(|_| LangError::Workflow(format!("{path} must be non-negative and <= 100")))?;
+        if max_retries > 100 {
+            return Err(LangError::Workflow(format!("{path} must be <= 100")));
+        }
+        return Ok(RetryPolicy {
+            max_retries,
+            ..RetryPolicy::default()
+        });
+    }
     let map = expect_struct(value, path)?;
     reject_unknown(map, path, &["max", "baseMs", "factor", "maxMs", "jitter"])?;
     let max_retries = opt_int(map, "max", &format!("{path}.max"))?.unwrap_or(0);
@@ -771,6 +782,7 @@ fn dummy_value(value: &Value) -> Json {
         Value::String(_) => Json::String(String::new()),
         Value::Bool(_) => Json::Bool(false),
         Value::Int(_)
+        | Value::BigInt(_)
         | Value::Float(_)
         | Value::Type(TypeKind::Int | TypeKind::Float | TypeKind::Number) => {
             Json::Number(serde_json::Number::from(0))
@@ -993,6 +1005,9 @@ fn opt_int(map: &Struct, key: &str, path: &str) -> Result<Option<i64>, LangError
     match map.get(key).map(Value::concretize) {
         None => Ok(None),
         Some(Value::Int(value)) => Ok(Some(*value)),
+        Some(Value::BigInt(value)) => i64::try_from(value)
+            .map(Some)
+            .map_err(|_| LangError::Workflow(format!("{path} must fit in an int"))),
         Some(other) => Err(LangError::Workflow(format!(
             "{path} must be an int, found {}",
             other.type_name()
@@ -1009,6 +1024,11 @@ fn opt_float(map: &Struct, key: &str, path: &str) -> Result<Option<f64>, LangErr
             })?))
         }
         Some(Value::Int(value)) => Ok(Some(*value as f64)),
+        Some(Value::BigInt(value)) => {
+            Ok(Some(value.to_string().parse::<f64>().map_err(|_| {
+                LangError::Workflow(format!("{path} must be a finite number"))
+            })?))
+        }
         Some(other) => Err(LangError::Workflow(format!(
             "{path} must be a number, found {}",
             other.type_name()

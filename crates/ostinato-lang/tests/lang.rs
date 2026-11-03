@@ -2828,8 +2828,8 @@ d: 1.0 * 0
     let json = value.to_json().expect("json");
     assert_eq!(json["x"], true);
     assert_eq!(json["a"].to_string(), "5.0");
-    assert_eq!(json["b"].to_string(), "1000.0");
-    assert_eq!(json["c"].to_string(), "150.0");
+    assert_eq!(json["b"].to_string(), "1e+3");
+    assert_eq!(json["c"].to_string(), "1.5e+2");
     assert_eq!(json["d"].to_string(), "0.0");
 
     let bound = r#"
@@ -5983,4 +5983,62 @@ defaulted: #A & {n: *4 | int}
             "compound optional-dependent forms remain documented limits: {source:?}"
         );
     }
+}
+
+#[test]
+fn arbitrary_precision_integer_literals_keep_exact_values() {
+    let source = r#"
+package demo
+big: 123456789012345678901234567890
+neg: -123456789012345678901234567890
+add: big + 1
+sub: big - 1
+mul: big * 2
+div: big / 2
+small_add: 1 + big
+gt: big > 1
+lt: 1 < big
+eq: big == big
+ne: big == 1
+typed: int & big
+bounded: >=1 & big
+text: "\(big)"
+list: [big, neg]
+over: 9223372036854775808
+"#;
+    let file = ostinato_lang::parse(source).expect("parse big integers");
+    let value = ostinato_lang::eval_file(&file).expect("eval big integers");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["big"].to_string(), "123456789012345678901234567890");
+    assert_eq!(json["neg"].to_string(), "-123456789012345678901234567890");
+    assert_eq!(json["add"].to_string(), "123456789012345678901234567891");
+    assert_eq!(json["sub"].to_string(), "123456789012345678901234567889");
+    assert_eq!(json["mul"].to_string(), "246913578024691357802469135780");
+    assert_eq!(json["div"].to_string(), "61728394506172839450617283945.0");
+    assert_eq!(
+        json["small_add"].to_string(),
+        "123456789012345678901234567891"
+    );
+    assert_eq!(json["gt"], true);
+    assert_eq!(json["lt"], true);
+    assert_eq!(json["eq"], true);
+    assert_eq!(json["ne"], false);
+    assert_eq!(json["typed"].to_string(), "123456789012345678901234567890");
+    assert_eq!(
+        json["bounded"].to_string(),
+        "123456789012345678901234567890"
+    );
+    assert_eq!(json["text"], "123456789012345678901234567890");
+    assert_eq!(
+        json["list"][0].to_string(),
+        "123456789012345678901234567890"
+    );
+    assert_eq!(json["over"].to_string(), "9223372036854775808");
+
+    let out_of_range = "package demo\nx: [1][123456789012345678901234567890]\n";
+    let file = ostinato_lang::parse(out_of_range).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "arbitrary-precision list indexes must be range-checked"
+    );
 }

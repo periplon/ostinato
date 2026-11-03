@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use bigdecimal::BigDecimal;
+use num_bigint::BigInt;
 
 use crate::error::LangError;
 
@@ -17,6 +18,7 @@ pub enum LexBytePart {
 pub enum Tok {
     Ident(String),
     Int(i64),
+    BigInt(BigInt),
     Float(BigDecimal),
     Str(String),
     Bytes(Vec<LexBytePart>),
@@ -409,10 +411,13 @@ impl Lexer {
                 .map_err(|_| LangError::parse(line, col, format!("invalid float `{text}`")))?;
             return Ok(Tok::Float(value));
         }
-        let value: i64 = text
-            .parse()
-            .map_err(|_| LangError::parse(line, col, format!("invalid integer `{text}`")))?;
-        Ok(Tok::Int(value))
+        match text.parse::<i64>() {
+            Ok(value) => Ok(Tok::Int(value)),
+            Err(_) => text
+                .parse::<BigInt>()
+                .map(Tok::BigInt)
+                .map_err(|_| LangError::parse(line, col, format!("invalid integer `{text}`"))),
+        }
     }
 
     fn read_bytes(&mut self, line: u32, col: u32) -> Result<Vec<LexBytePart>, LangError> {

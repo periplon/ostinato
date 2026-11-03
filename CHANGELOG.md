@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.15.0
+
+Arbitrary-precision integer literals.
+
+- Integer literals beyond `i64` are represented as `BigInt` and keep exact
+  values through arithmetic (add/subtract/multiply, division as a float),
+  negation, comparison, typing/bounds, unification, interpolation and JSON
+  export (serde_json arbitrary precision).
+- Mixed big-integer/float arithmetic and big list indexes follow CUE; `math.Abs`
+  and workflow numeric extraction handle big values.
+- 336 tests (61 CLI E2E, 1 conformance, 232 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.14.2
 
 Defaulted primitive optional-dependent fields.

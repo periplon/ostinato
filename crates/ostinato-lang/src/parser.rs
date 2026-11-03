@@ -830,6 +830,10 @@ impl Parser {
                 self.bump();
                 Ok(Expr::Int(value, span))
             }
+            Tok::BigInt(value) => {
+                self.bump();
+                Ok(Expr::BigInt(value, span))
+            }
             Tok::Float(value) => {
                 self.bump();
                 Ok(Expr::Float(value, span))
@@ -941,6 +945,7 @@ fn token_text(token: &Tok) -> String {
     match token {
         Tok::Ident(name) => name.clone(),
         Tok::Int(value) => value.to_string(),
+        Tok::BigInt(value) => value.to_string(),
         Tok::Float(value) => value.to_string(),
         Tok::Str(value) => value.clone(),
         Tok::Equals => "=".to_owned(),

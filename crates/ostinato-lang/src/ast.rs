@@ -1,4 +1,5 @@
 use bigdecimal::BigDecimal;
+use num_bigint::BigInt;
 
 /// Source position used in diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -156,6 +157,7 @@ pub enum Expr {
     Null(Span),
     Bool(bool, Span),
     Int(i64, Span),
+    BigInt(BigInt, Span),
     Float(BigDecimal, Span),
     Str(Vec<StrPart>, Span),
     Bytes(Vec<u8>, Span),
@@ -189,6 +191,7 @@ impl Expr {
             Self::Null(span)
             | Self::Bool(_, span)
             | Self::Int(_, span)
+            | Self::BigInt(_, span)
             | Self::Float(_, span)
             | Self::Bytes(_, span)
             | Self::BytesInterp(_, span)
