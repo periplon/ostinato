@@ -35,6 +35,7 @@ params: {
 	space_run:           time.Parse("2006-01-02 15:04", "2024-03-05  06:07")
 	hour_short:          time.Parse("15:04", "2:04")
 	pm_no_hour:          time.Parse("15:04PM", "15:04PM")
+	zone_24:             time.FormatString("15:04 -07:00", "2024-03-05T06:07:08+24:00")
 }
 
 workflow: {

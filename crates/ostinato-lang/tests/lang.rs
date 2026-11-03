@@ -5005,6 +5005,7 @@ h: time.ToUnixNano("2024-03-05T06:07:08.000000005Z")
 i: time.Split("2024-03-05T06:07:08.12Z")
 j: time.FormatDuration(3723000500000)
 k: time.Second
+l: time.FormatString("15:04 -07:00", "2024-03-05T06:07:08+24:00")
 "#;
     let file = ostinato_lang::parse(source).expect("parse");
     let mut imports = BTreeMap::new();
@@ -5026,6 +5027,7 @@ k: time.Second
     assert_eq!(json["i"]["nanosecond"], 120_000_000);
     assert_eq!(json["j"], "1h2m3.0005s");
     assert_eq!(json["k"], 1_000_000_000i64);
+    assert_eq!(json["l"], "06:07 +24:00");
 
     let fractions = r#"
 package demo

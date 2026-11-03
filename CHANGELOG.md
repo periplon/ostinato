@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.3
+
+Time formatting with out-of-range offsets.
+
+- `time.FormatString` formats the parsed local fields and zone offset directly,
+  so values such as `+24:00` keep their wall-clock and numeric offset instead
+  of being replaced by UTC/epoch.
+- 274 tests (48 CLI E2E, 1 conformance, 212 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.2
 
 Time layout review corrections.
