@@ -4584,3 +4584,67 @@ workflow: {name: "\(params.g.b)", steps: {s: {kind: "noop"}}}
     .expect("outer override in group");
     assert_eq!(compiled.spec.name, "2");
 }
+
+#[test]
+fn params_index_paths_resolve_through_nested_groups() {
+    let cases = [
+        "params: {db: {host: \"h\", port: params.db[\"host\"]}}",
+        "params: {g: {a: 1, v: params[\"g\"].a}}",
+        "params: {g: {\"a.b\": 1, v: params[\"g\"][\"a.b\"]}}",
+        "params: {\"g.h\": {a: 1, b: params[\"g.h\"].a}}",
+    ];
+    for source in cases {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        ostinato_lang::eval_file(&file).expect("index path");
+    }
+
+    let definition = r#"
+package demo
+#P: {db: {host: "h", port: params.db["host"]}}
+params: #P
+"#;
+    let file = ostinato_lang::parse(definition).expect("parse");
+    ostinato_lang::eval_file(&file).expect("definition index path");
+}
+
+#[test]
+fn definition_backed_params_see_overrides_in_dependents() {
+    let dependent = r#"
+package demo
+#P: {name: string @tag(name), greeting: "Hello \(name)"}
+params: #P
+workflow: {name: "\(params.greeting)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        dependent,
+        &BTreeMap::from([("name".to_owned(), "Alice".to_owned())]),
+    )
+    .expect("definition dependent override");
+    assert_eq!(compiled.spec.name, "Hello Alice");
+
+    let defaulted = r#"
+package demo
+#P: {name: string | *"world" @tag(name), greeting: "Hello \(name)"}
+params: #P
+workflow: {name: "\(params.greeting)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        defaulted,
+        &BTreeMap::from([("name".to_owned(), "Alice".to_owned())]),
+    )
+    .expect("definition default override");
+    assert_eq!(compiled.spec.name, "Hello Alice");
+
+    let conditional = r#"
+package demo
+#P: {name: string @tag(name), if name == "Alice" {g: 1}}
+params: #P
+workflow: {name: "\(params.g)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        conditional,
+        &BTreeMap::from([("name".to_owned(), "Alice".to_owned())]),
+    )
+    .expect("definition conditional override");
+    assert_eq!(compiled.spec.name, "1");
+}

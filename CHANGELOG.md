@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.17
+
+Params index paths and definition-backed overrides.
+
+- Bracket/index params paths resolve through nested groups and quoted labels.
+- Definition-backed `params` evaluate their closed definition with overrides
+  seeded, so dependent fields and conditionals see `-p` values.
+- 244 tests (35 CLI E2E, 1 conformance, 198 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.16
 
 Nested params scope and generated chains.
