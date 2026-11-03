@@ -21,8 +21,9 @@ workflow outside the Rust surface has a supported escape hatch.
 - nested field shorthand, **closed definitions by default**, `...` open,
   nested closedness, `[string]` / `[=~"regex"]` patterns, field aliases
   (`X=field: value`), unification,
-  defaults, disjunctions with defaults and narrowing, optional fields,
-  type constraints;
+  defaults, disjunctions with defaults and narrowing, numeric bounds
+  (`>=`, `>`, `<=`, `<`, `!=`, `=~`, `!~`), exact decimal arithmetic,
+  optional fields, type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - string interpolation, including nested quoted expressions;
 - `strings`, `list` and global `len` builtins with CUE/Go-compatible behaviour;
@@ -35,8 +36,10 @@ workflow outside the Rust surface has a supported escape hatch.
 | Feature | Why |
 |---|---|
 | Optional/open metadata on non-definition struct literals | `base: {b?: int}; #D: base` and `{b?: string} & {b: 1}` are out of scope; use a definition literal or the oracle |
-| Full disjunction lattice over bounds/patterns | Alternatives, defaults, narrowing and disjunction intersection are implemented; bounds and richer pattern intersections are not |
-| Default sets over bounds/patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through bounds/patterns is out of scope |
+| Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
+| Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
+| Arbitrary-precision integer literals | Decimal values are arbitrary precision; integer literals must fit in `i64` |
+| Decimal division digit count | Division uses `BigDecimal` precision, which can differ from CUE's 34-digit decimal expansion |
 | Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |
 | Recursive definition materialization (`#Tree: {children?: [...#Tree]}`) | Definitions are evaluated eagerly; self-referential constraints are not solved. Use `--evaluator cue` for recursive types |
 | Required fields that depend on optional fields (`#P: {name?: string, greeting: "Hello \\(name)"}`) | Definitions are evaluated eagerly; required-field expressions are not deferred until the optional field is materialized. Use a named definition that flattens the materialization (`#Q: #P & {name: "Alice"}`; `params: #Q`) or the oracle |

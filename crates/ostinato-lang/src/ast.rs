@@ -1,8 +1,21 @@
+use bigdecimal::BigDecimal;
+
 /// Source position used in diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Span {
     pub line: u32,
     pub col: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundOp {
+    Ge,
+    Gt,
+    Le,
+    Lt,
+    Ne,
+    Match,
+    NotMatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,12 +140,13 @@ pub enum Expr {
     Null(Span),
     Bool(bool, Span),
     Int(i64, Span),
-    Float(f64, Span),
+    Float(BigDecimal, Span),
     Str(Vec<StrPart>, Span),
     Ident(String, Span),
     Select(Box<Expr>, String, Span),
     Index(Box<Expr>, Box<Expr>, Span),
     Call(Box<Expr>, Vec<Expr>, Span),
+    Bound(BoundOp, Box<Expr>, Span),
     Paren(Box<Expr>, Span),
     Struct(Vec<StructItem>, Span),
     List(Vec<Expr>, Span),
@@ -163,6 +177,7 @@ impl Expr {
             | Self::Select(_, _, span)
             | Self::Index(_, _, span)
             | Self::Call(_, _, span)
+            | Self::Bound(_, _, span)
             | Self::Paren(_, span)
             | Self::Struct(_, span)
             | Self::List(_, span)

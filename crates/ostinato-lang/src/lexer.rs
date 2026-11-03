@@ -1,3 +1,7 @@
+use std::str::FromStr;
+
+use bigdecimal::BigDecimal;
+
 use crate::error::LangError;
 
 /// Lexical tokens. Newlines are significant as field separators and are
@@ -6,7 +10,7 @@ use crate::error::LangError;
 pub enum Tok {
     Ident(String),
     Int(i64),
-    Float(f64),
+    Float(BigDecimal),
     Str(String),
     Package,
     Import,
@@ -46,6 +50,7 @@ pub enum Tok {
     AndAnd,
     OrOr,
     Bang,
+    BangMatch,
     Ellipsis,
     At,
     Newline,
@@ -279,6 +284,9 @@ impl Lexer {
                 if self.peek() == Some('=') {
                     self.bump();
                     Tok::NotEq
+                } else if self.peek() == Some('~') {
+                    self.bump();
+                    Tok::BangMatch
                 } else {
                     Tok::Bang
                 }
@@ -314,6 +322,7 @@ impl Lexer {
 
     fn read_number(&mut self, line: u32, col: u32) -> Result<Tok, LangError> {
         let mut text = String::new();
+        let mut is_float = false;
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() || c == '_' {
                 if c != '_' {
@@ -325,6 +334,7 @@ impl Lexer {
             }
         }
         if self.peek() == Some('.') && self.peek_n(1).is_some_and(|c| c.is_ascii_digit()) {
+            is_float = true;
             text.push('.');
             self.bump();
             while let Some(c) = self.peek() {
@@ -337,8 +347,27 @@ impl Lexer {
                     break;
                 }
             }
-            let value: f64 = text
-                .parse()
+        }
+        if matches!(self.peek(), Some('e' | 'E')) {
+            is_float = true;
+            text.push('e');
+            self.bump();
+            if matches!(self.peek(), Some('+' | '-'))
+                && let Some(sign) = self.bump()
+            {
+                text.push(sign);
+            }
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    text.push(c);
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
+        if is_float {
+            let value = BigDecimal::from_str(&text)
                 .map_err(|_| LangError::parse(line, col, format!("invalid float `{text}`")))?;
             return Ok(Tok::Float(value));
         }

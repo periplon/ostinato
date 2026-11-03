@@ -1,9 +1,12 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use bigdecimal::BigDecimal;
 use serde_json::{Map, Number, Value as Json};
 
-use crate::ast::{BinOp, CompClause, Expr, File, Pattern, Span, StrPart, StructItem, UnOp};
+use crate::ast::{
+    BinOp, BoundOp, CompClause, Expr, File, Pattern, Span, StrPart, StructItem, UnOp,
+};
 use crate::error::LangError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,17 +21,36 @@ pub struct Admission {
     pub patterns: Vec<Pattern>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundKind {
+    Ge,
+    Gt,
+    Le,
+    Lt,
+    Ne,
+    Match,
+    NotMatch,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bound {
+    pub kind: BoundKind,
+    pub operand: Value,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
     Bool(bool),
     Int(i64),
-    Float(f64),
+    Float(BigDecimal),
     String(String),
     List(Vec<Value>),
     Struct(BTreeMap<String, Value>),
     /// A disjunction with optional default alternatives (indices).
     Disjunction(Vec<Value>, Vec<usize>),
+    /// A conjunction of bounds such as `>=5 & <10`.
+    Bounds(Vec<Bound>),
     /// A CUE definition: fields plus optional-field constraints. Open.
     Definition {
         fields: BTreeMap<String, Value>,
@@ -88,6 +110,7 @@ impl Value {
             Self::List(_) => "list",
             Self::Struct(_) | Self::Definition { .. } => "struct",
             Self::Disjunction(_, _) => "disjunction",
+            Self::Bounds(_) => "bound",
             Self::OpenList(_) | Self::OpenListPrefix(_, _) => "list",
             Self::Builtin(_) => "builtin",
             Self::Type(kind) => match kind {
@@ -125,6 +148,7 @@ impl Value {
     pub fn is_concrete(&self) -> bool {
         match self {
             Self::Disjunction(_, _) => self.to_json().is_some(),
+            Self::Bounds(_) => false,
             _ => !matches!(self, Self::Type(_) | Self::Bottom | Self::Conflict(_)),
         }
     }
@@ -136,7 +160,7 @@ impl Value {
             Self::Null => Some(Json::Null),
             Self::Bool(value) => Some(Json::Bool(*value)),
             Self::Int(value) => Some(Json::Number(Number::from(*value))),
-            Self::Float(value) => Number::from_f64(*value).map(Json::Number),
+            Self::Float(value) => value.to_string().parse::<Number>().ok().map(Json::Number),
             Self::String(value) => Some(Json::String(value.clone())),
             Self::List(values) => {
                 let mut out = Vec::with_capacity(values.len());
@@ -155,6 +179,7 @@ impl Value {
             Self::Disjunction(alternatives, defaults) => {
                 disjunction_to_json(alternatives, defaults)
             }
+            Self::Bounds(_) => None,
             Self::OpenList(_)
             | Self::OpenListPrefix(_, _)
             | Self::Builtin(_)
@@ -177,7 +202,7 @@ impl Value {
             Self::Null => false,
             Self::Bool(value) => *value,
             Self::Int(value) => *value != 0,
-            Self::Float(value) => *value != 0.0,
+            Self::Float(value) => value != &BigDecimal::from(0),
             Self::String(value) => !value.is_empty(),
             Self::List(values) => !values.is_empty(),
             Self::Struct(values) | Self::Definition { fields: values, .. } => !values.is_empty(),
@@ -191,6 +216,7 @@ impl Value {
                     Json::Object(values) => !values.is_empty(),
                 })
             }
+            Self::Bounds(_) => false,
             Self::OpenList(_) | Self::OpenListPrefix(_, _) => true,
             Self::Builtin(_) | Self::Type(_) | Self::Bottom | Self::Conflict(_) => false,
         }
@@ -221,6 +247,11 @@ impl Value {
                 }
                 parts.join(" | ")
             }
+            Self::Bounds(bounds) => bounds
+                .iter()
+                .map(bound_display)
+                .collect::<Vec<_>>()
+                .join(" & "),
             Self::Bottom => "_".to_owned(),
             Self::Conflict(message) => format!("<conflict: {message}>"),
             Self::OpenList(_) => format!(
@@ -372,7 +403,7 @@ fn json_to_value(value: &Json) -> Option<Value> {
             if let Some(int) = number.as_i64() {
                 Value::Int(int)
             } else {
-                Value::Float(number.as_f64()?)
+                Value::Float(number.to_string().parse::<BigDecimal>().ok()?)
             }
         }
         Json::String(value) => Value::String(value.clone()),
@@ -1338,7 +1369,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         Expr::Null(_) => Ok(Value::Null),
         Expr::Bool(value, _) => Ok(Value::Bool(*value)),
         Expr::Int(value, _) => Ok(Value::Int(*value)),
-        Expr::Float(value, _) => Ok(Value::Float(*value)),
+        Expr::Float(value, _) => Ok(Value::Float(value.clone())),
         Expr::Str(parts, _) => {
             let mut out = String::new();
             for part in parts {
@@ -1413,6 +1444,26 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     format!("cannot select `{field}` from {}", other.type_name()),
                 )),
             }
+        }
+        Expr::Bound(op, operand, span) => {
+            let operand = eval_expr(operand, frame)?;
+            if operand.to_json().is_none() {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "bound has non-concrete value",
+                ));
+            }
+            let kind = match op {
+                BoundOp::Ge => BoundKind::Ge,
+                BoundOp::Gt => BoundKind::Gt,
+                BoundOp::Le => BoundKind::Le,
+                BoundOp::Lt => BoundKind::Lt,
+                BoundOp::Ne => BoundKind::Ne,
+                BoundOp::Match => BoundKind::Match,
+                BoundOp::NotMatch => BoundKind::NotMatch,
+            };
+            Ok(Value::Bounds(vec![Bound { kind, operand }]))
         }
         Expr::Paren(inner, _) => eval_expr(inner, frame),
         Expr::Call(callee, arguments, span) => {
@@ -1924,6 +1975,112 @@ fn apply_optional_patterns(
     Ok(())
 }
 
+fn bound_display(bound: &Bound) -> String {
+    let op = match bound.kind {
+        BoundKind::Ge => ">=",
+        BoundKind::Gt => ">",
+        BoundKind::Le => "<=",
+        BoundKind::Lt => "<",
+        BoundKind::Ne => "!=",
+        BoundKind::Match => "=~",
+        BoundKind::NotMatch => "!~",
+    };
+    format!("{op}{}", bound.operand.display())
+}
+
+fn bound_matches(bound: &Bound, value: &Value, span: Span) -> Result<bool, LangError> {
+    match bound.kind {
+        BoundKind::Ne => return Ok(!values_equal(value, &bound.operand)),
+        BoundKind::Match | BoundKind::NotMatch => {
+            let Value::String(text) = value else {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    format!("bound `{}` requires a string", bound_display(bound)),
+                ));
+            };
+            let Value::String(regex) = &bound.operand else {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "regex bound requires a string operand",
+                ));
+            };
+            let matched = regex::Regex::new(regex)
+                .map(|regex| regex.is_match(text))
+                .map_err(|err| {
+                    LangError::eval(span.line, span.col, format!("invalid regex: {err}"))
+                })?;
+            return Ok(matched == (bound.kind == BoundKind::Match));
+        }
+        _ => {}
+    }
+    let Some(ordering) = ordered_compare(value, &bound.operand) else {
+        return Err(LangError::conflict(
+            span.line,
+            span.col,
+            format!("bound `{}` is not comparable", bound_display(bound)),
+        ));
+    };
+    Ok(match bound.kind {
+        BoundKind::Ge => ordering.is_ge(),
+        BoundKind::Gt => ordering.is_gt(),
+        BoundKind::Le => ordering.is_le(),
+        BoundKind::Lt => ordering.is_lt(),
+        _ => unreachable!("non-ordering bound"),
+    })
+}
+
+fn ordered_compare(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+    match (left, right) {
+        (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
+        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+        (Value::Int(a), Value::Float(b)) => BigDecimal::from(*a).partial_cmp(b),
+        (Value::Float(a), Value::Int(b)) => a.partial_cmp(&BigDecimal::from(*b)),
+        (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
+        _ => None,
+    }
+}
+
+fn apply_bounds(bounds: &[Bound], other: &Value, span: Span) -> Result<Value, LangError> {
+    if let Value::Type(kind) = other {
+        for bound in bounds {
+            let compatible = match bound.kind {
+                BoundKind::Ge | BoundKind::Gt | BoundKind::Le | BoundKind::Lt => {
+                    matches!(kind, TypeKind::Int | TypeKind::Float | TypeKind::Number)
+                }
+                BoundKind::Match | BoundKind::NotMatch => matches!(kind, TypeKind::String),
+                BoundKind::Ne => true,
+            };
+            if !compatible {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    format!(
+                        "bound `{}` is incompatible with this type",
+                        bound_display(bound)
+                    ),
+                ));
+            }
+        }
+        return Ok(Value::Bounds(bounds.to_vec()));
+    }
+    for bound in bounds {
+        if !bound_matches(bound, other, span)? {
+            return Err(LangError::conflict(
+                span.line,
+                span.col,
+                format!(
+                    "invalid value {} (out of bound {})",
+                    other.display(),
+                    bound_display(bound)
+                ),
+            ));
+        }
+    }
+    Ok(other.clone())
+}
+
 fn values_equal(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (
@@ -2201,8 +2358,8 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
                 .map(Value::Int)
                 .ok_or_else(|| overflow(span)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-            (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + *b as f64)),
+            (Value::Int(a), Value::Float(b)) => Ok(Value::Float(BigDecimal::from(*a) + b)),
+            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + BigDecimal::from(*b))),
             (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
             (Value::OpenList(element), Value::List(values))
             | (Value::List(values), Value::OpenList(element)) => {
@@ -2235,7 +2392,9 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
             (Value::Int(_), Value::Int(0)) => {
                 Err(LangError::conflict(span.line, span.col, "division by zero"))
             }
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Float(*a as f64 / *b as f64)),
+            (Value::Int(a), Value::Int(b)) => {
+                Ok(Value::Float(BigDecimal::from(*a) / BigDecimal::from(*b)))
+            }
             _ => numeric(op, left, right, span, |a, b| a / b, |a, b| a / b),
         },
         BinOp::Mod => match (left, right) {
@@ -2261,13 +2420,17 @@ fn numeric(
     right: &Value,
     span: Span,
     int_op: impl Fn(i64, i64) -> i64,
-    float_op: impl Fn(f64, f64) -> f64,
+    float_op: impl Fn(BigDecimal, BigDecimal) -> BigDecimal,
 ) -> Result<Value, LangError> {
     match (left, right) {
         (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(*a, *b))),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(*a, *b))),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(float_op(*a as f64, *b))),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(float_op(*a, *b as f64))),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(a.clone(), b.clone()))),
+        (Value::Int(a), Value::Float(b)) => {
+            Ok(Value::Float(float_op(BigDecimal::from(*a), b.clone())))
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            Ok(Value::Float(float_op(a.clone(), BigDecimal::from(*b))))
+        }
         _ => type_error(op_name(op), left, right, span),
     }
 }
@@ -2276,8 +2439,8 @@ fn compare(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value,
     let ordering = match (left, right) {
         (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
         (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
-        (Value::Int(a), Value::Float(b)) => (*a as f64).partial_cmp(b),
-        (Value::Float(a), Value::Int(b)) => a.partial_cmp(&(*b as f64)),
+        (Value::Int(a), Value::Float(b)) => BigDecimal::from(*a).partial_cmp(b),
+        (Value::Float(a), Value::Int(b)) => a.partial_cmp(&BigDecimal::from(*b)),
         (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
         _ => return type_error("compare", left, right, span),
     };
@@ -2330,11 +2493,23 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             Err(LangError::conflict(span.line, span.col, message.clone()))
         }
         (Value::Bottom, value) | (value, Value::Bottom) => Ok(value.clone()),
+        (Value::Bounds(a), Value::Bounds(b)) => {
+            let mut bounds = a.clone();
+            for bound in b {
+                if !bounds.contains(bound) {
+                    bounds.push(bound.clone());
+                }
+            }
+            Ok(Value::Bounds(bounds))
+        }
         (Value::Disjunction(a, da), Value::Disjunction(b, db)) => {
             unify_disjunctions(a, da, b, db, span)
         }
         (Value::Disjunction(a, da), other) | (other, Value::Disjunction(a, da)) => {
             unify_disjunction_with(a, da, other, span)
+        }
+        (Value::Bounds(bounds), other) | (other, Value::Bounds(bounds)) => {
+            apply_bounds(bounds, other, span)
         }
         (Value::Type(a), Value::Type(b)) => unify_types(*a, *b, span),
         (Value::Type(kind), value) | (value, Value::Type(kind)) => {
@@ -2540,7 +2715,7 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
         }
         (Value::Float(a), Value::Float(b)) => {
             if a == b {
-                Ok(Value::Float(*a))
+                Ok(Value::Float(a.clone()))
             } else {
                 Err(conflict(span))
             }
@@ -2913,7 +3088,12 @@ pub fn value_from_json(value: &Json) -> Value {
             if let Some(int) = number.as_i64() {
                 Value::Int(int)
             } else {
-                Value::Float(number.as_f64().unwrap_or(0.0))
+                Value::Float(
+                    number
+                        .to_string()
+                        .parse::<BigDecimal>()
+                        .unwrap_or_else(|_| BigDecimal::from(0)),
+                )
             }
         }
         Json::String(value) => Value::String(value.clone()),

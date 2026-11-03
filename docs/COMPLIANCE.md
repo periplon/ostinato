@@ -29,15 +29,17 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | Nested field shorthand (`exec: cmd: [...]`) | ✅ | |
 | Definitions (`#Foo`) and unification (`&`) | ✅ | Closed by default, `...` opens, nested closedness, optional constraints and patterns. Recursive materialization, self-selection and required expressions that depend on optional fields are out of scope |
 | Pattern constraints (`[string]: T`, `[=~"re"]: T`) | ✅ | String and regex patterns; other pattern expressions are out of scope |
-| Defaults and multi-branch disjunctions | ✅ | Alternatives, defaults, `&` narrowing, disjunction intersection and duplicate-default collapsing; bounds/pattern lattice is out of scope |
+| Defaults and multi-branch disjunctions | ✅ | Alternatives, defaults, `&` narrowing, disjunction intersection and duplicate-default collapsing |
+| Numeric/string bounds | ✅ | `>=`, `>`, `<=`, `<`, `!=`, `=~`, `!~`; conjunction with values, types and disjunctions |
+| Exact numbers | ✅ | Decimal literals and arithmetic use arbitrary-precision `BigDecimal`; integer literals fit in `i64`; division digit count may differ |
 | Optional fields (`foo?:`) | ✅ | Omitted from the concrete export, matching `cue export` |
 | Open lists (`[...T]`, `[x, ...T]`) | ✅ | Prefix and element constraints are unified |
-| Type constraints (`string`, `int`, `number`, `bool`) | ✅ | Basic constraint checking |
+| Type constraints (`string`, `int`, `number`, `bool`) | ✅ | Basic constraint checking; bounds intersect with numeric/string types |
 | String interpolation `\(...)` | ✅ | |
 | Attributes (`@tag`, `@flow`, ...) | ⚠️ | Syntactically accepted and skipped; `@tag` is not used for type-directed injection |
 | CUE aliases (`X=field: value`) | ✅ | Field aliases, struct-scoped and file-scoped; value aliases are not separate syntax |
 | Quoted labels (`"x": v`) | ✅ | Exported but not identifier-bindable; a quoted `"#D"` stays distinct from the definition `#D` |
-| Full disjunction lattice over bounds/patterns | ⚠️ | Alternatives, defaults, `&` narrowing and intersection work; bounds/pattern interactions are out of scope |
+| Full disjunction lattice over patterns | ⚠️ | Alternatives, defaults, bounds, `&` narrowing and intersection work; richer pattern intersections are out of scope |
 | Bytes, regexp/math/time, tool packages, `cue` commands | ❌ | |
 
 Unsupported features fail explicitly or are documented here. Use `--evaluator cue` for a workflow that needs them.

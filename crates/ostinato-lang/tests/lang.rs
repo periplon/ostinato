@@ -2615,3 +2615,113 @@ fn nested_comprehension_bodies_shadow_in_static_liveness() {
         "live nested binding must keep the cycle"
     );
 }
+
+#[test]
+fn bounds_narrow_concrete_values_and_types() {
+    let source = r#"
+package demo
+a: >=5 & 7
+b: >=1 & <=10 & !=5 & 6
+c: =~"^ab" & "abc"
+d: !~"^ab" & "xyz"
+e: >=1.5 & <=2.5 & 2
+f: >1.0 & <2.0 & 1.5
+g: >=5 & (1 | 7)
+h: >"a" & "b"
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 7);
+    assert_eq!(json["b"], 6);
+    assert_eq!(json["c"], "abc");
+    assert_eq!(json["d"], "xyz");
+    assert_eq!(json["e"], 2);
+    assert_eq!(json["f"], 1.5);
+    assert_eq!(json["g"], 7);
+    assert_eq!(json["h"], "b");
+    assert!(
+        json.get("i").is_none(),
+        "bound over a type stays incomplete"
+    );
+}
+
+#[test]
+fn bounds_reject_out_of_range_values() {
+    for source in [
+        "a: >=5 & 3",
+        "a: >=1 & <=10 & !=5 & 5",
+        "a: =~\"^ab\" & \"xyz\"",
+        "a: !~\"^ab\" & \"abc\"",
+        "a: >1.0 & <2.0 & 2.0",
+        "a: >=int & 1",
+        "a: =~\"^ab\" & 3",
+        "a: >=5 & \"x\"",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "expected bound conflict for {source}"
+        );
+    }
+}
+
+#[test]
+fn bound_disjunctions_and_defaults_are_lattice_aware() {
+    let source = r#"
+package demo
+a: *1 | >=5
+b: >=5 | 10
+c: (*>=5 | 10) & 7
+d: >=5 & (>=6 | 7)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json();
+    assert!(
+        json.is_none(),
+        "b is incomplete, so the export is incomplete"
+    );
+
+    let defaulted = r#"
+package demo
+a: *1 | >=5
+c: (*>=5 | 10) & 7
+"#;
+    let file = ostinato_lang::parse(defaulted).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 1);
+    assert_eq!(json["c"], 7);
+
+    let partial = r#"
+package demo
+d: >=5 & (>=6 | 7)
+"#;
+    let file = ostinato_lang::parse(partial).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert!(
+        value.to_json().is_none(),
+        "bound alternative stays incomplete"
+    );
+}
+
+#[test]
+fn decimal_arithmetic_is_exact() {
+    let source = r#"
+package demo
+a: 1.1 + 2.2
+b: 0.1 + 0.2 == 0.3
+c: 1.0 == 1
+d: 1 / 2
+e: 123456789012345678.1 + 0.2 == 123456789012345678.3
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"].to_string(), "3.3");
+    assert_eq!(json["b"], true);
+    assert_eq!(json["c"], false);
+    assert_eq!(json["d"].to_string(), "0.5");
+    assert_eq!(json["e"], true);
+}
