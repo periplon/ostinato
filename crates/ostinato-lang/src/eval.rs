@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use bigdecimal::BigDecimal;
+use bigdecimal::{BigDecimal, RoundingMode};
 use serde_json::{Map, Number, Value as Json};
 
 use crate::ast::{
@@ -2188,7 +2188,7 @@ fn merge_bounds(left: &BoundSet, right: &BoundSet, span: Span) -> Result<Value, 
             _ => None,
         },
     };
-    check_bound_interval(&items, span)?;
+    check_bound_interval(&items, ty, span)?;
     Ok(Value::Bounds(BoundSet { items, ty }))
 }
 
@@ -2220,7 +2220,11 @@ fn check_bound_classes(items: &[Bound], span: Span) -> Result<(), LangError> {
     Ok(())
 }
 
-fn check_bound_interval(items: &[Bound], span: Span) -> Result<(), LangError> {
+fn check_bound_interval(
+    items: &[Bound],
+    ty: Option<TypeKind>,
+    span: Span,
+) -> Result<(), LangError> {
     let mut lower: Option<(Value, bool)> = None;
     let mut upper: Option<(Value, bool)> = None;
     for bound in items {
@@ -2269,8 +2273,47 @@ fn check_bound_interval(items: &[Bound], span: Span) -> Result<(), LangError> {
             }
             _ => {}
         }
+        if ty == Some(TypeKind::Int) {
+            let smallest = bound_smallest_integer(&low, low_inclusive);
+            let largest = bound_largest_integer(&high, high_inclusive);
+            if let (Some(smallest), Some(largest)) = (smallest, largest)
+                && smallest > largest
+            {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    "empty integer bound interval",
+                ));
+            }
+        }
     }
     Ok(())
+}
+
+fn bound_decimal(value: &Value) -> Option<BigDecimal> {
+    match value {
+        Value::Int(value) => Some(BigDecimal::from(*value)),
+        Value::Float(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn bound_smallest_integer(value: &Value, inclusive: bool) -> Option<BigDecimal> {
+    let decimal = bound_decimal(value)?;
+    Some(if inclusive {
+        decimal.with_scale_round(0, RoundingMode::Ceiling)
+    } else {
+        decimal.with_scale_round(0, RoundingMode::Floor) + BigDecimal::from(1)
+    })
+}
+
+fn bound_largest_integer(value: &Value, inclusive: bool) -> Option<BigDecimal> {
+    let decimal = bound_decimal(value)?;
+    Some(if inclusive {
+        decimal.with_scale_round(0, RoundingMode::Floor)
+    } else {
+        decimal.with_scale_round(0, RoundingMode::Ceiling) - BigDecimal::from(1)
+    })
 }
 
 fn apply_bounds(bounds: &BoundSet, other: &Value, span: Span) -> Result<Value, LangError> {
@@ -2294,6 +2337,7 @@ fn apply_bounds(bounds: &BoundSet, other: &Value, span: Span) -> Result<Value, L
             },
             None => Some(*kind),
         };
+        check_bound_interval(&bounds.items, ty, span)?;
         return Ok(Value::Bounds(BoundSet {
             items: bounds.items.clone(),
             ty,
@@ -2331,22 +2375,20 @@ fn numeric_kind_mismatch(left: &Value, right: &Value) -> bool {
     )
 }
 
-#[allow(clippy::cmp_owned)]
-fn values_equal(left: &Value, right: &Value) -> bool {
+fn values_identical(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (
             Value::Struct(a) | Value::Definition { fields: a, .. },
             Value::Struct(b) | Value::Definition { fields: b, .. },
         ) => {
             a.len() == b.len()
-                && a.iter()
-                    .all(|(key, value)| b.get(key).is_some_and(|other| values_equal(value, other)))
+                && a.iter().all(|(key, value)| {
+                    b.get(key)
+                        .is_some_and(|other| values_identical(value, other))
+                })
         }
         (Value::List(a), Value::List(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| values_equal(a, b))
-        }
-        (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
-            BigDecimal::from(*a) == *b
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| values_identical(a, b))
         }
         (Value::Disjunction(_, _), _) | (_, Value::Disjunction(_, _)) => {
             match (left.to_json(), right.to_json()) {
@@ -2356,6 +2398,16 @@ fn values_equal(left: &Value, right: &Value) -> bool {
         }
         (Value::Conflict(_), _) | (_, Value::Conflict(_)) => false,
         _ => left == right,
+    }
+}
+
+#[allow(clippy::cmp_owned)]
+fn values_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
+            BigDecimal::from(*a) == *b
+        }
+        _ => values_identical(left, right),
     }
 }
 
@@ -3183,7 +3235,7 @@ enum DefaultMode {
 fn same_disjunction_alternative(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (Value::Definition { .. }, _) | (_, Value::Definition { .. }) => left == right,
-        _ => values_equal(left, right),
+        _ => values_identical(left, right),
     }
 }
 

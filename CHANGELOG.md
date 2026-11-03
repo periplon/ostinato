@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.2
+
+Numeric identity and integer intervals.
+
+- Scalar numeric equality is value-based (`1.0 == 1`), but composites and
+  disjunction alternatives stay kind-sensitive (`[1] != [1.0]`,
+  `1 | 1.0` incomplete, `1 | *1.0` → `1.0`).
+- Integer-constrained bound intervals account for discreteness: `int & >5 & <6`
+  is bottom, `int & >5 & <=6` is satisfiable, and disjunctions narrow past it.
+- 169 tests (24 CLI E2E, 1 conformance, 134 language, 6 domain, 3 store, 1 unit).
+
 ## v0.5.1
 
 Bounds and number review corrections.
