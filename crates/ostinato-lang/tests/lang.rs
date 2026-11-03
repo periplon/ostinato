@@ -2118,6 +2118,11 @@ fn undemanded_let_cycles_are_rejected_statically() {
         "a: {let Y = X, let X = Y, c?: X}\nd: 1",
         "#D: {let Y = X, let X = Y}\nd: 1",
         "let X = 1\na: {let Y = X, let X = Y}\nd: X",
+        "let A = {if B {}}\nlet B = A\nd: 1",
+        "let A = {for i in B {}}\nlet B = A\nd: 1",
+        "let A = {x: B}\nlet B = A\nd: 1",
+        "let A = [{x: B}]\nlet B = A\nd: 1",
+        "let A = ({x: B})\nlet B = A\nd: 1",
     ] {
         let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
         let error = ostinato_lang::eval_file(&file).expect_err("static let cycle");

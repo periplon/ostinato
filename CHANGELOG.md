@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.8
+
+Let-cycle graph through struct literals.
+
+- The static `let` cycle graph now follows references inside struct-literal
+  RHS values: `if` conditions, `for` sources, field values, list/parenthesized
+  wrappers and patterns.
+- 141 tests (23 CLI E2E, 1 conformance, 107 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.7
 
 Static `let` cycle detection.
