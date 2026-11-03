@@ -1543,7 +1543,7 @@ fn split_and_duplicate_definition_tags_work() {
         &directory.path().join("a.cue"),
         r#"
 package demo
-#P: { name: string @tag(other) }
+#P: { name: string @tag(other), ... }
 "#,
     );
     let workflow = directory.path().join("b.cue");
@@ -1551,7 +1551,7 @@ package demo
         &workflow,
         r#"
 package demo
-#Q: { size: *1 | int @tag(sz, type=int) }
+#Q: { size: *1 | int @tag(sz, type=int), ... }
 params: (#P & #Q)
 workflow: {name: "\(params.name)-\(params.size)", steps: {s: {kind: "noop"}}}
 "#,
@@ -1606,4 +1606,44 @@ workflow: {name: "\(params.name)-\(params.size)", steps: {s: {kind: "noop"}}}
     let report = json(&output);
     assert_eq!(report["params"]["name"], "Alice");
     assert_eq!(report["params"]["size"], 16);
+}
+
+#[test]
+fn let_and_alias_backed_params_tags_work() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("tagged-let.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+#P: { name: *"a" | string @tag(other), ... }
+let extra = { size: *1 | int @tag(sz, type=int), ... }
+X = P2: { note: string @tag(note), ... }
+params: (#P & extra & X)
+workflow: {name: "\(params.name)-\(params.size)-\(params.note)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "other=Alice",
+        "-p",
+        "sz=0x10",
+        "-p",
+        "note=hello",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["name"], "Alice");
+    assert_eq!(report["params"]["size"], 16);
+    assert_eq!(report["params"]["note"], "hello");
 }

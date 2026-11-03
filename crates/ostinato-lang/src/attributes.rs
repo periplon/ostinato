@@ -84,16 +84,28 @@ fn tag_info(
 pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, LangError> {
     let mut definitions: BTreeMap<String, Vec<Expr>> = BTreeMap::new();
     for item in &file.items {
-        let StructItem::Field(field) = item else {
-            continue;
-        };
-        if field.definition
-            && let Some(name) = label_name(field)
-        {
-            definitions
-                .entry(name.to_owned())
-                .or_default()
-                .push(field.value.clone());
+        match item {
+            StructItem::Field(field) => {
+                if let Some(name) = label_name(field) {
+                    definitions
+                        .entry(name.to_owned())
+                        .or_default()
+                        .push(field.value.clone());
+                }
+                if let Some(alias) = &field.alias {
+                    definitions
+                        .entry(alias.clone())
+                        .or_default()
+                        .push(field.value.clone());
+                }
+            }
+            StructItem::Let { name, value, .. } => {
+                definitions
+                    .entry(name.clone())
+                    .or_default()
+                    .push(value.clone());
+            }
+            _ => {}
         }
     }
     let mut tags: BTreeMap<String, Vec<TagInfo>> = BTreeMap::new();

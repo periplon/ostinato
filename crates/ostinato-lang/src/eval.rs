@@ -217,8 +217,14 @@ impl Value {
                 disjunction_to_json(alternatives, defaults)
             }
             Self::Bounds(_) => None,
+            Self::OpenListPrefix(prefix, _) => {
+                let mut out = Vec::with_capacity(prefix.len());
+                for value in prefix {
+                    out.push(value.to_json()?);
+                }
+                Some(Json::Array(out))
+            }
             Self::OpenList(_)
-            | Self::OpenListPrefix(_, _)
             | Self::Builtin(_)
             | Self::Conflict(_)
             | Self::Type(_)
@@ -982,11 +988,15 @@ impl<'a> Frame<'a> {
             };
             (def.exprs.clone(), def.definition)
         };
-        if name == "params"
-            && !self.overrides.borrow().is_empty()
-            && let Some(items) = self.params_items(&exprs)
-        {
-            return self.eval_params_struct(&items, span);
+        if name == "params" && !self.overrides.borrow().is_empty() {
+            if let Some(items) = self.params_items(&exprs) {
+                return self.eval_params_struct(&items, span);
+            }
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                "cannot apply parameter overrides to this `params` shape",
+            ));
         }
         if is_definition {
             if self.evaluating.borrow().contains(key) {
@@ -1219,6 +1229,7 @@ impl<'a> Frame<'a> {
         Some(items)
     }
 
+    #[allow(clippy::question_mark)]
     fn collect_struct_items(
         &self,
         expr: &Expr,
@@ -1242,11 +1253,23 @@ impl<'a> Frame<'a> {
                 if !seen.insert(name.clone()) {
                     return None;
                 }
-                let exprs = self
-                    .fields
-                    .borrow()
-                    .get(name)
-                    .map(|definition| definition.exprs.clone())?;
+                let exprs = if let Some(definition) = self.fields.borrow().get(name) {
+                    definition.exprs.clone()
+                } else if let Some(value) = self.lets.borrow().get(name).cloned() {
+                    vec![value]
+                } else if let Some(target) = self.aliases.borrow().get(name).cloned() {
+                    let key = if target.definition {
+                        self.stored_field_key(&target.name)
+                    } else {
+                        self.regular_field_key(&target.name)
+                    }?;
+                    self.fields
+                        .borrow()
+                        .get(&key)
+                        .map(|definition| definition.exprs.clone())?
+                } else {
+                    return None;
+                };
                 for expr in &exprs {
                     self.collect_struct_items(expr, out, seen, depth + 1)?;
                 }
@@ -2851,20 +2874,60 @@ fn valid_clock(text: &str) -> bool {
     let hour_ok =
         (1..=2).contains(&parts[0].len()) && parts[0].chars().all(|value| value.is_ascii_digit());
     let minute_ok = parts[1].len() == 2 && parts[1].chars().all(|value| value.is_ascii_digit());
-    let second_ok = parts[2].len() == 2 && parts[2].chars().all(|value| value.is_ascii_digit());
+    let second_ok = parts[2].len() == 2
+        && parts[2].chars().all(|value| value.is_ascii_digit())
+        && parts[2].parse::<u8>().is_ok_and(|second| second < 60);
     hour_ok && minute_ok && second_ok
 }
 
-fn valid_clock_ampm(text: &str) -> bool {
-    let Some(suffix) = text.strip_suffix("AM").or_else(|| text.strip_suffix("PM")) else {
-        return false;
+fn parse_ampm(text: &str) -> Option<(u32, u32)> {
+    let (body, suffix) = match text.strip_suffix("AM") {
+        Some(body) => (body, false),
+        None => (text.strip_suffix("PM")?, true),
     };
-    let parts: Vec<&str> = suffix.split(':').collect();
-    parts.len() == 2
-        && (1..=2).contains(&parts[0].len())
-        && parts[0].chars().all(|value| value.is_ascii_digit())
-        && parts[1].len() == 2
-        && parts[1].chars().all(|value| value.is_ascii_digit())
+    let (hour, minute) = body.split_once(':')?;
+    if !(1..=2).contains(&hour.len()) || minute.len() != 2 {
+        return None;
+    }
+    let hour: u32 = hour.parse().ok()?;
+    let minute: u32 = minute.parse().ok()?;
+    if hour > 12 || minute > 59 {
+        return None;
+    }
+    let hour = (hour % 12) + if suffix { 12 } else { 0 };
+    Some((hour, minute))
+}
+
+fn valid_rfc3339_shape(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.len() < 20
+        || bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || bytes.get(10) != Some(&b'T')
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+    {
+        return false;
+    }
+    let digits = |range: std::ops::Range<usize>| {
+        bytes
+            .get(range)
+            .is_some_and(|slice| slice.iter().all(u8::is_ascii_digit))
+    };
+    if !digits(0..4) || !digits(5..7) || !digits(8..10) || !digits(11..13) || !digits(14..16) {
+        return false;
+    }
+    if !digits(17..19)
+        || text[17..19]
+            .parse::<u8>()
+            .map_or(true, |second| second >= 60)
+    {
+        return false;
+    }
+    text.ends_with('Z')
+        || text
+            .get(19..)
+            .is_some_and(|rest| rest.starts_with('+') || rest.starts_with('-'))
 }
 
 fn split_fraction(text: &str) -> Option<(&str, i64)> {
@@ -2912,10 +2975,8 @@ fn parse_layout(
             Ok(Utc.from_utc_datetime(&date.and_time(time)) + chrono::Duration::nanoseconds(nanos))
         }
         "3:04PM" => {
-            if !valid_clock_ampm(text) {
-                return Err(invalid());
-            }
-            let time = NaiveTime::parse_from_str(text, "%I:%M%p").map_err(|_| invalid())?;
+            let (hour, minute) = parse_ampm(text).ok_or_else(invalid)?;
+            let time = NaiveTime::from_hms_opt(hour, minute, 0).ok_or_else(invalid)?;
             let date = NaiveDate::from_ymd_opt(0, 1, 1).ok_or_else(invalid)?;
             Ok(Utc.from_utc_datetime(&date.and_time(time)))
         }
@@ -2929,9 +2990,15 @@ fn parse_layout(
                 .map_err(|_| invalid())?;
             Ok(Utc.from_utc_datetime(&naive) + chrono::Duration::nanoseconds(nanos))
         }
-        "2006-01-02T15:04:05Z07:00" => DateTime::parse_from_rfc3339(&text.replacen(',', ".", 1))
-            .map(|value| value.with_timezone(&Utc))
-            .map_err(|_| invalid()),
+        "2006-01-02T15:04:05Z07:00" => {
+            let normalized = text.replacen(',', ".", 1);
+            if !valid_rfc3339_shape(&normalized) {
+                return Err(invalid());
+            }
+            DateTime::parse_from_rfc3339(&normalized)
+                .map(|value| value.with_timezone(&Utc))
+                .map_err(|_| invalid())
+        }
         _ => Err(LangError::conflict(
             span.line,
             span.col,

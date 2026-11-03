@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.6
+
+Tag-backed params and open-list compilation.
+
+- Parameter overrides and `@tag` discovery work through `let`/alias-backed and
+  merged `params` (loud error for unsupported shapes instead of silent defaults).
+- `[x, ...T]` values export their concrete prefix and compile into `needs`,
+  `cmd` and agent commands.
+- `time` enforces strict RFC3339 shape, rejects leap seconds and accepts
+  `0:04AM`/`12:00AM` AM/PM forms.
+- 191 tests (32 CLI E2E, 1 conformance, 148 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.5
 
 Tag discovery and time validation corrections.
