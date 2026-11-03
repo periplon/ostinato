@@ -4592,6 +4592,8 @@ fn params_index_paths_resolve_through_nested_groups() {
         "params: {g: {a: 1, v: params[\"g\"].a}}",
         "params: {g: {\"a.b\": 1, v: params[\"g\"][\"a.b\"]}}",
         "params: {\"g.h\": {a: 1, b: params[\"g.h\"].a}}",
+        "params: {db: {x: 1, for k in [\"x\"] {b: params.db[k]}}}",
+        "params: {db: {inner: {x: 1, for k in [\"x\"] {b: params.db.inner[k]}}}}",
     ];
     for source in cases {
         let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");

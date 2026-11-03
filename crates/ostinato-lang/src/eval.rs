@@ -1156,11 +1156,28 @@ impl<'a> Frame<'a> {
         path: &[(String, bool)],
         span: Span,
     ) -> Option<Result<Value, LangError>> {
-        let prefix = self.params_prefix.borrow().clone();
+        let mut prefix = Vec::new();
+        let mut prefix_frame = self;
+        let mut cursor = Some(self);
+        while let Some(current) = cursor {
+            let current_prefix = current.params_prefix.borrow().clone();
+            if !current_prefix.is_empty() {
+                prefix = current_prefix;
+                prefix_frame = current;
+                break;
+            }
+            cursor = current.parent;
+        }
         if !prefix.is_empty() {
             let keys = params_cache_key(path);
             if keys.len() > prefix.len() && keys[..prefix.len()] == prefix[..] {
-                return self.resolve_local_segment(&path[prefix.len()..], span);
+                let suffix = &path[prefix.len()..];
+                if let Some(result) = prefix_frame.resolve_local_segment(suffix, span) {
+                    return Some(result);
+                }
+                if suffix.len() > 1 {
+                    return self.resolve_local_segment(&suffix[1..], span);
+                }
             }
         }
         let ((first, quoted), rest) = path.split_first()?;

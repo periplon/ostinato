@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.18
+
+Dynamic params index paths in nested groups.
+
+- Frames inherit the nearest params path prefix, so `params.db[k]` inside
+  `params.db` (and deeper groups) resolves locally instead of reporting a
+  false cycle.
+- 244 tests (35 CLI E2E, 1 conformance, 198 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.17
 
 Params index paths and definition-backed overrides.
