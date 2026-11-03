@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.11.0
+
+Multiline and interpolated bytes literals.
+
+- `'''...'''` bytes literals: the opening quote must be followed by a newline,
+  the closing quote must be on its own (optionally indented) line, indentation
+  is removed with CUE's non-matching-whitespace check, blank lines and CRLF
+  are handled, and the leading/trailing newlines are dropped.
+- Bytes interpolation `\(...)` accepts numbers, strings, bytes and booleans
+  (numbers use CUE display formatting) and rejects null/list/struct values.
+- Interpolation inside multiline bytes, nested parentheses/strings/bytes
+  inside interpolation, UTF-8 source bytes, and the full Go escape set
+  (`\a\b\f\n\r\t\v\\\/\'\x\u\U` and octal) are supported.
+- 279 tests (49 CLI E2E, 1 conformance, 216 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
+
 ## v0.10.11
 
 Division scientific-notation boundary.

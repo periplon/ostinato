@@ -5152,3 +5152,91 @@ abs: math.Abs(-2)
         "Pow(0,0) is invalid in CUE"
     );
 }
+
+#[test]
+fn multiline_bytes_literals_dedent_and_interpolate() {
+    let source = r#"
+package demo
+plain: '''
+line1
+line2
+'''
+interp: '''
+a\(1+2)b
+'''
+indented: '''
+    line1
+      line2
+    '''
+blank: '''
+line1
+
+line2
+'''
+empty: '''
+'''
+unicode: '''
+日本語
+'''
+"#;
+    let file = ostinato_lang::parse(source).expect("parse multi-line bytes");
+    let value = ostinato_lang::eval_file(&file).expect("eval multi-line bytes");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["plain"], "bGluZTEKbGluZTI=");
+    assert_eq!(json["interp"], "YTNi");
+    assert_eq!(json["indented"], "bGluZTEKICBsaW5lMg==");
+    assert_eq!(json["blank"], "bGluZTEKCmxpbmUy");
+    assert_eq!(json["empty"], "");
+    assert_eq!(json["unicode"], "5pel5pys6Kqe");
+
+    for source in [
+        "package demo\na: '''abc\n'''\n",
+        "package demo\na: '''\n  one\ntwo\n  '''\n",
+        "package demo\na: '''\none\ntwo'''\n",
+        "package demo\na: 'one\ntwo'\n",
+    ] {
+        assert!(
+            ostinato_lang::parse(source).is_err(),
+            "invalid multi-line bytes must fail: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn bytes_interpolation_formats_scalars_and_rejects_incomplete() {
+    let source = r#"
+package demo
+b: 'raw'
+s: "text"
+n: 42
+f: 1.50
+flag: true
+int_text: 'a\(n)b'
+string_text: 'a\(s)b'
+bytes_text: 'a\(b)b'
+bool_text: 'a\(flag)b'
+float_text: 'a\(f)b'
+nested: 'a\((1+2)*3)b'
+"#;
+    let file = ostinato_lang::parse(source).expect("parse interpolated bytes");
+    let value = ostinato_lang::eval_file(&file).expect("eval interpolated bytes");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["int_text"], "YTQyYg==");
+    assert_eq!(json["string_text"], "YXRleHRi");
+    assert_eq!(json["bytes_text"], "YXJhd2I=");
+    assert_eq!(json["bool_text"], "YXRydWVi");
+    assert_eq!(json["float_text"], "YTEuNTBi");
+    assert_eq!(json["nested"], "YTli");
+
+    for source in [
+        "package demo\na: 'x\\(null)y'\n",
+        "package demo\na: 'x\\([1])y'\n",
+        "package demo\na: 'x\\({a: 1})y'\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "non-scalar interpolation must fail: {source:?}"
+        );
+    }
+}

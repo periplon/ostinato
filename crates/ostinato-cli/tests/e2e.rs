@@ -2518,3 +2518,67 @@ fn deep_recursive_values_do_not_exhaust_the_stack() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn multiline_and_interpolated_bytes_match_both_evaluators() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let workflow = directory.path().join("bytes.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: {
+	plain: '''
+line1
+line2
+'''
+	interp: 'x\(1+2)y'
+	scalars: 's=\(params.s) n=\(params.n) b=\(params.b)'
+	s: "text"
+	n: 42
+	b: 'raw'
+	indented: '''
+    value=\(1+2)
+      nested
+    '''
+}
+workflow: {name: "bytes", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let db_rust = directory.path().join("rust.sqlite");
+    let rust = ost(&[
+        "--db",
+        db_rust.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        rust.status.success(),
+        "rust stderr: {}",
+        String::from_utf8_lossy(&rust.stderr)
+    );
+
+    let db_cue = directory.path().join("cue.sqlite");
+    let oracle = ost(&[
+        "--db",
+        db_cue.to_str().expect("db"),
+        "--cue",
+        &cue,
+        "--evaluator",
+        "cue",
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        oracle.status.success(),
+        "cue stderr: {}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    assert_eq!(json(&rust)["params"], json(&oracle)["params"]);
+}

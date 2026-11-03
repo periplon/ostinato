@@ -783,6 +783,13 @@ fn assign_expr_impl(expr: &mut Expr, next: &mut usize) {
                 }
             }
         }
+        Expr::BytesInterp(parts, _) => {
+            for part in parts {
+                if let crate::ast::BytePart::Interp(inner) = part {
+                    assign_expr(inner, next);
+                }
+            }
+        }
         Expr::Null(_)
         | Expr::Bool(_, _)
         | Expr::Int(_, _)

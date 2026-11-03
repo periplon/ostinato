@@ -27,10 +27,11 @@ workflow outside the Rust surface has a supported escape hatch.
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - recursive definition materialization through optional fields and lists
   (`#Tree: {children?: [...#Tree]}`, mutually recursive definitions);
-- string interpolation, including nested quoted expressions;
+- string and bytes interpolation, including nested quoted expressions;
 - `strings`, `list`, `regexp`, `math` and `time` builtins (including the full
   Go layout language, `FormatString`, `Split`, `ToUnix`/`ToUnixNano`,
-  `FormatDuration` and time constants), bytes literals and global `len`;
+  `FormatDuration` and time constants), bytes literals (single-line, multiline
+  and interpolated) and global `len`;
 - constraint-based parameter overrides for split/definition-backed params and
   dependent params;
 - CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files).
@@ -44,7 +45,6 @@ workflow outside the Rust surface has a supported escape hatch.
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
 | Arbitrary-precision integer literals | Decimal values are arbitrary precision; integer literals must fit in `i64` |
 | `math` transcendental precision | `Pow`/`Exp`/`Log` and other transcendental helpers use native floating-point conversion where CUE uses its 34-digit decimal context; JSON export matches, but string interpolation can show fewer digits |
-| Multiline bytes literals and bytes interpolation | Single-line `'...'` bytes are supported; `'''...'''` and `\(...)` inside bytes are not |
 | Decimal division digit count | Division uses `BigDecimal` precision, which can differ from CUE's 34-digit decimal expansion |
 | JSON export of high-precision decimals | Arithmetic is arbitrary precision, but `to_json` rounds non-integral values through f64; string interpolation and comparisons use the exact value |
 | Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |

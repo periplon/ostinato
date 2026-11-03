@@ -814,6 +814,13 @@ impl AliasCtx {
                     }
                 }
             }
+            Expr::BytesInterp(parts, _) => {
+                for part in parts {
+                    if let crate::ast::BytePart::Interp(inner) = part {
+                        self.expr(inner, chain, shadowed, from)?;
+                    }
+                }
+            }
             Expr::Null(_)
             | Expr::Bool(_, _)
             | Expr::Int(_, _)
@@ -1119,6 +1126,13 @@ fn rename_expr(expr: &mut Expr, locals: &HashMap<String, String>, shadowed: &Has
         Expr::Str(parts, _) => {
             for part in parts {
                 if let StrPart::Interp(inner) = part {
+                    rename_expr(inner, locals, shadowed);
+                }
+            }
+        }
+        Expr::BytesInterp(parts, _) => {
+            for part in parts {
+                if let crate::ast::BytePart::Interp(inner) = part {
                     rename_expr(inner, locals, shadowed);
                 }
             }

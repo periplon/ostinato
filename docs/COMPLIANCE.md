@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.10.11 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.11.0 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -20,7 +20,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 |---|---|---|
 | Package selection and same-package sibling files | ✅ | File, directory, and `package _` / no-package fallbacks |
 | Split packages and sibling conflicts | ✅ | Same-directory package files are unified |
-| Imports: `strings`, `list`, `regexp`, `math`, `time` | ✅ | String/list helpers; regexp, math and full Go time layouts with `Parse`/`Format`/`FormatString`/`Split`/`ToUnix`/`FormatDuration` and constants; global `len`; bytes literals |
+| Imports: `strings`, `list`, `regexp`, `math`, `time` | ✅ | String/list helpers; regexp, math and full Go time layouts with `Parse`/`Format`/`FormatString`/`Split`/`ToUnix`/`FormatDuration` and constants; global `len`; single-line, multiline and interpolated bytes literals |
 | Local module imports (`cue.mod/module.cue`) | ✅ | Module path prefix resolution, `@v` suffixes, comments, cycle detection |
 | Relative imports (`./pkg`) | ✅ | |
 | `let` declarations | ✅ | File-scoped, lazy (forward references work) |

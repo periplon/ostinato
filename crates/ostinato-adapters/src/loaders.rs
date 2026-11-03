@@ -642,6 +642,10 @@ fn inject_field_expr(expr: &mut Expr, id: usize, value: &Expr) -> bool {
                 false
             }
         }),
+        Expr::BytesInterp(parts, _) => parts.iter_mut().any(|part| match part {
+            ostinato_lang::ast::BytePart::Interp(inner) => inject_field_expr(inner, id, value),
+            ostinato_lang::ast::BytePart::Text(_) => false,
+        }),
         Expr::Null(_)
         | Expr::Bool(_, _)
         | Expr::Int(_, _)

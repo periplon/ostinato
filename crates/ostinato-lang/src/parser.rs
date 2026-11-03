@@ -1,9 +1,9 @@
 use crate::ast::{
-    Attribute, BinOp, BoundOp, CompClause, Expr, Field, File, ImportDecl, Label, Pattern, Span,
-    StrPart, StructItem, UnOp,
+    Attribute, BinOp, BoundOp, BytePart, CompClause, Expr, Field, File, ImportDecl, Label, Pattern,
+    Span, StrPart, StructItem, UnOp,
 };
 use crate::error::LangError;
-use crate::lexer::{Tok, Token, lex};
+use crate::lexer::{LexBytePart, Tok, Token, lex};
 
 /// Parse a CUE-compatible source file.
 ///
@@ -840,7 +840,20 @@ impl Parser {
             }
             Tok::Bytes(raw) => {
                 self.bump();
-                Ok(Expr::Bytes(raw, span))
+                let mut parts = Vec::new();
+                for part in raw {
+                    match part {
+                        LexBytePart::Text(bytes) => parts.push(BytePart::Text(bytes)),
+                        LexBytePart::Interp(source) => {
+                            let expr = parse_expr_fragment(&source)?;
+                            parts.push(BytePart::Interp(expr));
+                        }
+                    }
+                }
+                match parts.as_slice() {
+                    [BytePart::Text(bytes)] => Ok(Expr::Bytes(bytes.clone(), span)),
+                    _ => Ok(Expr::BytesInterp(parts, span)),
+                }
             }
             Tok::Ident(name) => {
                 self.bump();

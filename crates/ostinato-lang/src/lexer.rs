@@ -4,6 +4,13 @@ use bigdecimal::BigDecimal;
 
 use crate::error::LangError;
 
+/// One piece of a lexed bytes literal.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LexBytePart {
+    Text(Vec<u8>),
+    Interp(String),
+}
+
 /// Lexical tokens. Newlines are significant as field separators and are
 /// normalised by the parser.
 #[derive(Debug, Clone, PartialEq)]
@@ -12,7 +19,7 @@ pub enum Tok {
     Int(i64),
     Float(BigDecimal),
     Str(String),
-    Bytes(Vec<u8>),
+    Bytes(Vec<LexBytePart>),
     Package,
     Import,
     For,
@@ -408,117 +415,137 @@ impl Lexer {
         Ok(Tok::Int(value))
     }
 
-    fn read_bytes(&mut self, line: u32, col: u32) -> Result<Vec<u8>, LangError> {
+    fn read_bytes(&mut self, line: u32, col: u32) -> Result<Vec<LexBytePart>, LangError> {
         self.bump(); // opening quote
-        let mut out = Vec::new();
+        let multiline = self.peek() == Some('\'') && self.peek_n(1) == Some('\'');
+        if multiline {
+            self.bump();
+            self.bump();
+            match self.peek() {
+                Some('\n') => {
+                    self.bump();
+                }
+                Some('\r') if self.peek_n(1) == Some('\n') => {
+                    self.bump();
+                    self.bump();
+                }
+                _ => {
+                    return Err(LangError::parse(
+                        line,
+                        col,
+                        "expected newline after multiline quote `'''`",
+                    ));
+                }
+            }
+            let mut raw = String::new();
+            let mut at_line_start = true;
+            loop {
+                if at_line_start {
+                    let mut indent = String::new();
+                    while let Some(current) = self.peek() {
+                        if current == ' ' || current == '\t' {
+                            indent.push(current);
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                    if self.peek() == Some('\'')
+                        && self.peek_n(1) == Some('\'')
+                        && self.peek_n(2) == Some('\'')
+                    {
+                        self.bump();
+                        self.bump();
+                        self.bump();
+                        let content = dedent_bytes_multiline(&raw, &indent, line, col)?;
+                        return decode_bytes_parts(&content, line, col);
+                    }
+                    raw.push_str(&indent);
+                    at_line_start = false;
+                    continue;
+                }
+                let Some(current) = self.peek() else {
+                    return Err(LangError::parse(line, col, "unterminated bytes literal"));
+                };
+                self.bump();
+                raw.push(current);
+                if current == '\n' {
+                    at_line_start = true;
+                }
+            }
+        }
+
+        let mut raw = String::new();
         loop {
             let Some(current) = self.peek() else {
                 return Err(LangError::parse(line, col, "unterminated bytes literal"));
             };
-            if current == '\'' {
-                self.bump();
-                return Ok(out);
+            match current {
+                '\'' => {
+                    self.bump();
+                    break;
+                }
+                '\n' => {
+                    return Err(LangError::parse(line, col, "unterminated bytes literal"));
+                }
+                '\\' => {
+                    self.bump();
+                    let Some(escaped) = self.bump() else {
+                        return Err(LangError::parse(line, col, "unterminated escape sequence"));
+                    };
+                    raw.push('\\');
+                    raw.push(escaped);
+                    if escaped == '(' {
+                        self.scan_interpolation(&mut raw, line, col)?;
+                    }
+                }
+                _ => {
+                    self.bump();
+                    raw.push(current);
+                }
             }
-            if current == '\\' {
-                self.bump();
-                let Some(escaped) = self.peek() else {
-                    return Err(LangError::parse(line, col, "unterminated escape sequence"));
-                };
-                self.bump();
-                match escaped {
-                    'a' => out.push(0x07),
-                    'b' => out.push(0x08),
-                    'f' => out.push(0x0c),
-                    'n' => out.push(b'\n'),
-                    'r' => out.push(b'\r'),
-                    't' => out.push(b'\t'),
-                    'v' => out.push(0x0b),
-                    '\\' => out.push(b'\\'),
-                    '/' => out.push(b'/'),
-                    '\'' => out.push(b'\''),
-                    'x' => {
-                        let value = self.read_hex_digits(2, line, col)?;
-                        out.push(u8::try_from(value).map_err(|_| {
-                            LangError::parse(line, col, "invalid hexadecimal escape")
-                        })?);
+        }
+        decode_bytes_parts(&raw, line, col)
+    }
+
+    /// Consume the remainder of an interpolation started by `\(`.
+    ///
+    /// Parentheses and quoted strings/bytes literals inside the interpolation
+    /// are respected so the enclosing bytes literal ends at the right quote.
+    fn scan_interpolation(
+        &mut self,
+        out: &mut String,
+        line: u32,
+        col: u32,
+    ) -> Result<(), LangError> {
+        let mut depth = 1usize;
+        let mut quote: Option<char> = None;
+        while let Some(current) = self.peek() {
+            self.bump();
+            out.push(current);
+            if let Some(open) = quote {
+                if current == '\\' {
+                    if let Some(next) = self.bump() {
+                        out.push(next);
                     }
-                    'u' => {
-                        let value = self.read_hex_digits(4, line, col)?;
-                        if (0xD800..=0xDBFF).contains(&value) {
-                            if self.peek() != Some('\\') || self.peek_n(1) != Some('u') {
-                                return Err(LangError::parse(line, col, "invalid unicode escape"));
-                            }
-                            self.bump();
-                            self.bump();
-                            let low = self.read_hex_digits(4, line, col)?;
-                            if !(0xDC00..=0xDFFF).contains(&low) {
-                                return Err(LangError::parse(line, col, "invalid unicode escape"));
-                            }
-                            let scalar = 0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00);
-                            append_code_point(&mut out, scalar, line, col)?;
-                        } else if (0xDC00..=0xDFFF).contains(&value) {
-                            return Err(LangError::parse(line, col, "invalid unicode escape"));
-                        } else {
-                            append_code_point(&mut out, value, line, col)?;
-                        }
-                    }
-                    'U' => {
-                        let value = self.read_hex_digits(8, line, col)?;
-                        append_code_point(&mut out, value, line, col)?;
-                    }
-                    digit if digit.is_digit(8) => {
-                        let mut value = digit.to_digit(8).unwrap_or(0);
-                        for _ in 0..2 {
-                            match self.peek() {
-                                Some(next) if next.is_digit(8) => {
-                                    value = value * 8 + next.to_digit(8).unwrap_or(0);
-                                    self.bump();
-                                }
-                                _ => {
-                                    return Err(LangError::parse(
-                                        line,
-                                        col,
-                                        "octal escape requires three digits",
-                                    ));
-                                }
-                            }
-                        }
-                        out.push(u8::try_from(value).map_err(|_| {
-                            LangError::parse(line, col, "octal escape out of range")
-                        })?);
-                    }
-                    _ => {
-                        return Err(LangError::parse(
-                            line,
-                            col,
-                            format!("unknown escape sequence `\\{escaped}`"),
-                        ));
-                    }
+                } else if current == open {
+                    quote = None;
                 }
                 continue;
             }
-            let mut buffer = [0u8; 4];
-            let text = current.encode_utf8(&mut buffer);
-            out.extend_from_slice(text.as_bytes());
-            self.bump();
-        }
-    }
-
-    fn read_hex_digits(&mut self, count: usize, line: u32, col: u32) -> Result<u32, LangError> {
-        let mut text = String::new();
-        for _ in 0..count {
-            match self.peek() {
-                Some(value) if value.is_ascii_hexdigit() => {
-                    text.push(value);
-                    self.bump();
+            match current {
+                '"' | '\'' => quote = Some(current),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(());
+                    }
                 }
-                _ => {
-                    return Err(LangError::parse(line, col, "invalid hexadecimal escape"));
-                }
+                _ => {}
             }
         }
-        u32::from_str_radix(&text, 16)
-            .map_err(|_| LangError::parse(line, col, "invalid hexadecimal escape"))
+        Err(LangError::parse(line, col, "unterminated interpolation"))
     }
 
     fn read_string(&mut self, line: u32, col: u32) -> Result<String, LangError> {
@@ -660,6 +687,202 @@ impl Lexer {
             }
         }
     }
+}
+
+fn dedent_bytes_multiline(
+    raw: &str,
+    closing_indent: &str,
+    line: u32,
+    col: u32,
+) -> Result<String, LangError> {
+    let normalized = raw.replace("\r\n", "\n");
+    if normalized.is_empty() {
+        return Ok(String::new());
+    }
+    let body = normalized.strip_suffix('\n').unwrap_or(&normalized);
+    let mut out = String::new();
+    for (index, current) in body.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        if current.is_empty() {
+            continue;
+        }
+        let Some(stripped) = current.strip_prefix(closing_indent) else {
+            return Err(LangError::parse(
+                line,
+                col,
+                "non-matching whitespace for multiline bytes literal",
+            ));
+        };
+        out.push_str(stripped);
+    }
+    Ok(out)
+}
+
+fn decode_bytes_parts(source: &str, line: u32, col: u32) -> Result<Vec<LexBytePart>, LangError> {
+    let chars: Vec<char> = source.chars().collect();
+    let mut parts = Vec::new();
+    let mut text = Vec::new();
+    let mut index = 0usize;
+    while index < chars.len() {
+        if chars[index] == '\\' && chars.get(index + 1) == Some(&'(') {
+            if !text.is_empty() {
+                parts.push(LexBytePart::Text(std::mem::take(&mut text)));
+            }
+            let start = index + 2;
+            let mut depth = 1usize;
+            let mut end = start;
+            let mut quote: Option<char> = None;
+            while end < chars.len() {
+                let current = chars[end];
+                if let Some(open) = quote {
+                    if current == '\\' {
+                        end += 1;
+                    } else if current == open {
+                        quote = None;
+                    }
+                } else {
+                    match current {
+                        '"' | '\'' => quote = Some(current),
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                end += 1;
+            }
+            if depth != 0 {
+                return Err(LangError::parse(line, col, "unterminated interpolation"));
+            }
+            let inner: String = chars[start..end].iter().collect();
+            parts.push(LexBytePart::Interp(inner));
+            index = end + 1;
+            continue;
+        }
+        if chars[index] == '\\' {
+            index += 1;
+            let Some(escaped) = chars.get(index).copied() else {
+                return Err(LangError::parse(line, col, "unterminated escape sequence"));
+            };
+            index += 1;
+            match escaped {
+                'a' => text.push(0x07),
+                'b' => text.push(0x08),
+                'f' => text.push(0x0c),
+                'n' => text.push(b'\n'),
+                'r' => text.push(b'\r'),
+                't' => text.push(b'\t'),
+                'v' => text.push(0x0b),
+                '\\' => text.push(b'\\'),
+                '/' => text.push(b'/'),
+                '\'' => text.push(b'\''),
+                'x' => {
+                    let mut value = 0u32;
+                    for _ in 0..2 {
+                        let Some(digit) = chars.get(index).and_then(|c| c.to_digit(16)) else {
+                            return Err(LangError::parse(line, col, "invalid hexadecimal escape"));
+                        };
+                        value = value * 16 + digit;
+                        index += 1;
+                    }
+                    text.push(
+                        u8::try_from(value).map_err(|_| {
+                            LangError::parse(line, col, "invalid hexadecimal escape")
+                        })?,
+                    );
+                }
+                'u' => {
+                    let mut value = 0u32;
+                    for _ in 0..4 {
+                        let Some(digit) = chars.get(index).and_then(|c| c.to_digit(16)) else {
+                            return Err(LangError::parse(line, col, "invalid unicode escape"));
+                        };
+                        value = value * 16 + digit;
+                        index += 1;
+                    }
+                    if (0xD800..=0xDBFF).contains(&value) {
+                        if chars.get(index) != Some(&'\\') || chars.get(index + 1) != Some(&'u') {
+                            return Err(LangError::parse(line, col, "invalid unicode escape"));
+                        }
+                        index += 2;
+                        let mut low = 0u32;
+                        for _ in 0..4 {
+                            let Some(digit) = chars.get(index).and_then(|c| c.to_digit(16)) else {
+                                return Err(LangError::parse(line, col, "invalid unicode escape"));
+                            };
+                            low = low * 16 + digit;
+                            index += 1;
+                        }
+                        if !(0xDC00..=0xDFFF).contains(&low) {
+                            return Err(LangError::parse(line, col, "invalid unicode escape"));
+                        }
+                        let scalar = 0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00);
+                        append_code_point(&mut text, scalar, line, col)?;
+                    } else if (0xDC00..=0xDFFF).contains(&value) {
+                        return Err(LangError::parse(line, col, "invalid unicode escape"));
+                    } else {
+                        append_code_point(&mut text, value, line, col)?;
+                    }
+                }
+                'U' => {
+                    let mut value = 0u32;
+                    for _ in 0..8 {
+                        let Some(digit) = chars.get(index).and_then(|c| c.to_digit(16)) else {
+                            return Err(LangError::parse(line, col, "invalid unicode escape"));
+                        };
+                        value = value * 16 + digit;
+                        index += 1;
+                    }
+                    append_code_point(&mut text, value, line, col)?;
+                }
+                digit if digit.is_digit(8) => {
+                    let mut value = digit.to_digit(8).unwrap_or(0);
+                    for _ in 0..2 {
+                        match chars.get(index).and_then(|c| c.to_digit(8)) {
+                            Some(next) => {
+                                value = value * 8 + next;
+                                index += 1;
+                            }
+                            None => {
+                                return Err(LangError::parse(
+                                    line,
+                                    col,
+                                    "octal escape requires three digits",
+                                ));
+                            }
+                        }
+                    }
+                    text.push(
+                        u8::try_from(value).map_err(|_| {
+                            LangError::parse(line, col, "octal escape out of range")
+                        })?,
+                    );
+                }
+                _ => {
+                    return Err(LangError::parse(
+                        line,
+                        col,
+                        format!("unknown escape sequence `\\{escaped}`"),
+                    ));
+                }
+            }
+            continue;
+        }
+        let mut buffer = [0u8; 4];
+        let encoded = chars[index].encode_utf8(&mut buffer);
+        text.extend_from_slice(encoded.as_bytes());
+        index += 1;
+    }
+    if !text.is_empty() || parts.is_empty() {
+        parts.push(LexBytePart::Text(text));
+    }
+    Ok(parts)
 }
 
 fn dedent_multiline(raw: &str) -> String {

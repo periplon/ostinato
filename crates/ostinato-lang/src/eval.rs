@@ -2491,6 +2491,40 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         Expr::Int(value, _) => Ok(Value::Int(*value)),
         Expr::Float(value, _) => Ok(Value::Float(value.clone())),
         Expr::Bytes(value, _) => Ok(Value::Bytes(value.clone())),
+        Expr::BytesInterp(parts, span) => {
+            let mut out = Vec::new();
+            for part in parts {
+                match part {
+                    crate::ast::BytePart::Text(bytes) => out.extend_from_slice(bytes),
+                    crate::ast::BytePart::Interp(expr) => {
+                        let value = eval_expr(expr, frame)?;
+                        let concrete = value.concretize();
+                        if concrete.to_json().is_none() {
+                            return Err(LangError::eval(
+                                span.line,
+                                span.col,
+                                "non-concrete value in bytes interpolation",
+                            ));
+                        }
+                        match &concrete {
+                            Value::Bytes(bytes) => out.extend_from_slice(bytes),
+                            Value::String(text) => out.extend_from_slice(text.as_bytes()),
+                            Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
+                                out.extend_from_slice(concrete.display().as_bytes());
+                            }
+                            other => {
+                                return Err(LangError::conflict(
+                                    span.line,
+                                    span.col,
+                                    format!("cannot interpolate {}", other.type_name()),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Value::Bytes(out))
+        }
         Expr::Str(parts, _) => {
             let mut out = String::new();
             for part in parts {
