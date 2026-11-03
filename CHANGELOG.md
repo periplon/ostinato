@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.6.8
+
+Open-list, regex and time corrections.
+
+- Bare `[...T]` values behave as empty lists for `len`, equality, `for`,
+  `list.Concat`, params export and workflow `needs`/commands.
+- RFC3339 accepts fractional seconds with numeric offsets.
+- `regexp`/patterns use Go/RE2 ASCII classes for `\d \w \s \b`, reject
+  repeat counts above 1000, and support `\/` escapes.
+- `strings.ToUpper`/`ToLower` use Go simple case mappings for U+0130 and Greek
+  polytonic characters.
+- `list.Range` accepts decimal bounds/steps and rejects wrong-direction ranges.
+- 197 tests (34 CLI E2E, 1 conformance, 152 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.7
 
 Open-list and interpolation corrections.

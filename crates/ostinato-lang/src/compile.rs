@@ -272,6 +272,7 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
     let needs = match map.get("needs").map(Value::concretize) {
         None => Vec::new(),
         Some(Value::String(need)) => vec![need.clone()],
+        Some(Value::OpenList(_)) => Vec::new(),
         Some(Value::List(list) | Value::OpenListPrefix(list, _)) => {
             let mut needs = Vec::with_capacity(list.len());
             for item in list {
@@ -426,6 +427,7 @@ fn extract_exec(value: &Value, path: &str) -> Result<ExecSpec, LangError> {
         .ok_or_else(|| LangError::Workflow(format!("{path}.cmd is required")))?;
     let cmd = match cmd_value {
         Value::String(command) => vec!["sh".to_owned(), "-c".to_owned(), command.clone()],
+        Value::OpenList(_) => Vec::new(),
         Value::List(list) | Value::OpenListPrefix(list, _) => {
             let mut cmd = Vec::with_capacity(list.len());
             for item in list {
@@ -475,6 +477,7 @@ fn extract_agent(value: &Value, path: &str) -> Result<AgentSpec, LangError> {
     let model = opt_string(map, "model", &format!("{path}.model"))?;
     let command = match map.get("command").map(Value::concretize) {
         None => None,
+        Some(Value::OpenList(_)) => Some(Vec::new()),
         Some(Value::List(list) | Value::OpenListPrefix(list, _)) => {
             let mut command = Vec::with_capacity(list.len());
             for item in list {
