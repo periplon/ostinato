@@ -39,7 +39,6 @@ workflow outside the Rust surface has a supported escape hatch.
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
 | Arbitrary-precision integer literals | Decimal values are arbitrary precision; integer literals must fit in `i64` |
-| Nested `@tag` injection | Only top-level `params` fields can be injected with `-p`; nested tags are metadata |
 | `time` layout subset | Supported: `2006-01-02`, `15:04:05`, `3:04PM`, `2006-01-02 15:04:05`, RFC3339, with fractional seconds; other Go layouts are an error |
 | Math functions with integral results | `Sqrt`/`Pow`/`Exp`/`Log` return an `int` when the result is integral (CUE types it as float); `Floor`/`Ceil`/`Round`/`Trunc` are decimal-exact |
 | Multiline bytes literals and bytes interpolation | Single-line `'...'` bytes are supported; `'''...'''` and `\(...)` inside bytes are not |

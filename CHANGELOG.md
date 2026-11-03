@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.0
+
+Nested `@tag` injection.
+
+- `@tag` metadata is collected with its full path, including nested `params`
+  groups, definition-backed params and duplicate tag names.
+- Nested overrides are injected as unified params values, so declared types and
+  constraints still apply (`host=...`, `port=0x10`).
+- Rust and official CUE agree on nested tag injection in e2e and the
+  conformance corpus.
+- 253 tests (37 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.21
 
 Params prefix resolution across generated frames.

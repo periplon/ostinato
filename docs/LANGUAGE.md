@@ -21,7 +21,7 @@ workflow: {
 ```
 
 - `params` is optional. A concrete value is a fixed constraint; use `*value` for an overridable default. A parameter with no default must be supplied with `-p name=value`. Parameters must live under the top-level `params` struct.
-- The Rust evaluator honours `@tag(name,type=string|int|bool|number)` for top-level `params` fields (including split files, definitions and duplicate tags). Untyped values keep the JSON-style fallback (`5` → int, `true` → bool, `[..]` → list, otherwise string); typed values use CUE literal grammar. Nested `@tag` injection and tool commands remain out of scope.
+- The Rust evaluator honours `@tag(name,type=string|int|bool|number)` for `params` fields at any depth (including split files, definitions, nested groups and duplicate tags). Untyped values keep the JSON-style fallback (`5` → int, `true` → bool, `[..]` → list, otherwise string); typed values use CUE literal grammar. Tool commands remain out of scope.
 - Definitions, closedness, patterns, aliases, `let`, imports, comprehensions (including list-comprehension struct bodies) and builtins are supported by the Rust evaluator as described in [COMPLIANCE.md](COMPLIANCE.md).
 - Only the evaluated concrete `workflow` value is read; other top-level fields are not consumed by the engine (same-package siblings are still unified, as in CUE).
 
