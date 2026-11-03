@@ -337,10 +337,10 @@ fn parse_override_value(
     match tag {
         Some(TagType::String) => return Ok(Value::String(raw.to_owned())),
         Some(TagType::Int) => {
-            return parse_tag_int(trimmed).map(Value::Int).ok_or_else(invalid);
+            return parse_tag_int(raw).map(Value::Int).ok_or_else(invalid);
         }
         Some(TagType::Number) => {
-            return parse_tag_number(trimmed).ok_or_else(invalid);
+            return parse_tag_number(raw).ok_or_else(invalid);
         }
         Some(TagType::Bool) => match trimmed {
             "true" | "TRUE" | "True" | "t" | "T" | "1" => return Ok(Value::Bool(true)),
@@ -418,8 +418,18 @@ fn parse_tag_number(text: &str) -> Option<Value> {
 }
 
 fn validate_number_literal(text: &str) -> Option<String> {
-    if text.is_empty() || text.starts_with('_') || text.ends_with('_') || text.contains("__") {
+    if text.is_empty() {
         return None;
+    }
+    let chars_with_underscores: Vec<char> = text.chars().collect();
+    for (index, character) in chars_with_underscores.iter().enumerate() {
+        if *character == '_'
+            && !chars_with_underscores
+                .get(index + 1)
+                .is_some_and(|next| next.is_ascii_digit())
+        {
+            return None;
+        }
     }
     let cleaned: String = text.chars().filter(|character| *character != '_').collect();
     let chars: Vec<char> = cleaned.chars().collect();
@@ -488,6 +498,9 @@ fn validate_number_literal(text: &str) -> Option<String> {
     }
     if out.starts_with('.') || out.starts_with("-.") {
         out.insert(if out.starts_with('-') { 1 } else { 0 }, '0');
+    }
+    if out.ends_with('.') {
+        out.push('0');
     }
     if out.contains(".e") {
         out = out.replace(".e", ".0e");
@@ -713,18 +726,6 @@ impl SpecLoader for CueCliLoader {
                 "`params` must be a struct, found {}",
                 json_type_name(&params)
             )));
-        }
-        if !request.params.is_empty() {
-            let Some(declared) = params.as_object() else {
-                return Err(PortError::Loader("`params` must be a struct".to_owned()));
-            };
-            for key in request.params.keys() {
-                if !declared.contains_key(key) {
-                    return Err(PortError::Loader(format!(
-                        "unknown parameter `{key}`; declare it under `params` with @tag"
-                    )));
-                }
-            }
         }
         let spec = compile_json(&json!({ "workflow": workflow, "params": params }))
             .map_err(|err| PortError::Loader(err.to_string()))?;

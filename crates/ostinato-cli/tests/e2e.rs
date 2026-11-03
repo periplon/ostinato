@@ -1386,8 +1386,9 @@ params: {
     b: int @tag(b, type=int)
     h: int @tag(h, type=int)
     n: number @tag(n, type=number)
+    dot: number @tag(dot, type=number)
 }
-workflow: {name: "\(params.o)-\(params.b)-\(params.h)-\(params.n)", steps: {s: {kind: "noop"}}}
+workflow: {name: "\(params.o)-\(params.b)-\(params.h)-\(params.n)-\(params.dot)", steps: {s: {kind: "noop"}}}
 "#,
     );
     let output = ost(&[
@@ -1404,6 +1405,8 @@ workflow: {name: "\(params.o)-\(params.b)-\(params.h)-\(params.n)", steps: {s: {
         "h=-0x10",
         "-p",
         "n=.5",
+        "-p",
+        "dot=5.",
     ]);
     assert!(
         output.status.success(),
@@ -1415,8 +1418,9 @@ workflow: {name: "\(params.o)-\(params.b)-\(params.h)-\(params.n)", steps: {s: {
     assert_eq!(report["params"]["b"], 5);
     assert_eq!(report["params"]["h"], -16);
     assert_eq!(report["params"]["n"], 0.5);
+    assert_eq!(report["params"]["dot"], 5.0);
 
-    for (name, value) in [("o", "010"), ("b", "1__0")] {
+    for (name, value) in [("o", "010"), ("b", "1__0"), ("n", "1_e1"), ("o", " 1 ")] {
         let output = ost(&[
             "--db",
             db.to_str().expect("db"),
@@ -1428,9 +1432,73 @@ workflow: {name: "\(params.o)-\(params.b)-\(params.h)-\(params.n)", steps: {s: {
             "h=1",
             "-p",
             "n=1",
+            "-p",
+            "dot=1",
         ]);
         assert!(!output.status.success(), "{name}={value}");
     }
+}
+
+#[test]
+fn definition_backed_tags_work_in_both_evaluators() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("tagged-definition.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+#P: {
+    name: string @tag(other)
+    size: int @tag(size, type=int)
+}
+params: #P
+workflow: {name: "\(params.name)-\(params.size)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "other=Alice",
+        "-p",
+        "size=0x10",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["name"], "Alice");
+    assert_eq!(report["params"]["size"], 16);
+
+    let Some(cue) = cue_command() else {
+        return;
+    };
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--cue",
+        &cue,
+        "--evaluator",
+        "cue",
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "other=Alice",
+        "-p",
+        "size=0x10",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
