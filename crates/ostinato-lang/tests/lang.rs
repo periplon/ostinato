@@ -2509,6 +2509,11 @@ fn live_struct_sources_and_constant_conditions_keep_cycles() {
         "let X = #A\n#A: {for k, x in {a: 1} {w: X}}\nparams: {v: 1}",
         "let X = #A\n#A: {if 1 == 1 {v: X}}\nparams: {v: 1}",
         "let C = true\nlet X = #A\n#A: {if C {v: X}}\nparams: {v: 1}",
+        "let C = 1 == 1\nlet X = #A\n#A: {if C {v: X}}\nparams: {v: 1}",
+        "let C = !false\nlet X = #A\n#A: {if C {v: X}}\nparams: {v: 1}",
+        "let C = true && true\nlet X = #A\n#A: {if C {v: X}}\nparams: {v: 1}",
+        "let S = {a: 1}\nlet X = #A\n#A: {for k, x in S {w: X}}\nparams: {v: 1}",
+        "let C = 1 == 1\nlet X = #A\n#A: {v: [for i in [1] if C {X}]}\nparams: {v: 1}",
         "let X = #A\n#A: {if \"a\" < \"b\" {v: X}}\nparams: {v: 1}",
     ] {
         let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
@@ -2520,6 +2525,10 @@ fn live_struct_sources_and_constant_conditions_keep_cycles() {
 
     for source in [
         "let X = #A\n#A: {for k, x in {} {w: X}}\nparams: {v: 1}",
+        "let S = {}\nlet X = #A\n#A: {for k, x in S {w: X}}\nparams: {v: 1}",
+        "let C = 1 == 2\nlet X = #A\n#A: {if C {v: X}}\nparams: {v: 1}",
+        "let C = 1 == 1\nlet X = #A\n#A: {if C && false {v: X}}\nparams: {v: 1}",
+        "let X = #A\n#Helper: {ok: bool, if ok && true {v: X}}\nparams: {v: 1}",
         "let X = #A\n#A: {if 1 == 2 {v: X}}\nparams: {v: 1}",
         "let C = false\nlet X = #A\n#A: {if C {v: X}}\nparams: {v: 1}",
         "let X = #A\n#A: {if \"b\" < \"a\" {v: X}}\nparams: {v: 1}",

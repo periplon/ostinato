@@ -210,25 +210,23 @@ impl AliasCtx {
             Expr::Unary(UnOp::Not, inner, _) => {
                 self.const_bool(inner, chain, depth + 1).map(|value| !value)
             }
-            Expr::Ident(_, _) => match self.const_scalar(expr, chain, depth + 1)? {
-                Scalar::Bool(value) => Some(value),
-                _ => None,
-            },
+            Expr::Ident(name, _) => {
+                for scope in chain.iter().rev() {
+                    if let Some(value) = self.scopes[*scope].let_values.get(name) {
+                        return self.const_bool(value, chain, depth + 1);
+                    }
+                }
+                None
+            }
             Expr::Binary(op, left, right, _) => match op {
-                BinOp::And => {
-                    if self.const_bool(left, chain, depth + 1) == Some(false) {
-                        Some(false)
-                    } else {
-                        self.const_bool(right, chain, depth + 1)
-                    }
-                }
-                BinOp::Or => {
-                    if self.const_bool(left, chain, depth + 1) == Some(true) {
-                        Some(true)
-                    } else {
-                        self.const_bool(right, chain, depth + 1)
-                    }
-                }
+                BinOp::And => Some(
+                    self.const_bool(left, chain, depth + 1)?
+                        && self.const_bool(right, chain, depth + 1)?,
+                ),
+                BinOp::Or => Some(
+                    self.const_bool(left, chain, depth + 1)?
+                        || self.const_bool(right, chain, depth + 1)?,
+                ),
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     let left = self.const_scalar(left, chain, depth + 1)?;
                     let right = self.const_scalar(right, chain, depth + 1)?;
@@ -247,7 +245,25 @@ impl AliasCtx {
         match expr {
             Expr::List(items, _) => !items.is_empty(),
             Expr::Struct(items, _) => self.struct_has_required(items, chain, depth + 1),
+            Expr::ListComp { clauses, .. } => clauses.iter().all(|clause| match clause {
+                CompClause::For { source, .. } => self.static_non_empty(source, chain, depth + 1),
+                CompClause::If { cond, .. } => {
+                    self.const_bool(cond, chain, depth + 1) == Some(true)
+                }
+            }),
+            Expr::Unify(left, right, _) => {
+                self.static_non_empty(left, chain, depth + 1)
+                    && self.static_non_empty(right, chain, depth + 1)
+            }
             Expr::Paren(inner, _) => self.static_non_empty(inner, chain, depth + 1),
+            Expr::Ident(name, _) => {
+                for scope in chain.iter().rev() {
+                    if let Some(value) = self.scopes[*scope].let_values.get(name) {
+                        return self.static_non_empty(value, chain, depth + 1);
+                    }
+                }
+                false
+            }
             _ => false,
         }
     }

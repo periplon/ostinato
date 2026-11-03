@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.15
+
+Constant folding and short-circuit corrections.
+
+- Static cycle gating resolves `let` bindings to full constant expressions
+  (comparisons, negation, `&&`/`||`) and to struct/list sources, including list
+  comprehensions and unifications.
+- `&&`/`||` fold only when both operands are statically known, so an incomplete
+  operand is not treated as dead.
+- 156 tests (24 CLI E2E, 1 conformance, 121 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.14
 
 Generated quoted optionals and constant gating.
