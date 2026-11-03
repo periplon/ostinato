@@ -3497,3 +3497,91 @@ fn escaped_slash_case_mapping_and_decimal_ranges() {
         assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
     }
 }
+
+#[test]
+fn regex_class_complements_and_repeat_scanner_are_re2_compatible() {
+    let source = r#"
+package demo
+import "regexp"
+a: regexp.Match("^[\\D]+$", "١٢")
+b: regexp.Match("^[\\W]+$", "é")
+c: regexp.Match("^[\\S]+$", " ")
+d: regexp.Valid("[a{1001}]")
+e: regexp.Valid("\\Q{1001}\\E")
+f: regexp.Valid("\\{1001\\}")
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "regexp".to_owned(),
+        ostinato_lang::builtin_module("regexp").expect("regexp"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], true);
+    assert_eq!(json["b"], true);
+    assert_eq!(json["c"], true);
+    assert_eq!(json["d"], true);
+    assert_eq!(json["e"], true);
+    assert_eq!(json["f"], true);
+
+    for source in [
+        r#"a: regexp.Valid("[\\b]")"#,
+        r#"a: regexp.Valid("[\\Qa-z\\E]")"#,
+        r#"a: regexp.Valid("\\{\\d{1001}\\}")"#,
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\nimport \"regexp\"\n{source}\n"))
+            .expect("parse");
+        assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
+    }
+}
+
+#[test]
+fn params_siblings_numeric_literals_and_bytes_concat() {
+    let source = r#"
+package demo
+params: {host: string | *"example.com", url: "http://\(params.host)/api"}
+a: .5
+b: 5.
+c: 1.e2
+d: >=.5 & <1 & 0.75
+e: 'a' + 'b'
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["url"], "http://example.com/api");
+    assert_eq!(json["a"], 0.5);
+    assert_eq!(json["b"], 5.0);
+    assert_eq!(json["c"], 100.0);
+    assert_eq!(json["d"], 0.75);
+    assert_eq!(json["e"], "YWI=");
+
+    let range = r#"
+package demo
+import "list"
+a: list.Range(0, 2, 1.0)
+b: list.Range(0, 2, 1.0) == [0, 1]
+c: "\(list.Range(0, 2, 1.0)[1])"
+"#;
+    let file = ostinato_lang::parse(range).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "list".to_owned(),
+        ostinato_lang::builtin_module("list").expect("list"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], serde_json::json!([0, 1]));
+    assert_eq!(json["b"], true);
+    assert_eq!(json["c"], "1");
+
+    let cycle = r#"
+package demo
+params: {a: params.a}
+"#;
+    let file = ostinato_lang::parse(cycle).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}

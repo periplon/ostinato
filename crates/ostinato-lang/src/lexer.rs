@@ -199,7 +199,9 @@ impl Lexer {
                         col,
                     });
                 }
-                c if c.is_ascii_digit() => {
+                c if c.is_ascii_digit()
+                    || (c == '.' && self.peek_n(1).is_some_and(|n| n.is_ascii_digit())) =>
+                {
                     out.push(Token {
                         tok: self.read_number(line, col)?,
                         line,
@@ -340,6 +342,10 @@ impl Lexer {
     fn read_number(&mut self, line: u32, col: u32) -> Result<Tok, LangError> {
         let mut text = String::new();
         let mut is_float = false;
+        if self.peek() == Some('.') && self.peek_n(1).is_some_and(|c| c.is_ascii_digit()) {
+            text.push('0');
+            is_float = true;
+        }
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() || c == '_' {
                 if c != '_' {
@@ -350,18 +356,23 @@ impl Lexer {
                 break;
             }
         }
-        if self.peek() == Some('.') && self.peek_n(1).is_some_and(|c| c.is_ascii_digit()) {
-            is_float = true;
-            text.push('.');
-            self.bump();
-            while let Some(c) = self.peek() {
-                if c.is_ascii_digit() || c == '_' {
-                    if c != '_' {
-                        text.push(c);
+        if self.peek() == Some('.') {
+            let after_dot = self.peek_n(1);
+            let selector =
+                after_dot.is_some_and(|c| Tok::is_ident_start(c) && !matches!(c, 'e' | 'E'));
+            if !selector {
+                is_float = true;
+                text.push('.');
+                self.bump();
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_digit() || c == '_' {
+                        if c != '_' {
+                            text.push(c);
+                        }
+                        self.bump();
+                    } else {
+                        break;
                     }
-                    self.bump();
-                } else {
-                    break;
                 }
             }
         }
@@ -384,6 +395,9 @@ impl Lexer {
             }
         }
         if is_float {
+            if text.ends_with('.') {
+                text.push('0');
+            }
             let value = BigDecimal::from_str(&text)
                 .map_err(|_| LangError::parse(line, col, format!("invalid float `{text}`")))?;
             return Ok(Tok::Float(value));

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.6.9
+
+Regex, params and numeric edge corrections.
+
+- RE2 complement classes inside `[...]` use ASCII ranges; `\b`/`\B`/`\Q`
+  inside classes are rejected like Go.
+- Repeat-count scanning is escape/class/quote aware and still enforces the
+  1000 limit.
+- `list.Range` canonicalizes integral decimal results to integers.
+- `params` sibling references (`params.host`) resolve during parameter
+  evaluation; true self-cycles still fail cleanly.
+- Numeric literals accept `.5`, `5.` and `1.e2`; bytes support `+`.
+- 199 tests (34 CLI E2E, 1 conformance, 154 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.8
 
 Open-list, regex and time corrections.

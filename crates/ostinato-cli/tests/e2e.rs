@@ -1649,15 +1649,40 @@ workflow: {name: "\(params.name)-\(params.size)-\(params.note)", steps: {s: {kin
 }
 
 #[test]
-fn params_self_reference_with_overrides_fails_cleanly() {
+fn params_siblings_resolve_and_true_cycles_fail_cleanly() {
     let directory = tempfile::tempdir().expect("tempdir");
     let db = directory.path().join("db.sqlite");
-    let workflow = directory.path().join("params-cycle.cue");
+    let workflow = directory.path().join("params-sibling.cue");
     write(
         &workflow,
         r#"
 package demo
 params: {a: int @tag(a, type=int), b: params.a}
+workflow: {name: "\(params.b)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "a=2",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json(&output)["params"]["b"], 2);
+
+    let cycle = directory.path().join("params-cycle.cue");
+    write(
+        &cycle,
+        r#"
+package demo
+params: {a: params.a}
 workflow: {name: "x", steps: {s: {kind: "noop"}}}
 "#,
     );
@@ -1665,9 +1690,7 @@ workflow: {name: "x", steps: {s: {kind: "noop"}}}
         "--db",
         db.to_str().expect("db"),
         "validate",
-        workflow.to_str().expect("workflow"),
-        "-p",
-        "a=2",
+        cycle.to_str().expect("workflow"),
     ]);
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
