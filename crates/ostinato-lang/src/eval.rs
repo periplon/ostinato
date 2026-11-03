@@ -259,8 +259,12 @@ impl Value {
                 stack.pop();
                 result
             }
-            // CUE compares open-list types as values (`[...int] == [...string]`).
-            Self::OpenList(_) | Self::OpenListPrefix(_, _) => true,
+            // CUE compares open-list types as values (`[...int] == [...string]`),
+            // but fixed prefix elements must themselves be concrete.
+            Self::OpenList(_) => true,
+            Self::OpenListPrefix(prefix, _) => prefix
+                .iter()
+                .all(|value| value.is_fully_concrete_inner(stack)),
             Self::Bounds(_)
             | Self::Type(_)
             | Self::Builtin(_)
@@ -5418,7 +5422,11 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
                 });
             }
             let merged_tail = match (tail.as_deref(), element.as_deref()) {
-                (Some(tail), Some(element)) => Some(Box::new(unify_values(tail, element, span)?)),
+                (Some(tail), Some(element)) => match unify_values(tail, element, span) {
+                    Ok(value) => Some(Box::new(value)),
+                    Err(err) if err.is_conflict() => return Ok(Value::List(out)),
+                    Err(err) => return Err(err),
+                },
                 (Some(tail), None) => Some(Box::new(tail.clone())),
                 (None, Some(element)) => Some(Box::new(element.clone())),
                 (None, None) => None,
@@ -5450,7 +5458,11 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
             }
             let tail = match (left_tail, right_tail) {
                 (None, None) => None,
-                (Some(left), Some(right)) => Some(Box::new(unify_values(left, right, span)?)),
+                (Some(left), Some(right)) => match unify_values(left, right, span) {
+                    Ok(value) => Some(Box::new(value)),
+                    Err(err) if err.is_conflict() => return Ok(Value::List(prefix)),
+                    Err(err) => return Err(err),
+                },
                 (Some(tail), None) | (None, Some(tail)) => Some(tail.clone()),
             };
             Ok(Value::OpenListPrefix(prefix, tail))
@@ -5468,9 +5480,11 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
         }
         (Value::OpenList(left), Value::OpenList(right)) => match (left, right) {
             (None, None) => Ok(Value::OpenList(None)),
-            (Some(left), Some(right)) => Ok(Value::OpenList(Some(Box::new(unify_values(
-                left, right, span,
-            )?)))),
+            (Some(left), Some(right)) => match unify_values(left, right, span) {
+                Ok(value) => Ok(Value::OpenList(Some(Box::new(value)))),
+                Err(err) if err.is_conflict() => Ok(Value::List(Vec::new())),
+                Err(err) => Err(err),
+            },
             (Some(element), None) | (None, Some(element)) => {
                 Ok(Value::OpenList(Some(element.clone())))
             }
