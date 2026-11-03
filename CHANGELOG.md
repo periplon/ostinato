@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.7.5
+
+Identifier/quoting namespace split.
+
+- Identifier selectors and aliases for `_name` resolve the hidden field, never
+  a quoted `"_name"` twin; identifier selection fails when only the quoted
+  field exists, matching CUE.
+- Comprehension key bindings use displayed labels for internal-prefix quoted
+  labels.
+- 221 tests (35 CLI E2E, 1 conformance, 175 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.4
 
 Hidden-field hygiene and quoted-selector corrections.
