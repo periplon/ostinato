@@ -606,6 +606,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         definition_context: RefCell::new(None),
         next_definition: RefCell::new(None),
         next_injections: RefCell::new(None),
+        generated_definitions: RefCell::new(BTreeMap::new()),
         skip_cache: Cell::new(false),
     };
     if let Json::Object(map) = context {
@@ -729,6 +730,7 @@ struct Frame<'a> {
     definition_context: RefCell<Option<String>>,
     next_definition: RefCell<Option<String>>,
     next_injections: RefCell<Option<BTreeMap<String, Value>>>,
+    generated_definitions: RefCell<BTreeMap<String, Value>>,
     skip_cache: Cell<bool>,
 }
 
@@ -772,6 +774,7 @@ impl<'a> Frame<'a> {
             definition_context: RefCell::new(None),
             next_definition: RefCell::new(None),
             next_injections: RefCell::new(None),
+            generated_definitions: RefCell::new(BTreeMap::new()),
             skip_cache: Cell::new(false),
         };
 
@@ -1014,9 +1017,17 @@ impl<'a> Frame<'a> {
             return fields.contains_key(&hidden).then_some(hidden);
         }
         if name.starts_with('#') {
-            return fields
+            if fields
                 .get(name)
                 .is_some_and(|definition| definition.definition)
+            {
+                return Some(name.to_owned());
+            }
+            drop(fields);
+            return self
+                .generated_definitions
+                .borrow()
+                .contains_key(name)
                 .then(|| name.to_owned());
         }
         if fields.contains_key(name) {
@@ -1163,9 +1174,21 @@ impl<'a> Frame<'a> {
         bindings: HashMap<String, Value>,
     ) -> Result<(), LangError> {
         let child = Frame::new(body, Some(self), bindings)?;
-        let Value::Struct(values) = child.to_struct_value()? else {
+        let value = child.to_struct_value_mode(true)?;
+        let Value::Definition {
+            fields: values,
+            definitions,
+            ..
+        } = value
+        else {
             return Ok(());
         };
+        for (key, value) in definitions {
+            self.generated_definitions
+                .borrow_mut()
+                .insert(key.clone(), value);
+            self.materialized.borrow_mut().insert(key);
+        }
         for (key, value) in values {
             let value = match self.generated_optionals.borrow_mut().remove(&key) {
                 Some(constraint) => unify_values(&value, &constraint, Span::default())?,
@@ -1283,6 +1306,11 @@ impl<'a> Frame<'a> {
         {
             return Ok(value.clone());
         }
+        if name.starts_with('#')
+            && let Some(value) = self.generated_definitions.borrow().get(name).cloned()
+        {
+            return Ok(value);
+        }
         if let Some(parent) = self.parent
             && parent.has_name(name)
         {
@@ -1307,6 +1335,7 @@ impl<'a> Frame<'a> {
 
     fn has_local_name(&self, name: &str) -> bool {
         self.bindable_field_key(name).is_some()
+            || self.generated_definitions.borrow().contains_key(name)
             || self.vars.borrow().contains_key(name)
             || self.lets.borrow().contains_key(name)
             || self.aliases.borrow().contains_key(name)
@@ -1749,6 +1778,9 @@ impl<'a> Frame<'a> {
         if let Some(value) = self.values.borrow().get(key) {
             return Ok(value.clone());
         }
+        if let Some(value) = self.generated_definitions.borrow().get(key).cloned() {
+            return Ok(value);
+        }
         let (exprs, is_definition) = {
             let fields = self.fields.borrow();
             let Some(def) = fields.get(key) else {
@@ -2064,6 +2096,7 @@ impl<'a> Frame<'a> {
         let mut names: Vec<String> = child.fields.borrow().keys().cloned().collect();
         names.extend(child.values.borrow().keys().cloned());
         names.extend(child.generated_optionals.borrow().keys().cloned());
+        names.extend(child.generated_definitions.borrow().keys().cloned());
         names.sort();
         names.dedup();
         let mut fields = BTreeMap::new();
@@ -2085,6 +2118,10 @@ impl<'a> Frame<'a> {
                 continue;
             }
             let display = output_field_name(&name);
+            if let Some(value) = child.generated_definitions.borrow().get(&name).cloned() {
+                definitions.insert(display, value);
+                continue;
+            }
             let defined = child.fields.borrow().get(&name).cloned();
             if defined.as_ref().is_some_and(|field| field.definition) {
                 let is_optional = defined.as_ref().is_some_and(|field| field.optional);
@@ -2467,6 +2504,10 @@ impl<'a> Frame<'a> {
                 .map(|(name, _)| name.clone())
                 .collect()
         };
+        let mut names = names;
+        names.extend(self.generated_definitions.borrow().keys().cloned());
+        names.sort();
+        names.dedup();
         let mut fields_out = BTreeMap::new();
         let mut definitions_out = BTreeMap::new();
         for name in names {
@@ -2491,6 +2532,11 @@ impl<'a> Frame<'a> {
                 definitions_out.insert(display, value);
             } else {
                 fields_out.insert(display, value);
+            }
+        }
+        if include_definitions {
+            for (name, value) in self.generated_definitions.borrow().iter() {
+                definitions_out.insert(output_field_name(name), value.clone());
             }
         }
         for (name, value) in self.values.borrow().iter() {

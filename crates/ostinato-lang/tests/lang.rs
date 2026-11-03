@@ -6119,3 +6119,27 @@ range: (list.Range(9223372036854775808, 9223372036854775811, 1)[0]) & int
         );
     }
 }
+
+#[test]
+fn comprehension_generated_definitions_are_selectable_and_hidden() {
+    let source = r#"
+package demo
+#D: {if true {#I: 3}, a: #D.#I, x: 1}
+#Nested: {if true {inner: {#I: 5}}, a: #Nested.inner.#I}
+#Both: {if true {#I: 6}, #J: 7, a: #Both.#I, b: #Both.#J}
+d: #D
+nested: #Nested
+both: #Both
+"#;
+    let file = ostinato_lang::parse(source).expect("parse generated definitions");
+    let value = ostinato_lang::eval_file(&file).expect("eval generated definitions");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["d"]["a"], 3);
+    assert_eq!(json["d"]["x"], 1);
+    assert!(json["d"].get("#I").is_none());
+    assert_eq!(json["nested"]["a"], 5);
+    assert_eq!(json["both"]["a"], 6);
+    assert_eq!(json["both"]["b"], 7);
+    assert!(json["both"].get("#I").is_none());
+    assert!(json["both"].get("#J").is_none());
+}

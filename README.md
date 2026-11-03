@@ -32,11 +32,11 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 
 ## Status
 
-`v0.15.2` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
+`v0.16.0` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
 
 ## Features
 
-- **Rust CUE front-end (default)**: packages, imports/modules, `let`, comprehensions, nested field shorthand, closed definitions with `...` and patterns, field aliases, bounds, exact decimals and arbitrary-precision integers, unification, disjunctions/defaults, optional fields, `strings`/`list`/`regexp`/`math`/`time` builtins, single-line/multiline/interpolated bytes literals, CUE-compatible multiline strings, `@tag` injection (top-level and nested) and attributes are implemented in Rust.
+- **Rust CUE front-end (default)**: packages, imports/modules, `let`, comprehensions, nested field shorthand, closed definitions with `...`, comprehension-generated definitions and patterns, field aliases, bounds, exact decimals and arbitrary-precision integers, unification, disjunctions/defaults, optional fields, `strings`/`list`/`regexp`/`math`/`time` builtins, single-line/multiline/interpolated bytes literals, CUE-compatible multiline strings, `@tag` injection (top-level and nested) and attributes are implemented in Rust.
 - **Official CUE oracle**: `--evaluator cue` and the conformance suite compare the Rust evaluator against CUE v0.17.1.
 - **Durable**: SQLite WAL + `synchronous=FULL`; each parallel group commits atomically with its audit events.
 - **Resumable**: `ostinato resume <run>` skips completed work using a stable plan index.
@@ -73,7 +73,7 @@ Verify:
 
 ```sh
 ostinato doctor
-# ostinato 0.15.2
+# ostinato 0.16.0
 # evaluator rust (required CUE workflow semantics; default)
 # oracle cue version v0.17.1
 # db .ostinato/ostinato.db

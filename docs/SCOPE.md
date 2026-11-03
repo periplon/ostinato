@@ -33,6 +33,7 @@ workflow outside the Rust surface has a supported escape hatch.
 - self-selection of a definition's or struct field's own fields
   (`#D: {a: #D.b, b: 1}`, `x: {a: x.b, b: 1}`), including nested and composed
   definitions;
+- comprehension-generated definitions (`#D: {if true {#I: 3}, a: #D.#I}`);
 - arbitrary-precision integer literals and exact integer arithmetic
   (add/subtract/multiply, comparison, typing, bounds and JSON export);
 - required fields that depend on optional fields materialized by unification
@@ -64,7 +65,6 @@ workflow outside the Rust surface has a supported escape hatch.
 | Optional-dependent required fields through compound optionals | Optional fields whose value is a struct, list, list-of-list or definition (`cfg?: {...}`, `ps?: [...]`, `e?: #E`), nested optional fields inside a required struct, fixed-length optional lists, and the root `params: #P & {...}` form are not resolved; primitive optional fields are implemented |
 | Self-selection through split composed non-definition literals | `x: {a: x.b} & {b: 1}` is not resolved; definition self-selection, regular struct self-selection and composed definitions are implemented |
 | Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |
-| Comprehension-generated definitions | `#D: {if true {#I: 3}, ...}` drops the generated `#I`; explicit definitions and comprehension-generated regular fields are supported |
 | Bare references to comprehension-generated fields | `x: {if true {b: 1}, a: b}` is accepted although CUE requires `x.b`; use an explicit field or selector |
 | Tool packages (`tool/...`, `@cmd` tool commands) | Ostinato has its own workflow engine; `_tool.cue` files stay excluded by build semantics and tool commands are not run |
 | `let` cycles mediated by fields (`let X = f, f: X`) | Direct and indirect `let` cycles are rejected; a cycle routed through a field is reported as an error rather than solved as an incomplete value. Use the oracle for that shape |
