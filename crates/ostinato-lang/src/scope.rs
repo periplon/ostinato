@@ -824,6 +824,7 @@ impl AliasCtx {
             Expr::Null(_)
             | Expr::Bool(_, _)
             | Expr::Int(_, _)
+            | Expr::BigInt(_, _)
             | Expr::Float(_, _)
             | Expr::Bytes(_, _) => {}
         }
@@ -1140,6 +1141,7 @@ fn rename_expr(expr: &mut Expr, locals: &HashMap<String, String>, shadowed: &Has
         Expr::Null(_)
         | Expr::Bool(_, _)
         | Expr::Int(_, _)
+        | Expr::BigInt(_, _)
         | Expr::Float(_, _)
         | Expr::Bytes(_, _) => {}
     }

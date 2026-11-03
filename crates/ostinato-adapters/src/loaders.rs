@@ -649,6 +649,7 @@ fn inject_field_expr(expr: &mut Expr, id: usize, value: &Expr) -> bool {
         Expr::Null(_)
         | Expr::Bool(_, _)
         | Expr::Int(_, _)
+        | Expr::BigInt(_, _)
         | Expr::Float(_, _)
         | Expr::Bytes(_, _)
         | Expr::Ident(_, _)

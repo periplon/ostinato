@@ -33,6 +33,8 @@ workflow outside the Rust surface has a supported escape hatch.
 - self-selection of a definition's or struct field's own fields
   (`#D: {a: #D.b, b: 1}`, `x: {a: x.b, b: 1}`), including nested and composed
   definitions;
+- arbitrary-precision integer literals and exact integer arithmetic
+  (add/subtract/multiply, comparison, typing, bounds and JSON export);
 - required fields that depend on optional fields materialized by unification
   (`#P: {name?: string, greeting: "Hello \\(name)"}`; `#P & {name: "Alice"}`);
 - `strings`, `list`, `regexp`, `math` and `time` builtins (including the full
@@ -54,9 +56,9 @@ workflow outside the Rust surface has a supported escape hatch.
 | Optional/open metadata on non-definition struct literals | `base: {b?: int}; #D: base` and `{b?: string} & {b: 1}` are out of scope; use a definition literal or the oracle |
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
-| Arbitrary-precision integer literals | Decimal values are arbitrary precision; integer literals must fit in `i64` |
 | `math` transcendental precision | `Pow`/`Exp`/`Log` and other transcendental helpers use native floating-point conversion where CUE uses its 34-digit decimal context; JSON export matches, but string interpolation can show fewer digits |
 | Decimal division digit count | Division uses `BigDecimal` precision, which can differ from CUE's 34-digit decimal expansion |
+| Integer arithmetic beyond 34 significant digits | CUE rounds arithmetic results to its 34-digit decimal context; Ostinato keeps exact `BigInt` results. Literals, comparisons and <=34-digit arithmetic match |
 | JSON export of high-precision decimals | Arithmetic is arbitrary precision, but `to_json` rounds non-integral values through f64; string interpolation and comparisons use the exact value |
 | Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |
 | Optional-dependent required fields through compound optionals | Optional fields whose value is a struct, list, list-of-list or definition (`cfg?: {...}`, `ps?: [...]`, `e?: #E`), nested optional fields inside a required struct, fixed-length optional lists, and the root `params: #P & {...}` form are not resolved; primitive optional fields are implemented |

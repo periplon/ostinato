@@ -13,6 +13,7 @@ regex = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 bigdecimal = "0.4.11"
+num-bigint = { workspace = true }
 stacker = { workspace = true }
 
 [lints]

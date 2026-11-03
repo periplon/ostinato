@@ -793,6 +793,7 @@ fn assign_expr_impl(expr: &mut Expr, next: &mut usize) {
         Expr::Null(_)
         | Expr::Bool(_, _)
         | Expr::Int(_, _)
+        | Expr::BigInt(_, _)
         | Expr::Float(_, _)
         | Expr::Bytes(_, _)
         | Expr::Ident(_, _)

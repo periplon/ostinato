@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.14.2 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.15.0 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -31,7 +31,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | Pattern constraints (`[string]: T`, `[=~"re"]: T`) | ✅ | String and regex patterns; other pattern expressions are out of scope |
 | Defaults and multi-branch disjunctions | ✅ | Alternatives, defaults, `&` narrowing, disjunction intersection and duplicate-default collapsing |
 | Numeric/string bounds | ✅ | `>=`, `>`, `<=`, `<`, `!=`, `=~`, `!~`; conjunction with values, types and disjunctions |
-| Exact numbers | ✅ | Decimal literals and arithmetic use arbitrary-precision `BigDecimal`; integer literals fit in `i64`; division digit count and JSON export rounding may differ |
+| Exact numbers | ✅ | Decimal literals and arithmetic use arbitrary-precision `BigDecimal`; integer literals and arithmetic use `BigInt` (exact beyond CUE's 34-digit arithmetic context); division digit count and JSON export rounding may differ |
 | Optional fields (`foo?:`) | ✅ | Omitted from the concrete export, matching `cue export` |
 | Open lists (`[...T]`, `[x, ...T]`) | ✅ | Prefix and element constraints are unified |
 | Type constraints (`string`, `int`, `number`, `bool`) | ✅ | Basic constraint checking; bounds intersect with numeric/string types |
