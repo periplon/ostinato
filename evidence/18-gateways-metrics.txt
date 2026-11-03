@@ -1,4 +1,4 @@
-### /Users/joanmarc/dailywork/jmca/ostinato-gateways/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.dkgvWCkNdZ/gateway.sqlite metrics --run d210862f-eb0e-4225-b826-dde3c1cfad45 --format prometheus
+### /Users/joanmarc/dailywork/jmca/ostinato-gateways/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.dtYcj0WtnS/gateway.sqlite metrics --run d5d8ce0e-3292-4530-a6ac-9964f2cca4aa --format prometheus
 
 # HELP ostinato_runs_total Runs started.
 # TYPE ostinato_runs_total counter
