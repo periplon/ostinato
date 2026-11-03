@@ -12,6 +12,11 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.7.20
+
+- Params cycle precision, dynamic index selectors and deferred generation.
+- 249 tests (35 CLI E2E, 1 conformance, 203 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.19
 
 - Dependency-chained params comprehensions and generated nested groups.

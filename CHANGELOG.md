@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.7.20
+
+Params cycle precision and deferred generation.
+
+- Absolute `params.<path>` lookups no longer resolve against nested sibling
+  shadows, so true cycles are rejected.
+- Dynamic index followed by a selector (`params[k].x`) flattens into a params
+  path.
+- Params expansion retries deferred comprehensions, allowing items that depend
+  on later generated siblings.
+- 249 tests (35 CLI E2E, 1 conformance, 203 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.19
 
 Dependency-chained params and generated groups.
