@@ -110,7 +110,13 @@ fn evaluate_path(
         if let Some(infos) = tags.get(key) {
             for info in infos {
                 let value = parse_override_value(raw, Some(info.ty))?;
-                if info.path.len() == 1 {
+                if let Some(origin) = info.origin.as_ref()
+                    && origin.starts_with('#')
+                {
+                    combined
+                        .items
+                        .push(nested_constraint_item(origin, &info.origin_path, value)?);
+                } else if info.path.len() == 1 {
                     injected.insert(info.field.clone(), value);
                 } else {
                     combined.items.push(nested_params_item(&info.path, value)?);
@@ -534,10 +540,24 @@ fn validate_number_literal(text: &str) -> Option<String> {
     Some(normalized)
 }
 
-fn nested_params_item(
-    path: &[String],
+fn field_item(label: String, quoted: bool, definition: bool, value: Expr) -> StructItem {
+    let span = Span::default();
+    StructItem::Field(Field {
+        label: Label::Name(label, span),
+        value,
+        optional: false,
+        definition,
+        alias: None,
+        quoted,
+        attributes: Vec::new(),
+        span,
+    })
+}
+
+fn nested_expr(
+    path: &[ostinato_lang::TagSegment],
     value: Value,
-) -> Result<StructItem, ostinato_lang::LangError> {
+) -> Result<Expr, ostinato_lang::LangError> {
     let json = value.to_json().ok_or_else(|| {
         ostinato_lang::LangError::Workflow("parameter value is not concrete".to_owned())
     })?;
@@ -548,50 +568,33 @@ fn nested_params_item(
     let mut expr = ostinato_lang::parse_expr_fragment(&text)?;
     for segment in path.iter().rev() {
         expr = Expr::Struct(
-            vec![StructItem::Field(Field {
-                label: Label::Name(segment.clone(), span),
-                value: expr,
-                optional: false,
-                definition: false,
-                alias: None,
-                quoted: false,
-                attributes: Vec::new(),
-                span,
-            })],
+            vec![field_item(
+                segment.name.clone(),
+                segment.quoted,
+                false,
+                expr,
+            )],
             span,
         );
     }
-    Ok(StructItem::Field(Field {
-        label: Label::Name("params".to_owned(), span),
-        value: expr,
-        optional: false,
-        definition: false,
-        alias: None,
-        quoted: false,
-        attributes: Vec::new(),
-        span,
-    }))
+    Ok(expr)
 }
 
-fn params_path_exists(params: &BTreeMap<String, Value>, path: &[String]) -> bool {
-    let Some(first) = path.first() else {
-        return false;
-    };
-    let Some(mut value) = params.get(first) else {
-        return false;
-    };
-    for segment in &path[1..] {
-        value = match value {
-            Value::Struct(map) | Value::Definition { fields: map, .. } => {
-                let Some(next) = map.get(segment) else {
-                    return false;
-                };
-                next
-            }
-            _ => return false,
-        };
-    }
-    true
+fn nested_params_item(
+    path: &[ostinato_lang::TagSegment],
+    value: Value,
+) -> Result<StructItem, ostinato_lang::LangError> {
+    let expr = nested_expr(path, value)?;
+    Ok(field_item("params".to_owned(), false, false, expr))
+}
+
+fn nested_constraint_item(
+    origin: &str,
+    path: &[ostinato_lang::TagSegment],
+    value: Value,
+) -> Result<StructItem, ostinato_lang::LangError> {
+    let expr = nested_expr(path, value)?;
+    Ok(field_item(origin.to_owned(), false, true, expr))
 }
 
 fn collect_parameter_tags(
@@ -639,11 +642,7 @@ fn parameters_json(
     };
     if !overrides.is_empty() {
         for key in overrides.keys() {
-            let known = tags.get(key).is_some_and(|infos| {
-                infos
-                    .iter()
-                    .all(|info| params_path_exists(params, &info.path))
-            });
+            let known = tags.contains_key(key);
             if !known && !params.contains_key(key) {
                 return Err(ostinato_lang::LangError::Workflow(format!(
                     "unknown parameter `{key}`; declare it under `params`"

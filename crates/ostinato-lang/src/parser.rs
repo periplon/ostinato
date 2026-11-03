@@ -576,6 +576,10 @@ impl Parser {
             let optional = self.eat(&Tok::Question);
             self.expect(&Tok::Colon, "`:`")?;
             let value = self.parse_field_value()?;
+            let mut attributes = Vec::new();
+            while matches!(self.peek_tok(), Tok::At) {
+                attributes.push(self.parse_attribute()?);
+            }
             Ok(Expr::Struct(
                 vec![StructItem::Field(Field {
                     label,
@@ -584,7 +588,7 @@ impl Parser {
                     definition,
                     alias,
                     quoted,
-                    attributes: Vec::new(),
+                    attributes,
                     span,
                 })],
                 span,

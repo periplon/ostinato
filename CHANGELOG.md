@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.8.1
+
+Nested `@tag` review corrections.
+
+- Tag collection is cycle-guarded, so recursive definitions no longer overflow
+  the stack before evaluation.
+- Definition-declared tags are injected into their declaration, so internal
+  dependents and reuses see the override.
+- Hidden and quoted `_name` nested groups accept `-p`, and nested paths retain
+  per-segment quoting.
+- Shorthand `db: host: string @tag(host)` attaches the attribute to the inner
+  field.
+- Added definition/hidden/quoted/shorthand conformance and e2e coverage.
+- 255 tests (39 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.0
 
 Nested `@tag` injection.
