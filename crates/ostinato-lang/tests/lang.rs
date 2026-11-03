@@ -3930,3 +3930,97 @@ X: {b: 1}
     let value = ostinato_lang::eval_file(&file).expect("repeated segment");
     assert_eq!(value.to_json().expect("json")["params"]["a"]["b"], 1);
 }
+
+#[test]
+fn closedness_through_let_mediated_definition_bodies() {
+    for source in [
+        "#P: {a: 1}\nlet L = #P & {b: 2}\n#Q: L\nparams: #Q",
+        "#P: {a: 1}\nlet L = #P\n#Q: L & {b: 2}\nparams: #Q",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "let-mediated closedness must be enforced: {source}"
+        );
+    }
+}
+
+#[test]
+fn root_params_patterns_constrain_fields() {
+    for source in [
+        "params: {[string]: int, a: \"x\"}",
+        "params: {[=~\"^x\"]: int, x1: \"bad\"}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "root params pattern must constrain: {source}"
+        );
+    }
+
+    let hidden = r#"
+package demo
+params: {[string]: int, _h: "x", a: 1}
+"#;
+    let file = ostinato_lang::parse(hidden).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("patterns do not match hidden fields");
+    assert_eq!(value.to_json().expect("json")["params"]["a"], 1);
+}
+
+#[test]
+fn nested_params_groups_see_lexical_siblings_through_paths() {
+    let source = r#"
+package demo
+params: {
+    host: "example.com"
+    db: {url: "http://\(host)/api"}
+}
+name: params.db.url
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("lexical sibling");
+    assert_eq!(
+        value.to_json().expect("json")["name"],
+        "http://example.com/api"
+    );
+}
+
+#[test]
+fn hidden_fields_are_evaluated_selected_and_conflict_checked() {
+    let selected = r#"
+package demo
+#P: {_h: 3, a: 1}
+v: #P._h
+"#;
+    let file = ostinato_lang::parse(selected).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("hidden select");
+    assert_eq!(value.to_json().expect("json")["v"], 3);
+
+    for source in [
+        "#P: {_h: int, a: 1}\nparams: #P & {_h: \"x\", a: 1}",
+        "params: {_h: 1, _h: 2}",
+        "params: {_h: 1 + \"x\"}",
+        "params: {q: {_h: 1, _h: 2}}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "hidden field must be evaluated: {source}"
+        );
+    }
+
+    let alias = r#"
+package demo
+params: {X=_h: 3, v: X}
+"#;
+    let file = ostinato_lang::parse(alias).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("hidden alias");
+    assert_eq!(value.to_json().expect("json")["params"]["v"], 3);
+
+    let literal = "package demo\nparams: {\"\u{3}a\": 1, a: 2}\n";
+    let file = ostinato_lang::parse(literal).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("literal internal-prefix label");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["\u{3}a"], 1);
+    assert_eq!(json["params"]["a"], 2);
+}
