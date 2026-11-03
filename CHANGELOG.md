@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.14
+
+Quoted definition lookups and override constraints.
+
+- Quoted params lookups never return cached definitions.
+- Parameter overrides re-apply generated optional constraints, so conflicting
+  `-p` values are rejected.
+- 238 tests (35 CLI E2E, 1 conformance, 192 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.13
 
 Optional/generated sentinel corrections.

@@ -1128,7 +1128,15 @@ impl<'a> Frame<'a> {
         if quoted {
             [escaped_field(name), prefixed_field(name), name.to_owned()]
                 .into_iter()
-                .find(|key| !is_hidden_key(key) && values.contains_key(key))
+                .find(|key| {
+                    !is_hidden_key(key)
+                        && values.contains_key(key)
+                        && !self
+                            .fields
+                            .borrow()
+                            .get(key)
+                            .is_some_and(|definition| definition.definition)
+                })
         } else if name.starts_with('_') {
             let key = hidden_field(name);
             values.contains_key(&key).then_some(key)
@@ -1754,6 +1762,14 @@ impl<'a> Frame<'a> {
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
         child.params_scope.set(true);
         child.expand(items)?;
+        let mut materialized_values = BTreeMap::new();
+        for name in child.materialized.borrow().iter() {
+            if let Some(key) = child.display_storage_key(name)
+                && let Some(value) = child.values.borrow().get(&key)
+            {
+                materialized_values.insert(display_field_name(name).to_owned(), value.clone());
+            }
+        }
         let overrides = self.overrides.borrow().clone();
         for (key, value) in &overrides {
             let known =
@@ -1789,6 +1805,10 @@ impl<'a> Frame<'a> {
                 })?
             } else {
                 value.clone()
+            };
+            let resolved = match materialized_values.get(key) {
+                Some(prior) => unify_values(prior, &resolved, span)?,
+                None => resolved,
             };
             child.values.borrow_mut().insert(key.clone(), resolved);
         }
