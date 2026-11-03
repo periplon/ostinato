@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.10.1
+
+Time layout parsing corrections.
+
+- Exact fractional layouts (`.000`) require exactly the declared number of
+  digits; trimmed layouts (`.999`) accept 1–10 digits (truncating to
+  nanoseconds) and a comma or period separator, matching Go.
+- Fractional seconds after a seconds field follow the same rule.
+- Zone abbreviations consume exactly three letters, so trailing text is
+  rejected like `time.Parse`.
+- 274 tests (48 CLI E2E, 1 conformance, 212 language, 6 domain, 3 store, 1 unit).
+
 ## v0.10.0
 
 Full Go time layouts and `time` helpers.
