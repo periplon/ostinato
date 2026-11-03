@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.0
+
+Numeric bounds and exact decimals.
+
+- Prefix bounds `>=`, `>`, `<=`, `<`, `!=`, `=~`, `!~` over numbers and strings,
+  with conjunction, type intersection, disjunction narrowing and defaults.
+- Decimal literals, exponents and arithmetic use arbitrary-precision
+  `BigDecimal`; `1.1 + 2.2 == 3.3` and `0.1 + 0.2 == 0.3` hold exactly.
+- `int` and float values remain distinct for unification.
+- 164 tests (24 CLI E2E, 1 conformance, 129 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.18
 
 Nested comprehension-body shadowing.

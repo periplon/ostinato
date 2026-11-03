@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use bigdecimal::BigDecimal;
+
 use crate::ast::{BinOp, CompClause, Expr, File, Label, Span, StrPart, StructItem, UnOp};
 use crate::error::LangError;
 
@@ -60,7 +62,7 @@ fn is_field_node(name: &str) -> bool {
 #[derive(Debug, Clone)]
 enum Scalar {
     Int(i64),
-    Float(f64),
+    Float(BigDecimal),
     String(String),
     Bool(bool),
 }
@@ -101,7 +103,7 @@ impl Scalar {
                 _ => None,
             },
             (Self::Int(a), Self::Float(b)) => {
-                let a = *a as f64;
+                let a = BigDecimal::from(*a);
                 Some(match op {
                     BinOp::Eq => a == *b,
                     BinOp::Ne => a != *b,
@@ -113,7 +115,7 @@ impl Scalar {
                 })
             }
             (Self::Float(a), Self::Int(b)) => {
-                let b = *b as f64;
+                let b = BigDecimal::from(*b);
                 Some(match op {
                     BinOp::Eq => *a == b,
                     BinOp::Ne => *a != b,
@@ -242,7 +244,7 @@ impl AliasCtx {
         }
         match expr {
             Expr::Int(value, _) => Some(Scalar::Int(*value)),
-            Expr::Float(value, _) => Some(Scalar::Float(*value)),
+            Expr::Float(value, _) => Some(Scalar::Float(value.clone())),
             Expr::Bool(value, _) => Some(Scalar::Bool(*value)),
             Expr::Paren(inner, _) => self.const_scalar(inner, chain, local, depth + 1),
             Expr::Str(parts, _) if parts.len() == 1 => match &parts[0] {
@@ -673,6 +675,7 @@ impl AliasCtx {
             Expr::Paren(inner, _) | Expr::Default(inner, _) => {
                 self.expr(inner, chain, shadowed, from)?;
             }
+            Expr::Bound(_, inner, _) => self.expr(inner, chain, shadowed, from)?,
             Expr::Select(base, _, _) => self.expr(base, chain, shadowed, from)?,
             Expr::Index(base, index, _) => {
                 self.expr(base, chain, shadowed, from)?;
@@ -1015,7 +1018,9 @@ fn rename_expr(expr: &mut Expr, locals: &HashMap<String, String>, shadowed: &Has
                 name.clone_from(renamed);
             }
         }
-        Expr::Paren(inner, _) => rename_expr(inner, locals, shadowed),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            rename_expr(inner, locals, shadowed);
+        }
         Expr::Select(base, _, _) => rename_expr(base, locals, shadowed),
         Expr::Index(base, index, _) => {
             rename_expr(base, locals, shadowed);
@@ -1075,7 +1080,7 @@ fn rename_expr(expr: &mut Expr, locals: &HashMap<String, String>, shadowed: &Has
             rename_expr(left, locals, shadowed);
             rename_expr(right, locals, shadowed);
         }
-        Expr::Unary(_, inner, _) | Expr::Default(inner, _) => {
+        Expr::Unary(_, inner, _) => {
             rename_expr(inner, locals, shadowed);
         }
         Expr::Str(parts, _) => {

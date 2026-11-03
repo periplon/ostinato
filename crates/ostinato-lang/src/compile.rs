@@ -560,7 +560,9 @@ fn dummy_value(value: &Value) -> Json {
             let index = defaults.first().copied().unwrap_or(0);
             alternatives.get(index).map_or(Json::Null, dummy_value)
         }
-        Value::Null | Value::Bottom | Value::Builtin(_) | Value::Conflict(_) => Json::Null,
+        Value::Bounds(_) | Value::Null | Value::Bottom | Value::Builtin(_) | Value::Conflict(_) => {
+            Json::Null
+        }
     }
 }
 
@@ -629,7 +631,11 @@ fn opt_int(map: &Struct, key: &str, path: &str) -> Result<Option<i64>, LangError
 fn opt_float(map: &Struct, key: &str, path: &str) -> Result<Option<f64>, LangError> {
     match map.get(key).map(Value::concretize) {
         None => Ok(None),
-        Some(Value::Float(value)) => Ok(Some(*value)),
+        Some(Value::Float(value)) => {
+            Ok(Some(value.to_string().parse::<f64>().map_err(|_| {
+                LangError::Workflow(format!("{path} must be a finite number"))
+            })?))
+        }
         Some(Value::Int(value)) => Ok(Some(*value as f64)),
         Some(other) => Err(LangError::Workflow(format!(
             "{path} must be a number, found {}",

@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinOp, CompClause, Expr, Field, File, ImportDecl, Label, Pattern, Span, StrPart, StructItem,
-    UnOp,
+    BinOp, BoundOp, CompClause, Expr, Field, File, ImportDecl, Label, Pattern, Span, StrPart,
+    StructItem, UnOp,
 };
 use crate::error::LangError;
 use crate::lexer::{Tok, Token, lex};
@@ -653,6 +653,20 @@ impl Parser {
             Tok::Star => {
                 self.bump();
                 Ok(Expr::Default(Box::new(self.parse_unary()?), span))
+            }
+            Tok::Ge | Tok::Gt | Tok::Le | Tok::Lt | Tok::NotEq | Tok::Match | Tok::BangMatch => {
+                let op = match self.bump().tok {
+                    Tok::Ge => BoundOp::Ge,
+                    Tok::Gt => BoundOp::Gt,
+                    Tok::Le => BoundOp::Le,
+                    Tok::Lt => BoundOp::Lt,
+                    Tok::NotEq => BoundOp::Ne,
+                    Tok::Match => BoundOp::Match,
+                    Tok::BangMatch => BoundOp::NotMatch,
+                    _ => unreachable!("bound operator"),
+                };
+                let operand = self.parse_unary()?;
+                Ok(Expr::Bound(op, Box::new(operand), span))
             }
             _ => self.parse_postfix(),
         }
