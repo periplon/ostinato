@@ -24,6 +24,17 @@ params: {
 	split:        time.Split("2024-03-05T06:07:08.12Z")
 	duration:     time.FormatDuration(3723000500000)
 	second:       time.Second
+	fraction_exact:      time.FormatString("15:04:05.000", "2024-03-05T06:07:08.123456789Z")
+	fraction_exact_zero: time.FormatString("15:04:05.000", "2024-03-05T06:07:08Z")
+	fraction_trim:       time.FormatString("15:04:05.999", "2024-03-05T06:07:08.123456789Z")
+	fraction_comma:      time.FormatString("15:04:05,000", "2024-03-05T06:07:08.123456789Z")
+	fraction_long:       time.Parse(time.RFC3339Nano, "2024-03-05T06:07:08.123456789012Z")
+	zone_seconds:        time.Parse("2006-01-02T15:04:05Z070000", "2024-03-05T06:07:08+020030")
+	zone_gmt:            time.Parse("MST", "GMT+2")
+	zone_aest:           time.Parse("MST", "AEST")
+	space_run:           time.Parse("2006-01-02 15:04", "2024-03-05  06:07")
+	hour_short:          time.Parse("15:04", "2:04")
+	pm_no_hour:          time.Parse("15:04PM", "15:04PM")
 }
 
 workflow: {
