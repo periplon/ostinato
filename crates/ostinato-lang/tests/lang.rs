@@ -3701,3 +3701,111 @@ f: regexp.Valid("\\{1001\\}")
         assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
     }
 }
+
+#[test]
+fn params_paths_resolve_against_the_params_root() {
+    let nested = r#"
+package demo
+params: {a: {x: 99, inner: {x: 1, y: params.a.x}}}
+"#;
+    let file = ostinato_lang::parse(nested).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("nested path");
+    assert_eq!(
+        value.to_json().expect("json")["params"]["a"]["inner"]["y"],
+        99
+    );
+
+    let parent = r#"
+package demo
+params: {server: {tls: {port: 443, url: params.server.tls.port}}}
+"#;
+    let file = ostinato_lang::parse(parent).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("parent path");
+    assert_eq!(
+        value.to_json().expect("json")["params"]["server"]["tls"]["url"],
+        443
+    );
+
+    let outer_let = r#"
+package demo
+let h = params.db.host
+params: {db: {host: string | *"h", url: "\(h)/"}}
+"#;
+    let file = ostinato_lang::parse(outer_let).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("outer let nested");
+    assert_eq!(value.to_json().expect("json")["params"]["db"]["url"], "h/");
+
+    let missing = r#"
+package demo
+params: {a: {b: {c: 1, d: params.a.c}}}
+"#;
+    let file = ostinato_lang::parse(missing).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn params_dynamic_fields_hidden_definitions_and_quoted_selectors() {
+    let dynamic = r#"
+package demo
+params: {for k in ["x"] { "\(k)": 1 }}
+workflow: {name: "\(params.x)", steps: {s: {kind: "noop"}}}
+"#;
+    let file = ostinato_lang::parse(dynamic).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("dynamic params");
+    assert_eq!(value.to_json().expect("json")["workflow"]["name"], "1");
+
+    let locals = r#"
+package demo
+#P: {a: int}
+params: #P & {#Q: {b: 2}, a: #Q.b}
+"#;
+    let file = ostinato_lang::parse(locals).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("local definition in params");
+    assert_eq!(value.to_json().expect("json")["params"]["a"], 2);
+
+    let hidden = r#"
+package demo
+#P: {a: 1}
+params: #P & {_b: 2}
+"#;
+    let file = ostinato_lang::parse(hidden).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_ok());
+
+    let quoted = r#"
+package demo
+params: {"a-b": 1, c: params."a-b", d: params["a-b"]}
+"#;
+    let file = ostinato_lang::parse(quoted).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("quoted selectors");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["c"], 1);
+    assert_eq!(json["params"]["d"], 1);
+}
+
+#[test]
+fn closed_definitions_apply_to_nested_dynamic_and_let_params() {
+    let nested = r#"
+package demo
+#P: {n: {a: 1}}
+params: #P & {n: {b: 2}}
+"#;
+    let file = ostinato_lang::parse(nested).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let comprehension = r#"
+package demo
+#P: {a: 1}
+params: #P & {for k in ["c"] { "\(k)": 2 }}
+"#;
+    let file = ostinato_lang::parse(comprehension).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let let_bound = r#"
+package demo
+#P: {a: 1}
+let Q = #P
+params: Q & {c: 2}
+"#;
+    let file = ostinato_lang::parse(let_bound).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}

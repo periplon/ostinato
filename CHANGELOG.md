@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.7.1
+
+Params path resolver and closedness corrections.
+
+- `params.<path>` resolves against the params root at any depth, including
+  parent groups, outer lets/fields and sibling paths without dropping segments.
+- Dynamic/comprehension-generated params fields are reachable; local
+  definitions and hidden fields are not treated as closedness violations.
+- Closed definitions are enforced by unifying the final params value with every
+  closed operand, covering nested groups, comprehensions and let-bound
+  definitions; hidden fields are admitted by closedness.
+- Quoted selectors (`params."a-b"`, `x."a-b"`) and quoted params indexes work.
+- 206 tests (34 CLI E2E, 1 conformance, 161 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.0
 
 Params scoping, closedness and RE2 quantifiers.

@@ -990,17 +990,6 @@ impl<'a> Frame<'a> {
         frame
     }
 
-    fn field_in_progress(&self, name: &str) -> bool {
-        let mut frame = Some(self);
-        while let Some(current) = frame {
-            if current.evaluating.borrow().contains(name) {
-                return true;
-            }
-            frame = current.parent;
-        }
-        false
-    }
-
     fn params_shadowed(&self) -> bool {
         let mut frame = Some(self);
         while let Some(current) = frame {
@@ -1020,7 +1009,7 @@ impl<'a> Frame<'a> {
         false
     }
 
-    fn params_value(&self, field: &str, span: Span) -> Result<Value, LangError> {
+    fn params_path_value(&self, path: &[String], span: Span) -> Result<Value, LangError> {
         let Some(context) = self.params_context.borrow().clone() else {
             return Err(LangError::eval(
                 span.line,
@@ -1028,149 +1017,139 @@ impl<'a> Frame<'a> {
                 "params are not being evaluated",
             ));
         };
-        if let Some(value) = context.values.borrow().get(field) {
+        let cache_key = path.join(".");
+        if let Some(value) = context.values.borrow().get(&cache_key) {
             return Ok(value.clone());
         }
-        if context.evaluating.borrow().contains(field) {
+        if context.evaluating.borrow().contains(&cache_key) {
             return Err(LangError::eval(
                 span.line,
                 span.col,
-                format!("cyclic reference while evaluating `params.{field}`"),
+                format!("cyclic reference while evaluating `params.{cache_key}`"),
             ));
         }
-        context.evaluating.borrow_mut().insert(field.to_owned());
+        context.evaluating.borrow_mut().insert(cache_key.clone());
         let result = (|| {
             let root = self.root_frame();
-            let child = Frame::from_static(&context.items, Some(root), HashMap::new())?;
+            let mut items = context.items.clone();
+            for segment in &path[..path.len().saturating_sub(1)] {
+                let mut value_expr = None;
+                for item in &items {
+                    if let StructItem::Field(field) = item
+                        && let crate::ast::Label::Name(name, _) = &field.label
+                        && name == segment
+                    {
+                        value_expr = Some(field.value.clone());
+                        break;
+                    }
+                }
+                let Some(value_expr) = value_expr else {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!("field `{segment}` not found in params"),
+                    ));
+                };
+                let struct_expr = match &value_expr {
+                    Expr::Struct(inner, _) => inner.clone(),
+                    Expr::Paren(inner, _) => match &**inner {
+                        Expr::Struct(inner, _) => inner.clone(),
+                        _ => {
+                            let child = Frame::from_static(&items, Some(root), HashMap::new())?;
+                            child.expand(&items)?;
+                            let mut value = eval_expr(&value_expr, &child)?;
+                            let remaining = path
+                                .iter()
+                                .position(|value| value == segment)
+                                .map_or(&[][..], |index| &path[index + 1..]);
+                            for field in remaining {
+                                value = select_value(&value, field, span)?;
+                            }
+                            return Ok(value);
+                        }
+                    },
+                    _ => {
+                        let child = Frame::from_static(&items, Some(root), HashMap::new())?;
+                        child.expand(&items)?;
+                        let mut value = eval_expr(&value_expr, &child)?;
+                        let remaining = path
+                            .iter()
+                            .position(|value| value == segment)
+                            .map_or(&[][..], |index| &path[index + 1..]);
+                        for field in remaining {
+                            value = select_value(&value, field, span)?;
+                        }
+                        return Ok(value);
+                    }
+                };
+                items = struct_expr;
+            }
+            let Some(final_name) = path.last() else {
+                return Err(LangError::eval(span.line, span.col, "empty params path"));
+            };
+            let child = Frame::from_static(&items, Some(root), HashMap::new())?;
             child.params_scope.set(true);
+            child.expand(&items)?;
+            child.reconcile_generated_required_fields()?;
             for (key, value) in &context.overrides {
                 child.values.borrow_mut().insert(key.clone(), value.clone());
             }
             let optional = child
                 .fields
                 .borrow()
-                .get(field)
+                .get(final_name)
                 .is_some_and(|definition| definition.optional);
-            let overridden = context.overrides.contains_key(field);
+            let overridden = path.len() == 1 && context.overrides.contains_key(final_name);
             if optional
                 && !overridden
-                && !child.materialized.borrow().contains(field)
-                && !child.values.borrow().contains_key(field)
+                && !child.materialized.borrow().contains(final_name)
+                && !child.values.borrow().contains_key(final_name)
             {
                 return Err(LangError::eval(
                     span.line,
                     span.col,
-                    format!("cannot reference optional field `{field}`"),
+                    format!("cannot reference optional field `{final_name}`"),
                 ));
             }
-            let key = child
-                .regular_field_key(field)
-                .unwrap_or_else(|| field.to_owned());
-            if let Some(override_value) = context.overrides.get(field) {
-                child.values.borrow_mut().remove(field);
+            if overridden {
+                child.values.borrow_mut().remove(final_name);
                 let exprs = child
                     .fields
                     .borrow()
-                    .get(field)
+                    .get(final_name)
                     .map(|definition| definition.exprs.clone())
                     .unwrap_or_default();
+                let override_value = context
+                    .overrides
+                    .get(final_name)
+                    .cloned()
+                    .unwrap_or(Value::Bottom);
                 let mut result: Option<Value> = None;
                 for expr in &exprs {
-                    let candidate = eval_with_override(expr, &child, override_value, span)?;
+                    let candidate = eval_with_override(expr, &child, &override_value, span)?;
                     result = Some(match result {
                         None => candidate,
                         Some(current) => unify_values(&current, &candidate, span)?,
                     });
                 }
                 result.ok_or_else(|| {
-                    LangError::eval(span.line, span.col, format!("unknown parameter `{field}`"))
+                    LangError::eval(
+                        span.line,
+                        span.col,
+                        format!("unknown parameter `{final_name}`"),
+                    )
                 })
             } else {
+                let key = child
+                    .regular_field_key(final_name)
+                    .unwrap_or_else(|| final_name.clone());
                 child.eval_field_key(&key, span)
             }
         })();
-        context.evaluating.borrow_mut().remove(field);
+        context.evaluating.borrow_mut().remove(&cache_key);
         let value = result?;
-        context
-            .values
-            .borrow_mut()
-            .insert(field.to_owned(), value.clone());
+        context.values.borrow_mut().insert(cache_key, value.clone());
         Ok(value)
-    }
-
-    fn check_params_closedness(&self, exprs: &[Expr], span: Span) -> Result<(), LangError> {
-        let mut closed: Vec<(BTreeSet<String>, Vec<Pattern>)> = Vec::new();
-        let mut labels: Vec<String> = Vec::new();
-        fn walk(
-            frame: &Frame<'_>,
-            expr: &Expr,
-            closed: &mut Vec<(BTreeSet<String>, Vec<Pattern>)>,
-            labels: &mut Vec<String>,
-            seen: &mut HashSet<String>,
-        ) -> Result<(), LangError> {
-            match expr {
-                Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-                    walk(frame, inner, closed, labels, seen)?;
-                }
-                Expr::Unify(left, right, _) => {
-                    walk(frame, left, closed, labels, seen)?;
-                    walk(frame, right, closed, labels, seen)?;
-                }
-                Expr::Struct(items, _) => {
-                    for item in items {
-                        if let StructItem::Field(field) = item
-                            && let crate::ast::Label::Name(name, _) = &field.label
-                        {
-                            labels.push(name.clone());
-                        }
-                    }
-                }
-                Expr::Ident(name, _) if name != "params" && seen.insert(name.clone()) => {
-                    if let Ok(Value::Definition {
-                        fields,
-                        optional,
-                        definitions,
-                        patterns,
-                        closed: true,
-                        ..
-                    }) = frame.eval_field(name, Span::default())
-                    {
-                        let mut names: BTreeSet<String> = fields.keys().cloned().collect();
-                        names.extend(optional.keys().cloned());
-                        names.extend(definitions.keys().cloned());
-                        closed.push((names, patterns.iter().map(|(p, _)| p.clone()).collect()));
-                    }
-                }
-                _ => {}
-            }
-            Ok(())
-        }
-        let mut seen = HashSet::new();
-        for expr in exprs {
-            walk(self, expr, &mut closed, &mut labels, &mut seen)?;
-        }
-        for (names, patterns) in &closed {
-            for label in &labels {
-                if names.contains(label) {
-                    continue;
-                }
-                let mut allowed = false;
-                for pattern in patterns {
-                    if pattern_matches(pattern, label, span)? {
-                        allowed = true;
-                        break;
-                    }
-                }
-                if !allowed {
-                    return Err(LangError::eval(
-                        span.line,
-                        span.col,
-                        format!("field `{label}` is not allowed by the closed definition"),
-                    ));
-                }
-            }
-        }
-        Ok(())
     }
 
     fn eval_field_key(&self, key: &str, span: Span) -> Result<Value, LangError> {
@@ -1197,7 +1176,6 @@ impl<'a> Frame<'a> {
             (def.exprs.clone(), def.definition)
         };
         if name == "params" {
-            self.check_params_closedness(&exprs, span)?;
             let items = self.params_items(&exprs);
             if items.is_some() || !self.overrides.borrow().is_empty() {
                 if self.evaluating.borrow().contains(key) {
@@ -1209,7 +1187,7 @@ impl<'a> Frame<'a> {
                 }
                 self.evaluating.borrow_mut().insert(key.to_owned());
                 let result = match items {
-                    Some(items) => self.eval_params_struct(&items, span),
+                    Some(items) => self.eval_params_struct(&items, &exprs, span),
                     None => Err(LangError::eval(
                         span.line,
                         span.col,
@@ -1506,7 +1484,12 @@ impl<'a> Frame<'a> {
         Some(())
     }
 
-    fn eval_params_struct(&self, items: &[StructItem], span: Span) -> Result<Value, LangError> {
+    fn eval_params_struct(
+        &self,
+        items: &[StructItem],
+        exprs: &[Expr],
+        span: Span,
+    ) -> Result<Value, LangError> {
         let context = Rc::new(ParamsContext {
             items: items.to_vec(),
             overrides: self.overrides.borrow().clone(),
@@ -1555,7 +1538,37 @@ impl<'a> Frame<'a> {
             };
             child.values.borrow_mut().insert(key.clone(), resolved);
         }
-        child.to_struct_value()
+        let mut result = child.to_struct_value()?;
+        for expr in exprs {
+            self.apply_closed_params(expr, &mut result, span)?;
+        }
+        Ok(result)
+    }
+
+    fn apply_closed_params(
+        &self,
+        expr: &Expr,
+        result: &mut Value,
+        span: Span,
+    ) -> Result<(), LangError> {
+        match expr {
+            Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+                self.apply_closed_params(inner, result, span)?;
+            }
+            Expr::Unify(left, right, _) => {
+                self.apply_closed_params(left, result, span)?;
+                self.apply_closed_params(right, result, span)?;
+            }
+            Expr::Ident(name, _) if name != "params" => {
+                if let Ok(value) = self.lookup(name, span)
+                    && matches!(value, Value::Definition { closed: true, .. })
+                {
+                    *result = unify_values(result, &value, span)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn eval_let(&self, name: &str, span: Span) -> Result<Value, LangError> {
@@ -1685,6 +1698,25 @@ impl<'a> Frame<'a> {
     }
 }
 
+fn select_value(value: &Value, field: &str, span: Span) -> Result<Value, LangError> {
+    match value.concretize() {
+        Value::Struct(map) | Value::Definition { fields: map, .. } => {
+            map.get(field).cloned().ok_or_else(|| {
+                LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("field `{field}` not found in struct"),
+                )
+            })
+        }
+        other => Err(LangError::eval(
+            span.line,
+            span.col,
+            format!("cannot select `{field}` from {}", other.type_name()),
+        )),
+    }
+}
+
 fn params_select_path(expr: &Expr) -> Option<(String, Vec<String>)> {
     match expr {
         Expr::Ident(name, _) if name == "params" => Some((String::new(), Vec::new())),
@@ -1745,53 +1777,14 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         }
         Expr::Ident(name, span) => frame.lookup(name, *span),
         Expr::Select(base, field, span) => {
-            if let Expr::Ident(name, _) = &**base
-                && name == "params"
-                && frame.params_context.borrow().is_some()
-                && !frame.params_shadowed()
-            {
-                return frame.params_value(field, *span);
-            }
             if let Some((first, rest)) = params_select_path(expr)
                 && !first.is_empty()
                 && frame.params_context.borrow().is_some()
                 && !frame.params_shadowed()
-                && frame.field_in_progress(&first)
-                && !rest.is_empty()
             {
-                let Some(first_field) = rest.first() else {
-                    return Err(LangError::eval(
-                        span.line,
-                        span.col,
-                        "cyclic params selection",
-                    ));
-                };
-                let mut value = if frame.fields.borrow().contains_key(first_field) {
-                    frame.eval_field(first_field, *span)?
-                } else {
-                    frame.lookup(first_field, *span)?
-                };
-                for field in rest.iter().skip(1) {
-                    value = match value.concretize() {
-                        Value::Struct(map) | Value::Definition { fields: map, .. } => {
-                            map.get(field).cloned().ok_or_else(|| {
-                                LangError::eval(
-                                    span.line,
-                                    span.col,
-                                    format!("field `{field}` not found in struct"),
-                                )
-                            })?
-                        }
-                        other => {
-                            return Err(LangError::eval(
-                                span.line,
-                                span.col,
-                                format!("cannot select `{field}` from {}", other.type_name()),
-                            ));
-                        }
-                    };
-                }
-                return Ok(value);
+                let mut path = vec![first];
+                path.extend(rest);
+                return frame.params_path_value(&path, *span);
             }
             let base = eval_expr(base, frame)?.concretize().clone();
             match base {
@@ -1879,6 +1872,14 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             apply_builtin(&callee, &values, *span)
         }
         Expr::Index(base, index, span) => {
+            if let Expr::Ident(name, _) = &**base
+                && name == "params"
+                && frame.params_context.borrow().is_some()
+                && !frame.params_shadowed()
+                && let Value::String(key) = eval_expr(index, frame)?.concretize()
+            {
+                return frame.params_path_value(std::slice::from_ref(key), *span);
+            }
             let base = eval_expr(base, frame)?.concretize().clone();
             let index = eval_expr(index, frame)?.concretize().clone();
             match (base, index) {
@@ -2276,7 +2277,7 @@ fn close_nested(value: &Value) -> Value {
 }
 
 fn admitted(admissions: &[Admission], key: &str, span: Span) -> Result<bool, LangError> {
-    if admissions.is_empty() {
+    if admissions.is_empty() || key.starts_with('_') {
         return Ok(true);
     }
     for admission in admissions {

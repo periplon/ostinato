@@ -744,7 +744,29 @@ impl Parser {
             match self.peek_tok().clone() {
                 Tok::Dot => {
                     self.bump();
-                    let name = self.expect_ident()?;
+                    let name = match self.peek_tok().clone() {
+                        Tok::Ident(name) => {
+                            self.bump();
+                            name
+                        }
+                        Tok::Str(raw) => {
+                            self.bump();
+                            let parts = parse_str_parts(&raw, span)?;
+                            let mut text = String::new();
+                            for part in parts {
+                                match part {
+                                    StrPart::Text(value) => text.push_str(&value),
+                                    StrPart::Interp(_) => {
+                                        return Err(
+                                            self.error("quoted selector cannot interpolate")
+                                        );
+                                    }
+                                }
+                            }
+                            text
+                        }
+                        _ => return Err(self.error("expected selector")),
+                    };
                     expr = Expr::Select(Box::new(expr), name, span);
                 }
                 Tok::LBracket => {
