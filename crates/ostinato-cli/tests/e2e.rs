@@ -1673,3 +1673,35 @@ workflow: {name: "x", steps: {s: {kind: "noop"}}}
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("cyclic"), "stderr: {stderr}");
 }
+
+#[test]
+fn bare_open_list_needs_and_params_compile() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("open.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: {tags: [...string]}
+workflow: {
+    name: "open"
+    steps: {a: {kind: "noop", needs: [...string]}}
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["tags"], serde_json::json!([]));
+}

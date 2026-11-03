@@ -224,11 +224,8 @@ impl Value {
                 }
                 Some(Json::Array(out))
             }
-            Self::OpenList(_)
-            | Self::Builtin(_)
-            | Self::Conflict(_)
-            | Self::Type(_)
-            | Self::Bottom => None,
+            Self::OpenList(_) => Some(Json::Array(Vec::new())),
+            Self::Builtin(_) | Self::Conflict(_) | Self::Type(_) | Self::Bottom => None,
         }
     }
 
@@ -1783,6 +1780,7 @@ fn eval_list_comp(
                         )
                     })
                     .collect(),
+                Value::OpenList(_) => Vec::new(),
                 other => {
                     return Err(LangError::eval(
                         span.line,
@@ -2007,7 +2005,7 @@ fn closed_error(span: Span, key: &str) -> LangError {
 fn pattern_matches(pattern: &Pattern, key: &str, span: Span) -> Result<bool, LangError> {
     match pattern {
         Pattern::Any => Ok(true),
-        Pattern::Regex(regex) => regex::Regex::new(regex)
+        Pattern::Regex(regex) => cue_regex(regex)
             .map(|regex| regex.is_match(key))
             .map_err(|err| {
                 LangError::eval(span.line, span.col, format!("invalid pattern regex: {err}"))
@@ -2222,7 +2220,7 @@ fn bound_matches(bound: &Bound, value: &Value, span: Span) -> Result<bool, LangE
                     format!("bound `{}` requires a string operand", bound_display(bound)),
                 ));
             };
-            let matched = regex::Regex::new(regex)
+            let matched = cue_regex(regex)
                 .map(|regex| regex.is_match(text))
                 .map_err(|err| {
                     LangError::eval(span.line, span.col, format!("invalid regex: {err}"))
@@ -2485,6 +2483,14 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+fn list_prefix(value: &Value) -> Option<&[Value]> {
+    match value {
+        Value::List(values) | Value::OpenListPrefix(values, _) => Some(values),
+        Value::OpenList(_) => Some(&[]),
+        _ => None,
+    }
+}
+
 fn values_identical(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (
@@ -2497,10 +2503,9 @@ fn values_identical(left: &Value, right: &Value) -> bool {
                         .is_some_and(|other| values_identical(value, other))
                 })
         }
-        (Value::List(a), Value::List(b))
-        | (Value::OpenListPrefix(a, _), Value::OpenListPrefix(b, _))
-        | (Value::OpenListPrefix(a, _), Value::List(b))
-        | (Value::List(b), Value::OpenListPrefix(a, _)) => {
+        (left, right) if list_prefix(left).is_some() && list_prefix(right).is_some() => {
+            let a = list_prefix(left).unwrap_or_default();
+            let b = list_prefix(right).unwrap_or_default();
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| values_identical(a, b))
         }
         (Value::Disjunction(_, _), _) | (_, Value::Disjunction(_, _)) => {
@@ -2527,6 +2532,25 @@ fn values_equal(left: &Value, right: &Value) -> bool {
 fn go_case(text: &str, upper: bool) -> String {
     text.chars()
         .map(|character| {
+            let simple = match (character, upper) {
+                ('\u{0130}', false) => Some('i'),
+                ('\u{1F80}'..='\u{1F87}', true) => {
+                    Some(char::from_u32(character as u32 + 8).unwrap_or(character))
+                }
+                ('\u{1F90}'..='\u{1F97}', true) => {
+                    Some(char::from_u32(character as u32 + 8).unwrap_or(character))
+                }
+                ('\u{1FA0}'..='\u{1FA7}', true) => {
+                    Some(char::from_u32(character as u32 + 8).unwrap_or(character))
+                }
+                ('\u{1FB3}', true) => Some('\u{1FBC}'),
+                ('\u{1FC3}', true) => Some('\u{1FCC}'),
+                ('\u{1FF3}', true) => Some('\u{1FFC}'),
+                _ => None,
+            };
+            if let Some(value) = simple {
+                return value;
+            }
             let mapped: Vec<char> = if upper {
                 character.to_uppercase().collect()
             } else {
@@ -2620,26 +2644,110 @@ fn regex_arg(arguments: &[Value], index: usize, span: Span) -> Result<&str, Lang
     }
 }
 
-fn translate_re2_pattern(pattern: &str) -> String {
+fn translate_re2_pattern(pattern: &str) -> Result<String, String> {
     let mut out = String::with_capacity(pattern.len());
-    let mut rest = pattern;
-    while let Some(index) = rest.find("\\Q") {
-        out.push_str(&rest[..index]);
-        rest = &rest[index + 2..];
-        if let Some(end) = rest.find("\\E") {
-            out.push_str(&regex::escape(&rest[..end]));
-            rest = &rest[end + 2..];
-        } else {
-            out.push_str(&regex::escape(rest));
-            rest = "";
+    let mut chars = pattern.chars().peekable();
+    let mut in_class = false;
+    while let Some(character) = chars.next() {
+        match character {
+            '\\' => {
+                let Some(next) = chars.next() else {
+                    out.push('\\');
+                    break;
+                };
+                match next {
+                    'Q' => {
+                        let mut literal = String::new();
+                        while let Some(value) = chars.next() {
+                            if value == '\\' && chars.peek() == Some(&'E') {
+                                chars.next();
+                                break;
+                            }
+                            literal.push(value);
+                        }
+                        out.push_str(&regex::escape(&literal));
+                    }
+                    'd' => out.push_str(if in_class { "0-9" } else { "[0-9]" }),
+                    'D' => out.push_str(if in_class { "\\D" } else { "[^0-9]" }),
+                    'w' => out.push_str(if in_class {
+                        "0-9A-Za-z_"
+                    } else {
+                        "[0-9A-Za-z_]"
+                    }),
+                    'W' => out.push_str(if in_class { "\\W" } else { "[^0-9A-Za-z_]" }),
+                    's' => out.push_str(if in_class {
+                        "\\t\\n\\f\\r "
+                    } else {
+                        "[\\t\\n\\f\\r ]"
+                    }),
+                    'S' => out.push_str(if in_class { "\\S" } else { "[^\\t\\n\\f\\r ]" }),
+                    'b' => out.push_str(if in_class { "\\x08" } else { "(?-u:\\b)" }),
+                    'B' => out.push_str(if in_class { "\\B" } else { "(?-u:\\B)" }),
+                    other => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                }
+            }
+            '[' => {
+                in_class = true;
+                out.push(character);
+            }
+            ']' => {
+                in_class = false;
+                out.push(character);
+            }
+            _ => out.push(character),
         }
     }
-    out.push_str(rest);
-    out
+    check_repeat_limits(pattern)?;
+    Ok(out)
+}
+
+fn check_repeat_limits(pattern: &str) -> Result<(), String> {
+    let bytes = pattern.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'{' {
+            let mut end = index + 1;
+            while end < bytes.len() && bytes[end] != b'}' {
+                end += 1;
+            }
+            if end < bytes.len() {
+                let body = &pattern[index + 1..end];
+                let mut parts = body.split(',');
+                let first = parts.next().unwrap_or("");
+                let second = parts.next();
+                if first.chars().all(|value| value.is_ascii_digit()) && !first.is_empty() {
+                    let first_value: u32 = first.parse().map_err(|_| "repeat count too large")?;
+                    if first_value > 1000 {
+                        return Err("invalid repeat count".to_owned());
+                    }
+                    if let Some(second) = second
+                        && !second.is_empty()
+                    {
+                        let second_value: u32 =
+                            second.parse().map_err(|_| "repeat count too large")?;
+                        if second_value > 1000 {
+                            return Err("invalid repeat count".to_owned());
+                        }
+                    }
+                }
+                index = end;
+            }
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
+fn cue_regex(pattern: &str) -> Result<regex::Regex, String> {
+    let translated = translate_re2_pattern(pattern)?;
+    regex::Regex::new(&translated).map_err(|err| err.to_string())
 }
 
 fn regex_compile(pattern: &str, span: Span) -> Result<regex::Regex, LangError> {
-    regex::Regex::new(&translate_re2_pattern(pattern))
+    cue_regex(pattern)
         .map_err(|err| LangError::conflict(span.line, span.col, format!("invalid regex: {err}")))
 }
 
@@ -2722,6 +2830,14 @@ fn numeric_f64(value: &Value) -> Option<f64> {
     match value {
         Value::Int(value) => Some(*value as f64),
         Value::Float(value) => value.to_string().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn numeric_value_decimal(value: &Value) -> Option<BigDecimal> {
+    match value {
+        Value::Int(value) => Some(BigDecimal::from(*value)),
+        Value::Float(value) => Some(value.clone()),
         _ => None,
     }
 }
@@ -2960,10 +3076,21 @@ fn valid_rfc3339_shape(text: &str) -> bool {
     {
         return false;
     }
-    text.ends_with('Z')
-        || text
-            .get(19..)
-            .is_some_and(|rest| rest.starts_with('+') || rest.starts_with('-'))
+    if text.ends_with('Z') {
+        return true;
+    }
+    let rest = text.get(19..).unwrap_or("");
+    let rest = match rest.strip_prefix(['.', ',']) {
+        Some(fraction) => {
+            let digits = fraction.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                return false;
+            }
+            &fraction[digits..]
+        }
+        None => rest,
+    };
+    rest.starts_with('+') || rest.starts_with('-')
 }
 
 fn split_fraction(text: &str) -> Option<(&str, i64)> {
@@ -3239,27 +3366,51 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                     "list.Range requires exactly three arguments",
                 ));
             }
-            let (Some(Value::Int(start)), Some(Value::Int(end)), Some(Value::Int(step))) =
-                (arguments.first(), arguments.get(1), arguments.get(2))
-            else {
+            let (Some(start), Some(end), Some(step)) = (
+                arguments.first().and_then(numeric_value_decimal),
+                arguments.get(1).and_then(numeric_value_decimal),
+                arguments.get(2).and_then(numeric_value_decimal),
+            ) else {
                 return Err(LangError::conflict(
                     span.line,
                     span.col,
-                    "list.Range requires three integers",
+                    "list.Range requires three numbers",
                 ));
             };
-            if *step == 0 {
+            if step == 0 {
                 return Err(LangError::conflict(
                     span.line,
                     span.col,
                     "list.Range step is zero",
                 ));
             }
+            let positive = step > 0;
+            if (positive && start > end) || (!positive && start < end) {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    "list.Range step has the wrong direction",
+                ));
+            }
             let mut out = Vec::new();
-            let mut current = *start;
-            while (step > &0 && current < *end) || (step < &0 && current > *end) {
-                out.push(Value::Int(current));
-                current = current.saturating_add(*step);
+            let mut current = start;
+            let mut iterations = 0usize;
+            while (positive && current < end) || (!positive && current > end) {
+                if iterations > 100_000 {
+                    return Err(LangError::conflict(
+                        span.line,
+                        span.col,
+                        "list.Range is too large",
+                    ));
+                }
+                iterations += 1;
+                let text = current.to_string();
+                if let Ok(value) = text.parse::<i64>() {
+                    out.push(Value::Int(value));
+                } else {
+                    out.push(Value::Float(current.clone()));
+                }
+                current += &step;
             }
             Ok(Value::List(out))
         }
@@ -3281,6 +3432,9 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
             };
             let mut values = Vec::new();
             for inner in outer {
+                if matches!(inner, Value::OpenList(_)) {
+                    continue;
+                }
                 let (Value::List(inner) | Value::OpenListPrefix(inner, _)) = inner else {
                     return Err(LangError::conflict(
                         span.line,
@@ -3304,6 +3458,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                 Some(Value::List(values) | Value::OpenListPrefix(values, _)) => {
                     Ok(Value::Int(i64::try_from(values.len()).unwrap_or(i64::MAX)))
                 }
+                Some(Value::OpenList(_)) => Ok(Value::Int(0)),
                 Some(Value::Struct(values) | Value::Definition { fields: values, .. }) => {
                     Ok(Value::Int(i64::try_from(values.len()).unwrap_or(i64::MAX)))
                 }

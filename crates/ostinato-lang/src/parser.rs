@@ -993,6 +993,10 @@ fn parse_str_parts(raw: &str, span: Span) -> Result<Vec<StrPart>, LangError> {
                     text.push('\\');
                     index += 2;
                 }
+                '/' => {
+                    text.push('/');
+                    index += 2;
+                }
                 '"' => {
                     text.push('"');
                     index += 2;

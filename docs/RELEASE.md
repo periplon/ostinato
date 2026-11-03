@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.6.8
+
+- Bare open lists, RFC3339 fraction+offset, RE2 ASCII classes, Go case
+  mappings and decimal `list.Range`.
+- 197 tests (34 CLI E2E, 1 conformance, 152 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.7
 
 - Open-list prefix list semantics, scalar-only interpolation and clean

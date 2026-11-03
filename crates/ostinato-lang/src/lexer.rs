@@ -420,6 +420,7 @@ impl Lexer {
                     't' => out.push(b'\t'),
                     'v' => out.push(0x0b),
                     '\\' => out.push(b'\\'),
+                    '/' => out.push(b'/'),
                     '\'' => out.push(b'\''),
                     'x' => {
                         let value = self.read_hex_digits(2, line, col)?;
