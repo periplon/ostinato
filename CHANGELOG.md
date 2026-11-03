@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.10.7
+
+Math kind and float-scale review follow-up.
+
+- Arithmetic preserves CUE's decimal scale per operation instead of forcing
+  `.0`: `math.Sqrt(4) * 2`/`- 1` stay `4`/`1`, while `1.0 * 0.0` stays `0.00`.
+- `math.Abs` normalises integral float arguments to int kind
+  (`math.Abs(-2.0) & int` succeeds, `& float` conflicts).
+- `math.Pow` returns exact ints for integral bases/exponents up to i64
+  (`Pow(2, 53)`, `Pow(2, 60)`, `Pow(10, 16)`).
+- 276 tests (48 CLI E2E, 1 conformance, 214 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.6
 
 Math integral result kinds and float rendering.

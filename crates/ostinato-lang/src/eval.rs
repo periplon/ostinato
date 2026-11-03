@@ -4276,6 +4276,14 @@ fn math_decimal_number(value: BigDecimal) -> Value {
     }
 }
 
+fn integral_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Int(value) => Some(*value),
+        Value::Float(value) => value.normalized().to_string().parse().ok(),
+        _ => None,
+    }
+}
+
 fn math_float_number(value: f64) -> Value {
     format!("{value}")
         .parse::<BigDecimal>()
@@ -4310,7 +4318,7 @@ fn apply_math_builtin(
                 .checked_abs()
                 .map(Value::Int)
                 .ok_or_else(|| overflow(span)),
-            Some(Value::Float(value)) => Ok(Value::Float(value.abs())),
+            Some(Value::Float(value)) => Ok(math_decimal_number(value.abs().normalized())),
             _ => Err(LangError::conflict(
                 span.line,
                 span.col,
@@ -4338,9 +4346,19 @@ fn apply_math_builtin(
             }
             Ok(math_float_number(value))
         }
-        Builtin::MathPow => Ok(math_number(
-            math_arg(arguments, 0, span)?.powf(math_arg(arguments, 1, span)?),
-        )),
+        Builtin::MathPow => {
+            if let (Some(base), Some(exponent)) = (arguments.first(), arguments.get(1))
+                && let Some(base) = integral_i64(base)
+                && let Some(exponent) = integral_i64(exponent)
+                && let Ok(exponent) = u32::try_from(exponent)
+                && let Some(result) = base.checked_pow(exponent)
+            {
+                return Ok(Value::Int(result));
+            }
+            Ok(math_number(
+                math_arg(arguments, 0, span)?.powf(math_arg(arguments, 1, span)?),
+            ))
+        }
         Builtin::MathExp => Ok(math_number(math_arg(arguments, 0, span)?.exp())),
         Builtin::MathLog => Ok(math_number(math_arg(arguments, 0, span)?.ln())),
         _ => unreachable!("math builtin"),
@@ -4964,17 +4982,17 @@ fn repeat_bytes(bytes: &[u8], count: i64, span: Span) -> Result<Value, LangError
     Ok(Value::Bytes(bytes.repeat(count)))
 }
 
-fn float_representation(value: BigDecimal) -> BigDecimal {
+fn float_arithmetic(value: BigDecimal, desired_scale: i64) -> BigDecimal {
     let (_, scale) = value.as_bigint_and_exponent();
-    if scale <= 0 {
-        value.with_scale(1)
+    if scale <= 0 && desired_scale > 0 {
+        value.with_scale(desired_scale)
     } else {
         value
     }
 }
 
 fn float_division(left: &BigDecimal, right: &BigDecimal) -> BigDecimal {
-    float_representation(left / right)
+    float_arithmetic(left / right, 1)
 }
 
 fn numeric(
@@ -4985,20 +5003,28 @@ fn numeric(
     int_op: impl Fn(i64, i64) -> i64,
     float_op: impl Fn(BigDecimal, BigDecimal) -> BigDecimal,
 ) -> Result<Value, LangError> {
+    let scale = |value: &Value| match value {
+        Value::Float(value) => value.as_bigint_and_exponent().1.max(0),
+        _ => 0,
+    };
+    let desired_scale = match op {
+        BinOp::Mul => scale(left) + scale(right),
+        _ => scale(left).max(scale(right)),
+    };
     match (left, right) {
         (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(*a, *b))),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_representation(float_op(
-            a.clone(),
-            b.clone(),
-        )))),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(float_representation(float_op(
-            BigDecimal::from(*a),
-            b.clone(),
-        )))),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(float_representation(float_op(
-            a.clone(),
-            BigDecimal::from(*b),
-        )))),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_arithmetic(
+            float_op(a.clone(), b.clone()),
+            desired_scale,
+        ))),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(float_arithmetic(
+            float_op(BigDecimal::from(*a), b.clone()),
+            desired_scale,
+        ))),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(float_arithmetic(
+            float_op(a.clone(), BigDecimal::from(*b)),
+            desired_scale,
+        ))),
         _ => type_error(op_name(op), left, right, span),
     }
 }
