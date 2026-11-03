@@ -6198,3 +6198,42 @@ params: {if true {#I: 3}, x: 1}
         );
     }
 }
+
+#[test]
+fn comprehension_generated_declarations_merge_like_cue() {
+    let source = r#"
+package demo
+#I: {v: int, ...}
+if true {#I: {...}}
+open_merged: #I & {v: 1, z: 3}
+#J: {v: int}
+if true {#J: {...}}
+right_open: #J & {v: 1, w: 2}
+#K: {v: int, #M: 4}
+if true {#K: {v: 1, #N: 5, w: 2}}
+meta_m: #K.#M
+meta_n: #K.#N
+#D: {if true {#I: {v: int}}, if true {#I: {v: 1, w: 2}}, a: #D.#I}
+nested: #D.a
+"#;
+    let file = ostinato_lang::parse(source).expect("parse declaration merges");
+    let value = ostinato_lang::eval_file(&file).expect("eval declaration merges");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["open_merged"]["z"], 3);
+    assert_eq!(json["right_open"]["w"], 2);
+    assert_eq!(json["meta_m"], 4);
+    assert_eq!(json["meta_n"], 5);
+    assert_eq!(json["nested"]["w"], 2);
+
+    let dependent = r#"
+package demo
+#P: {env: string, greeting: "hello \(env)"}
+if true {#P: {env: "prod"}}
+x: #P
+"#;
+    let file = ostinato_lang::parse(dependent).expect("parse dependent merge");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "dependent fields after a generated declaration merge remain a documented limit"
+    );
+}
