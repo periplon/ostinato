@@ -36,7 +36,10 @@ workflow outside the Rust surface has a supported escape hatch.
   and interpolated) and global `len`;
 - constraint-based parameter overrides for split/definition-backed params and
   dependent params;
-- CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files).
+- CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files);
+- workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, branch
+  conditions, default branches, dead-path elimination and `stepStatus` routing
+  (v1 rejects gateways combined with cycles and implicit joins).
 
 ## Explicitly out of scope
 

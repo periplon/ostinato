@@ -3,11 +3,28 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DomainError;
-use crate::workflow::WorkflowSpec;
+use crate::workflow::{GatewaySpec, StepKind, WorkflowSpec};
 
 /// Hard cap on materialised plan nodes. Cycles expand eagerly; this prevents
 /// a workflow file from exhausting memory during planning.
 pub const MAX_PLAN_NODES: usize = 100_000;
+
+/// Where an incoming plan edge came from.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeOrigin {
+    /// An explicit `needs` dependency.
+    Dependency,
+    /// An implicit edge created by a split gateway branch.
+    Branch { gateway: String, branch: String },
+}
+
+/// One incoming edge of a plan node. Metadata only; not persisted.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PlanEdge {
+    pub from: String,
+    pub origin: EdgeOrigin,
+}
 
 /// One scheduled execution of a step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +41,17 @@ pub struct PlanNode {
     pub is_round_end: bool,
     pub cycle_until: Option<String>,
     pub cycle_max_rounds: u32,
+    /// True when this node belongs to a materialised cycle. Activation is
+    /// bypassed for cycle members because their internal back-edges have no
+    /// record until the round completes.
+    #[serde(default)]
+    pub in_cycle: bool,
+    /// Incoming edges in deterministic `(from, origin)` order.
+    #[serde(default)]
+    pub incoming: Vec<PlanEdge>,
+    /// Gateway routing definition, if this node is a gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewaySpec>,
 }
 
 /// A fully materialised execution plan, including every cycle round.
@@ -35,6 +63,8 @@ pub struct Plan {
     pub nodes: Vec<PlanNode>,
     pub groups: u64,
     pub has_cycles: bool,
+    #[serde(default)]
+    pub has_gateways: bool,
 }
 
 /// Build a deterministic execution plan from a workflow specification.
@@ -57,8 +87,16 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
         .map(|(i, name)| (name.as_str(), i))
         .collect();
 
+    validate_gateways(spec, &index_of)?;
+
+    let has_gateways = spec
+        .steps
+        .values()
+        .any(|step| step.kind == StepKind::Gateway);
+
     // Execution graph: dependency -> dependent.
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); names.len()];
+    let mut incoming: Vec<Vec<PlanEdge>> = vec![Vec::new(); names.len()];
     let mut has_self_edge = vec![false; names.len()];
     for (dependent, name) in names.iter().enumerate() {
         let step = &spec.steps[name];
@@ -73,10 +111,44 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
                 has_self_edge[dependent] = true;
             }
             adj[dependency].push(dependent);
+            incoming[dependent].push(PlanEdge {
+                from: need.clone(),
+                origin: EdgeOrigin::Dependency,
+            });
+        }
+    }
+
+    // Implicit branch edges: split gateway -> branch target.
+    for (gateway_name, step) in &spec.steps {
+        let Some(gateway) = &step.gateway else {
+            continue;
+        };
+        let Some(_split) = gateway.split else {
+            continue;
+        };
+        let Some(&gateway_index) = index_of.get(gateway_name.as_str()) else {
+            continue;
+        };
+        for target in gateway.branches.keys() {
+            let Some(&target_index) = index_of.get(target.as_str()) else {
+                continue;
+            };
+            adj[gateway_index].push(target_index);
+            incoming[target_index].push(PlanEdge {
+                from: gateway_name.clone(),
+                origin: EdgeOrigin::Branch {
+                    gateway: gateway_name.clone(),
+                    branch: target.clone(),
+                },
+            });
         }
     }
     for edges in &mut adj {
         edges.sort_unstable();
+        edges.dedup();
+    }
+    for edges in &mut incoming {
+        edges.sort();
         edges.dedup();
     }
 
@@ -91,6 +163,24 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
     let mut comp_nodes: Vec<Vec<usize>> = components.clone();
     for component in &mut comp_nodes {
         component.sort_by(|a, b| names[*a].cmp(&names[*b]));
+    }
+
+    if has_gateways {
+        let cyclic_steps: Vec<String> = (0..names.len())
+            .filter(|node| is_cyclic(comp_of[*node], &comp_nodes, &has_self_edge, &comp_of, &adj))
+            .map(|node| names[node].clone())
+            .collect();
+        if !cyclic_steps.is_empty() {
+            return Err(DomainError::GatewayCycleUnsupported {
+                steps: cyclic_steps,
+            });
+        }
+        for (node, name) in names.iter().enumerate() {
+            let is_gateway = spec.steps[name].kind == StepKind::Gateway;
+            if !is_gateway && incoming[node].len() > 1 {
+                return Err(DomainError::ImplicitJoinWithGateways(name.clone()));
+            }
+        }
     }
 
     // Condensation DAG and its levels.
@@ -171,6 +261,9 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
                     is_round_end: true,
                     cycle_until: None,
                     cycle_max_rounds: 1,
+                    in_cycle: false,
+                    incoming: incoming[member].clone(),
+                    gateway: spec.steps[&names[member]].gateway.clone(),
                 });
             }
             group += 1;
@@ -198,6 +291,9 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
                             is_round_end: level_idx + 1 == levels.len(),
                             cycle_until: until.clone(),
                             cycle_max_rounds: max_rounds,
+                            in_cycle: true,
+                            incoming: incoming[node].clone(),
+                            gateway: spec.steps[&names[node]].gateway.clone(),
                         });
                     }
                     group += 1;
@@ -209,8 +305,162 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
     Ok(Plan {
         groups: group,
         has_cycles,
+        has_gateways,
         nodes,
     })
+}
+
+/// Structural gateway validation. The compiler reports the same rules with
+/// full field paths; this keeps programmatic callers honest.
+fn validate_gateways(
+    spec: &WorkflowSpec,
+    index_of: &BTreeMap<&str, usize>,
+) -> Result<(), DomainError> {
+    let split_gateways: BTreeSet<&str> = spec
+        .steps
+        .iter()
+        .filter(|(_, step)| step.gateway.as_ref().is_some_and(GatewaySpec::is_split))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    for (name, step) in &spec.steps {
+        for need in &step.needs {
+            if split_gateways.contains(need.as_str()) {
+                return Err(DomainError::GatewayNeedsRejected {
+                    gateway: need.clone(),
+                    step: name.clone(),
+                });
+            }
+        }
+    }
+
+    for (name, step) in &spec.steps {
+        match (step.kind, &step.gateway) {
+            (StepKind::Gateway, None) => {
+                return Err(DomainError::GatewayRequiresSpec(name.clone()));
+            }
+            (StepKind::Gateway, Some(_)) => {}
+            (_, Some(_)) => {
+                return Err(DomainError::GatewayOnNonGateway(name.clone()));
+            }
+            (_, None) => continue,
+        }
+        let gateway = step
+            .gateway
+            .as_ref()
+            .ok_or_else(|| DomainError::GatewayRequiresSpec(name.clone()))?;
+        for (present, field) in [
+            (
+                step.retry != crate::workflow::RetryPolicy::default(),
+                "retry",
+            ),
+            (step.cycle.is_some(), "cycle"),
+            (step.exec.is_some(), "exec"),
+            (step.agent.is_some(), "agent"),
+            (step.improve.is_some(), "improve"),
+            (step.timeout_ms.is_some(), "timeoutMs"),
+            (step.continue_on_error, "continueOnError"),
+        ] {
+            if present {
+                return Err(DomainError::GatewayPayloadNotAllowed {
+                    step: name.clone(),
+                    field: field.to_owned(),
+                });
+            }
+        }
+        match (gateway.split, gateway.join) {
+            (Some(_), Some(_)) => return Err(DomainError::GatewaySplitAndJoin(name.clone())),
+            (None, None) => return Err(DomainError::GatewayMissingMode(name.clone())),
+            (Some(mode), None) => {
+                if gateway.branches.is_empty() {
+                    return Err(DomainError::GatewayEmptyBranches(name.clone()));
+                }
+                if let Some(default) = &gateway.default
+                    && !gateway.branches.contains_key(default)
+                {
+                    return Err(DomainError::GatewayInvalidDefault {
+                        gateway: name.clone(),
+                        branch: default.clone(),
+                    });
+                }
+                for (branch, branch_spec) in &gateway.branches {
+                    if !index_of.contains_key(branch.as_str()) {
+                        return Err(DomainError::GatewayUnknownBranchTarget {
+                            gateway: name.clone(),
+                            target: branch.clone(),
+                        });
+                    }
+                    if branch == name {
+                        return Err(DomainError::GatewaySelfBranch(name.clone()));
+                    }
+                    let target = &spec.steps[branch.as_str()];
+                    if target.kind == StepKind::Gateway
+                        && target.gateway.as_ref().is_some_and(GatewaySpec::is_join)
+                    {
+                        return Err(DomainError::GatewayBranchTargetIsJoin {
+                            gateway: name.clone(),
+                            target: branch.clone(),
+                        });
+                    }
+                    if target.needs.iter().any(|need| need == name) {
+                        return Err(DomainError::GatewayNeedsRejected {
+                            gateway: name.clone(),
+                            step: branch.clone(),
+                        });
+                    }
+                    if !target.needs.is_empty() {
+                        return Err(DomainError::GatewayBranchTargetHasNeeds {
+                            gateway: name.clone(),
+                            target: branch.clone(),
+                        });
+                    }
+                    let is_default = gateway.default.as_deref() == Some(branch.as_str());
+                    match mode {
+                        crate::workflow::SplitMode::And => {
+                            if branch_spec.condition.is_some() {
+                                return Err(DomainError::GatewayAndCondition {
+                                    gateway: name.clone(),
+                                    branch: branch.clone(),
+                                });
+                            }
+                        }
+                        crate::workflow::SplitMode::Or | crate::workflow::SplitMode::Xor => {
+                            if is_default {
+                                if branch_spec.condition.is_some() {
+                                    return Err(DomainError::GatewayInvalidDefault {
+                                        gateway: name.clone(),
+                                        branch: branch.clone(),
+                                    });
+                                }
+                            } else if mode == crate::workflow::SplitMode::Xor
+                                && branch_spec.condition.is_none()
+                            {
+                                return Err(DomainError::GatewayMissingCondition {
+                                    gateway: name.clone(),
+                                    branch: branch.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                if mode == crate::workflow::SplitMode::And && gateway.default.is_some() {
+                    let branch = gateway.default.clone().unwrap_or_default();
+                    return Err(DomainError::GatewayInvalidDefault {
+                        gateway: name.clone(),
+                        branch,
+                    });
+                }
+            }
+            (None, Some(_)) => {
+                if step.needs.is_empty() {
+                    return Err(DomainError::GatewayJoinWithoutNeeds(name.clone()));
+                }
+                if !gateway.branches.is_empty() || gateway.default.is_some() {
+                    return Err(DomainError::GatewayJoinHasBranches(name.clone()));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn is_cyclic(

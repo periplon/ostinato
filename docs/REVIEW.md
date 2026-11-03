@@ -141,6 +141,26 @@ unified with `{name: 1}` was accepted). Fixed before the final PR:
 | Required field emitted after a generated optional, or as a dynamic label | Generated required fields are reconciled before export; later required values unify the stored constraint and surface conflicts |
 | Debug `eprintln!` leaked evaluator state to stderr | Removed; CLI stderr is clean for successful validation |
 
+## Gateway review (v0.12.0)
+
+Architecture review of `docs/GATEWAYS.md` raised and closed these points:
+
+| Finding | Resolution |
+|---|---|
+| `gateway: None` would change historical `state_digest` values | `#[serde(default, skip_serializing_if = "Option::is_none")]`; golden pre-gateway spec JSON + captured digest test asserts byte-identical serialization |
+| Gateway decisions could diverge from the audit chain | Decisions are ordinary `steps` rows and `state_digest` covers output; `audit verify` fails after mutation |
+| Dead-path skips could be re-executed on resume | Skipped rows are committed in the group `Completion` and rehydrated before activation |
+| OR joins could race or fire early | Joins are barrier nodes in the static plan; activation runs once per group |
+| Cycle back-edge removal could silently delete branch edges | Compiler and domain reject gateways combined with cycles (`GatewayCycleUnsupported`) |
+| Implicit convergence could change legacy multi-`needs` semantics | Legacy workflows are untouched; gateway workflows reject non-gateway nodes with more than one incoming edge |
+| Branch conditions could read downstream or missing outputs | `step_references` + ancestor scope validation reject them at compile time; `stepStatus` routes on failure/skip |
+| Skipped rows counted as failures | Metrics distinguish `Skipped`; `steps_failed` excludes them |
+| Gateways inside cycles bypass activation | `PlanNode.in_cycle` preserves legacy cycle execution; a gateway workflow with a cycle is rejected before planning |
+
+Residual v1 limits are deliberate: no `n_of`/quorum, `event_based` or
+`complex` gateways; no gateways inside cycles; joins are barriers (not
+early-firing). See `docs/GATEWAYS.md` §14.
+
 ## Deliberately deferred / residual risks
 
 | Item | Status |

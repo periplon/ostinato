@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.12.0
+
+First-class workflow gateways: XOR/OR/AND splits and joins.
+
+- New step kind `gateway` with a `gateway` payload (`split`, `join`,
+  `branches`, `default`). Splits create implicit branch edges to named target
+  steps; joins synchronise explicit `needs`.
+- Conditions reuse the existing pure condition language and gain a
+  `stepStatus` map (`succeeded` / `failed` / `skipped`) alongside `steps`
+  successful outputs.
+- Dead-path elimination records skipped rows (`status = "skipped"`,
+  `visits = 0`, `attempts = 0`) and emits `step.skipped`; gateway decisions are
+  persisted as gateway step outputs with `gateway.evaluated`,
+  `gateway.joined` and `gateway.failed` events.
+- Durability needs no schema migration: gateway and skip rows commit in the
+  same group transaction as executed rows, and resume reconstructs routing from
+  `steps` rows. Gateway output is covered by `state_digest` and `audit verify`.
+- Validation rejects gateways combined with cycles, implicit joins in gateway
+  workflows, invalid branch targets/defaults and out-of-scope condition
+  references, with full `workflow.steps.<name>...` paths.
+- `graph --format dot` renders gateway diamonds and condition labels;
+  `graph --format json` exposes `has_gateways`, `incoming` and `gateway`.
+  `metrics` adds `steps_skipped` / `gateways_evaluated` in text, Prometheus and
+  JSON.
+- Backward compatible: `gateway` is skipped when absent from serialization, so
+  pre-existing specs keep their state digest and remain resumable.
+
 ## v0.11.3
 
 Multiline string dedent and remaining raw-literal edge cases.

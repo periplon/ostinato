@@ -24,6 +24,7 @@ fn run_record(id: &str) -> RunRecord {
             exec: None,
             agent: None,
             improve: None,
+            gateway: None,
             continue_on_error: false,
             timeout_ms: None,
         },

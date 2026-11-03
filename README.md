@@ -32,7 +32,7 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 
 ## Status
 
-`v0.11.3` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
+`v0.12.0` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
 
 ## Features
 
@@ -42,7 +42,8 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 - **Resumable**: `ostinato resume <run>` skips completed work using a stable plan index.
 - **Retries**: bounded exponential backoff, deterministic jitter, per-attempt timeouts.
 - **Cycles**: strongly-connected components execute as bounded rounds; `until` conditions stop early.
-- **Agentic + deterministic**: `exec`, `agent`, `improve`, `noop` step kinds share one scheduler.
+- **Gateways**: XOR/OR/AND splits and joins with conditions, default branches, explicit convergence, dead-path elimination, `stepStatus` failure routing and durable audit of every routing decision.
+- **Agentic + deterministic**: `exec`, `agent`, `improve`, `noop` and `gateway` step kinds share one scheduler.
 - **Audit**: SHA-256 hash chain per run with a persisted head, a state digest and a chained `state.committed` anchor; `ostinato audit verify` detects payload tampering, tail truncation, status flips and edits to the spec/checkpoint/step outputs.
 - **Trials**: append-only log of every attempt with input/output hashes, score, duration and error.
 - **Observability**: structured tracing, `status`, `logs --follow`, run metrics, Prometheus text output.
@@ -72,7 +73,7 @@ Verify:
 
 ```sh
 ostinato doctor
-# ostinato 0.11.3
+# ostinato 0.12.0
 # evaluator rust (required CUE workflow semantics; default)
 # oracle cue version v0.17.1
 # db .ostinato/ostinato.db

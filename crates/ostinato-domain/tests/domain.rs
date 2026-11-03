@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use ostinato_domain::{
-    AuditEvent, CycleSpec, DomainError, NewEvent, RetryPolicy, StepKind, StepSpec, WorkflowSpec,
-    audit, build_plan,
+    AuditEvent, BranchSpec, CycleSpec, DomainError, EdgeOrigin, GatewaySpec, JoinMode, NewEvent,
+    PlanEdge, RetryPolicy, SplitMode, StepKind, StepSpec, WorkflowSpec, audit, build_plan,
 };
 use serde_json::json;
 
@@ -18,6 +18,7 @@ fn step(name: &str) -> StepSpec {
         exec: None,
         agent: None,
         improve: None,
+        gateway: None,
         continue_on_error: false,
         timeout_ms: None,
     }
@@ -143,4 +144,263 @@ fn retry_backoff_is_capped_and_deterministic() {
 fn new_event_helper_is_ergonomic() {
     let event = NewEvent::new("run.started", None, json!({}));
     assert_eq!(event.kind, "run.started");
+}
+
+fn gateway_step(name: &str, gateway: GatewaySpec) -> StepSpec {
+    let mut spec = step(name);
+    spec.kind = StepKind::Gateway;
+    spec.gateway = Some(gateway);
+    spec
+}
+
+fn split_gateway(
+    mode: SplitMode,
+    branches: &[(&str, Option<&str>)],
+    default: Option<&str>,
+) -> GatewaySpec {
+    let mut gateway = GatewaySpec {
+        split: Some(mode),
+        join: None,
+        branches: BTreeMap::new(),
+        default: default.map(ToOwned::to_owned),
+    };
+    for (name, condition) in branches {
+        gateway.branches.insert(
+            (*name).to_owned(),
+            BranchSpec {
+                condition: condition.map(ToOwned::to_owned),
+            },
+        );
+    }
+    gateway
+}
+
+fn join_gateway(mode: JoinMode) -> GatewaySpec {
+    GatewaySpec {
+        split: None,
+        join: Some(mode),
+        branches: BTreeMap::new(),
+        default: None,
+    }
+}
+
+fn gateway_workflow() -> WorkflowSpec {
+    let mut steps = BTreeMap::new();
+    steps.insert("test".to_owned(), step("test"));
+    let mut route = gateway_step(
+        "route",
+        split_gateway(
+            SplitMode::Xor,
+            &[("deployFast", Some("params.fast")), ("deploySlow", None)],
+            Some("deploySlow"),
+        ),
+    );
+    route.needs = vec!["test".to_owned()];
+    steps.insert("route".to_owned(), route);
+    steps.insert("deployFast".to_owned(), step("deployFast"));
+    steps.insert("deploySlow".to_owned(), step("deploySlow"));
+    let mut merge = gateway_step("merge", join_gateway(JoinMode::Or));
+    merge.needs = vec!["deployFast".to_owned(), "deploySlow".to_owned()];
+    steps.insert("merge".to_owned(), merge);
+    let mut notify = step("notify");
+    notify.needs = vec!["merge".to_owned()];
+    steps.insert("notify".to_owned(), notify);
+    WorkflowSpec {
+        name: "gateways".to_owned(),
+        max_parallel: 4,
+        steps,
+    }
+}
+
+#[test]
+fn gateway_plan_orders_branches_and_joins() {
+    let plan = build_plan(&gateway_workflow()).expect("plan");
+    assert!(plan.has_gateways);
+    assert!(!plan.has_cycles);
+    let index = |name: &str| {
+        plan.nodes
+            .iter()
+            .position(|node| node.step == name)
+            .expect("node")
+    };
+    assert!(index("route") < index("deployFast"));
+    assert!(index("route") < index("deploySlow"));
+    assert!(index("merge") > index("deployFast"));
+    assert!(index("merge") > index("deploySlow"));
+    assert!(index("notify") > index("merge"));
+
+    let fast = &plan.nodes[index("deployFast")];
+    assert_eq!(
+        fast.incoming,
+        vec![PlanEdge {
+            from: "route".to_owned(),
+            origin: EdgeOrigin::Branch {
+                gateway: "route".to_owned(),
+                branch: "deployFast".to_owned(),
+            },
+        }]
+    );
+    assert_eq!(plan.nodes[index("route")].incoming.len(), 1);
+    assert_eq!(plan.nodes[index("merge")].incoming.len(), 2);
+}
+
+#[test]
+fn legacy_plan_shape_is_unchanged_without_gateways() {
+    let mut steps = BTreeMap::new();
+    steps.insert("a".to_owned(), step("a"));
+    let mut b = step("b");
+    b.needs = vec!["a".to_owned()];
+    steps.insert("b".to_owned(), b);
+    let plan = build_plan(&WorkflowSpec {
+        name: "legacy".to_owned(),
+        max_parallel: 1,
+        steps,
+    })
+    .expect("plan");
+    assert!(!plan.has_gateways);
+    assert!(plan.nodes.iter().all(|node| node.gateway.is_none()));
+    assert_eq!(
+        plan.nodes[1].incoming,
+        vec![PlanEdge {
+            from: "a".to_owned(),
+            origin: EdgeOrigin::Dependency,
+        }]
+    );
+}
+
+#[test]
+fn gateway_and_cycle_combination_is_rejected() {
+    let mut steps = BTreeMap::new();
+    let mut a = step("a");
+    a.needs = vec!["b".to_owned()];
+    a.cycle = Some(CycleSpec {
+        max_rounds: 2,
+        until: None,
+    });
+    let mut b = step("b");
+    b.needs = vec!["a".to_owned()];
+    steps.insert("a".to_owned(), a);
+    steps.insert("b".to_owned(), b);
+    steps.insert(
+        "gate".to_owned(),
+        gateway_step("gate", split_gateway(SplitMode::And, &[("c", None)], None)),
+    );
+    steps.insert("c".to_owned(), step("c"));
+    let error = build_plan(&WorkflowSpec {
+        name: "both".to_owned(),
+        max_parallel: 1,
+        steps,
+    })
+    .expect_err("must reject");
+    assert!(matches!(error, DomainError::GatewayCycleUnsupported { .. }));
+}
+
+#[test]
+fn implicit_join_with_gateways_is_rejected() {
+    let mut spec = gateway_workflow();
+    let mut extra = step("extra");
+    extra.needs = vec!["test".to_owned(), "deployFast".to_owned()];
+    spec.steps.insert("extra".to_owned(), extra);
+    let error = build_plan(&spec).expect_err("must reject");
+    assert_eq!(
+        error,
+        DomainError::ImplicitJoinWithGateways("extra".to_owned())
+    );
+}
+
+#[test]
+fn unknown_branch_target_is_rejected() {
+    let mut spec = gateway_workflow();
+    spec.steps.insert(
+        "route".to_owned(),
+        gateway_step(
+            "route",
+            split_gateway(SplitMode::And, &[("missing", None)], None),
+        ),
+    );
+    let error = build_plan(&spec).expect_err("must reject");
+    assert!(matches!(
+        error,
+        DomainError::GatewayUnknownBranchTarget { .. }
+    ));
+}
+
+#[test]
+fn branch_target_with_needs_is_rejected() {
+    let mut spec = gateway_workflow();
+    spec.steps.get_mut("deployFast").expect("step").needs = vec!["test".to_owned()];
+    let error = build_plan(&spec).expect_err("must reject");
+    assert!(matches!(
+        error,
+        DomainError::GatewayBranchTargetHasNeeds { .. }
+    ));
+}
+
+#[test]
+fn join_with_branches_is_rejected() {
+    let mut spec = gateway_workflow();
+    let mut merge = join_gateway(JoinMode::Or);
+    merge
+        .branches
+        .insert("x".to_owned(), BranchSpec { condition: None });
+    spec.steps
+        .insert("merge".to_owned(), gateway_step("merge", merge));
+    spec.steps.get_mut("merge").expect("merge").needs = vec!["deployFast".to_owned()];
+    let error = build_plan(&spec).expect_err("must reject");
+    assert_eq!(
+        error,
+        DomainError::GatewayJoinHasBranches("merge".to_owned())
+    );
+}
+
+#[test]
+fn split_and_join_together_is_rejected() {
+    let mut spec = gateway_workflow();
+    let mut gateway = split_gateway(SplitMode::And, &[("deployFast", None)], None);
+    gateway.join = Some(JoinMode::And);
+    spec.steps
+        .insert("route".to_owned(), gateway_step("route", gateway));
+    let error = build_plan(&spec).expect_err("must reject");
+    assert_eq!(error, DomainError::GatewaySplitAndJoin("route".to_owned()));
+}
+
+#[test]
+fn invalid_default_is_rejected() {
+    let mut spec = gateway_workflow();
+    let gateway = split_gateway(
+        SplitMode::Xor,
+        &[("deployFast", Some("params.fast"))],
+        Some("nope"),
+    );
+    spec.steps
+        .insert("route".to_owned(), gateway_step("route", gateway));
+    let error = build_plan(&spec).expect_err("must reject");
+    assert!(matches!(error, DomainError::GatewayInvalidDefault { .. }));
+}
+
+#[test]
+fn legacy_step_spec_deserializes_without_gateway_and_reserializes_identically() {
+    let legacy = r#"{"name":"a","kind":"noop","needs":[],"retry":{"max_retries":0,"base_delay_ms":100,"factor":2.0,"max_delay_ms":30000,"jitter":true},"cycle":null,"exec":null,"agent":null,"improve":null,"continue_on_error":false,"timeout_ms":null}"#;
+    let step: StepSpec = serde_json::from_str(legacy).expect("deserialize legacy step");
+    assert!(step.gateway.is_none());
+    let serialized = serde_json::to_string(&step).expect("serialize");
+    assert_eq!(serialized, legacy);
+    assert!(!serialized.contains("gateway"));
+}
+
+#[test]
+fn legacy_state_digest_is_stable_across_the_gateway_change() {
+    let legacy_spec = r#"{"name":"legacy","max_parallel":2,"steps":{"a":{"name":"a","kind":"noop","needs":[],"retry":{"max_retries":0,"base_delay_ms":100,"factor":2.0,"max_delay_ms":30000,"jitter":true},"cycle":null,"exec":null,"agent":null,"improve":null,"continue_on_error":false,"timeout_ms":null},"b":{"name":"b","kind":"exec","needs":["a"],"retry":{"max_retries":0,"base_delay_ms":100,"factor":2.0,"max_delay_ms":30000,"jitter":true},"cycle":null,"exec":{"cmd":["sh","-c","echo b"],"cwd":null,"env":{},"timeout_ms":null},"agent":null,"improve":null,"continue_on_error":false,"timeout_ms":null}}}"#;
+    // Captured from the pre-gateway implementation.
+    let expected = "a41013b4e440b0441253a7b4166e9a3db7fd08fa039d19a98df5e91803ffee4b";
+    let spec: WorkflowSpec = serde_json::from_str(legacy_spec).expect("deserialize legacy spec");
+    assert_eq!(
+        serde_json::to_string(&spec).expect("serialize"),
+        legacy_spec,
+        "gateway must not appear in legacy serialization"
+    );
+    assert_eq!(
+        audit::state_digest(&spec, &json!({"x": 1}), "legacy.cue", 2, &[]),
+        expected
+    );
 }

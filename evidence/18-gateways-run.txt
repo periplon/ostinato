@@ -1,0 +1,12 @@
+### /Users/joanmarc/dailywork/jmca/ostinato-gateways/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.dkgvWCkNdZ/gateway.sqlite --cue cue run examples/gateway.cue
+
+run=d210862f-eb0e-4225-b826-dde3c1cfad45 workflow=release-decision status=succeeded durationMs=22
+STEP                     STATUS     VISITS ATTEMPTS
+deployFast               succeeded  1      1       
+deploySlow               skipped    0      0       
+merge                    succeeded  1      0       
+notify                   succeeded  1      1       
+route                    succeeded  1      0       
+test                     succeeded  1      1       
+
+exit=0

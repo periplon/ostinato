@@ -4,6 +4,7 @@
 //! language front-end. Infrastructure is injected through the traits in
 //! [`ports`].
 
+pub mod activation;
 pub mod engine;
 pub mod error;
 pub mod improve;

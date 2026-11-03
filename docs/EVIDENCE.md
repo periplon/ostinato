@@ -724,3 +724,68 @@ Payload mutation fails.
 AUDIT FAILED run=787c4169-be90-42e4-b22a-0c91473ade96: invalid audit chain at sequence 1: event hash does not match its content
 exit= 1
 ````
+
+## Gateways (`v0.12.0`)
+
+`examples/gateway.cue` routes an XOR split on `steps.test.score`, skips the
+dead branch, joins both branches with an OR join, and notifies once. This is
+the real transcript from `scripts/evidence.sh` section 18.
+
+### Run: XOR routing and dead-path skip
+
+````text
+### target/debug/ostinato --db <workdir>/gateway.sqlite --cue cue run examples/gateway.cue
+
+run=d210862f-eb0e-4225-b826-dde3c1cfad45 workflow=release-decision status=succeeded durationMs=22
+STEP                     STATUS     VISITS ATTEMPTS
+deployFast               succeeded  1      1
+deploySlow               skipped    0      0
+merge                    succeeded  1      0
+notify                   succeeded  1      1
+route                    succeeded  1      0
+test                     succeeded  1      1
+
+exit=0
+````
+
+### Status: skipped rows are durable and visible
+
+````text
+run=d210862f-eb0e-4225-b826-dde3c1cfad45 workflow=release-decision status=succeeded resumeIndex=6
+STEP                     STATUS     VISITS ATTEMPTS
+deployFast               succeeded  1      1
+deploySlow               skipped    0      0
+merge                    succeeded  1      0
+notify                   succeeded  1      1
+route                    succeeded  1      0
+test                     succeeded  1      1
+
+exit=0
+````
+
+### Metrics: skips and gateway evaluations
+
+````text
+ostinato_steps_total 6
+ostinato_steps_failed_total 0
+ostinato_steps_skipped_total 1
+ostinato_gateways_evaluated_total 2
+ostinato_attempts_total 3
+
+exit=0
+````
+
+### Audit: gateway decisions are covered by the state digest
+
+````text
+OK run=d210862f-eb0e-4225-b826-dde3c1cfad45 events=14 head=0aa2eed6923a019e0504c125ec92b59ccdf2903be69ae7c1019cc3badef1d17c
+exit=0
+````
+
+The `gateway.evaluated`, `gateway.joined` and `step.skipped` events are visible
+in `evidence/18-gateways-logs.txt`. `gateway_resume_after_split_does_not_re_evaluate_or_run_dead_branch`
+and `gateway_audit_verifies_and_detects_tampered_gateway_output`,
+`gateway_audit_detects_a_tampered_skipped_row` and
+`legacy_run_without_gateways_still_resumes_and_verifies` in
+`crates/ostinato-cli/tests/e2e.rs` prove resume without a second split decision,
+tamper detection for gateway and skipped rows, and legacy-run compatibility.

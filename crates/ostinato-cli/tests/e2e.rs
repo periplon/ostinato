@@ -2592,3 +2592,721 @@ workflow: {name: "bytes", steps: {s: {kind: "noop"}}}
     );
     assert_eq!(json(&rust)["params"], json(&oracle)["params"]);
 }
+
+fn write_gateway_workflow(directory: &Path, workflow: &str) -> PathBuf {
+    let path = directory.join("gateway.cue");
+    write(&path, workflow);
+    path
+}
+
+fn run_workflow(db: &Path, workflow: &Path) -> Output {
+    ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ])
+}
+
+fn status_text(db: &Path, run: &str) -> String {
+    let output = ost(&["--db", db.to_str().expect("db"), "status", run]);
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn logs_json(db: &Path, run: &str) -> Vec<Value> {
+    let output = ost(&["--db", db.to_str().expect("db"), "--json", "logs", run]);
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("event json"))
+        .collect()
+}
+
+fn metrics_json(db: &Path, run: &str) -> Value {
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "metrics",
+        "--run",
+        run,
+        "--format",
+        "json",
+    ]);
+    assert!(output.status.success());
+    json(&output)
+}
+
+fn trials_for(db: &Path, run: &str) -> Vec<Value> {
+    let output = ost(&["--db", db.to_str().expect("db"), "--json", "trials", run]);
+    assert!(output.status.success());
+    json(&output).as_array().cloned().unwrap_or_default()
+}
+
+#[test]
+fn gateway_xor_routes_one_branch_and_skips_the_other() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let trace = directory.path().join("trace");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        &format!(
+            r#"
+package demo
+workflow: {{
+    name: "xor"
+    steps: {{
+        test: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo '{{\"score\":0.95}}'"] }} }}
+        route: {{
+            kind: "gateway"
+            needs: ["test"]
+            gateway: {{
+                split: "xor"
+                branches: {{
+                    deployFast: "steps.test.score >= 0.9"
+                    deploySlow: true
+                }}
+                default: "deploySlow"
+            }}
+        }}
+        deployFast: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo fast >> {trace}"] }} }}
+        deploySlow: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo slow >> {trace}"] }} }}
+        merge: {{ kind: "gateway", needs: ["deployFast", "deploySlow"], gateway: {{ join: "or" }} }}
+        notify: {{ kind: "exec", needs: ["merge"], exec: {{ cmd: ["sh", "-c", "echo notify >> {trace}"] }} }}
+    }}
+}}
+"#,
+            trace = trace.display()
+        ),
+    );
+    let output = run_workflow(&db, &workflow);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let trace = std::fs::read_to_string(&trace).expect("trace");
+    assert_eq!(trace.lines().collect::<Vec<_>>(), vec!["fast", "notify"]);
+
+    let status = status_text(&db, &run);
+    assert!(
+        status
+            .lines()
+            .any(|line| line.starts_with("deployFast ") && line.contains("succeeded"))
+    );
+    assert!(
+        status
+            .lines()
+            .any(|line| line.starts_with("deploySlow ") && line.contains("skipped"))
+    );
+
+    let trials = trials_for(&db, &run);
+    let names: Vec<&str> = trials
+        .iter()
+        .filter_map(|trial| trial["step"].as_str())
+        .collect();
+    assert!(!names.contains(&"route"), "gateways must not record trials");
+    assert!(!names.contains(&"merge"), "gateways must not record trials");
+    assert!(
+        !names.contains(&"deploySlow"),
+        "skipped steps must not record trials"
+    );
+
+    let metrics = metrics_json(&db, &run);
+    assert_eq!(metrics["stepsSkipped"], 1);
+    assert_eq!(metrics["gatewaysEvaluated"], 2);
+
+    let text = ost(&["--db", db.to_str().expect("db"), "metrics", "--run", &run]);
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("steps_skipped     1"), "{text}");
+    assert!(text.contains("gateways_evaluated 2"), "{text}");
+    let prometheus = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "metrics",
+        "--run",
+        &run,
+        "--format",
+        "prometheus",
+    ]);
+    let prometheus = String::from_utf8_lossy(&prometheus.stdout);
+    assert!(
+        prometheus.contains("ostinato_steps_skipped_total 1"),
+        "{prometheus}"
+    );
+    assert!(
+        prometheus.contains("ostinato_gateways_evaluated_total 2"),
+        "{prometheus}"
+    );
+}
+
+#[test]
+fn gateway_xor_default_branch_runs_when_no_condition_matches() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let trace = directory.path().join("trace");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        &format!(
+            r#"
+package demo
+workflow: {{
+    name: "default"
+    steps: {{
+        test: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo '{{\"score\":0.1}}'"] }} }}
+        route: {{
+            kind: "gateway"
+            needs: ["test"]
+            gateway: {{
+                split: "xor"
+                branches: {{
+                    deployFast: "steps.test.score >= 0.9"
+                    deploySlow: true
+                }}
+                default: "deploySlow"
+            }}
+        }}
+        deployFast: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo fast >> {trace}"] }} }}
+        deploySlow: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo slow >> {trace}"] }} }}
+        merge: {{ kind: "gateway", needs: ["deployFast", "deploySlow"], gateway: {{ join: "or" }} }}
+    }}
+}}
+"#,
+            trace = trace.display()
+        ),
+    );
+    let output = run_workflow(&db, &workflow);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace = std::fs::read_to_string(&trace).expect("trace");
+    assert_eq!(trace.lines().collect::<Vec<_>>(), vec!["slow"]);
+}
+
+#[test]
+fn gateway_or_runs_every_true_branch() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let trace = directory.path().join("trace");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        &format!(
+            r#"
+package demo
+workflow: {{
+    name: "or"
+    steps: {{
+        route: {{
+            kind: "gateway"
+            gateway: {{ split: "or", branches: {{
+                left: "true"
+                right: "true"
+            }} }}
+        }}
+        left: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo left >> {trace}"] }} }}
+        right: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo right >> {trace}"] }} }}
+        merge: {{ kind: "gateway", needs: ["left", "right"], gateway: {{ join: "or" }} }}
+    }}
+}}
+"#,
+            trace = trace.display()
+        ),
+    );
+    let output = run_workflow(&db, &workflow);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let trace = std::fs::read_to_string(&trace).expect("trace");
+    let lines: Vec<&str> = trace.lines().collect();
+    assert!(lines.contains(&"left") && lines.contains(&"right"));
+    let metrics = metrics_json(&db, &run);
+    assert_eq!(metrics["stepsSkipped"], 0);
+    assert_eq!(metrics["gatewaysEvaluated"], 2);
+}
+
+#[test]
+fn gateway_and_fan_out_and_fan_in_wait_for_both_branches() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let trace = directory.path().join("trace");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        &format!(
+            r#"
+package demo
+workflow: {{
+    name: "and"
+    steps: {{
+        fanout: {{ kind: "gateway", gateway: {{ split: "and", branches: {{ unit: true, integration: true }} }} }}
+        unit: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo unit >> {trace}"] }} }}
+        integration: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo integration >> {trace}"] }} }}
+        fanin: {{ kind: "gateway", needs: ["unit", "integration"], gateway: {{ join: "and" }} }}
+        done: {{ kind: "exec", needs: ["fanin"], exec: {{ cmd: ["sh", "-c", "echo done >> {trace}"] }} }}
+    }}
+}}
+"#,
+            trace = trace.display()
+        ),
+    );
+    let output = run_workflow(&db, &workflow);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace = std::fs::read_to_string(&trace).expect("trace");
+    let lines: Vec<&str> = trace.lines().collect();
+    assert!(lines.contains(&"unit") && lines.contains(&"integration"));
+    assert_eq!(lines.last().copied(), Some("done"));
+    let run = run_id(&db);
+    let metrics = metrics_json(&db, &run);
+    assert_eq!(metrics["stepsSkipped"], 0);
+    assert_eq!(metrics["gatewaysEvaluated"], 2);
+}
+
+#[test]
+fn gateway_dead_path_propagates_and_records_skips() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "dead"
+    steps: {
+        route: {
+            kind: "gateway"
+            gateway: { split: "xor", branches: {
+                live: "true"
+                dead: true
+            }, default: "dead" }
+        }
+        live: { kind: "noop" }
+        dead: { kind: "noop" }
+        dead2: { kind: "noop", needs: ["dead"] }
+        dead3: { kind: "noop", needs: ["dead2"] }
+        merge: { kind: "gateway", needs: ["live", "dead3"], gateway: { join: "or" } }
+    }
+}
+"#,
+    );
+    let output = run_workflow(&db, &workflow);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let status = status_text(&db, &run);
+    for name in ["dead", "dead2", "dead3"] {
+        assert!(
+            status
+                .lines()
+                .any(|line| line.starts_with(name) && line.contains("skipped")),
+            "{name} must be skipped:\n{status}"
+        );
+    }
+    let trials = trials_for(&db, &run);
+    assert!(
+        trials.iter().all(
+            |trial| !["dead", "dead2", "dead3"].contains(&trial["step"].as_str().unwrap_or(""))
+        ),
+        "skipped steps must not record trials"
+    );
+    let skipped_events = logs_json(&db, &run)
+        .into_iter()
+        .filter(|event| event["kind"] == "step.skipped")
+        .count();
+    assert_eq!(skipped_events, 3);
+}
+
+#[test]
+fn gateway_routes_on_continue_on_error_status() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let trace = directory.path().join("trace");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        &format!(
+            r#"
+package demo
+workflow: {{
+    name: "failure-routing"
+    steps: {{
+        check: {{ kind: "exec", continueOnError: true, exec: {{ cmd: ["sh", "-c", "exit 3"] }} }}
+        route: {{
+            kind: "gateway"
+            needs: ["check"]
+            gateway: {{
+                split: "xor"
+                branches: {{
+                    failure: "stepStatus.check == \"failed\""
+                    success: true
+                }}
+                default: "success"
+            }}
+        }}
+        failure: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo failure >> {trace}"] }} }}
+        success: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo success >> {trace}"] }} }}
+        merge: {{ kind: "gateway", needs: ["failure", "success"], gateway: {{ join: "or" }} }}
+    }}
+}}
+"#,
+            trace = trace.display()
+        ),
+    );
+    let output = run_workflow(&db, &workflow);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace = std::fs::read_to_string(&trace).expect("trace");
+    assert_eq!(trace.lines().collect::<Vec<_>>(), vec!["failure"]);
+    let run = run_id(&db);
+    let status = status_text(&db, &run);
+    assert!(
+        status
+            .lines()
+            .any(|line| line.starts_with("success ") && line.contains("skipped"))
+    );
+}
+
+#[test]
+fn gateway_failure_is_recorded_and_keeps_resume_index_at_the_gateway_group() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+params: { never: bool | *false }
+workflow: {
+    name: "gateway-failure"
+    steps: {
+        test: { kind: "noop" }
+        route: {
+            kind: "gateway"
+            needs: ["test"]
+            gateway: { split: "xor", branches: {
+                a: "params.never == true"
+            } }
+        }
+        a: { kind: "noop" }
+        merge: { kind: "gateway", needs: ["a"], gateway: { join: "or" } }
+    }
+}
+"#,
+    );
+    let output = run_workflow(&db, &workflow);
+    assert_eq!(output.status.code(), Some(1));
+    let events = logs_json(&db, &run_id(&db));
+    assert!(events.iter().any(|event| event["kind"] == "gateway.failed"));
+    assert!(events.iter().any(|event| event["kind"] == "run.failed"));
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    let resume_index: i64 = connection
+        .query_row("SELECT resume_index FROM runs LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .expect("resume index");
+    assert_eq!(resume_index, 1, "gateway is the second plan node");
+}
+
+#[test]
+fn gateway_resume_after_split_does_not_re_evaluate_or_run_dead_branch() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let flag = directory.path().join("go");
+    let trace = directory.path().join("trace");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        &format!(
+            r#"
+package demo
+workflow: {{
+    name: "gateway-resume"
+    steps: {{
+        route: {{
+            kind: "gateway"
+            gateway: {{ split: "xor", branches: {{
+                active: "true"
+                dead: true
+            }}, default: "dead" }}
+        }}
+        active: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "test -f {flag} || exit 7; echo active >> {trace}"] }} }}
+        dead: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo dead >> {trace}"] }} }}
+        merge: {{ kind: "gateway", needs: ["active", "dead"], gateway: {{ join: "or" }} }}
+        done: {{ kind: "exec", needs: ["merge"], exec: {{ cmd: ["sh", "-c", "echo done >> {trace}"] }} }}
+    }}
+}}
+"#,
+            flag = flag.display(),
+            trace = trace.display()
+        ),
+    );
+    let first = run_workflow(&db, &workflow);
+    assert!(!first.status.success());
+    let run = run_id(&db);
+    std::fs::write(&flag, b"go").expect("flag");
+    let resumed = ost(&["--db", db.to_str().expect("db"), "resume", &run]);
+    assert!(
+        resumed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+
+    let trace = std::fs::read_to_string(&trace).expect("trace");
+    assert_eq!(trace.lines().collect::<Vec<_>>(), vec!["active", "done"]);
+    let events = logs_json(&db, &run);
+    let evaluated = events
+        .iter()
+        .filter(|event| event["kind"] == "gateway.evaluated")
+        .count();
+    assert_eq!(evaluated, 1, "the split must not be re-evaluated on resume");
+    let dead_skips = events
+        .iter()
+        .filter(|event| event["kind"] == "step.skipped" && event["step"] == "dead")
+        .count();
+    assert_eq!(
+        dead_skips, 1,
+        "a committed skip must not be re-emitted on resume"
+    );
+}
+
+#[test]
+fn gateway_audit_verifies_and_detects_tampered_gateway_output() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "audit"
+    steps: {
+        route: {
+            kind: "gateway"
+            gateway: { split: "xor", branches: {
+                a: "true"
+                b: true
+            }, default: "b" }
+        }
+        a: { kind: "noop" }
+        b: { kind: "noop" }
+        merge: { kind: "gateway", needs: ["a", "b"], gateway: { join: "or" } }
+    }
+}
+"#,
+    );
+    let output = run_workflow(&db, &workflow);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let verified = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(verified.status.success());
+
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    connection
+        .execute(
+            "UPDATE steps SET output_json = '{\"chosen\":[\"b\"],\"kind\":\"gateway\"}' WHERE run_id = ?1 AND name = 'route'",
+            rusqlite::params![run],
+        )
+        .expect("tamper gateway output");
+    let tampered = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(
+        !tampered.status.success(),
+        "tampered state must fail verification"
+    );
+    let stderr = String::from_utf8_lossy(&tampered.stderr);
+    assert!(
+        stderr.contains("AUDIT FAILED") || stderr.contains("digest"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn gateway_graph_dot_and_json_expose_routing_metadata() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "graph"
+    steps: {
+        test: { kind: "noop" }
+        route: {
+            kind: "gateway"
+            needs: ["test"]
+            gateway: { split: "xor", branches: {
+                fast: "steps.test.stdout == \"ok\""
+                slow: true
+            }, default: "slow" }
+        }
+        fast: { kind: "noop" }
+        slow: { kind: "noop" }
+        merge: { kind: "gateway", needs: ["fast", "slow"], gateway: { join: "or" } }
+    }
+}
+"#,
+    );
+    let dot = ost(&[
+        "--evaluator",
+        "native",
+        "graph",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(dot.status.success());
+    let dot = String::from_utf8_lossy(&dot.stdout);
+    assert_eq!(dot.matches("shape=diamond").count(), 2, "{dot}");
+    assert!(dot.contains("steps.test.stdout == \\\"ok\\\""), "{dot}");
+    assert!(dot.contains("default: true"), "{dot}");
+    assert!(dot.contains("join: or"), "{dot}");
+
+    let plan = ost(&[
+        "--evaluator",
+        "native",
+        "graph",
+        "--format",
+        "json",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(plan.status.success());
+    let plan = json(&plan);
+    assert_eq!(plan["has_gateways"], true);
+    let nodes = plan["nodes"].as_array().expect("nodes");
+    let route = nodes
+        .iter()
+        .find(|node| node["step"] == "route")
+        .expect("route node");
+    assert_eq!(route["gateway"]["split"], "xor");
+    let fast = nodes
+        .iter()
+        .find(|node| node["step"] == "fast")
+        .expect("fast node");
+    assert_eq!(fast["incoming"][0]["origin"]["branch"]["gateway"], "route");
+    let merge = nodes
+        .iter()
+        .find(|node| node["step"] == "merge")
+        .expect("merge node");
+    assert_eq!(merge["gateway"]["join"], "or");
+    assert_eq!(merge["incoming"].as_array().expect("incoming").len(), 2);
+}
+
+#[test]
+fn gateway_audit_detects_a_tampered_skipped_row() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "skip-tamper"
+    steps: {
+        route: {
+            kind: "gateway"
+            gateway: { split: "xor", branches: { a: "true", b: true }, default: "b" }
+        }
+        a: { kind: "noop" }
+        b: { kind: "noop" }
+        merge: { kind: "gateway", needs: ["a", "b"], gateway: { join: "or" } }
+    }
+}
+"#,
+    );
+    let output = run_workflow(&db, &workflow);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    connection
+        .execute(
+            "UPDATE steps SET status = 'succeeded' WHERE run_id = ?1 AND name = 'b'",
+            rusqlite::params![run],
+        )
+        .expect("tamper skipped row");
+    let tampered = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(
+        !tampered.status.success(),
+        "tampered skip must fail verification"
+    );
+    let stderr = String::from_utf8_lossy(&tampered.stderr);
+    assert!(
+        stderr.contains("AUDIT FAILED") || stderr.contains("digest"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn legacy_run_without_gateways_still_resumes_and_verifies() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let flag = directory.path().join("go");
+    let workflow = directory.path().join("legacy.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+workflow: {{
+    name: "legacy"
+    steps: {{
+        a: {{ kind: "exec", exec: {{ cmd: ["sh", "-c", "echo a"] }} }}
+        b: {{ kind: "exec", needs: ["a"], exec: {{ cmd: ["sh", "-c", "test -f {flag} || exit 7"] }} }}
+    }}
+}}
+"#,
+            flag = flag.display()
+        ),
+    );
+    let first = run_workflow(&db, &workflow);
+    assert!(!first.status.success());
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    let spec_json: String = connection
+        .query_row(
+            "SELECT spec_json FROM runs WHERE id = ?1",
+            rusqlite::params![run],
+            |row| row.get(0),
+        )
+        .expect("spec json");
+    assert!(
+        !spec_json.contains("gateway"),
+        "legacy spec must not gain a gateway key"
+    );
+    assert!(
+        ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run])
+            .status
+            .success()
+    );
+    std::fs::write(&flag, b"go").expect("flag");
+    let resumed = ost(&["--db", db.to_str().expect("db"), "resume", &run]);
+    assert!(
+        resumed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert!(
+        ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run])
+            .status
+            .success()
+    );
+}

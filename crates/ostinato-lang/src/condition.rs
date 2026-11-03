@@ -1,6 +1,39 @@
+use std::collections::BTreeSet;
+
 use serde_json::{Number, Value as Json};
 
 use crate::error::LangError;
+
+/// Collect the step names referenced through `steps.<name>` or
+/// `stepStatus.<name>` in a condition expression.
+///
+/// This is a pure lexical pass used by compile-time gateway scope validation.
+/// Invalid expressions yield an empty set; syntax errors are reported by
+/// [`validate_condition`] separately.
+#[must_use]
+pub fn step_references(expr: &str) -> BTreeSet<String> {
+    let Ok(tokens) = tokenize(expr) else {
+        return BTreeSet::new();
+    };
+    let mut references = BTreeSet::new();
+    for (index, token) in tokens.iter().enumerate() {
+        let CTok::Ident(root) = token else {
+            continue;
+        };
+        if root != "steps" && root != "stepStatus" {
+            continue;
+        }
+        if index > 0 && matches!(tokens.get(index - 1), Some(CTok::Dot)) {
+            continue;
+        }
+        if let (Some(CTok::Dot), Some(CTok::Ident(name))) =
+            (tokens.get(index + 1), tokens.get(index + 2))
+        {
+            references.insert(name.clone());
+        }
+    }
+    references
+}
 
 /// Evaluate a boolean-ish condition such as `steps.review.score >= 0.9`.
 ///
@@ -367,6 +400,12 @@ fn valid_reference(context: &Json, path: &str) -> bool {
             context
                 .get("params")
                 .and_then(|params| params.get(param))
+                .is_some()
+        }),
+        "stepStatus" => segments.next().is_some_and(|step| {
+            context
+                .get("stepStatus")
+                .and_then(|status| status.get(step))
                 .is_some()
         }),
         "run_id" | "workflow" | "round" => true,

@@ -1,12 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ostinato_domain::{
-    AgentSpec, CycleSpec, ExecSpec, ImproveSpec, RetryPolicy, StepKind, StepSpec, WorkflowSpec,
-    build_plan,
+    AgentSpec, BranchSpec, CycleSpec, ExecSpec, GatewaySpec, ImproveSpec, JoinMode, RetryPolicy,
+    SplitMode, StepKind, StepSpec, WorkflowSpec, build_plan,
 };
 use serde_json::{Map, Value as Json};
 
-use crate::condition::validate_condition;
+use crate::condition::{step_references, validate_condition};
 use crate::error::LangError;
 use crate::eval::{TypeKind, Value, eval_file, is_hidden_key, value_from_json};
 use crate::parser::parse;
@@ -124,6 +124,8 @@ pub fn compile_value(root: &Value) -> Result<WorkflowSpec, LangError> {
         .get("workflow")
         .ok_or_else(|| LangError::Workflow("missing top-level `workflow` struct".to_owned()))?;
     let spec = extract_workflow(workflow)?;
+    validate_gateway_cross_references(&spec)?;
+    validate_gateway_condition_scopes(&spec)?;
     build_plan(&spec).map_err(|err| LangError::Workflow(err.to_string()))?;
     validate_conditions(&spec, &dummy_params(root))?;
     Ok(spec)
@@ -261,6 +263,7 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
             "exec",
             "agent",
             "improve",
+            "gateway",
             "continueOnError",
             "timeoutMs",
         ],
@@ -272,9 +275,10 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
         "agent" => StepKind::Agent,
         "improve" => StepKind::Improve,
         "noop" => StepKind::Noop,
+        "gateway" => StepKind::Gateway,
         other => {
             return Err(LangError::Workflow(format!(
-                "{path}.kind: unknown kind `{other}` (expected exec, agent, improve or noop)"
+                "{path}.kind: unknown kind `{other}` (expected exec, agent, improve, noop or gateway)"
             )));
         }
     };
@@ -298,16 +302,66 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
         }
     };
 
-    let retry = extract_retry(map.get("retry"), &format!("{path}.retry"))?;
-    let cycle = extract_cycle(map.get("cycle"), &format!("{path}.cycle"))?;
-    let timeout_ms = opt_int(map, "timeoutMs", &format!("{path}.timeoutMs"))?
-        .map(|value| {
-            u64::try_from(value)
-                .map_err(|_| LangError::Workflow(format!("{path}.timeoutMs must be non-negative")))
-        })
-        .transpose()?;
-    let continue_on_error =
-        opt_bool(map, "continueOnError", &format!("{path}.continueOnError"))?.unwrap_or(false);
+    let gateway = extract_gateway(map.get("gateway"), &format!("{path}.gateway"))?;
+    if kind == StepKind::Gateway {
+        if gateway.is_none() {
+            return Err(LangError::Workflow(format!(
+                "{path}.gateway is required when kind = \"gateway\""
+            )));
+        }
+        for field in [
+            "retry",
+            "cycle",
+            "exec",
+            "agent",
+            "improve",
+            "timeoutMs",
+            "continueOnError",
+        ] {
+            if map.contains_key(field) {
+                return Err(LangError::Workflow(format!(
+                    "{path}.{field} is not allowed when kind = \"gateway\""
+                )));
+            }
+        }
+        if gateway.as_ref().is_some_and(|spec| spec.join.is_some()) && needs.is_empty() {
+            return Err(LangError::Workflow(format!(
+                "{path}.needs must not be empty for a join gateway"
+            )));
+        }
+    } else if gateway.is_some() {
+        return Err(LangError::Workflow(format!(
+            "{path}.gateway is only allowed when kind = \"gateway\""
+        )));
+    }
+
+    let is_gateway = kind == StepKind::Gateway;
+    let retry = if is_gateway {
+        RetryPolicy::default()
+    } else {
+        extract_retry(map.get("retry"), &format!("{path}.retry"))?
+    };
+    let cycle = if is_gateway {
+        None
+    } else {
+        extract_cycle(map.get("cycle"), &format!("{path}.cycle"))?
+    };
+    let timeout_ms = if is_gateway {
+        None
+    } else {
+        opt_int(map, "timeoutMs", &format!("{path}.timeoutMs"))?
+            .map(|value| {
+                u64::try_from(value).map_err(|_| {
+                    LangError::Workflow(format!("{path}.timeoutMs must be non-negative"))
+                })
+            })
+            .transpose()?
+    };
+    let continue_on_error = if is_gateway {
+        false
+    } else {
+        opt_bool(map, "continueOnError", &format!("{path}.continueOnError"))?.unwrap_or(false)
+    };
 
     let exec = match map.get("exec").map(Value::concretize) {
         Some(value) => Some(extract_exec(value, &format!("{path}.exec"))?),
@@ -350,7 +404,7 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
                 )));
             }
         }
-        StepKind::Noop => {}
+        StepKind::Noop | StepKind::Gateway => {}
     }
 
     Ok(StepSpec {
@@ -362,9 +416,162 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
         exec,
         agent,
         improve,
+        gateway,
         continue_on_error,
         timeout_ms,
     })
+}
+
+fn extract_gateway(value: Option<&Value>, path: &str) -> Result<Option<GatewaySpec>, LangError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let map = expect_struct(value, path)?;
+    reject_unknown(map, path, &["split", "join", "branches", "default"])?;
+
+    let split = match opt_string(map, "split", &format!("{path}.split"))? {
+        None => None,
+        Some(mode) => Some(match mode.as_str() {
+            "and" => SplitMode::And,
+            "or" => SplitMode::Or,
+            "xor" => SplitMode::Xor,
+            other => {
+                return Err(LangError::Workflow(format!(
+                    "{path}.split: unknown split mode `{other}` (expected and, or or xor)"
+                )));
+            }
+        }),
+    };
+    let join = match opt_string(map, "join", &format!("{path}.join"))? {
+        None => None,
+        Some(mode) => Some(match mode.as_str() {
+            "and" => JoinMode::And,
+            "or" => JoinMode::Or,
+            "xor" => JoinMode::Xor,
+            other => {
+                return Err(LangError::Workflow(format!(
+                    "{path}.join: unknown join mode `{other}` (expected and, or or xor)"
+                )));
+            }
+        }),
+    };
+    match (split, join) {
+        (Some(_), Some(_)) => {
+            return Err(LangError::Workflow(format!(
+                "{path}: exactly one of `split` and `join` is allowed"
+            )));
+        }
+        (None, None) => {
+            return Err(LangError::Workflow(format!(
+                "{path}: one of `split` or `join` is required"
+            )));
+        }
+        _ => {}
+    }
+
+    let branches_declared = map.contains_key("branches");
+    let default_declared = map.contains_key("default");
+    let default = opt_string(map, "default", &format!("{path}.default"))?;
+    let mut branches = BTreeMap::new();
+    if let Some(branches_value) = map.get("branches") {
+        let branch_map = expect_struct(branches_value, &format!("{path}.branches"))?;
+        for (branch, branch_value) in branch_map {
+            if is_hidden_key(branch) {
+                continue;
+            }
+            let branch_path = format!("{path}.branches.{branch}");
+            let condition = match branch_value.concretize() {
+                Value::Bool(true) => None,
+                Value::Bool(false) => {
+                    return Err(LangError::Workflow(format!(
+                        "{branch_path} must be `true` or a condition string; `false` branches are not allowed"
+                    )));
+                }
+                Value::String(condition) => {
+                    if condition.trim().is_empty() {
+                        return Err(LangError::Workflow(format!(
+                            "{branch_path} must not be an empty condition"
+                        )));
+                    }
+                    Some(condition.clone())
+                }
+                other => {
+                    return Err(LangError::Workflow(format!(
+                        "{branch_path} must be `true` or a condition string, found {}",
+                        other.type_name()
+                    )));
+                }
+            };
+            branches.insert(branch.clone(), BranchSpec { condition });
+        }
+    }
+
+    if let Some(split_mode) = split {
+        if branches.is_empty() {
+            return Err(LangError::Workflow(format!(
+                "{path}.branches must contain at least one branch for a split gateway"
+            )));
+        }
+        if split_mode == SplitMode::And && default.is_some() {
+            let branch = default.clone().unwrap_or_default();
+            return Err(LangError::Workflow(format!(
+                "{path}.default is not allowed on an AND split (branch `{branch}`)"
+            )));
+        }
+        if let Some(branch) = &default
+            && !branches.contains_key(branch)
+        {
+            return Err(LangError::Workflow(format!(
+                "{path}.default `{branch}` is not one of the declared branches"
+            )));
+        }
+        for (branch, branch_spec) in &branches {
+            let branch_path = format!("{path}.branches.{branch}");
+            let is_default = default.as_deref() == Some(branch.as_str());
+            match split_mode {
+                SplitMode::And => {
+                    if branch_spec.condition.is_some() {
+                        return Err(LangError::Workflow(format!(
+                            "{branch_path} must be unconditional `true` on an AND split"
+                        )));
+                    }
+                }
+                SplitMode::Xor => {
+                    if is_default {
+                        if branch_spec.condition.is_some() {
+                            return Err(LangError::Workflow(format!(
+                                "{branch_path} is the default branch and must be `true`"
+                            )));
+                        }
+                    } else if branch_spec.condition.is_none() {
+                        return Err(LangError::Workflow(format!(
+                            "{branch_path} requires a condition on an XOR split"
+                        )));
+                    }
+                }
+                SplitMode::Or => {
+                    if is_default && branch_spec.condition.is_some() {
+                        return Err(LangError::Workflow(format!(
+                            "{branch_path} is the default branch and must be `true`"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    if join.is_some() && (branches_declared || default_declared) {
+        return Err(LangError::Workflow(format!(
+            "{path}: a join gateway must not declare `branches` or `default`"
+        )));
+    }
+
+    Ok(Some(GatewaySpec {
+        split,
+        join,
+        branches,
+        default,
+    }))
 }
 
 fn extract_retry(value: Option<&Value>, path: &str) -> Result<RetryPolicy, LangError> {
@@ -595,10 +802,134 @@ fn dummy_value(value: &Value) -> Json {
     }
 }
 
+fn validate_gateway_cross_references(spec: &WorkflowSpec) -> Result<(), LangError> {
+    let split_gateways: BTreeSet<&str> = spec
+        .steps
+        .iter()
+        .filter(|(_, step)| {
+            step.gateway
+                .as_ref()
+                .is_some_and(|gateway| gateway.split.is_some())
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    for (name, step) in &spec.steps {
+        for need in &step.needs {
+            if split_gateways.contains(need.as_str()) {
+                return Err(LangError::Workflow(format!(
+                    "workflow.steps.{name}.needs must not list split gateway `{need}`; branch edges are implicit and selected at runtime"
+                )));
+            }
+        }
+    }
+
+    for (name, step) in &spec.steps {
+        let Some(gateway) = &step.gateway else {
+            continue;
+        };
+        if gateway.split.is_none() {
+            continue;
+        }
+        for branch in gateway.branches.keys() {
+            let branch_path = format!("workflow.steps.{name}.gateway.branches.{branch}");
+            let Some(target) = spec.steps.get(branch) else {
+                return Err(LangError::Workflow(format!(
+                    "{branch_path} targets unknown step `{branch}`; declare it under workflow.steps"
+                )));
+            };
+            if branch == name {
+                return Err(LangError::Workflow(format!(
+                    "{branch_path} must not target the gateway itself"
+                )));
+            }
+            if target.kind == StepKind::Gateway
+                && target
+                    .gateway
+                    .as_ref()
+                    .is_some_and(|spec| spec.join.is_some())
+            {
+                return Err(LangError::Workflow(format!(
+                    "{branch_path} targets join gateway `{branch}`; joins cannot be branch targets"
+                )));
+            }
+            if target.needs.iter().any(|need| need == name) {
+                return Err(LangError::Workflow(format!(
+                    "workflow.steps.{branch}.needs must not list split gateway `{name}`; the branch edge is implicit"
+                )));
+            }
+            if !target.needs.is_empty() {
+                return Err(LangError::Workflow(format!(
+                    "workflow.steps.{branch}.needs must be empty; branch target of `{name}` cannot have prerequisites (put them on the gateway)"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_gateway_condition_scopes(spec: &WorkflowSpec) -> Result<(), LangError> {
+    let mut incoming: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (name, step) in &spec.steps {
+        for need in &step.needs {
+            incoming
+                .entry(name.clone())
+                .or_default()
+                .insert(need.clone());
+        }
+        if let Some(gateway) = &step.gateway
+            && gateway.split.is_some()
+        {
+            for target in gateway.branches.keys() {
+                incoming
+                    .entry(target.clone())
+                    .or_default()
+                    .insert(name.clone());
+            }
+        }
+    }
+    for (name, step) in &spec.steps {
+        let Some(gateway) = &step.gateway else {
+            continue;
+        };
+        if gateway.split.is_none() {
+            continue;
+        }
+        let ancestors = ancestors(&incoming, name);
+        for (branch, branch_spec) in &gateway.branches {
+            let Some(condition) = &branch_spec.condition else {
+                continue;
+            };
+            for reference in step_references(condition) {
+                if !ancestors.contains(&reference) {
+                    return Err(LangError::Workflow(format!(
+                        "workflow.steps.{name}.gateway.branches.{branch}: condition references `{reference}` which is not a transitive predecessor of the gateway; branch conditions may only use params, run_id, workflow, round, stepStatus and predecessor outputs"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ancestors(incoming: &BTreeMap<String, BTreeSet<String>>, name: &str) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut stack: Vec<String> = incoming.get(name).into_iter().flatten().cloned().collect();
+    while let Some(current) = stack.pop() {
+        if seen.insert(current.clone())
+            && let Some(parents) = incoming.get(&current)
+        {
+            stack.extend(parents.iter().cloned());
+        }
+    }
+    seen
+}
+
 fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangError> {
     let mut steps = Map::new();
+    let mut step_status = Map::new();
     for name in spec.steps.keys() {
         steps.insert(name.clone(), serde_json::json!({}));
+        step_status.insert(name.clone(), Json::String("succeeded".to_owned()));
     }
     let context = serde_json::json!({
         "run_id": "validate",
@@ -606,6 +937,7 @@ fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangErr
         "round": 0,
         "params": params,
         "steps": steps,
+        "stepStatus": step_status,
     });
     for (name, step) in &spec.steps {
         if let Some(until) = step.cycle.as_ref().and_then(|cycle| cycle.until.as_ref()) {
@@ -614,6 +946,17 @@ fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangErr
                     "workflow.steps.{name}.cycle.until is invalid: {err}"
                 ))
             })?;
+        }
+        if let Some(gateway) = &step.gateway {
+            for (branch, branch_spec) in &gateway.branches {
+                if let Some(condition) = &branch_spec.condition {
+                    validate_condition(condition, &context).map_err(|err| {
+                        LangError::Workflow(format!(
+                            "workflow.steps.{name}.gateway.branches.{branch} is invalid: {err}"
+                        ))
+                    })?;
+                }
+            }
         }
     }
     Ok(())

@@ -15,6 +15,8 @@ pub enum StepKind {
     Improve,
     /// Do nothing. Useful as a join or as a cycle marker.
     Noop,
+    /// Route tokens through a split or join gateway. Performs no I/O.
+    Gateway,
 }
 
 impl StepKind {
@@ -25,7 +27,89 @@ impl StepKind {
             Self::Agent => "agent",
             Self::Improve => "improve",
             Self::Noop => "noop",
+            Self::Gateway => "gateway",
         }
+    }
+}
+
+/// How a split gateway fans one token out to its branches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SplitMode {
+    /// Activate every branch.
+    And,
+    /// Activate every branch whose condition is true (or the default).
+    Or,
+    /// Activate exactly one branch.
+    Xor,
+}
+
+impl SplitMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Xor => "xor",
+        }
+    }
+}
+
+/// How a join gateway synchronises its incoming branches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinMode {
+    /// Wait for every incoming branch; any dead input makes the join dead.
+    And,
+    /// Activate when at least one incoming branch is active.
+    Or,
+    /// Activate when exactly one incoming branch is active.
+    Xor,
+}
+
+impl JoinMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Xor => "xor",
+        }
+    }
+}
+
+/// A single outgoing branch of a split gateway.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BranchSpec {
+    /// `None` means the branch is unconditional (`true` in CUE).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+/// Gateway routing definition. Exactly one of `split` or `join` is set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GatewaySpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split: Option<SplitMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<JoinMode>,
+    /// Outgoing branches, keyed by target step name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub branches: BTreeMap<String, BranchSpec>,
+    /// Fallback branch for XOR/OR splits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
+impl GatewaySpec {
+    #[must_use]
+    pub fn is_split(&self) -> bool {
+        self.split.is_some()
+    }
+
+    #[must_use]
+    pub fn is_join(&self) -> bool {
+        self.join.is_some()
     }
 }
 
@@ -136,6 +220,12 @@ pub struct StepSpec {
     pub exec: Option<ExecSpec>,
     pub agent: Option<AgentSpec>,
     pub improve: Option<ImproveSpec>,
+    /// Gateway routing definition. Must be absent for non-gateway steps.
+    ///
+    /// `skip_serializing_if` is mandatory: adding a `null` field would change
+    /// the persisted `spec` bytes and therefore every historical state digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewaySpec>,
     pub continue_on_error: bool,
     pub timeout_ms: Option<u64>,
 }
@@ -152,6 +242,7 @@ impl StepSpec {
             exec: None,
             agent: None,
             improve: None,
+            gateway: None,
             continue_on_error: false,
             timeout_ms: None,
         }

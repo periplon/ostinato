@@ -561,6 +561,8 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                             "runsRunning": metrics.runs_running,
                             "stepsTotal": metrics.steps_total,
                             "stepsFailed": metrics.steps_failed,
+                            "stepsSkipped": metrics.steps_skipped,
+                            "gatewaysEvaluated": metrics.gateways_evaluated,
                             "attemptsTotal": metrics.attempts_total,
                             "retriesTotal": metrics.retries_total,
                             "avgAttemptMs": metrics.avg_attempt_ms,
@@ -574,6 +576,8 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     println!("runs_running      {}", metrics.runs_running);
                     println!("steps_total       {}", metrics.steps_total);
                     println!("steps_failed      {}", metrics.steps_failed);
+                    println!("steps_skipped     {}", metrics.steps_skipped);
+                    println!("gateways_evaluated {}", metrics.gateways_evaluated);
                     println!("attempts_total    {}", metrics.attempts_total);
                     println!("retries_total     {}", metrics.retries_total);
                     println!("avg_attempt_ms    {:.2}", metrics.avg_attempt_ms);
@@ -587,6 +591,11 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     println!("ostinato_runs_running {}", metrics.runs_running);
                     println!("ostinato_steps_total {}", metrics.steps_total);
                     println!("ostinato_steps_failed_total {}", metrics.steps_failed);
+                    println!("ostinato_steps_skipped_total {}", metrics.steps_skipped);
+                    println!(
+                        "ostinato_gateways_evaluated_total {}",
+                        metrics.gateways_evaluated
+                    );
                     println!("ostinato_attempts_total {}", metrics.attempts_total);
                     println!("ostinato_retries_total {}", metrics.retries_total);
                     println!(
@@ -604,6 +613,8 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                             "runsRunning": metrics.runs_running,
                             "stepsTotal": metrics.steps_total,
                             "stepsFailed": metrics.steps_failed,
+                            "stepsSkipped": metrics.steps_skipped,
+                            "gatewaysEvaluated": metrics.gateways_evaluated,
                             "attemptsTotal": metrics.attempts_total,
                             "retriesTotal": metrics.retries_total,
                             "avgAttemptMs": metrics.avg_attempt_ms,
@@ -781,10 +792,49 @@ fn print_dot(spec: &ostinato_domain::WorkflowSpec) {
     println!("digraph {} {{", sanitize(&spec.name));
     println!("  rankdir=LR;");
     for (name, step) in &spec.steps {
-        let label = format!("{}\\n({})", name, step.kind.as_str());
-        println!("  \"{}\" [label=\"{}\"];", sanitize(name), label);
+        let mode = step.gateway.as_ref().and_then(|gateway| {
+            gateway
+                .split
+                .map(|mode| format!("split: {}", mode.as_str()))
+                .or_else(|| gateway.join.map(|mode| format!("join: {}", mode.as_str())))
+        });
+        let label = match &mode {
+            Some(mode) => format!("{}\\n({})", dot_escape(name), dot_escape(mode)),
+            None => format!("{}\\n({})", dot_escape(name), step.kind.as_str()),
+        };
+        if step.gateway.is_some() {
+            println!(
+                "  \"{}\" [label=\"{}\", shape=diamond];",
+                sanitize(name),
+                label
+            );
+        } else {
+            println!("  \"{}\" [label=\"{}\"];", sanitize(name), label);
+        }
+    }
+    for (name, step) in &spec.steps {
         for need in &step.needs {
             println!("  \"{}\" -> \"{}\";", sanitize(need), sanitize(name));
+        }
+        let Some(gateway) = &step.gateway else {
+            continue;
+        };
+        if gateway.split.is_none() {
+            continue;
+        }
+        for (branch, branch_spec) in &gateway.branches {
+            let condition = branch_spec.condition.as_deref().unwrap_or("true");
+            let label = if gateway.default.as_deref() == Some(branch.as_str()) {
+                format!("default: {condition}")
+            } else {
+                condition.to_owned()
+            };
+            println!(
+                "  \"{}\" -> \"{}\" [label=\"{}\"];",
+                sanitize(name),
+                sanitize(branch),
+                dot_escape(&label)
+            );
         }
     }
     println!("}}");
@@ -792,6 +842,10 @@ fn print_dot(spec: &ostinato_domain::WorkflowSpec) {
 
 fn sanitize(name: &str) -> String {
     name.replace('"', "_")
+}
+
+fn dot_escape(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn init_project(directory: &Path, json: bool) -> Result<()> {
