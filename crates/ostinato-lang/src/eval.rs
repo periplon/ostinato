@@ -2071,7 +2071,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             let base = eval_expr(base, frame)?.concretize().clone();
             match base {
                 Value::Struct(map) => {
-                    if field.starts_with('#') {
+                    if !*quoted && field.starts_with('#') {
                         return Err(LangError::eval(
                             span.line,
                             span.col,

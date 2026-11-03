@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.8
+
+Quoted hash labels on struct values.
+
+- `src."#D"` selects quoted hash labels from plain structs (static and
+  comprehension-generated) while `src.#D` stays rejected.
+- 226 tests (35 CLI E2E, 1 conformance, 180 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.7
 
 Params definition selectors and generated quoted labels.
