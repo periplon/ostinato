@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.4
+
+Open-list bottom-tail correction.
+
+- Incompatible open-list tails collapse to the finite closed prefix for every
+  element-constraint failure, including nested fixed-length lists and closed
+  definitions (`[...[1]] & [...[1,2]]` → `[]`, `[...#A] & [...#B]` → `[]`).
+- Prefix-position conflicts still error.
+- 270 tests (48 CLI E2E, 1 conformance, 211 language, 6 domain, 3 store, 1 unit).
+
 ## v0.9.3
 
 Open-list equality and tail-correction follow-up.
