@@ -583,8 +583,12 @@ fn parameters_json(
     }
     let mut out = serde_json::Map::new();
     for (key, value) in params {
+        if key.starts_with('\u{3}') {
+            continue;
+        }
+        let key = key.strip_prefix('\u{4}').unwrap_or(key);
         if let Some(json) = value.to_json() {
-            out.insert(key.clone(), json);
+            out.insert(key.to_owned(), json);
         } else {
             return Err(ostinato_lang::LangError::Workflow(format!(
                 "missing required parameter `{key}` (pass `-p {key}=...`)"

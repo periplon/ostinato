@@ -165,7 +165,14 @@ fn extract_params(root: &Struct) -> Result<Vec<ParamSpec>, LangError> {
     };
     let map = expect_struct(value, "params")?;
     let mut params = Vec::with_capacity(map.len());
-    for (name, value) in map {
+    for (raw_name, value) in map {
+        if raw_name.starts_with('\u{3}') {
+            continue;
+        }
+        let name = raw_name
+            .strip_prefix('\u{4}')
+            .unwrap_or(raw_name)
+            .to_owned();
         match value {
             Value::Type(kind) => params.push(ParamSpec {
                 name: name.clone(),

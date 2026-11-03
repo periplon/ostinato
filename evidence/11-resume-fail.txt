@@ -1,6 +1,6 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.JfmE1uMv4C/resume.sqlite run /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.JfmE1uMv4C/resume.cue
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.CDYoaGW51F/resume.sqlite run /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.CDYoaGW51F/resume.cue
 
-run=a9989d2a-d75c-4c0c-b644-850e7a22d896 workflow=resume-evidence status=failed durationMs=12
+run=1704e623-315b-492c-82b3-937ce7e61b43 workflow=resume-evidence status=failed durationMs=13
 error: command exited with 7: 
 STEP                     STATUS     VISITS ATTEMPTS
 a                        succeeded  1      1       

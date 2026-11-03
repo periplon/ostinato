@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.3
+
+Hidden-field evaluation and params closedness corrections.
+
+- Hidden `_name` fields are evaluated, selected (`#P._h`), conflict-checked and
+  aliasable, while still omitted from export. Patterns do not match hidden
+  fields.
+- Closedness is enforced through let-mediated definition bodies
+  (`#Q: L`, `let L = #P & {b: 2}`) and chained definitions.
+- Root `params` patterns constrain their fields.
+- Nested params groups resolve bare lexical siblings when reached through a
+  path (`params.db.url` with `url: "\\(host)"`).
+- Quoted labels that begin with the internal prefix are escaped, so the
+  `params` export round-trips them.
+- 215 tests (34 CLI E2E, 1 conformance, 170 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.2
 
 Params resolver and hidden-field corrections.

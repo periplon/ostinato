@@ -210,7 +210,11 @@ impl Value {
             Self::Struct(values) | Self::Definition { fields: values, .. } => {
                 let mut out = Map::new();
                 for (key, value) in values {
-                    out.insert(key.clone(), value.to_json()?);
+                    if is_hidden_key(key) {
+                        continue;
+                    }
+                    let key = key.strip_prefix(ESCAPED_PREFIX).unwrap_or(key);
+                    out.insert(key.to_owned(), value.to_json()?);
                 }
                 Some(Json::Object(out))
             }
@@ -489,9 +493,23 @@ fn prefixed_field(name: &str) -> String {
 
 /// Prefix for an identifier-hidden field (`_name`).
 const HIDDEN_PREFIX: char = '\u{3}';
+/// Prefix for a regular label that itself begins with an internal prefix.
+const ESCAPED_PREFIX: char = '\u{4}';
+
+fn output_field_name(name: &str) -> String {
+    if is_hidden_key(name) || name.starts_with(ESCAPED_PREFIX) {
+        name.to_owned()
+    } else {
+        display_field_name(name).to_owned()
+    }
+}
 
 fn hidden_field(name: &str) -> String {
     format!("{HIDDEN_PREFIX}{name}")
+}
+
+fn escaped_field(name: &str) -> String {
+    format!("{ESCAPED_PREFIX}{name}")
 }
 
 fn is_hidden_key(key: &str) -> bool {
@@ -499,9 +517,13 @@ fn is_hidden_key(key: &str) -> bool {
 }
 
 fn display_field_name(key: &str) -> &str {
-    key.strip_prefix(NON_DEFINITION_PREFIX)
-        .or_else(|| key.strip_prefix(HIDDEN_PREFIX))
-        .unwrap_or(key)
+    if let Some(rest) = key.strip_prefix(NON_DEFINITION_PREFIX) {
+        return rest.strip_prefix(ESCAPED_PREFIX).unwrap_or(rest);
+    }
+    if let Some(rest) = key.strip_prefix(ESCAPED_PREFIX) {
+        return rest;
+    }
+    key.strip_prefix(HIDDEN_PREFIX).unwrap_or(key)
 }
 
 #[derive(Debug)]
@@ -704,6 +726,11 @@ impl<'a> Frame<'a> {
         hidden: bool,
     ) {
         let mut fields = self.fields.borrow_mut();
+        let name = if !hidden && !definition && name.starts_with([HIDDEN_PREFIX, ESCAPED_PREFIX]) {
+            escaped_field(&name)
+        } else {
+            name
+        };
         let key = if hidden && !definition {
             hidden_field(&name)
         } else if definition {
@@ -743,9 +770,13 @@ impl<'a> Frame<'a> {
         if fields.get(name).is_some_and(|def| def.bindable) {
             return Some(name.to_owned());
         }
-        [prefixed_field(name), hidden_field(name)]
-            .into_iter()
-            .find(|prefixed| fields.get(prefixed).is_some_and(|def| def.bindable))
+        [
+            prefixed_field(name),
+            hidden_field(name),
+            escaped_field(name),
+        ]
+        .into_iter()
+        .find(|prefixed| fields.get(prefixed).is_some_and(|def| def.bindable))
     }
 
     fn any_field_key(&self, name: &str) -> Option<String> {
@@ -753,9 +784,13 @@ impl<'a> Frame<'a> {
         if fields.contains_key(name) {
             return Some(name.to_owned());
         }
-        [prefixed_field(name), hidden_field(name)]
-            .into_iter()
-            .find(|prefixed| fields.contains_key(prefixed))
+        [
+            prefixed_field(name),
+            hidden_field(name),
+            escaped_field(name),
+        ]
+        .into_iter()
+        .find(|prefixed| fields.contains_key(prefixed))
     }
 
     fn field_storage_key(&self, name: &str) -> Option<String> {
@@ -925,7 +960,7 @@ impl<'a> Frame<'a> {
             let key = if target.definition {
                 self.stored_field_key(&target.name)
             } else {
-                self.regular_field_key(&target.name)
+                self.field_storage_key(&target.name)
             };
             let Some(key) = key else {
                 return Err(LangError::eval(
@@ -1063,6 +1098,7 @@ impl<'a> Frame<'a> {
         let result = (|| {
             let root = self.root_frame();
             let mut items = context.items.clone();
+            let mut bindings: HashMap<String, Value> = HashMap::new();
             for (index, segment) in path.iter().enumerate() {
                 let child = Frame::from_static(&items, Some(root), HashMap::new())?;
                 child.params_scope.set(true);
@@ -1070,6 +1106,14 @@ impl<'a> Frame<'a> {
                 if index == 0 {
                     for (key, value) in &context.overrides {
                         child.values.borrow_mut().insert(key.clone(), value.clone());
+                    }
+                }
+                for (name, value) in &bindings {
+                    let shadowed = child.fields.borrow().contains_key(name)
+                        || child.lets.borrow().contains_key(name)
+                        || child.aliases.borrow().contains_key(name);
+                    if !shadowed {
+                        child.vars.borrow_mut().insert(name.clone(), value.clone());
                     }
                 }
                 child.reconcile_generated_required_fields()?;
@@ -1140,6 +1184,26 @@ impl<'a> Frame<'a> {
                         }
                     };
                     if let Some(next_items) = struct_items {
+                        for item in &items {
+                            if let StructItem::Field(field) = item
+                                && let crate::ast::Label::Name(name, _) = &field.label
+                                && name != segment
+                                && !field.quoted
+                                && !name.starts_with('_')
+                                && let Some(sibling_key) = child.any_field_key(name)
+                            {
+                                let optional = child
+                                    .fields
+                                    .borrow()
+                                    .get(&sibling_key)
+                                    .is_some_and(|definition| definition.optional);
+                                if !optional
+                                    && let Ok(value) = child.eval_field_key(&sibling_key, span)
+                                {
+                                    bindings.insert(name.clone(), value);
+                                }
+                            }
+                        }
                         items = next_items;
                         continue;
                     }
@@ -1271,8 +1335,9 @@ impl<'a> Frame<'a> {
             let mut result = result?;
             let mut references = Vec::new();
             if flattened {
+                let mut seen = HashSet::new();
                 for expr in &exprs {
-                    collect_definition_references(expr, &mut references);
+                    self.collect_definition_references(expr, &mut references, &mut seen);
                 }
             }
             for reference in references {
@@ -1309,6 +1374,52 @@ impl<'a> Frame<'a> {
         Ok(result)
     }
 
+    fn collect_definition_references(
+        &self,
+        expr: &Expr,
+        out: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        match expr {
+            Expr::Ident(name, _) if name.starts_with('#') => {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            Expr::Ident(name, _) => {
+                if !seen.insert(name.clone()) {
+                    return;
+                }
+                if let Some(value) = self.lets.borrow().get(name).cloned() {
+                    self.collect_definition_references(&value, out, seen);
+                } else {
+                    let exprs = {
+                        let fields = self.fields.borrow();
+                        let prefixed = prefixed_field(name);
+                        fields
+                            .get(name)
+                            .or_else(|| fields.get(&prefixed))
+                            .map(|definition| definition.exprs.clone())
+                    };
+                    if let Some(exprs) = exprs {
+                        for expr in &exprs {
+                            self.collect_definition_references(expr, out, seen);
+                        }
+                    }
+                }
+                seen.remove(name);
+            }
+            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+                self.collect_definition_references(left, out, seen);
+                self.collect_definition_references(right, out, seen);
+            }
+            Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+                self.collect_definition_references(inner, out, seen);
+            }
+            _ => {}
+        }
+    }
+
     fn eval_definition_items(&self, items: &[StructItem], span: Span) -> Result<Value, LangError> {
         self.eval_struct_items(items, span, true)
     }
@@ -1333,9 +1444,19 @@ impl<'a> Frame<'a> {
         let mut definitions = BTreeMap::new();
         for name in names {
             if is_hidden_key(&name) {
+                let declared_optional = child
+                    .fields
+                    .borrow()
+                    .get(&name)
+                    .is_some_and(|field| field.optional);
+                let materialized = child.materialized.borrow().contains(&name);
+                if !declared_optional || materialized {
+                    let value = child.eval_field_key(&name, span)?;
+                    fields.insert(name, value);
+                }
                 continue;
             }
-            let display = display_field_name(&name).to_owned();
+            let display = output_field_name(&name);
             let defined = child.fields.borrow().get(&name).cloned();
             if defined.as_ref().is_some_and(|field| field.definition) {
                 let is_optional = defined.as_ref().is_some_and(|field| field.optional);
@@ -1563,6 +1684,15 @@ impl<'a> Frame<'a> {
             child.values.borrow_mut().insert(key.clone(), resolved);
         }
         let mut result = child.to_struct_value()?;
+        let patterns: Vec<(Pattern, Value)> = child
+            .patterns
+            .borrow()
+            .iter()
+            .map(|(pattern, expr)| Ok((pattern.clone(), eval_expr(expr, &child)?)))
+            .collect::<Result<_, LangError>>()?;
+        if let Value::Struct(map) = &mut result {
+            apply_patterns(&patterns, map, span)?;
+        }
         for expr in exprs {
             self.apply_closed_params(expr, &mut result, span)?;
         }
@@ -1653,8 +1783,7 @@ impl<'a> Frame<'a> {
             fields
                 .iter()
                 .filter(|(name, definition)| {
-                    !is_hidden_key(name)
-                        && (include_definitions || !definition.definition)
+                    (include_definitions || !definition.definition)
                         && !generated.contains_key(display_field_name(name))
                 })
                 .map(|(name, _)| name.clone())
@@ -1674,7 +1803,7 @@ impl<'a> Frame<'a> {
                 continue;
             }
             let value = self.eval_field_key(&name, Span::default())?;
-            let display = display_field_name(&name).to_owned();
+            let display = output_field_name(&name);
             if self
                 .fields
                 .borrow()
@@ -1687,9 +1816,6 @@ impl<'a> Frame<'a> {
             }
         }
         for (name, value) in self.values.borrow().iter() {
-            if is_hidden_key(name) {
-                continue;
-            }
             let definition = self
                 .fields
                 .borrow()
@@ -1703,7 +1829,7 @@ impl<'a> Frame<'a> {
             {
                 continue;
             }
-            let display = display_field_name(name).to_owned();
+            let display = output_field_name(name);
             if definition {
                 definitions_out.insert(display, value.clone());
             } else {
@@ -1727,15 +1853,17 @@ impl<'a> Frame<'a> {
 
 fn select_value(value: &Value, field: &str, span: Span) -> Result<Value, LangError> {
     match value.concretize() {
-        Value::Struct(map) | Value::Definition { fields: map, .. } => {
-            map.get(field).cloned().ok_or_else(|| {
+        Value::Struct(map) | Value::Definition { fields: map, .. } => map
+            .get(field)
+            .or_else(|| map.get(&hidden_field(field)))
+            .cloned()
+            .ok_or_else(|| {
                 LangError::eval(
                     span.line,
                     span.col,
                     format!("field `{field}` not found in struct"),
                 )
-            })
-        }
+            }),
         other => Err(LangError::eval(
             span.line,
             span.col,
@@ -1823,13 +1951,16 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                             format!("field `{field}` not found in struct"),
                         ));
                     }
-                    map.get(field).cloned().ok_or_else(|| {
-                        LangError::eval(
-                            span.line,
-                            span.col,
-                            format!("field `{field}` not found in struct"),
-                        )
-                    })
+                    map.get(field)
+                        .or_else(|| map.get(&hidden_field(field)))
+                        .cloned()
+                        .ok_or_else(|| {
+                            LangError::eval(
+                                span.line,
+                                span.col,
+                                format!("field `{field}` not found in struct"),
+                            )
+                        })
                 }
                 Value::Definition {
                     fields,
@@ -1840,7 +1971,10 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     let selected = if field.starts_with('#') {
                         definitions.get(field).cloned()
                     } else {
-                        fields.get(field).cloned()
+                        fields
+                            .get(field)
+                            .or_else(|| fields.get(&hidden_field(field)))
+                            .cloned()
                     };
                     if let Some(value) = selected {
                         Ok(value)
@@ -1927,15 +2061,17 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         )
                     })
                 }
-                (Value::Definition { fields, .. }, Value::String(key)) => {
-                    fields.get(&key).cloned().ok_or_else(|| {
+                (Value::Definition { fields, .. }, Value::String(key)) => fields
+                    .get(&key)
+                    .or_else(|| fields.get(&hidden_field(&key)))
+                    .cloned()
+                    .ok_or_else(|| {
                         LangError::eval(
                             span.line,
                             span.col,
                             format!("field `{key}` not found in struct"),
                         )
-                    })
-                }
+                    }),
                 (other, _) => Err(LangError::eval(
                     span.line,
                     span.col,
@@ -2161,20 +2297,6 @@ fn merge_generated_optional(
     Ok(())
 }
 
-fn collect_definition_references(expr: &Expr, out: &mut Vec<String>) {
-    match expr {
-        Expr::Ident(name, _) if name.starts_with('#') => out.push(name.clone()),
-        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            collect_definition_references(left, out);
-            collect_definition_references(right, out);
-        }
-        Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-            collect_definition_references(inner, out);
-        }
-        _ => {}
-    }
-}
-
 fn close_composed_definition(value: &Value) -> Value {
     match value {
         Value::Disjunction(alternatives, defaults) => Value::Disjunction(
@@ -2389,6 +2511,9 @@ fn apply_patterns(
     span: Span,
 ) -> Result<(), LangError> {
     for (key, value) in fields.iter_mut() {
+        if is_hidden_key(key) {
+            continue;
+        }
         if let Some(constrained) = pattern_constraint(patterns, key, value, span)? {
             *value = constrained;
         }
@@ -2402,6 +2527,9 @@ fn apply_optional_patterns(
     span: Span,
 ) -> Result<(), LangError> {
     for (key, value) in optional.iter_mut() {
+        if is_hidden_key(key) {
+            continue;
+        }
         for (pattern, _) in patterns {
             pattern_matches(pattern, key, span)?;
         }
