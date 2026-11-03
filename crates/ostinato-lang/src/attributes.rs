@@ -624,6 +624,10 @@ impl Collector<'_> {
 /// # Errors
 /// Returns an evaluation error for unknown `@tag` types.
 pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, LangError> {
+    stacker::grow(512 * 1024 * 1024, || parameter_tags_impl(file))
+}
+
+fn parameter_tags_impl(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, LangError> {
     let mut definitions: DefinitionMap = BTreeMap::new();
     let mut definition_aliases: BTreeMap<String, String> = BTreeMap::new();
     for (index, item) in file.items.iter().enumerate() {

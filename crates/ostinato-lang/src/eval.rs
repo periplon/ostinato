@@ -210,6 +210,66 @@ impl Value {
     }
 
     #[must_use]
+    pub fn is_fully_concrete(&self) -> bool {
+        self.is_fully_concrete_inner(&mut Vec::new())
+    }
+
+    fn is_fully_concrete_inner(&self, stack: &mut Vec<*const RecursiveSlot>) -> bool {
+        stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || match self {
+            Self::Null
+            | Self::Bool(_)
+            | Self::Int(_)
+            | Self::Float(_)
+            | Self::String(_)
+            | Self::Bytes(_) => true,
+            Self::List(values) => values
+                .iter()
+                .all(|value| value.is_fully_concrete_inner(stack)),
+            Self::Struct(fields) | Self::Definition { fields, .. } => fields
+                .iter()
+                .filter(|(key, _)| !is_hidden_key(key))
+                .all(|(_, value)| value.is_fully_concrete_inner(stack)),
+            Self::Disjunction(_, _) => self.to_json().is_some(),
+            Self::Recursive(slot) => {
+                let pointer = Rc::as_ptr(slot);
+                if stack.contains(&pointer) {
+                    return false;
+                }
+                let Some(value) = slot.value.borrow().clone() else {
+                    return false;
+                };
+                stack.push(pointer);
+                let result = value.is_fully_concrete_inner(stack);
+                stack.pop();
+                result
+            }
+            Self::Deferred(slot, constraint) => {
+                let pointer = Rc::as_ptr(slot);
+                if stack.contains(&pointer) {
+                    return false;
+                }
+                let Some(value) = slot.value.borrow().clone() else {
+                    return false;
+                };
+                let Ok(unified) = unify_values(&value, constraint, Span::default()) else {
+                    return false;
+                };
+                stack.push(pointer);
+                let result = unified.is_fully_concrete_inner(stack);
+                stack.pop();
+                result
+            }
+            // CUE compares open-list types as values (`[...int] == [...string]`).
+            Self::OpenList(_) | Self::OpenListPrefix(_, _) => true,
+            Self::Bounds(_)
+            | Self::Type(_)
+            | Self::Builtin(_)
+            | Self::Bottom
+            | Self::Conflict(_) => false,
+        })
+    }
+
+    #[must_use]
     pub fn is_concrete(&self) -> bool {
         match self {
             Self::Disjunction(_, _) | Self::Recursive(_) | Self::Deferred(_, _) => {
@@ -422,10 +482,12 @@ impl Value {
 /// Returns evaluation errors for undefined references, cyclic references,
 /// conflicting values and non-concrete disjunctions.
 pub fn eval_file(file: &File) -> Result<Value, LangError> {
-    crate::scope::validate_aliases(&file.items, &[])?;
-    let frame = Frame::new(&file.items, None, HashMap::new())?;
-    frame.ensure_params_context();
-    frame.to_struct_value()
+    stacker::grow(512 * 1024 * 1024, || {
+        crate::scope::validate_aliases(&file.items, &[])?;
+        let frame = Frame::new(&file.items, None, HashMap::new())?;
+        frame.ensure_params_context();
+        frame.to_struct_value()
+    })
 }
 
 /// Evaluate a single expression against an already-built JSON context.
@@ -445,17 +507,19 @@ pub fn eval_file_with_overrides(
     file: &File,
     overrides: &BTreeMap<String, Value>,
 ) -> Result<Value, LangError> {
-    crate::scope::validate_aliases(&file.items, &[])?;
-    let frame = Frame::from_static(&file.items, None, HashMap::new())?;
-    for (key, value) in overrides {
-        frame
-            .overrides
-            .borrow_mut()
-            .insert(key.clone(), value.clone());
-    }
-    frame.ensure_params_context();
-    frame.expand(&file.items)?;
-    frame.to_struct_value()
+    stacker::grow(512 * 1024 * 1024, || {
+        crate::scope::validate_aliases(&file.items, &[])?;
+        let frame = Frame::from_static(&file.items, None, HashMap::new())?;
+        for (key, value) in overrides {
+            frame
+                .overrides
+                .borrow_mut()
+                .insert(key.clone(), value.clone());
+        }
+        frame.ensure_params_context();
+        frame.expand(&file.items)?;
+        frame.to_struct_value()
+    })
 }
 
 /// Evaluate a file with imported package values and parameter overrides.
@@ -486,22 +550,24 @@ pub fn eval_file_with_imports_mode(
     overrides: &BTreeMap<String, Value>,
     include_definitions: bool,
 ) -> Result<Value, LangError> {
-    let import_aliases: Vec<String> = imports.keys().cloned().collect();
-    crate::scope::validate_aliases(&file.items, &import_aliases)?;
-    let mut vars = HashMap::new();
-    for (name, value) in imports {
-        vars.insert(name.clone(), value.clone());
-    }
-    let frame = Frame::from_static(&file.items, None, vars)?;
-    for (key, value) in overrides {
-        frame
-            .overrides
-            .borrow_mut()
-            .insert(key.clone(), value.clone());
-    }
-    frame.ensure_params_context();
-    frame.expand(&file.items)?;
-    frame.to_struct_value_mode(include_definitions)
+    stacker::grow(512 * 1024 * 1024, || {
+        let import_aliases: Vec<String> = imports.keys().cloned().collect();
+        crate::scope::validate_aliases(&file.items, &import_aliases)?;
+        let mut vars = HashMap::new();
+        for (name, value) in imports {
+            vars.insert(name.clone(), value.clone());
+        }
+        let frame = Frame::from_static(&file.items, None, vars)?;
+        for (key, value) in overrides {
+            frame
+                .overrides
+                .borrow_mut()
+                .insert(key.clone(), value.clone());
+        }
+        frame.ensure_params_context();
+        frame.expand(&file.items)?;
+        frame.to_struct_value_mode(include_definitions)
+    })
 }
 
 fn json_frame(context: &Json) -> Frame<'static> {
@@ -4823,8 +4889,21 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a % b)),
             _ => type_error("mod", left, right, span),
         },
-        BinOp::Eq => Ok(Value::Bool(values_equal(left, right))),
-        BinOp::Ne => Ok(Value::Bool(!values_equal(left, right))),
+        BinOp::Eq | BinOp::Ne => {
+            if !left.is_fully_concrete() || !right.is_fully_concrete() {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "non-concrete value in operand to == or !=",
+                ));
+            }
+            let equal = values_equal(left, right);
+            Ok(Value::Bool(if matches!(op, BinOp::Eq) {
+                equal
+            } else {
+                !equal
+            }))
+        }
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => compare(op, left, right, span),
         BinOp::And | BinOp::Or => Ok(Value::Bool(match op {
             BinOp::And => left.truthy() && right.truthy(),
@@ -5331,32 +5410,43 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
         }
         (Value::OpenListPrefix(prefix, tail), Value::OpenList(element))
         | (Value::OpenList(element), Value::OpenListPrefix(prefix, tail)) => {
-            let mut out = prefix.clone();
-            if let Some(tail) = tail {
-                out.push((**tail).clone());
+            let mut out = Vec::with_capacity(prefix.len());
+            for value in prefix {
+                out.push(match element.as_deref() {
+                    Some(element) => unify_values(element, value, span)?,
+                    None => value.clone(),
+                });
             }
-            let mut merged_tail = element.clone();
-            if let Some(element) = element
-                && let Some(tail) = tail
-            {
-                merged_tail = Some(Box::new(unify_values(tail, element, span)?));
-            }
+            let merged_tail = match (tail.as_deref(), element.as_deref()) {
+                (Some(tail), Some(element)) => Some(Box::new(unify_values(tail, element, span)?)),
+                (Some(tail), None) => Some(Box::new(tail.clone())),
+                (None, Some(element)) => Some(Box::new(element.clone())),
+                (None, None) => None,
+            };
             Ok(Value::OpenListPrefix(out, merged_tail))
         }
         (
             Value::OpenListPrefix(left_prefix, left_tail),
             Value::OpenListPrefix(right_prefix, right_tail),
         ) => {
-            if left_prefix.len() != right_prefix.len() {
-                return Err(LangError::eval(
-                    span.line,
-                    span.col,
-                    "cannot unify list prefixes of different lengths",
-                ));
-            }
-            let mut prefix = Vec::with_capacity(left_prefix.len());
-            for (left, right) in left_prefix.iter().zip(right_prefix) {
-                prefix.push(unify_values(left, right, span)?);
+            let length = left_prefix.len().max(right_prefix.len());
+            let mut prefix = Vec::with_capacity(length);
+            for index in 0..length {
+                let left = left_prefix
+                    .get(index)
+                    .map_or_else(|| left_tail.as_deref(), Some);
+                let right = right_prefix
+                    .get(index)
+                    .map_or_else(|| right_tail.as_deref(), Some);
+                match (left, right) {
+                    (Some(left), Some(right)) => {
+                        prefix.push(unify_values(left, right, span)?);
+                    }
+                    (Some(value), None) | (None, Some(value)) => {
+                        prefix.push(value.clone());
+                    }
+                    (None, None) => break,
+                }
             }
             let tail = match (left_tail, right_tail) {
                 (None, None) => None,

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.9.2
+
+Recursive materialization follow-up corrections.
+
+- Open-list prefixes align by position against the other side's prefix/tail and
+  prefix elements satisfy element constraints, matching CUE for mixed prefix
+  arithmetic and recursive open lists.
+- `==`/`!=` reject non-concrete operands, so structurally infinite definitions
+  cannot leak concrete booleans through equality or interpolation.
+- Deep finite values (tested to 2000 levels) materialize in the CLI: evaluation
+  runs on a dedicated large stack and AST/JSON clone paths grow on demand.
+- 270 tests (48 CLI E2E, 1 conformance, 211 language, 6 domain, 3 store, 1 unit).
+
 ## v0.9.1
 
 Recursive materialization review corrections.

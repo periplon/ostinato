@@ -2486,3 +2486,35 @@ workflow: {name: "recursive", steps: {s: {kind: "noop"}}}
     );
     assert_eq!(json(&oracle)["params"], report["params"]);
 }
+
+#[test]
+fn deep_recursive_values_do_not_exhaust_the_stack() {
+    fn tree(depth: usize) -> String {
+        let mut value = format!("{{value: {depth}}}");
+        for index in (1..depth).rev() {
+            value = format!("{{value: {index}, children: [{value}]}}");
+        }
+        value
+    }
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("deep.cue");
+    write(
+        &workflow,
+        &format!(
+            "package demo\n#Tree: {{value: int, children?: [...#Tree]}}\ntree: #Tree & {}\nparams: {{out: tree}}\nworkflow: {{name: \"deep\", steps: {{s: {{kind: \"noop\"}}}}}}\n",
+            tree(800)
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

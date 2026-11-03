@@ -169,6 +169,16 @@ enum MetricFormat {
 }
 
 fn main() -> ExitCode {
+    std::thread::Builder::new()
+        .name("ostinato".to_owned())
+        .stack_size(512 * 1024 * 1024)
+        .spawn(run)
+        .ok()
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_else(run)
+}
+
+fn run() -> ExitCode {
     let cli = Cli::parse();
     if let Err(err) = init_tracing(cli.verbose, cli.json) {
         eprintln!("warning: {err}");

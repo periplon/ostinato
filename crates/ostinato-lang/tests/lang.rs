@@ -4891,3 +4891,50 @@ fn deep_values_compare_and_materialize_beyond_128_levels() {
     }
     assert_eq!(node["value"], 300);
 }
+
+#[test]
+fn open_list_prefixes_align_and_enforce_element_constraints() {
+    let conflict = r#"
+package demo
+x: ["a", ...] & [...int] & ["a"]
+"#;
+    let file = ostinato_lang::parse(conflict).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "prefix elements must satisfy the open-list element constraint"
+    );
+
+    let valid = r#"
+package demo
+#N: {kind: string | *"leaf", value: int, children?: [...#N]}
+x: [{value: 1}, ...#N] & [...{value: int}] & [{value: 1}]
+y: [1, ...int] & [1, 2, ...int] & [1, 2, 3]
+"#;
+    let file = ostinato_lang::parse(valid).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("aligned prefixes");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"], serde_json::json!([{"value": 1}]));
+    assert_eq!(json["y"], serde_json::json!([1, 2, 3]));
+}
+
+#[test]
+fn equality_requires_concrete_operands() {
+    for source in [
+        "a: int\nparams: {eq: a == a}",
+        "#N: {value: int, next: #N}\nn: #N\nparams: {eq: n == n}",
+        "#N: {value: int, next?: #N}\nn: #N\nparams: {eq: n != n}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "non-concrete equality must be rejected: {source}"
+        );
+    }
+
+    let concrete = "package demo\na: 1\nb: 1\nparams: {eq: a == b, neq: a != b}\n";
+    let file = ostinato_lang::parse(concrete).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("concrete equality");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["eq"], true);
+    assert_eq!(json["params"]["neq"], false);
+}
