@@ -4248,3 +4248,79 @@ a: src.#D
     let file = ostinato_lang::parse(unquoted).expect("parse");
     assert!(ostinato_lang::eval_file(&file).is_err());
 }
+
+#[test]
+fn sentinel_prefixed_quoted_labels_select_their_escaped_storage() {
+    let hidden_sentinel = "package demo\nsrc: {_h: 7, \"\u{3}_h\": 8}\nq: src.\"\u{3}_h\"\n";
+    let file = ostinato_lang::parse(hidden_sentinel).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("sentinel hidden label");
+    assert_eq!(value.to_json().expect("json")["q"], 8);
+
+    let non_definition = "package demo\nparams: {src: {\"\u{1}#D\": 5, \"#D\": 6}}\n";
+    let file = ostinato_lang::parse(non_definition).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("non-definition sentinel label");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["src"]["\u{1}#D"], 5);
+    assert_eq!(json["params"]["src"]["#D"], 6);
+}
+
+#[test]
+fn imported_packages_drop_package_hidden_fields() {
+    let lib = r#"
+package lib
+#P: {_secret: string, kind: "exec"}
+h: {_h: 3, a: 1}
+"#;
+    let file = ostinato_lang::parse(lib).expect("parse");
+    let value =
+        ostinato_lang::eval_file_with_imports_mode(&file, &BTreeMap::new(), &BTreeMap::new(), true)
+            .expect("evaluate lib");
+    let stripped = ostinato_lang::strip_hidden(value);
+    let ostinato_lang::Value::Definition {
+        fields,
+        definitions,
+        ..
+    } = stripped
+    else {
+        return;
+    };
+    let params = definitions
+        .get("#P")
+        .or_else(|| fields.get("#P"))
+        .expect("definition");
+    let json = params.to_json().expect("json");
+    assert!(json.get("_secret").is_none());
+}
+
+#[test]
+fn imported_hidden_fields_do_not_leak_into_the_importer() {
+    let lib = r#"
+package lib
+#P: {_secret: string, kind: "exec"}
+h: {_h: 3, a: 1}
+"#;
+    let file = ostinato_lang::parse(lib).expect("parse");
+    let value =
+        ostinato_lang::eval_file_with_imports_mode(&file, &BTreeMap::new(), &BTreeMap::new(), true)
+            .expect("evaluate lib");
+    let mut imports = BTreeMap::new();
+    imports.insert("lib".to_owned(), ostinato_lang::strip_hidden(value));
+
+    let ok = r#"
+package main
+params: lib.#P & {_secret: 3, kind: "exec"}
+"#;
+    let file = ostinato_lang::parse(ok).expect("parse");
+    let value = ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new())
+        .expect("importer hidden is distinct");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["kind"], "exec");
+    assert!(json["params"].get("_secret").is_none());
+
+    let leak = r#"
+package main
+x: lib.h._h
+"#;
+    let file = ostinato_lang::parse(leak).expect("parse");
+    assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
+}

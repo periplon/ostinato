@@ -118,6 +118,11 @@ fn evaluate_path(
         }
     }
     let value = eval_file_with_imports_mode(&combined, &imports, &injected, include_definitions)?;
+    let value = if include_definitions {
+        ostinato_lang::strip_hidden(value)
+    } else {
+        value
+    };
     cache.insert(key, value.clone());
     stack.pop();
     Ok(value)
