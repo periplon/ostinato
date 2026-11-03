@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.7.4
+
+- Hidden-field value-operation/schema filtering, quoted-vs-identifier selector
+  rules and displayed-label pattern matching.
+- 219 tests (35 CLI E2E, 1 conformance, 173 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.3
 
 - Hidden-field evaluation/selection, let-mediated closedness, root params

@@ -676,7 +676,7 @@ impl AliasCtx {
                 self.expr(inner, chain, shadowed, from)?;
             }
             Expr::Bound(_, inner, _) => self.expr(inner, chain, shadowed, from)?,
-            Expr::Select(base, _, _) => {
+            Expr::Select(base, _, _, _) => {
                 if !matches!(&**base, Expr::Ident(name, _) if name == "params") {
                     self.expr(base, chain, shadowed, from)?;
                 }
@@ -1029,7 +1029,7 @@ fn rename_expr(expr: &mut Expr, locals: &HashMap<String, String>, shadowed: &Has
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             rename_expr(inner, locals, shadowed);
         }
-        Expr::Select(base, _, _) => rename_expr(base, locals, shadowed),
+        Expr::Select(base, _, _, _) => rename_expr(base, locals, shadowed),
         Expr::Index(base, index, _) => {
             rename_expr(base, locals, shadowed);
             rename_expr(index, locals, shadowed);

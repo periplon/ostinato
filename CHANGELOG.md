@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.7.4
+
+Hidden-field hygiene and quoted-selector corrections.
+
+- Hidden `_name` fields are invisible to `len`, struct/list comprehensions,
+  equality, workflow steps, `exec.env`, dummies and schema validation, while
+  still supporting identifier selection, aliases and conflict checks.
+- Quoted selectors (`#P."_h"`, `#P["_h"]`, `params."_h"`) address regular
+  fields only; identifier selectors still reach hidden fields.
+- Quoted labels beginning with internal prefixes resolve through selectors and
+  match patterns by their displayed label.
+- 219 tests (35 CLI E2E, 1 conformance, 173 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.3
 
 Hidden-field evaluation and params closedness corrections.

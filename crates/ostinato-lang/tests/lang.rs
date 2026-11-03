@@ -4024,3 +4024,58 @@ params: {X=_h: 3, v: X}
     assert_eq!(json["params"]["\u{3}a"], 1);
     assert_eq!(json["params"]["a"], 2);
 }
+
+#[test]
+fn hidden_fields_are_invisible_to_value_operations() {
+    let source = r#"
+package demo
+params: {
+    count: len({_h: 1, a: 2})
+    equal: {_h: 1, a: 2} == {a: 2}
+    mapped: {for k, v in {_h: 1, a: 2} {"\(k)": v}}
+    listed: [for k, _ in {_h: 1, a: 2} {k}]
+}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["count"], 1);
+    assert_eq!(json["params"]["equal"], true);
+    assert_eq!(json["params"]["mapped"], serde_json::json!({"a": 2}));
+    assert_eq!(json["params"]["listed"], serde_json::json!(["a"]));
+}
+
+#[test]
+fn quoted_and_index_selectors_do_not_reach_hidden_fields() {
+    for source in [
+        "#P: {_h: 3, a: 1}\nx: #P.\"_h\"",
+        "#P: {_h: 3, a: 1}\nx: #P[\"_h\"]",
+        "#P: {_h: 3, a: 1}\nparams: {x: params._h, a: 1}",
+    ] {
+        if source.starts_with("#P: {_h: 3, a: 1}\nparams") {
+            let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+            assert!(ostinato_lang::eval_file(&file).is_err(), "{source}");
+            continue;
+        }
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(ostinato_lang::eval_file(&file).is_err(), "{source}");
+    }
+
+    let identifier = "#P: {_h: 3, a: 1}\nx: #P._h\n";
+    let file = ostinato_lang::parse(&format!("package demo\n{identifier}")).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("identifier selector");
+    assert_eq!(value.to_json().expect("json")["x"], 3);
+
+    let control = "package demo\n#P: {\"\u{3}a\": 1, a: 2}\nx: #P.\"\u{3}a\"\n";
+    let file = ostinato_lang::parse(control).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("escaped quoted selector");
+    assert_eq!(value.to_json().expect("json")["x"], 1);
+}
+
+#[test]
+fn control_prefix_labels_match_patterns() {
+    let source = "package demo\n#P: {[=~\"^\u{3}\"]: int}\nparams: #P & {\"\u{3}a\": 1}\n";
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("pattern uses the displayed label");
+    assert_eq!(value.to_json().expect("json")["params"]["\u{3}a"], 1);
+}
