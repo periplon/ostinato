@@ -4340,6 +4340,7 @@ fn time_arg(arguments: &[Value], index: usize, span: Span) -> Result<&str, LangE
     }
 }
 
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 fn parse_duration_nanos(text: &str) -> Option<i64> {
     if text == "0" || text == "+0" || text == "-0" {
         return Some(0);
@@ -4392,8 +4393,13 @@ fn parse_duration_nanos(text: &str) -> Option<i64> {
         rest = &rest[unit.len()..];
         let mut value = integer.checked_mul(scale)?;
         if fraction_digits > 0 {
-            let divisor = 10i128.checked_pow(fraction_digits)?;
-            value = value.checked_add(fraction.checked_mul(scale)?.checked_div(divisor)?)?;
+            if fraction_digits > 18 {
+                let ratio = fraction as f64 / 10f64.powi(i32::try_from(fraction_digits).ok()?);
+                value = value.checked_add((ratio * scale as f64) as i128)?;
+            } else {
+                let divisor = 10i128.checked_pow(fraction_digits)?;
+                value = value.checked_add(fraction.checked_mul(scale)?.checked_div(divisor)?)?;
+            }
         }
         total = total.checked_add(value)?;
     }

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.10.4
+
+Time layout fidelity follow-up.
+
+- Year-day layouts validate only the month/day fields actually written
+  (`2006-002 01`, `2006-002 02`).
+- Short `Jan`/`Mon` tokens are literals when followed by a lowercase letter
+  (`Januar`, `Monat`), matching Go.
+- `_2006`, optional trailing layout spaces, and the `UTC` zone shortcut parse
+  and format like Go; the conformance/evidence scripts pin `TZ=UTC`.
+- `ParseDuration` matches Go's float rounding for very long fractions.
+- 274 tests (48 CLI E2E, 1 conformance, 212 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.3
 
 Time formatting with out-of-range offsets.

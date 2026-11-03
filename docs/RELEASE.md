@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.10.4
+
+- Year-day field validation, short-token lowercase guard, `_2006`, optional
+  trailing spaces, `UTC` shortcut and long-fraction duration rounding.
+- 274 tests (48 CLI E2E, 1 conformance, 212 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.3
 
 - FormatString preserves local fields and offsets beyond chrono's fixed-offset

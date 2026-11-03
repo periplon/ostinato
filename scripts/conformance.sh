@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export CUE_BIN="${CUE_BIN:-cue}"
+export TZ=UTC
 
 if ! "$CUE_BIN" version >/dev/null 2>&1; then
   echo "official CUE not found. Run scripts/install-cue.sh v0.17.1" >&2
