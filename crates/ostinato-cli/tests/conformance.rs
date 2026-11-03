@@ -160,6 +160,7 @@ fn rust_matches_official_cue_on_the_conformance_corpus() {
             Some("params-nested-tag-origin") => &["host=x", "ihost=y", "lhost=z", "ehost=w"],
             Some("params-nested-tag-identity") => &["dhost=x", "phost=y", "ghost=z"],
             Some("params-nested-tag-selector") => &["leaf=Z", "h=H", "p=9", "n=5"],
+            Some("params-nested-tag-scope") => &["h=x", "b=2", "n=5"],
             _ => &[],
         };
         compare(&cue, &path, params);

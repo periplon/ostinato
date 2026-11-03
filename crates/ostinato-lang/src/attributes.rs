@@ -104,61 +104,35 @@ struct Selected {
     field: Option<crate::ast::Field>,
 }
 
-fn select_in_expr(expr: &Expr, field: &str, quoted: bool) -> Vec<Selected> {
-    match expr {
-        Expr::Struct(items, _) => {
-            let mut out = Vec::new();
-            for item in items {
-                let StructItem::Field(candidate) = item else {
-                    continue;
-                };
-                let Label::Name(name, _) = &candidate.label else {
-                    continue;
-                };
-                if name != field || candidate.quoted != quoted {
-                    continue;
-                }
-                let value = match &candidate.value {
-                    Expr::Ident(target, _) => {
-                        local_value(items, target).unwrap_or_else(|| candidate.value.clone())
-                    }
-                    other => other.clone(),
-                };
-                out.push(Selected {
-                    value,
-                    field: Some(candidate.clone()),
-                });
-            }
-            out
-        }
-        Expr::Paren(inner, _) | Expr::Default(inner, _) => select_in_expr(inner, field, quoted),
-        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            let mut out = select_in_expr(left, field, quoted);
-            out.extend(select_in_expr(right, field, quoted));
-            out
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn local_value(items: &[StructItem], name: &str) -> Option<Expr> {
-    for item in items {
+fn scope_map(items: &[StructItem]) -> DefinitionMap {
+    let mut scope = DefinitionMap::new();
+    for (index, item) in items.iter().enumerate() {
+        let path = vec![index];
         match item {
-            StructItem::Field(candidate) => {
-                let Label::Name(label, _) = &candidate.label else {
-                    continue;
-                };
-                if label == name || candidate.alias.as_deref() == Some(name) {
-                    return Some(candidate.value.clone());
+            StructItem::Field(field) => {
+                if let Label::Name(name, _) = &field.label {
+                    scope
+                        .entry(name.clone())
+                        .or_default()
+                        .push((path.clone(), field.value.clone()));
+                }
+                if let Some(alias) = &field.alias {
+                    scope
+                        .entry(alias.clone())
+                        .or_default()
+                        .push((path, field.value.clone()));
                 }
             }
-            StructItem::Let {
-                name: label, value, ..
-            } if label == name => return Some(value.clone()),
+            StructItem::Let { name, value, .. } => {
+                scope
+                    .entry(name.clone())
+                    .or_default()
+                    .push((path, value.clone()));
+            }
             _ => {}
         }
     }
-    None
+    scope
 }
 
 struct Collector<'a> {
@@ -166,6 +140,7 @@ struct Collector<'a> {
     definitions: &'a DefinitionMap,
     definition_aliases: &'a BTreeMap<String, String>,
     local_definitions: Vec<DefinitionMap>,
+    selecting: Vec<String>,
     selectors: Vec<Expr>,
     visiting: &'a mut Vec<String>,
 }
@@ -189,7 +164,7 @@ impl Collector<'_> {
                 self.expr(right, prefix, origin, origin_prefix, item_base)
             }
             Expr::Select(_, _, _, _) | Expr::Index(_, _, _) => {
-                if self.selectors.contains(expr) {
+                if self.selectors.contains(expr) || self.selectors.len() > 64 {
                     return Ok(());
                 }
                 self.selectors.push(expr.clone());
@@ -269,7 +244,107 @@ impl Collector<'_> {
         self.definitions.get(target).cloned()
     }
 
-    fn resolve_selector_all(&self, expr: &Expr) -> Vec<ResolvedSelector> {
+    fn select_in_expr(&mut self, expr: &Expr, field: &str, quoted: bool) -> Vec<Selected> {
+        match expr {
+            Expr::Struct(items, _) => {
+                let local = scope_map(items);
+                self.local_definitions.push(local);
+                let mut out = Vec::new();
+                for item in items {
+                    let StructItem::Field(candidate) = item else {
+                        continue;
+                    };
+                    let Label::Name(name, _) = &candidate.label else {
+                        continue;
+                    };
+                    if name != field || candidate.quoted != quoted {
+                        continue;
+                    }
+                    match &candidate.value {
+                        Expr::Ident(target, _) => {
+                            let values = self.lookup(target).unwrap_or_default();
+                            if values.is_empty() {
+                                out.push(Selected {
+                                    value: candidate.value.clone(),
+                                    field: Some(candidate.clone()),
+                                });
+                            } else {
+                                for (_, value) in values {
+                                    out.push(Selected {
+                                        value,
+                                        field: Some(candidate.clone()),
+                                    });
+                                }
+                            }
+                        }
+                        Expr::Select(_, _, _, _) | Expr::Index(_, _, _) => {
+                            if self.selectors.contains(&candidate.value)
+                                || self.selectors.len() > 64
+                            {
+                                out.push(Selected {
+                                    value: candidate.value.clone(),
+                                    field: Some(candidate.clone()),
+                                });
+                                continue;
+                            }
+                            self.selectors.push(candidate.value.clone());
+                            let resolved = self.resolve_selector_all(&candidate.value);
+                            self.selectors.pop();
+                            if resolved.is_empty() {
+                                out.push(Selected {
+                                    value: candidate.value.clone(),
+                                    field: Some(candidate.clone()),
+                                });
+                            } else {
+                                for (_, value, _, selected) in resolved {
+                                    out.push(Selected {
+                                        value,
+                                        field: selected.or_else(|| Some(candidate.clone())),
+                                    });
+                                }
+                            }
+                        }
+                        other => out.push(Selected {
+                            value: other.clone(),
+                            field: Some(candidate.clone()),
+                        }),
+                    }
+                }
+                self.local_definitions.pop();
+                out
+            }
+            Expr::Ident(name, _) => {
+                let target = self
+                    .definition_aliases
+                    .get(name)
+                    .map_or(name.as_str(), String::as_str);
+                if self.selecting.iter().any(|value| value == target) {
+                    return Vec::new();
+                }
+                let Some(values) = self.lookup(name) else {
+                    return Vec::new();
+                };
+                self.selecting.push(target.to_owned());
+                let mut out = Vec::new();
+                for (_, value) in values {
+                    out.extend(self.select_in_expr(&value, field, quoted));
+                }
+                self.selecting.pop();
+                out
+            }
+            Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+                self.select_in_expr(inner, field, quoted)
+            }
+            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+                let mut out = self.select_in_expr(left, field, quoted);
+                out.extend(self.select_in_expr(right, field, quoted));
+                out
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn resolve_selector_all(&mut self, expr: &Expr) -> Vec<ResolvedSelector> {
         match expr {
             Expr::Ident(name, _) => self
                 .lookup(name)
@@ -283,7 +358,7 @@ impl Collector<'_> {
             Expr::Select(base, field, quoted, _) => {
                 let mut out = Vec::new();
                 for (path, value, relative, _) in self.resolve_selector_all(base) {
-                    for selected in select_in_expr(&value, field, *quoted) {
+                    for selected in self.select_in_expr(&value, field, *quoted) {
                         let mut next = relative.clone();
                         let definition = selected
                             .field
@@ -318,7 +393,7 @@ impl Collector<'_> {
                     .collect();
                 let mut out = Vec::new();
                 for (path, value, mut relative, _) in self.resolve_selector_all(base) {
-                    for selected in select_in_expr(&value, &field, true) {
+                    for selected in self.select_in_expr(&value, &field, true) {
                         let definition = selected
                             .field
                             .as_ref()
@@ -462,6 +537,7 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
         definitions: &definitions,
         definition_aliases: &definition_aliases,
         local_definitions: Vec::new(),
+        selecting: Vec::new(),
         selectors: Vec::new(),
         visiting: &mut visiting,
     };

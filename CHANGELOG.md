@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.8.7
+
+Scope-aware selector tag discovery.
+
+- Identifier-valued selector steps (`config: #Config`, `config: database: #DB`)
+  are followed recursively with cycle guards.
+- Duplicate local declarations behind an identifier are all discovered.
+- Selected struct scopes are pushed while resolving nested selectors, so
+  shadowed `#P`/local lets resolve to the declaring scope.
+- 260 tests (44 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.6
 
 Selector tag discovery.
