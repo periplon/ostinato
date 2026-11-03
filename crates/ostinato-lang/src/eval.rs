@@ -1920,7 +1920,7 @@ fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<
             let selected = if quoted {
                 map.get(field).or_else(|| map.get(&escaped_field(field)))
             } else {
-                Frame::map_identifier_key(&map, field).and_then(|key| map.get(key))
+                Frame::map_identifier_key(map, field).and_then(|key| map.get(key))
             };
             selected.cloned().ok_or_else(|| {
                 LangError::eval(
