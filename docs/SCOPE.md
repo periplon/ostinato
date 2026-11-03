@@ -28,6 +28,8 @@ workflow outside the Rust surface has a supported escape hatch.
 - recursive definition materialization through optional fields and lists
   (`#Tree: {children?: [...#Tree]}`, mutually recursive definitions);
 - string and bytes interpolation, including nested quoted expressions;
+- multiline strings (`"""..."""`) with CUE opening/closing rules, dedent, CR
+  stripping and interpolation continuations;
 - `strings`, `list`, `regexp`, `math` and `time` builtins (including the full
   Go layout language, `FormatString`, `Split`, `ToUnix`/`ToUnixNano`,
   `FormatDuration` and time constants), bytes literals (single-line, multiline
