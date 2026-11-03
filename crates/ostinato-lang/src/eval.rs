@@ -1183,31 +1183,6 @@ impl<'a> Frame<'a> {
         else {
             return Ok(());
         };
-        for (key, value) in definitions {
-            let existing = self
-                .generated_definitions
-                .borrow()
-                .get(&key)
-                .cloned()
-                .or_else(|| {
-                    self.fields
-                        .borrow()
-                        .get(&key)
-                        .is_some_and(|definition| definition.definition)
-                        .then(|| self.eval_field_key(&key, Span::default()))
-                        .transpose()
-                        .ok()
-                        .flatten()
-                });
-            let merged = match existing {
-                Some(existing) => unify_values(&existing, &value, Span::default())?,
-                None => value,
-            };
-            self.generated_definitions
-                .borrow_mut()
-                .insert(key.clone(), merged);
-            self.materialized.borrow_mut().insert(key);
-        }
         for (key, value) in values {
             let value = match self.generated_optionals.borrow_mut().remove(&key) {
                 Some(constraint) => unify_values(&value, &constraint, Span::default())?,
@@ -1230,6 +1205,32 @@ impl<'a> Frame<'a> {
             };
             self.materialized.borrow_mut().insert(key.clone());
             self.values.borrow_mut().insert(storage_key, merged);
+        }
+        for (key, value) in definitions {
+            let prior = self.generated_definitions.borrow().get(&key).cloned();
+            let declared = if prior.is_none()
+                && self
+                    .fields
+                    .borrow()
+                    .get(&key)
+                    .is_some_and(|definition| definition.definition)
+            {
+                Some(self.eval_field_key(&key, Span::default())?)
+            } else {
+                None
+            };
+            let existing = prior.or(declared);
+            let merged = match existing {
+                Some(existing) => unify_values(&existing, &value, Span::default())?,
+                None => value,
+            };
+            self.generated_definitions
+                .borrow_mut()
+                .insert(key.clone(), merged.clone());
+            if self.values.borrow().contains_key(&key) {
+                self.values.borrow_mut().insert(key.clone(), merged);
+            }
+            self.materialized.borrow_mut().insert(key);
         }
         let optional_names: Vec<String> = child
             .fields
@@ -1325,11 +1326,6 @@ impl<'a> Frame<'a> {
         {
             return Ok(value.clone());
         }
-        if name.starts_with('#')
-            && let Some(value) = self.generated_definitions.borrow().get(name).cloned()
-        {
-            return Ok(value);
-        }
         if let Some(parent) = self.parent
             && parent.has_name(name)
         {
@@ -1354,7 +1350,6 @@ impl<'a> Frame<'a> {
 
     fn has_local_name(&self, name: &str) -> bool {
         self.bindable_field_key(name).is_some()
-            || self.generated_definitions.borrow().contains_key(name)
             || self.vars.borrow().contains_key(name)
             || self.lets.borrow().contains_key(name)
             || self.aliases.borrow().contains_key(name)
@@ -2524,7 +2519,9 @@ impl<'a> Frame<'a> {
                 .collect()
         };
         let mut names = names;
-        names.extend(self.generated_definitions.borrow().keys().cloned());
+        if include_definitions {
+            names.extend(self.generated_definitions.borrow().keys().cloned());
+        }
         names.sort();
         names.dedup();
         let mut fields_out = BTreeMap::new();

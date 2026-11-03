@@ -6155,3 +6155,43 @@ both: #Both
         );
     }
 }
+
+#[test]
+fn comprehension_generated_definitions_respect_caches_and_shadowing() {
+    let source = r#"
+package demo
+#I: 1
+#D: {if true {#I: 2}, a: #I}
+#M: {#I: int, if true {#I: 3}, a: #I}
+d: #D
+m: #M
+outer: #I
+params: {if true {#I: 3}, x: 1}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse generated definitions");
+    let value = ostinato_lang::eval_file(&file).expect("eval generated definitions");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["d"]["a"], 1, "outer definition must shadow a bare #I");
+    assert_eq!(json["outer"], 1);
+    assert_eq!(
+        json["m"]["a"], 3,
+        "declared and generated definitions must merge"
+    );
+    assert_eq!(json["params"]["x"], 1);
+    assert!(
+        json["params"].get("#I").is_none(),
+        "generated definitions must not leak into params exports"
+    );
+
+    for source in [
+        "package demo\n#E: {#I: #Nope, if true {#I: 3}, a: #I}\nx: #E.a\n",
+        "package demo\nif true {#I: 3}\nx: #I\n",
+        "package demo\nx: {if true {#I: 3}, a: #I}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse invalid generated definitions");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "generated-definition errors/shadowing must fail: {source:?}"
+        );
+    }
+}

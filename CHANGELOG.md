@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.16.2
+
+Generated-definition merge, export and shadowing corrections.
+
+- Declared+generated definitions keep a consistent cached value and propagate
+  declaration errors instead of swallowing them.
+- Generated definitions no longer leak into `params`/root exports and no longer
+  shadow outer definitions through bare identifiers; selectors still see them.
+- 339 tests (61 CLI E2E, 1 conformance, 235 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.16.1
 
 Duplicate generated-definition conflicts.
