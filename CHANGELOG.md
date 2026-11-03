@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.16.3
+
+Declared+generated definition declaration merge.
+
+- A declared closed struct definition and a same-name generated definition
+  merge their fields like CUE declarations, instead of rejecting the generated
+  fields as closed-definition violations.
+- 339 tests (61 CLI E2E, 1 conformance, 235 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.16.2
 
 Generated-definition merge, export and shadowing corrections.

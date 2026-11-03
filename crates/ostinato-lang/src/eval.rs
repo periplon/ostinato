@@ -1219,10 +1219,10 @@ impl<'a> Frame<'a> {
             } else {
                 None
             };
-            let existing = prior.or(declared);
-            let merged = match existing {
-                Some(existing) => unify_values(&existing, &value, Span::default())?,
-                None => value,
+            let merged = match (prior, declared) {
+                (Some(prior), _) => unify_values(&prior, &value, Span::default())?,
+                (None, Some(declared)) => merge_declaration(&declared, &value, Span::default())?,
+                (None, None) => value,
             };
             self.generated_definitions
                 .borrow_mut()
@@ -2775,6 +2775,71 @@ fn try_definition_unify(
         return Ok(None);
     };
     unify_values(&defined, &value, span).map(Some)
+}
+
+fn merge_declaration(left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
+    match (left, right) {
+        (
+            Value::Definition {
+                fields: left_fields,
+                optional,
+                definitions,
+                patterns,
+                closed,
+                open,
+                admissions,
+            },
+            Value::Definition {
+                fields: right_fields,
+                ..
+            },
+        )
+        | (
+            Value::Definition {
+                fields: left_fields,
+                optional,
+                definitions,
+                patterns,
+                closed,
+                open,
+                admissions,
+            },
+            Value::Struct(right_fields),
+        ) => {
+            let mut fields = left_fields.clone();
+            for (key, value) in right_fields {
+                if let Some(existing) = fields.get(key).cloned() {
+                    fields.insert(key.clone(), unify_values(&existing, value, span)?);
+                } else {
+                    fields.insert(key.clone(), value.clone());
+                }
+            }
+            let mut admissions = admissions.clone();
+            if admissions.is_empty() {
+                admissions.push(Admission {
+                    names: fields.keys().cloned().collect(),
+                    patterns: patterns
+                        .iter()
+                        .map(|(pattern, _)| pattern.clone())
+                        .collect(),
+                });
+            } else {
+                for admission in &mut admissions {
+                    admission.names.extend(fields.keys().cloned());
+                }
+            }
+            Ok(Value::Definition {
+                fields,
+                optional: optional.clone(),
+                definitions: definitions.clone(),
+                patterns: patterns.clone(),
+                closed: *closed,
+                open: *open,
+                admissions,
+            })
+        }
+        _ => unify_values(left, right, span),
+    }
 }
 
 fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<Value, LangError> {
