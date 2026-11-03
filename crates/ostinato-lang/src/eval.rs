@@ -39,6 +39,12 @@ pub struct Bound {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct BoundSet {
+    pub items: Vec<Bound>,
+    pub ty: Option<TypeKind>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
     Bool(bool),
@@ -50,7 +56,7 @@ pub enum Value {
     /// A disjunction with optional default alternatives (indices).
     Disjunction(Vec<Value>, Vec<usize>),
     /// A conjunction of bounds such as `>=5 & <10`.
-    Bounds(Vec<Bound>),
+    Bounds(BoundSet),
     /// A CUE definition: fields plus optional-field constraints. Open.
     Definition {
         fields: BTreeMap<String, Value>,
@@ -160,7 +166,13 @@ impl Value {
             Self::Null => Some(Json::Null),
             Self::Bool(value) => Some(Json::Bool(*value)),
             Self::Int(value) => Some(Json::Number(Number::from(*value))),
-            Self::Float(value) => value.to_string().parse::<Number>().ok().map(Json::Number),
+            Self::Float(value) => {
+                let mut text = value.to_string();
+                if !text.contains(['.', 'e', 'E']) {
+                    text.push_str(".0");
+                }
+                text.parse::<Number>().ok().map(Json::Number)
+            }
             Self::String(value) => Some(Json::String(value.clone())),
             Self::List(values) => {
                 let mut out = Vec::with_capacity(values.len());
@@ -228,7 +240,13 @@ impl Value {
             Self::Null => "null".to_owned(),
             Self::Bool(value) => value.to_string(),
             Self::Int(value) => value.to_string(),
-            Self::Float(value) => value.to_string(),
+            Self::Float(value) => {
+                let mut text = value.to_string();
+                if !text.contains(['.', 'e', 'E']) {
+                    text.push_str(".0");
+                }
+                text
+            }
             Self::String(value) => value.clone(),
             Self::Type(kind) => match kind {
                 TypeKind::String => "string",
@@ -248,6 +266,7 @@ impl Value {
                 parts.join(" | ")
             }
             Self::Bounds(bounds) => bounds
+                .items
                 .iter()
                 .map(bound_display)
                 .collect::<Vec<_>>()
@@ -1463,7 +1482,11 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 BoundOp::Match => BoundKind::Match,
                 BoundOp::NotMatch => BoundKind::NotMatch,
             };
-            Ok(Value::Bounds(vec![Bound { kind, operand }]))
+            validate_bound_operand(kind, &operand, *span)?;
+            Ok(Value::Bounds(BoundSet {
+                items: vec![Bound { kind, operand }],
+                ty: None,
+            }))
         }
         Expr::Paren(inner, _) => eval_expr(inner, frame),
         Expr::Call(callee, arguments, span) => {
@@ -1988,9 +2011,116 @@ fn bound_display(bound: &Bound) -> String {
     format!("{op}{}", bound.operand.display())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoundClass {
+    Numeric,
+    String,
+    Null,
+    List,
+    Struct,
+}
+
+fn bound_class(bound: &Bound) -> Option<BoundClass> {
+    match &bound.operand {
+        Value::Int(_) | Value::Float(_) => Some(BoundClass::Numeric),
+        Value::String(_) => Some(BoundClass::String),
+        Value::Null => Some(BoundClass::Null),
+        Value::List(_) => Some(BoundClass::List),
+        Value::Struct(_) | Value::Definition { .. } => Some(BoundClass::Struct),
+        _ => None,
+    }
+}
+
+fn validate_bound_operand(kind: BoundKind, operand: &Value, span: Span) -> Result<(), LangError> {
+    let allowed = match kind {
+        BoundKind::Ge | BoundKind::Gt | BoundKind::Le | BoundKind::Lt => {
+            matches!(operand, Value::Int(_) | Value::Float(_) | Value::String(_))
+        }
+        BoundKind::Match | BoundKind::NotMatch => {
+            matches!(operand, Value::Int(_) | Value::Float(_) | Value::String(_))
+        }
+        BoundKind::Ne => !matches!(operand, Value::Bool(_)),
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(LangError::conflict(
+            span.line,
+            span.col,
+            format!(
+                "invalid value {} for bound {}",
+                operand.display(),
+                match kind {
+                    BoundKind::Ge => ">=",
+                    BoundKind::Gt => ">",
+                    BoundKind::Le => "<=",
+                    BoundKind::Lt => "<",
+                    BoundKind::Ne => "!=",
+                    BoundKind::Match => "=~",
+                    BoundKind::NotMatch => "!~",
+                }
+            ),
+        ))
+    }
+}
+
+fn bound_type_compatible(kind: BoundKind, ty: TypeKind, operand: &Value) -> bool {
+    match kind {
+        BoundKind::Ge | BoundKind::Gt | BoundKind::Le | BoundKind::Lt => match ty {
+            TypeKind::String => matches!(operand, Value::String(_)),
+            TypeKind::Int | TypeKind::Float | TypeKind::Number => {
+                matches!(operand, Value::Int(_) | Value::Float(_))
+            }
+            TypeKind::Bool => false,
+        },
+        BoundKind::Match | BoundKind::NotMatch => match ty {
+            TypeKind::String => matches!(operand, Value::String(_)),
+            TypeKind::Int | TypeKind::Float | TypeKind::Number => {
+                matches!(operand, Value::Int(_) | Value::Float(_))
+            }
+            TypeKind::Bool => false,
+        },
+        BoundKind::Ne => match ty {
+            TypeKind::String => matches!(operand, Value::String(_) | Value::Null),
+            TypeKind::Int | TypeKind::Float | TypeKind::Number => {
+                matches!(operand, Value::Int(_) | Value::Float(_) | Value::Null)
+            }
+            TypeKind::Bool => match operand {
+                Value::Null => true,
+                Value::Int(_) | Value::Float(_) | Value::String(_) | Value::List(_) => false,
+                Value::Struct(_) | Value::Definition { .. } => false,
+                _ => false,
+            },
+        },
+    }
+}
+
 fn bound_matches(bound: &Bound, value: &Value, span: Span) -> Result<bool, LangError> {
     match bound.kind {
-        BoundKind::Ne => return Ok(!values_equal(value, &bound.operand)),
+        BoundKind::Ne => {
+            let compatible = match bound_class(bound) {
+                Some(BoundClass::Null) => !matches!(value, Value::Null),
+                Some(BoundClass::Numeric) => matches!(value, Value::Int(_) | Value::Float(_)),
+                Some(BoundClass::String) => matches!(value, Value::String(_)),
+                Some(BoundClass::List) => matches!(value, Value::List(_)),
+                Some(BoundClass::Struct) => {
+                    matches!(value, Value::Struct(_) | Value::Definition { .. })
+                }
+                None => false,
+            };
+            if !compatible {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    format!(
+                        "invalid value {} (out of bound {})",
+                        value.display(),
+                        bound_display(bound)
+                    ),
+                ));
+            }
+            return Ok(!values_equal(value, &bound.operand));
+        }
         BoundKind::Match | BoundKind::NotMatch => {
             let Value::String(text) = value else {
                 return Err(LangError::conflict(
@@ -2000,10 +2130,10 @@ fn bound_matches(bound: &Bound, value: &Value, span: Span) -> Result<bool, LangE
                 ));
             };
             let Value::String(regex) = &bound.operand else {
-                return Err(LangError::eval(
+                return Err(LangError::conflict(
                     span.line,
                     span.col,
-                    "regex bound requires a string operand",
+                    format!("bound `{}` requires a string operand", bound_display(bound)),
                 ));
             };
             let matched = regex::Regex::new(regex)
@@ -2042,17 +2172,111 @@ fn ordered_compare(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
     }
 }
 
-fn apply_bounds(bounds: &[Bound], other: &Value, span: Span) -> Result<Value, LangError> {
+fn merge_bounds(left: &BoundSet, right: &BoundSet, span: Span) -> Result<Value, LangError> {
+    let mut items = left.items.clone();
+    for bound in &right.items {
+        if !items.contains(bound) {
+            items.push(bound.clone());
+        }
+    }
+    check_bound_classes(&items, span)?;
+    let ty = match (&left.ty, &right.ty) {
+        (None, None) => None,
+        (Some(ty), None) | (None, Some(ty)) => Some(*ty),
+        (Some(a), Some(b)) => match unify_types(*a, *b, span)? {
+            Value::Type(ty) => Some(ty),
+            _ => None,
+        },
+    };
+    check_bound_interval(&items, span)?;
+    Ok(Value::Bounds(BoundSet { items, ty }))
+}
+
+fn check_bound_classes(items: &[Bound], span: Span) -> Result<(), LangError> {
+    let mut class: Option<BoundClass> = None;
+    for bound in items {
+        let Some(bound_class) = bound_class(bound) else {
+            return Err(LangError::conflict(
+                span.line,
+                span.col,
+                "bound operand has an unsupported type",
+            ));
+        };
+        if bound_class == BoundClass::Null {
+            continue;
+        }
+        match class {
+            None => class = Some(bound_class),
+            Some(existing) if existing == bound_class => {}
+            Some(_) => {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    "incompatible bound operand types",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_bound_interval(items: &[Bound], span: Span) -> Result<(), LangError> {
+    let mut lower: Option<(Value, bool)> = None;
+    let mut upper: Option<(Value, bool)> = None;
+    for bound in items {
+        let (value, inclusive, is_lower) = match bound.kind {
+            BoundKind::Ge => (&bound.operand, true, true),
+            BoundKind::Gt => (&bound.operand, false, true),
+            BoundKind::Le => (&bound.operand, true, false),
+            BoundKind::Lt => (&bound.operand, false, false),
+            _ => continue,
+        };
+        if is_lower {
+            lower = Some(match lower {
+                None => (value.clone(), inclusive),
+                Some((current, current_inclusive)) => match ordered_compare(value, &current) {
+                    Some(std::cmp::Ordering::Greater) => (value.clone(), inclusive),
+                    Some(std::cmp::Ordering::Equal) => (current, current_inclusive && inclusive),
+                    _ => (current, current_inclusive),
+                },
+            });
+        } else {
+            upper = Some(match upper {
+                None => (value.clone(), inclusive),
+                Some((current, current_inclusive)) => match ordered_compare(value, &current) {
+                    Some(std::cmp::Ordering::Less) => (value.clone(), inclusive),
+                    Some(std::cmp::Ordering::Equal) => (current, current_inclusive && inclusive),
+                    _ => (current, current_inclusive),
+                },
+            });
+        }
+    }
+    if let (Some((low, low_inclusive)), Some((high, high_inclusive))) = (lower, upper) {
+        match ordered_compare(&low, &high) {
+            Some(std::cmp::Ordering::Greater) => {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    "empty bound interval",
+                ));
+            }
+            Some(std::cmp::Ordering::Equal) if !(low_inclusive && high_inclusive) => {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    "empty bound interval",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn apply_bounds(bounds: &BoundSet, other: &Value, span: Span) -> Result<Value, LangError> {
     if let Value::Type(kind) = other {
-        for bound in bounds {
-            let compatible = match bound.kind {
-                BoundKind::Ge | BoundKind::Gt | BoundKind::Le | BoundKind::Lt => {
-                    matches!(kind, TypeKind::Int | TypeKind::Float | TypeKind::Number)
-                }
-                BoundKind::Match | BoundKind::NotMatch => matches!(kind, TypeKind::String),
-                BoundKind::Ne => true,
-            };
-            if !compatible {
+        for bound in &bounds.items {
+            if !bound_type_compatible(bound.kind, *kind, &bound.operand) {
                 return Err(LangError::conflict(
                     span.line,
                     span.col,
@@ -2063,9 +2287,28 @@ fn apply_bounds(bounds: &[Bound], other: &Value, span: Span) -> Result<Value, La
                 ));
             }
         }
-        return Ok(Value::Bounds(bounds.to_vec()));
+        let ty = match bounds.ty {
+            Some(existing) => match unify_types(existing, *kind, span)? {
+                Value::Type(ty) => Some(ty),
+                _ => None,
+            },
+            None => Some(*kind),
+        };
+        return Ok(Value::Bounds(BoundSet {
+            items: bounds.items.clone(),
+            ty,
+        }));
     }
-    for bound in bounds {
+    if let Some(ty) = bounds.ty
+        && !type_matches(ty, other)
+    {
+        return Err(LangError::conflict(
+            span.line,
+            span.col,
+            format!("{} does not satisfy {}", other.type_name(), kind_name(ty)),
+        ));
+    }
+    for bound in &bounds.items {
         if !bound_matches(bound, other, span)? {
             return Err(LangError::conflict(
                 span.line,
@@ -2081,6 +2324,14 @@ fn apply_bounds(bounds: &[Bound], other: &Value, span: Span) -> Result<Value, La
     Ok(other.clone())
 }
 
+fn numeric_kind_mismatch(left: &Value, right: &Value) -> bool {
+    matches!(
+        (left, right),
+        (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_))
+    )
+}
+
+#[allow(clippy::cmp_owned)]
 fn values_equal(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (
@@ -2093,6 +2344,9 @@ fn values_equal(left: &Value, right: &Value) -> bool {
         }
         (Value::List(a), Value::List(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| values_equal(a, b))
+        }
+        (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
+            BigDecimal::from(*a) == *b
         }
         (Value::Disjunction(_, _), _) | (_, Value::Disjunction(_, _)) => {
             match (left.to_json(), right.to_json()) {
@@ -2388,15 +2642,19 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
         },
         BinOp::Sub => numeric(op, left, right, span, |a, b| a - b, |a, b| a - b),
         BinOp::Mul => numeric(op, left, right, span, |a, b| a * b, |a, b| a * b),
-        BinOp::Div => match (left, right) {
-            (Value::Int(_), Value::Int(0)) => {
-                Err(LangError::conflict(span.line, span.col, "division by zero"))
+        BinOp::Div => {
+            let zero = matches!(right, Value::Int(0))
+                || matches!(right, Value::Float(value) if value == &BigDecimal::from(0));
+            if zero {
+                return Err(LangError::conflict(span.line, span.col, "division by zero"));
             }
-            (Value::Int(a), Value::Int(b)) => {
-                Ok(Value::Float(BigDecimal::from(*a) / BigDecimal::from(*b)))
+            match (left, right) {
+                (Value::Int(a), Value::Int(b)) => {
+                    Ok(Value::Float(BigDecimal::from(*a) / BigDecimal::from(*b)))
+                }
+                _ => numeric(op, left, right, span, |a, b| a / b, |a, b| a / b),
             }
-            _ => numeric(op, left, right, span, |a, b| a / b, |a, b| a / b),
-        },
+        }
         BinOp::Mod => match (left, right) {
             (Value::Int(_), Value::Int(0)) => {
                 Err(LangError::conflict(span.line, span.col, "modulo by zero"))
@@ -2493,15 +2751,7 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             Err(LangError::conflict(span.line, span.col, message.clone()))
         }
         (Value::Bottom, value) | (value, Value::Bottom) => Ok(value.clone()),
-        (Value::Bounds(a), Value::Bounds(b)) => {
-            let mut bounds = a.clone();
-            for bound in b {
-                if !bounds.contains(bound) {
-                    bounds.push(bound.clone());
-                }
-            }
-            Ok(Value::Bounds(bounds))
-        }
+        (Value::Bounds(a), Value::Bounds(b)) => merge_bounds(a, b, span),
         (Value::Disjunction(a, da), Value::Disjunction(b, db)) => {
             unify_disjunctions(a, da, b, db, span)
         }
@@ -2825,7 +3075,7 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
             }
             Ok(Value::List(out))
         }
-        (a, b) if values_equal(a, b) => Ok(a.clone()),
+        (a, b) if !numeric_kind_mismatch(a, b) && values_equal(a, b) => Ok(a.clone()),
         (a, b) => Err(LangError::conflict(
             span.line,
             span.col,
