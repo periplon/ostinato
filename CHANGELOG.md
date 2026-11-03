@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.13.2
+
+Self-selection documentation and optional-materialization corrections.
+
+- A declared optional field that is materialized by a comprehension can be
+  referenced (`#D: {b?: int, if true {b: 1}, a: #D.b}`), matching CUE; an
+  unmaterialized optional still errors.
+- README/COMPLIANCE no longer claim self-selection is out of scope.
+- SCOPE records the remaining comprehension-generated-definition and bare
+  generated-field-reference limits explicitly.
+- 333 tests (61 CLI E2E, 1 conformance, 229 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.13.1
 
 Self-selection review corrections.

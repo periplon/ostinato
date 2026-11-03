@@ -32,7 +32,7 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 
 ## Status
 
-`v0.13.1` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
+`v0.13.2` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
 
 ## Features
 
@@ -73,7 +73,7 @@ Verify:
 
 ```sh
 ostinato doctor
-# ostinato 0.13.1
+# ostinato 0.13.2
 # evaluator rust (required CUE workflow semantics; default)
 # oracle cue version v0.17.1
 # db .ostinato/ostinato.db
@@ -242,7 +242,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and SOLID mapping. Th
 
 - `--evaluator rust` is the default (`native` is an alias).
 - `--evaluator cue` requires CUE **>= v0.17.1**; CI installs and pins v0.17.1.
-- The Rust evaluator targets the workflow-relevant CUE semantics, not every CUE feature. Clause-sequence/list comprehensions and file-scoped `let` are implemented; tool packages, self-selection and the full disjunction lattice over bounds/patterns are explicitly out of scope in [docs/SCOPE.md](docs/SCOPE.md).
+- The Rust evaluator targets the workflow-relevant CUE semantics, not every CUE feature. Clause-sequence/list comprehensions and file-scoped `let` are implemented; tool packages, self-selection through split composed non-definition literals and the full disjunction lattice over bounds/patterns are explicitly out of scope in [docs/SCOPE.md](docs/SCOPE.md).
 - There is **no silent fallback**: the default is Rust; `--evaluator cue` errors if the oracle is missing.
 
 ## Evidence

@@ -12,6 +12,14 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.13.2
+
+- Materialized optional fields are self-selectable; README/COMPLIANCE/SCOPE
+  statements about self-selection are consistent and the remaining generated
+  definition/field-reference limits are documented.
+- 333 tests (61 CLI E2E, 1 conformance, 229 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.13.1
 
 - Self-selection sees comprehension-generated fields and no longer mis-resolves

@@ -5863,6 +5863,8 @@ base: {b: 1}
 #G3: {for i, v in [{b: 3}] {"x": v.b}, a: #G3.x}
 #G4: {if true {_b: 1}, a: #G4._b}
 #GS: {for k, v in {b: 9, y: #GS.b} {"out-\(k)": v}, b: 1}
+#M: {b?: int, if true {b: 5}, a: #M.b}
+#MF: {b?: int, for k, v in {b: 6} {"\(k)": v}, a: #MF.b}
 regular: {a: regular.b, b: 1}
 regular_deep: {inner: {a: regular_deep.b}, b: 1}
 #Shadow: {#Shadow: {b: 9}, a: #Shadow.b, b: 1}
@@ -5885,6 +5887,8 @@ g3: #G3
 g4: #G4
 gs_y: #GS."out-y"
 gs_b: #GS."out-b"
+m: #M
+mf: #MF
 "#;
     let file = ostinato_lang::parse(source).expect("parse self-selection");
     let value = ostinato_lang::eval_file(&file).expect("eval self-selection");
@@ -5910,6 +5914,8 @@ gs_b: #GS."out-b"
     assert_eq!(json["g4"]["a"], 1);
     assert_eq!(json["gs_y"], 1);
     assert_eq!(json["gs_b"], 9);
+    assert_eq!(json["m"]["a"], 5);
+    assert_eq!(json["mf"]["a"], 6);
 
     for source in [
         "#D: {a: #D.b, b?: int}",

@@ -17,6 +17,8 @@ base: {b: 1}
 #G3: {for i, v in [{b: 3}] {"x": v.b}, a: #G3.x}
 #G4: {if true {_b: 1}, a: #G4._b}
 #GS: {for k, v in {b: 9, y: #GS.b} {"out-\(k)": v}, b: 1}
+#M: {b?: int, if true {b: 5}, a: #M.b}
+#MF: {b?: int, for k, v in {b: 6} {"\(k)": v}, a: #MF.b}
 
 params: {
 	basic:       #D
@@ -36,6 +38,8 @@ params: {
 	generated_hidden: #G4.a
 	generated_shadow_y: #GS."out-y"
 	generated_shadow_b: #GS."out-b"
+	materialized_if:  #M.a
+	materialized_for: #MF.a
 }
 
 workflow: {
