@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.19
+
+Dependency-chained params and generated groups.
+
+- Params comprehensions resolve dependency-chained siblings (`b: params.a`
+  referenced by a later `if`/`for`) without false cycles.
+- Nested params frames inherit path prefixes during normal evaluation, so
+  conditionally generated groups resolve `params.<group>[k]`.
+- 246 tests (35 CLI E2E, 1 conformance, 200 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.18
 
 Dynamic params index paths in nested groups.

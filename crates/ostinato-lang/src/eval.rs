@@ -444,6 +444,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         params_scope: Cell::new(false),
         params_context: RefCell::new(None),
         params_prefix: RefCell::new(Vec::new()),
+        params_segment: RefCell::new(None),
     };
     if let Json::Object(map) = context {
         let mut values = BTreeMap::new();
@@ -554,6 +555,7 @@ struct Frame<'a> {
     params_scope: Cell<bool>,
     params_context: RefCell<Option<Rc<ParamsContext>>>,
     params_prefix: RefCell<Vec<String>>,
+    params_segment: RefCell<Option<String>>,
 }
 
 impl<'a> Frame<'a> {
@@ -591,6 +593,7 @@ impl<'a> Frame<'a> {
                 parent.and_then(|parent| parent.params_context.borrow().clone()),
             ),
             params_prefix: RefCell::new(Vec::new()),
+            params_segment: RefCell::new(None),
         };
 
         // Pass 1: static fields and lazy let bindings.
@@ -1127,6 +1130,29 @@ impl<'a> Frame<'a> {
         false
     }
 
+    fn nearest_params_prefix(&self) -> Vec<String> {
+        let mut cursor = Some(self);
+        while let Some(current) = cursor {
+            let prefix = current.params_prefix.borrow().clone();
+            if !prefix.is_empty() {
+                return prefix;
+            }
+            cursor = current.parent;
+        }
+        Vec::new()
+    }
+
+    fn within_params(&self) -> bool {
+        let mut cursor = Some(self);
+        while let Some(current) = cursor {
+            if current.params_scope.get() {
+                return true;
+            }
+            cursor = current.parent;
+        }
+        false
+    }
+
     fn generated_value_key(&self, name: &str, quoted: bool) -> Option<String> {
         let values = self.values.borrow();
         if quoted {
@@ -1282,6 +1308,19 @@ impl<'a> Frame<'a> {
         let cache_key = params_cache_key(path);
         if let Some(value) = context.values.borrow().get(&cache_key) {
             return Ok(value.clone());
+        }
+        if !context.local.borrow().is_empty()
+            && !context.evaluating.borrow().contains(&cache_key)
+            && !context.local.borrow().contains(&cache_key)
+        {
+            context.local.borrow_mut().insert(cache_key.clone());
+            let local = self.params_path_local(path, span);
+            context.local.borrow_mut().remove(&cache_key);
+            match local {
+                Some(Ok(value)) => return Ok(value),
+                Some(Err(err)) => return Err(err),
+                None => {}
+            }
         }
         if context.evaluating.borrow().contains(&cache_key) {
             if !context.local.borrow().contains(&cache_key) {
@@ -1582,9 +1621,19 @@ impl<'a> Frame<'a> {
             return Ok(result);
         }
         self.evaluating.borrow_mut().insert(key.to_owned());
+        let segment = self
+            .within_params()
+            .then(|| display_field_name(key).to_owned());
         let mut result = Value::Bottom;
         for (index, expr) in exprs.iter().enumerate() {
-            let value = eval_expr(expr, self)?;
+            let previous = segment
+                .as_ref()
+                .map(|segment| self.params_segment.replace(Some(segment.clone())));
+            let value = eval_expr(expr, self);
+            if let Some(previous) = previous {
+                *self.params_segment.borrow_mut() = previous;
+            }
+            let value = value?;
             result = if index == 0 {
                 value
             } else {
@@ -1655,6 +1704,11 @@ impl<'a> Frame<'a> {
         closed_by_default: bool,
     ) -> Result<Value, LangError> {
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
+        if let Some(segment) = self.params_segment.borrow().clone() {
+            let mut prefix = self.nearest_params_prefix();
+            prefix.push(segment);
+            *child.params_prefix.borrow_mut() = prefix;
+        }
         child.closed.set(closed_by_default);
         child.expand(items)?;
         child.reconcile_generated_required_fields()?;
