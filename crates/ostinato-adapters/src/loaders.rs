@@ -557,6 +557,7 @@ fn field_item(label: String, quoted: bool, definition: bool, value: Expr) -> Str
 fn nested_expr(
     path: &[ostinato_lang::TagSegment],
     value: Value,
+    definitions: bool,
 ) -> Result<Expr, ostinato_lang::LangError> {
     let json = value.to_json().ok_or_else(|| {
         ostinato_lang::LangError::Workflow("parameter value is not concrete".to_owned())
@@ -571,7 +572,7 @@ fn nested_expr(
             vec![field_item(
                 segment.name.clone(),
                 segment.quoted,
-                false,
+                definitions && segment.definition,
                 expr,
             )],
             span,
@@ -584,7 +585,7 @@ fn nested_params_item(
     path: &[ostinato_lang::TagSegment],
     value: Value,
 ) -> Result<StructItem, ostinato_lang::LangError> {
-    let expr = nested_expr(path, value)?;
+    let expr = nested_expr(path, value, false)?;
     Ok(field_item("params".to_owned(), false, false, expr))
 }
 
@@ -593,7 +594,7 @@ fn nested_constraint_item(
     path: &[ostinato_lang::TagSegment],
     value: Value,
 ) -> Result<StructItem, ostinato_lang::LangError> {
-    let expr = nested_expr(path, value)?;
+    let expr = nested_expr(path, value, true)?;
     Ok(field_item(origin.to_owned(), false, true, expr))
 }
 

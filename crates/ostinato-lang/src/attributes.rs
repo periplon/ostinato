@@ -22,6 +22,7 @@ pub enum TagType {
 pub struct TagSegment {
     pub name: String,
     pub quoted: bool,
+    pub definition: bool,
 }
 
 /// A `@tag` declaration: external name, parameter path and injection type.
@@ -153,6 +154,7 @@ impl Collector<'_> {
             let segment = TagSegment {
                 name: name.to_owned(),
                 quoted: field.quoted,
+                definition: field.definition,
             };
             let mut path = prefix.to_vec();
             path.push(segment.clone());
