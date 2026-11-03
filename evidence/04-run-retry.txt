@@ -1,6 +1,6 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.v0urkNAkjw/db.sqlite run examples/retry.cue
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.cQyslt2Mst/db.sqlite run examples/retry.cue
 
-run=0da4a493-9a18-4bf9-85ad-20705df9b817 workflow=retry status=succeeded durationMs=330
+run=7ec3ea7f-4bd9-42fc-af2a-959a6a4b6e27 workflow=retry status=succeeded durationMs=322
 STEP                     STATUS     VISITS ATTEMPTS
 flaky                    succeeded  1      3       
 setup                    succeeded  1      1       

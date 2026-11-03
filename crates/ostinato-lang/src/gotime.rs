@@ -16,13 +16,7 @@ pub(crate) struct ParsedTime {
 impl ParsedTime {
     #[must_use]
     pub(crate) fn utc(&self) -> DateTime<Utc> {
-        let offset = FixedOffset::east_opt(self.offset_seconds).unwrap_or_else(|| {
-            FixedOffset::east_opt(0).unwrap_or_else(|| unreachable!("UTC offset"))
-        });
-        offset
-            .from_local_datetime(&self.local)
-            .single()
-            .map_or_else(Utc::now, |value| value.with_timezone(&Utc))
+        (self.local - chrono::Duration::seconds(i64::from(self.offset_seconds))).and_utc()
     }
 
     #[must_use]
@@ -64,7 +58,11 @@ enum Item {
     PmLower,
     ZoneName,
     ZoneNumeric(ZoneStyle),
-    Fraction { digits: usize, trim: bool },
+    Fraction {
+        digits: usize,
+        trim: bool,
+        separator: char,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,11 +173,12 @@ fn token_at(text: &str) -> Option<(Item, usize)> {
             let run = &rest[..digits];
             let all_zero = run.chars().all(|value| value == '0');
             let all_nine = run.chars().all(|value| value == '9');
-            if (all_zero || all_nine) && digits <= 9 {
+            if all_zero || all_nine {
                 return Some((
                     Item::Fraction {
                         digits,
                         trim: all_nine,
+                        separator: first,
                     },
                     first.len_utf8() + digits,
                 ));
@@ -274,15 +273,13 @@ fn parse_fraction(input: &str, digits: usize, trim: bool) -> Option<(u32, &str)>
         if count == 0 {
             return None;
         }
-        let used = count.min(10);
-        let significant = used.min(9);
-        let nanos = fraction_nanos(rest, significant)?;
-        Some((nanos, &rest[used..]))
+        let nanos = fraction_nanos(rest, count.min(9))?;
+        Some((nanos, &rest[count..]))
     } else {
         if count != digits {
             return None;
         }
-        let nanos = fraction_nanos(rest, digits)?;
+        let nanos = fraction_nanos(rest, digits.min(9))?;
         Some((nanos, &rest[digits..]))
     }
 }
@@ -293,28 +290,80 @@ fn parse_nanoseconds(input: &str) -> Option<(u32, &str)> {
     if count == 0 {
         return None;
     }
-    let used = count.min(10);
-    let significant = used.min(9);
-    let nanos = fraction_nanos(rest, significant)?;
-    Some((nanos, &rest[used..]))
+    let nanos = fraction_nanos(rest, count.min(9))?;
+    Some((nanos, &rest[count..]))
 }
 
-fn parse_name<'a>(input: &'a str, names: &[&str], short: bool) -> Option<(usize, &'a str)> {
+fn parse_name<'a>(input: &'a str, names: &[&str]) -> Option<(usize, &'a str)> {
+    let bytes = input.as_bytes();
     for (index, name) in names.iter().enumerate() {
-        if name.len() > input.len() {
-            continue;
-        }
-        if input[..name.len()].eq_ignore_ascii_case(name) {
+        if bytes.len() >= name.len() && bytes[..name.len()].eq_ignore_ascii_case(name.as_bytes()) {
             return Some((index, &input[name.len()..]));
         }
     }
-    let length = if short {
-        3
-    } else {
-        names.first().map_or(0, |name| name.len())
-    };
-    let _ = length;
     None
+}
+
+fn skip_literal<'a>(mut value: &'a str, mut prefix: &str) -> Option<&'a str> {
+    while let Some(character) = prefix.chars().next() {
+        if character == ' ' {
+            if !value.starts_with(' ') {
+                return None;
+            }
+            value = value.trim_start_matches(' ');
+            prefix = prefix.trim_start_matches(' ');
+        } else {
+            value = value.strip_prefix(character)?;
+            prefix = &prefix[character.len_utf8()..];
+        }
+    }
+    Some(value)
+}
+
+fn parse_signed_offset(input: &str) -> usize {
+    let bytes = input.as_bytes();
+    if bytes.is_empty() || (bytes[0] != b'+' && bytes[0] != b'-') {
+        return 0;
+    }
+    let mut index = 1;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index == 1 {
+        return 0;
+    }
+    match input[1..index].parse::<u32>() {
+        Ok(value) if value <= 23 => index,
+        _ => 0,
+    }
+}
+
+fn parse_zone_name(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    if bytes.len() < 3 {
+        return None;
+    }
+    if bytes.starts_with(b"ChST") || bytes.starts_with(b"MeST") {
+        return Some(4);
+    }
+    if bytes.starts_with(b"GMT") {
+        let extra = parse_signed_offset(&input[3..]);
+        return Some(if extra == 0 { 3 } else { 3 + extra });
+    }
+    if bytes[0] == b'+' || bytes[0] == b'-' {
+        let consumed = parse_signed_offset(input);
+        return (consumed > 0).then_some(consumed);
+    }
+    let mut length = 0;
+    while length < 6 && length < bytes.len() && bytes[length].is_ascii_uppercase() {
+        length += 1;
+    }
+    match length {
+        3 => Some(3),
+        4 if bytes[3] == b'T' || &bytes[..4] == b"WITA" => Some(4),
+        5 if bytes[4] == b'T' => Some(5),
+        _ => None,
+    }
 }
 
 fn parse_zone(input: &str, style: ZoneStyle) -> Option<(i32, &str)> {
@@ -334,13 +383,22 @@ fn parse_zone(input: &str, style: ZoneStyle) -> Option<(i32, &str)> {
             let rest = rest.strip_prefix(':')?;
             take_digits(rest, 2)?
         }
-        ZoneStyle::Seconds | ZoneStyle::IsoSeconds => take_digits(rest, 2)?,
+        ZoneStyle::Seconds | ZoneStyle::IsoSeconds => {
+            let (minutes, rest) = take_digits(rest, 2)?;
+            let (seconds, rest) = take_digits(rest, 2)?;
+            if hours > 24 || minutes > 60 || seconds > 60 {
+                return None;
+            }
+            let offset =
+                sign * (i64::from(hours) * 3600 + i64::from(minutes) * 60 + i64::from(seconds));
+            return i32::try_from(offset).ok().map(|offset| (offset, rest));
+        }
         ZoneStyle::SecondsColon | ZoneStyle::IsoSecondsColon => {
             let rest = rest.strip_prefix(':')?;
             let (minutes, rest) = take_digits(rest, 2)?;
             let rest = rest.strip_prefix(':')?;
             let (seconds, rest) = take_digits(rest, 2)?;
-            if hours > 23 || minutes > 59 || seconds > 59 {
+            if hours > 24 || minutes > 60 || seconds > 60 {
                 return None;
             }
             let offset =
@@ -348,7 +406,7 @@ fn parse_zone(input: &str, style: ZoneStyle) -> Option<(i32, &str)> {
             return i32::try_from(offset).ok().map(|offset| (offset, rest));
         }
     };
-    if hours > 23 || minutes > 59 {
+    if hours > 24 || minutes > 60 {
         return None;
     }
     let offset = sign * (i64::from(hours) * 3600 + i64::from(minutes) * 60);
@@ -364,6 +422,7 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
     let mut year = 0i32;
     let mut month = 1u32;
     let mut day = 1u32;
+    let mut saw_month_day = false;
     let mut yday: Option<u32> = None;
     let mut hour = 0u32;
     let mut minute = 0u32;
@@ -375,7 +434,7 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
     for (index, item) in items.iter().enumerate() {
         match item {
             Item::Literal(text) => {
-                rest = rest.strip_prefix(text.as_str())?;
+                rest = skip_literal(rest, text)?;
             }
             Item::Year4 => {
                 let (value, next) = take_digits(rest, 4)?;
@@ -389,19 +448,22 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
                 rest = next;
             }
             Item::MonthLong => {
-                let (value, next) = parse_name(rest, &MONTHS_LONG, false)?;
+                let (value, next) = parse_name(rest, &MONTHS_LONG)?;
                 month = u32::try_from(value + 1).ok()?;
+                saw_month_day = true;
                 rest = next;
             }
             Item::MonthShort => {
-                let (value, next) = parse_name(rest, &MONTHS_SHORT, true)?;
+                let (value, next) = parse_name(rest, &MONTHS_SHORT)?;
                 month = u32::try_from(value + 1).ok()?;
+                saw_month_day = true;
                 rest = next;
             }
             Item::MonthNum | Item::MonthNum0 => {
                 let fixed = matches!(item, Item::MonthNum0);
                 let (value, next) = take_number(rest, if fixed { 2 } else { 1 }, 2)?;
                 month = value;
+                saw_month_day = true;
                 rest = next;
             }
             Item::Day | Item::Day0 | Item::DaySpace => {
@@ -411,6 +473,7 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
                 let fixed = matches!(item, Item::Day0);
                 let (value, next) = take_number(rest, if fixed { 2 } else { 1 }, 2)?;
                 day = value;
+                saw_month_day = true;
                 rest = next;
             }
             Item::YDay0 => {
@@ -435,11 +498,11 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
                 } else {
                     &WEEKDAYS_SHORT
                 };
-                let (_, next) = parse_name(rest, names, matches!(item, Item::WeekdayShort))?;
+                let (_, next) = parse_name(rest, names)?;
                 rest = next;
             }
             Item::Hour24 => {
-                let (value, next) = take_digits(rest, 2)?;
+                let (value, next) = take_number(rest, 1, 2)?;
                 hour = value;
                 rest = next;
             }
@@ -469,7 +532,7 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
                     rest = next;
                 }
             }
-            Item::Fraction { digits, trim } => {
+            Item::Fraction { digits, trim, .. } => {
                 if rest.starts_with(['.', ',']) {
                     let (value, next) = parse_fraction(rest, *digits, *trim)?;
                     nanos = value;
@@ -499,16 +562,7 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
                 rest = next;
             }
             Item::ZoneName => {
-                // Go consumes the three-letter zone abbreviation; anything
-                // longer is trailing text.
-                let mut consumed = 0usize;
-                for _ in 0..3 {
-                    let character = rest[consumed..].chars().next()?;
-                    if !character.is_alphabetic() {
-                        return None;
-                    }
-                    consumed += character.len_utf8();
-                }
+                let consumed = parse_zone_name(rest)?;
                 rest = &rest[consumed..];
                 offset_seconds = 0;
             }
@@ -525,10 +579,8 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
     if saw_hour12 && hour > 12 {
         return None;
     }
+    let _ = saw_hour12;
     if let Some(pm) = pm {
-        if !saw_hour12 {
-            return None;
-        }
         if pm {
             if hour < 12 {
                 hour += 12;
@@ -541,7 +593,11 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
         if yday == 0 {
             return None;
         }
-        NaiveDate::from_yo_opt(year, yday)?
+        let date = NaiveDate::from_yo_opt(year, yday)?;
+        if saw_month_day && (date.month() != month || date.day() != day) {
+            return None;
+        }
+        date
     } else {
         NaiveDate::from_ymd_opt(year, month, day)?
     };
@@ -646,10 +702,23 @@ pub(crate) fn format(layout: &str, value: DateTime<FixedOffset>) -> String {
             Item::MinuteZero => out.push_str(&format!("{:02}", value.minute())),
             Item::Second => out.push_str(&value.second().to_string()),
             Item::SecondZero => out.push_str(&format!("{:02}", value.second())),
-            Item::Fraction { digits, trim } => {
-                let precision = if trim { 9 } else { digits };
-                let (fraction, _) = format_fraction(u64::from(value.nanosecond()), precision);
-                out.push_str(&fraction);
+            Item::Fraction {
+                digits,
+                trim,
+                separator,
+            } => {
+                let text = format!("{:09}", value.nanosecond());
+                let take = digits.min(9);
+                if trim {
+                    let trimmed = text[..take].trim_end_matches('0');
+                    if !trimmed.is_empty() {
+                        out.push(separator);
+                        out.push_str(trimmed);
+                    }
+                } else {
+                    out.push(separator);
+                    out.push_str(&text[..take]);
+                }
             }
             Item::PmUpper => out.push_str(if value.hour() < 12 { "AM" } else { "PM" }),
             Item::PmLower => out.push_str(if value.hour() < 12 { "am" } else { "pm" }),

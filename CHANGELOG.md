@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.2
+
+Time layout review corrections.
+
+- Non-ASCII input can no longer panic name matching.
+- Exact fractional layouts print the leading digits and always include the
+  declared width/separator; trimmed layouts respect the declared digit count.
+- Zone offsets support second precision and Go's out-of-range normalization;
+  zone abbreviations follow Go's `parseTimeZone` (AEST/WITA/CHST/GMT+2/signed
+  names), rejecting lowercase.
+- Fractions longer than 10 digits are truncated to nanoseconds; layout
+  whitespace runs match one-or-more input spaces; short `15`, PM without a
+  12-hour field and conflicting year-day/month-day inputs match Go.
+- 274 tests (48 CLI E2E, 1 conformance, 212 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.1
 
 Time layout parsing corrections.
@@ -10,7 +26,7 @@ Time layout parsing corrections.
 - Fractional seconds after a seconds field follow the same rule.
 - Zone abbreviations consume exactly three letters, so trailing text is
   rejected like `time.Parse`.
-- 274 tests (48 CLI E2E, 1 conformance, 212 language, 6 domain, 3 store, 1 unit).
+- 274 tests (48 CLI E2E, 1 conformance, 212 language, 3 language unit, 6 domain, 3 store, 1 adapters unit).
 
 ## v0.10.0
 
@@ -23,7 +39,7 @@ Full Go time layouts and `time` helpers.
 - Added `time.FormatString`, `time.Split`, `time.ToUnix`, `time.ToUnixNano`,
   `time.FormatDuration`, the `Time`/`Duration` validators, and layout/month/
   weekday/duration constants.
-- 274 tests (48 CLI E2E, 1 conformance, 212 language, 6 domain, 3 store, 1 unit).
+- 274 tests (48 CLI E2E, 1 conformance, 212 language, 3 language unit, 6 domain, 3 store, 1 adapters unit).
 
 ## v0.9.4
 

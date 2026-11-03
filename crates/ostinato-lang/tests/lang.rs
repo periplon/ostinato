@@ -5043,6 +5043,9 @@ b: time.Parse("2006-01-02T15:04:05.999Z07:00", "2024-03-05T06:07:08.1234567891Z"
     for source in [
         r#"a: time.Parse("Mon", "Xyz")"#,
         r#"a: time.Parse("MST", "PSTX")"#,
+        r#"a: time.Parse("MST", "utc")"#,
+        r#"a: time.Parse("2006-002 01-02", "2024-065 03-06")"#,
+        r#"a: time.Format("😀 5, 2024", "Jan 2, 2006")"#,
         r#"a: time.Parse("2006-01-02T15:04:05.000Z07:00", "2024-03-05T06:07:08.12Z")"#,
         r#"a: time.Parse("2006-01", "2024-13")"#,
         r#"a: time.Parse("2006-01-02", "2024-02-30")"#,
