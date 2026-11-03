@@ -533,6 +533,7 @@ struct ParamsContext {
     overrides: BTreeMap<String, Value>,
     values: RefCell<BTreeMap<Vec<String>, Value>>,
     evaluating: RefCell<HashSet<Vec<String>>>,
+    local: RefCell<HashSet<Vec<String>>>,
 }
 
 struct Frame<'a> {
@@ -1147,6 +1148,57 @@ impl<'a> Frame<'a> {
         }
     }
 
+    fn params_path_local(
+        &self,
+        path: &[(String, bool)],
+        span: Span,
+    ) -> Option<Result<Value, LangError>> {
+        let ((first, quoted), rest) = path.split_first()?;
+        let mut frame = Some(self);
+        let mut value = None;
+        while let Some(current) = frame {
+            if let Some(key) = current.segment_field_key(first, *quoted) {
+                if current.evaluating.borrow().contains(&key) {
+                    return self.resolve_local_segment(rest, span);
+                }
+                match current.eval_field_key(&key, span) {
+                    Ok(found) => value = Some(found),
+                    Err(err) => return Some(Err(err)),
+                }
+                break;
+            }
+            frame = current.parent;
+        }
+        let mut value = value?;
+        for (field, quoted) in rest {
+            match select_value(&value, field, *quoted, span) {
+                Ok(next) => value = next,
+                Err(err) => return Some(Err(err)),
+            }
+        }
+        Some(Ok(value))
+    }
+
+    fn resolve_local_segment(
+        &self,
+        rest: &[(String, bool)],
+        span: Span,
+    ) -> Option<Result<Value, LangError>> {
+        let ((first, quoted), tail) = rest.split_first()?;
+        let key = self.segment_field_key(first, *quoted)?;
+        let mut value = match self.eval_field_key(&key, span) {
+            Ok(value) => value,
+            Err(err) => return Some(Err(err)),
+        };
+        for (field, quoted) in tail {
+            match select_value(&value, field, *quoted, span) {
+                Ok(next) => value = next,
+                Err(err) => return Some(Err(err)),
+            }
+        }
+        Some(Ok(value))
+    }
+
     fn segment_field_key(&self, name: &str, quoted: bool) -> Option<String> {
         if !quoted {
             return self.any_field_key(name);
@@ -1194,6 +1246,14 @@ impl<'a> Frame<'a> {
             return Ok(value.clone());
         }
         if context.evaluating.borrow().contains(&cache_key) {
+            if !context.local.borrow().contains(&cache_key) {
+                context.local.borrow_mut().insert(cache_key.clone());
+                let local = self.params_path_local(path, span);
+                context.local.borrow_mut().remove(&cache_key);
+                if let Some(local) = local {
+                    return local;
+                }
+            }
             return Err(LangError::eval(
                 span.line,
                 span.col,
@@ -1214,12 +1274,12 @@ impl<'a> Frame<'a> {
             for (index, (segment, quoted)) in path.iter().enumerate() {
                 let child = Frame::from_static(&items, Some(root), HashMap::new())?;
                 child.params_scope.set(true);
-                child.expand(&items)?;
                 if index == 0 {
                     for (key, value) in &context.overrides {
                         child.values.borrow_mut().insert(key.clone(), value.clone());
                     }
                 }
+                child.expand(&items)?;
                 for (name, value) in &bindings {
                     let shadowed = child.fields.borrow().contains_key(name)
                         || child.lets.borrow().contains_key(name)
@@ -1757,10 +1817,15 @@ impl<'a> Frame<'a> {
             overrides: self.overrides.borrow().clone(),
             values: RefCell::new(BTreeMap::new()),
             evaluating: RefCell::new(HashSet::new()),
+            local: RefCell::new(HashSet::new()),
         });
         *self.params_context.borrow_mut() = Some(context);
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
         child.params_scope.set(true);
+        let overrides = self.overrides.borrow().clone();
+        for (key, value) in &overrides {
+            child.values.borrow_mut().insert(key.clone(), value.clone());
+        }
         child.expand(items)?;
         let mut materialized_values = BTreeMap::new();
         for name in child.materialized.borrow().iter() {
@@ -1770,10 +1835,11 @@ impl<'a> Frame<'a> {
                 materialized_values.insert(display_field_name(name).to_owned(), value.clone());
             }
         }
-        let overrides = self.overrides.borrow().clone();
-        for (key, value) in &overrides {
-            let known =
-                child.fields.borrow().contains_key(key) || child.values.borrow().contains_key(key);
+        for key in overrides.keys() {
+            let known = child.fields.borrow().contains_key(key)
+                || child.values.borrow().contains_key(key)
+                || child.materialized.borrow().contains(key)
+                || child.generated_optionals.borrow().contains_key(key);
             if !known {
                 return Err(LangError::eval(
                     span.line,
@@ -1781,9 +1847,6 @@ impl<'a> Frame<'a> {
                     format!("unknown parameter `{key}`"),
                 ));
             }
-            // Pre-seed every override so dependent parameters can see each
-            // other regardless of declaration or alphabetical order.
-            child.values.borrow_mut().insert(key.clone(), value.clone());
         }
         for (key, value) in &overrides {
             child.values.borrow_mut().remove(key);
@@ -1895,6 +1958,7 @@ impl<'a> Frame<'a> {
             overrides: self.overrides.borrow().clone(),
             values: RefCell::new(BTreeMap::new()),
             evaluating: RefCell::new(HashSet::new()),
+            local: RefCell::new(HashSet::new()),
         });
         *self.params_context.borrow_mut() = Some(context.clone());
         Some(context)

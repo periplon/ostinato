@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.15
+
+Params comprehensions and override timing.
+
+- Params comprehensions resolve sibling `params.<path>` references locally
+  (including nested groups) while true cycles still error.
+- Parameter overrides are seeded before params comprehensions expand, so
+  `if`/`for` bodies see `-p` values.
+- 240 tests (35 CLI E2E, 1 conformance, 194 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.14
 
 Quoted definition lookups and override constraints.
