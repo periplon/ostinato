@@ -1952,7 +1952,7 @@ impl<'a> Frame<'a> {
                     if let Some(items) = self.params_items(&exprs) {
                         let def = Frame::from_static(&items, Some(params_frame), HashMap::new())?;
                         def.closed.set(true);
-                        for (key, _) in self.overrides.borrow().iter() {
+                        for key in self.overrides.borrow().keys() {
                             if let Some(value) = params_frame.values.borrow().get(key) {
                                 def.values.borrow_mut().insert(key.clone(), value.clone());
                             }
