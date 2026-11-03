@@ -378,7 +378,7 @@ workflow: {name: "p" steps: {a: {kind: "noop"}}}
 fn parameters_can_be_backed_by_a_definition_or_split_struct() {
     let source = r#"
 package demo
-#P: {name: string @tag(name)}
+#P: {name: string @tag(name), ...}
 params: #P & {greeting: "Hello \(name)"}
 workflow: {
     name: "\(params.greeting)"
@@ -3584,4 +3584,120 @@ params: {a: params.a}
 "#;
     let file = ostinato_lang::parse(cycle).expect("parse");
     assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn params_resolution_handles_nested_groups_lets_and_fields() {
+    let nested = r#"
+package demo
+params: {db: {host: string | *"h", url: "http://\(params.db.host)/"}}
+"#;
+    let file = ostinato_lang::parse(nested).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("nested params");
+    assert_eq!(
+        value.to_json().expect("json")["params"]["db"]["url"],
+        "http://h/"
+    );
+
+    let outer_let = r#"
+package demo
+let base = params.host
+params: {host: string | *"h", url: "\(base)/"}
+"#;
+    let file = ostinato_lang::parse(outer_let).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("outer let params");
+    assert_eq!(value.to_json().expect("json")["params"]["url"], "h/");
+
+    let outer_field = r#"
+package demo
+p: params.a
+params: {a: int | *1, b: p}
+"#;
+    let file = ostinato_lang::parse(outer_field).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("outer field params");
+    assert_eq!(value.to_json().expect("json")["params"]["b"], 1);
+
+    let quoted = r#"
+package demo
+params: {"a": 1, b: params.a}
+"#;
+    let file = ostinato_lang::parse(quoted).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("quoted params");
+    assert_eq!(value.to_json().expect("json")["params"]["b"], 1);
+}
+
+#[test]
+fn params_optional_and_shadowing_rules_hold() {
+    let optional = r#"
+package demo
+params: {a?: int | *3, b: params.a}
+"#;
+    let file = ostinato_lang::parse(optional).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let shadow = r#"
+package demo
+params: {params: {a: 1}, a: 2, b: params.a}
+"#;
+    let file = ostinato_lang::parse(shadow).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("shadowed params");
+    assert_eq!(value.to_json().expect("json")["params"]["b"], 1);
+}
+
+#[test]
+fn closed_definitions_stay_closed_through_params() {
+    let closed = r#"
+package demo
+#P: {a: 1}
+params: #P & {c: 2}
+"#;
+    let file = ostinato_lang::parse(closed).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let open = r#"
+package demo
+#P: {a: 1, ...}
+params: #P & {c: 2}
+"#;
+    let file = ostinato_lang::parse(open).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("open params");
+    assert_eq!(value.to_json().expect("json")["params"]["c"], 2);
+}
+
+#[test]
+fn re2_quantifier_grammar_matches_cue() {
+    let valid = r#"
+package demo
+import "regexp"
+a: regexp.Valid("a*?")
+b: regexp.Valid("a{2}?")
+c: regexp.Valid("a{}")
+d: regexp.Valid("a{,3}")
+e: regexp.Valid("a{1001")
+f: regexp.Valid("\\{1001\\}")
+"#;
+    let file = ostinato_lang::parse(valid).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "regexp".to_owned(),
+        ostinato_lang::builtin_module("regexp").expect("regexp"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    for key in ["a", "b", "c", "d", "e", "f"] {
+        assert_eq!(json[key], true, "{key}");
+    }
+
+    for source in [
+        "a: regexp.Valid(\"a**\")",
+        "a: regexp.Valid(\"a++\")",
+        "a: regexp.Valid(\"a???\")",
+        "a: regexp.Valid(\"a{2}{3}\")",
+        "a: regexp.Valid(\"a{2}??\")",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\nimport \"regexp\"\n{source}\n"))
+            .expect("parse");
+        assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
+    }
 }

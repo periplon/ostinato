@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 
 use bigdecimal::{BigDecimal, RoundingMode};
 use serde_json::{Map, Number, Value as Json};
@@ -340,6 +341,7 @@ impl Value {
 pub fn eval_file(file: &File) -> Result<Value, LangError> {
     crate::scope::validate_aliases(&file.items, &[])?;
     let frame = Frame::new(&file.items, None, HashMap::new())?;
+    frame.ensure_params_context();
     frame.to_struct_value()
 }
 
@@ -368,6 +370,7 @@ pub fn eval_file_with_overrides(
             .borrow_mut()
             .insert(key.clone(), value.clone());
     }
+    frame.ensure_params_context();
     frame.expand(&file.items)?;
     frame.to_struct_value()
 }
@@ -413,6 +416,7 @@ pub fn eval_file_with_imports_mode(
             .borrow_mut()
             .insert(key.clone(), value.clone());
     }
+    frame.ensure_params_context();
     frame.expand(&file.items)?;
     frame.to_struct_value_mode(include_definitions)
 }
@@ -433,6 +437,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         evaluating: RefCell::new(HashSet::new()),
         self_rhs: RefCell::new(None),
         params_scope: Cell::new(false),
+        params_context: RefCell::new(None),
     };
     if let Json::Object(map) = context {
         let mut values = BTreeMap::new();
@@ -486,6 +491,14 @@ fn display_field_name(key: &str) -> &str {
     key.strip_prefix(NON_DEFINITION_PREFIX).unwrap_or(key)
 }
 
+#[derive(Debug)]
+struct ParamsContext {
+    items: Vec<StructItem>,
+    overrides: BTreeMap<String, Value>,
+    values: RefCell<BTreeMap<String, Value>>,
+    evaluating: RefCell<HashSet<String>>,
+}
+
 struct Frame<'a> {
     parent: Option<&'a Frame<'a>>,
     vars: RefCell<HashMap<String, Value>>,
@@ -501,6 +514,7 @@ struct Frame<'a> {
     evaluating: RefCell<HashSet<String>>,
     self_rhs: RefCell<Option<String>>,
     params_scope: Cell<bool>,
+    params_context: RefCell<Option<Rc<ParamsContext>>>,
 }
 
 impl<'a> Frame<'a> {
@@ -534,6 +548,9 @@ impl<'a> Frame<'a> {
             evaluating: RefCell::new(HashSet::new()),
             self_rhs: RefCell::new(None),
             params_scope: Cell::new(false),
+            params_context: RefCell::new(
+                parent.and_then(|parent| parent.params_context.borrow().clone()),
+            ),
         };
 
         // Pass 1: static fields and lazy let bindings.
@@ -965,6 +982,197 @@ impl<'a> Frame<'a> {
         self.eval_field_key(&key, span)
     }
 
+    fn root_frame(&self) -> &Frame<'_> {
+        let mut frame = self;
+        while let Some(parent) = frame.parent {
+            frame = parent;
+        }
+        frame
+    }
+
+    fn field_in_progress(&self, name: &str) -> bool {
+        let mut frame = Some(self);
+        while let Some(current) = frame {
+            if current.evaluating.borrow().contains(name) {
+                return true;
+            }
+            frame = current.parent;
+        }
+        false
+    }
+
+    fn params_shadowed(&self) -> bool {
+        let mut frame = Some(self);
+        while let Some(current) = frame {
+            if current.parent.is_some()
+                && (current.fields.borrow().contains_key("params")
+                    || current.lets.borrow().contains_key("params")
+                    || current.aliases.borrow().contains_key("params")
+                    || current.vars.borrow().contains_key("params"))
+            {
+                return true;
+            }
+            if current.params_scope.get() {
+                break;
+            }
+            frame = current.parent;
+        }
+        false
+    }
+
+    fn params_value(&self, field: &str, span: Span) -> Result<Value, LangError> {
+        let Some(context) = self.params_context.borrow().clone() else {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                "params are not being evaluated",
+            ));
+        };
+        if let Some(value) = context.values.borrow().get(field) {
+            return Ok(value.clone());
+        }
+        if context.evaluating.borrow().contains(field) {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("cyclic reference while evaluating `params.{field}`"),
+            ));
+        }
+        context.evaluating.borrow_mut().insert(field.to_owned());
+        let result = (|| {
+            let root = self.root_frame();
+            let child = Frame::from_static(&context.items, Some(root), HashMap::new())?;
+            child.params_scope.set(true);
+            for (key, value) in &context.overrides {
+                child.values.borrow_mut().insert(key.clone(), value.clone());
+            }
+            let optional = child
+                .fields
+                .borrow()
+                .get(field)
+                .is_some_and(|definition| definition.optional);
+            let overridden = context.overrides.contains_key(field);
+            if optional
+                && !overridden
+                && !child.materialized.borrow().contains(field)
+                && !child.values.borrow().contains_key(field)
+            {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("cannot reference optional field `{field}`"),
+                ));
+            }
+            let key = child
+                .regular_field_key(field)
+                .unwrap_or_else(|| field.to_owned());
+            if let Some(override_value) = context.overrides.get(field) {
+                child.values.borrow_mut().remove(field);
+                let exprs = child
+                    .fields
+                    .borrow()
+                    .get(field)
+                    .map(|definition| definition.exprs.clone())
+                    .unwrap_or_default();
+                let mut result: Option<Value> = None;
+                for expr in &exprs {
+                    let candidate = eval_with_override(expr, &child, override_value, span)?;
+                    result = Some(match result {
+                        None => candidate,
+                        Some(current) => unify_values(&current, &candidate, span)?,
+                    });
+                }
+                result.ok_or_else(|| {
+                    LangError::eval(span.line, span.col, format!("unknown parameter `{field}`"))
+                })
+            } else {
+                child.eval_field_key(&key, span)
+            }
+        })();
+        context.evaluating.borrow_mut().remove(field);
+        let value = result?;
+        context
+            .values
+            .borrow_mut()
+            .insert(field.to_owned(), value.clone());
+        Ok(value)
+    }
+
+    fn check_params_closedness(&self, exprs: &[Expr], span: Span) -> Result<(), LangError> {
+        let mut closed: Vec<(BTreeSet<String>, Vec<Pattern>)> = Vec::new();
+        let mut labels: Vec<String> = Vec::new();
+        fn walk(
+            frame: &Frame<'_>,
+            expr: &Expr,
+            closed: &mut Vec<(BTreeSet<String>, Vec<Pattern>)>,
+            labels: &mut Vec<String>,
+            seen: &mut HashSet<String>,
+        ) -> Result<(), LangError> {
+            match expr {
+                Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+                    walk(frame, inner, closed, labels, seen)?;
+                }
+                Expr::Unify(left, right, _) => {
+                    walk(frame, left, closed, labels, seen)?;
+                    walk(frame, right, closed, labels, seen)?;
+                }
+                Expr::Struct(items, _) => {
+                    for item in items {
+                        if let StructItem::Field(field) = item
+                            && let crate::ast::Label::Name(name, _) = &field.label
+                        {
+                            labels.push(name.clone());
+                        }
+                    }
+                }
+                Expr::Ident(name, _) if name != "params" && seen.insert(name.clone()) => {
+                    if let Ok(Value::Definition {
+                        fields,
+                        optional,
+                        definitions,
+                        patterns,
+                        closed: true,
+                        ..
+                    }) = frame.eval_field(name, Span::default())
+                    {
+                        let mut names: BTreeSet<String> = fields.keys().cloned().collect();
+                        names.extend(optional.keys().cloned());
+                        names.extend(definitions.keys().cloned());
+                        closed.push((names, patterns.iter().map(|(p, _)| p.clone()).collect()));
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        let mut seen = HashSet::new();
+        for expr in exprs {
+            walk(self, expr, &mut closed, &mut labels, &mut seen)?;
+        }
+        for (names, patterns) in &closed {
+            for label in &labels {
+                if names.contains(label) {
+                    continue;
+                }
+                let mut allowed = false;
+                for pattern in patterns {
+                    if pattern_matches(pattern, label, span)? {
+                        allowed = true;
+                        break;
+                    }
+                }
+                if !allowed {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!("field `{label}` is not allowed by the closed definition"),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn eval_field_key(&self, key: &str, span: Span) -> Result<Value, LangError> {
         let name = display_field_name(key);
         if let Some(value) = self.values.borrow().get(key) {
@@ -989,6 +1197,7 @@ impl<'a> Frame<'a> {
             (def.exprs.clone(), def.definition)
         };
         if name == "params" {
+            self.check_params_closedness(&exprs, span)?;
             let items = self.params_items(&exprs);
             if items.is_some() || !self.overrides.borrow().is_empty() {
                 if self.evaluating.borrow().contains(key) {
@@ -1298,6 +1507,13 @@ impl<'a> Frame<'a> {
     }
 
     fn eval_params_struct(&self, items: &[StructItem], span: Span) -> Result<Value, LangError> {
+        let context = Rc::new(ParamsContext {
+            items: items.to_vec(),
+            overrides: self.overrides.borrow().clone(),
+            values: RefCell::new(BTreeMap::new()),
+            evaluating: RefCell::new(HashSet::new()),
+        });
+        *self.params_context.borrow_mut() = Some(context);
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
         child.params_scope.set(true);
         child.expand(items)?;
@@ -1371,6 +1587,22 @@ impl<'a> Frame<'a> {
             .borrow_mut()
             .insert(name.to_owned(), value.clone());
         Ok(value)
+    }
+
+    fn ensure_params_context(&self) -> Option<Rc<ParamsContext>> {
+        if let Some(context) = self.params_context.borrow().clone() {
+            return Some(context);
+        }
+        let exprs = self.fields.borrow().get("params")?.exprs.clone();
+        let items = self.params_items(&exprs)?;
+        let context = Rc::new(ParamsContext {
+            items,
+            overrides: self.overrides.borrow().clone(),
+            values: RefCell::new(BTreeMap::new()),
+            evaluating: RefCell::new(HashSet::new()),
+        });
+        *self.params_context.borrow_mut() = Some(context.clone());
+        Some(context)
     }
 
     fn to_struct_value(&self) -> Result<Value, LangError> {
@@ -1453,6 +1685,22 @@ impl<'a> Frame<'a> {
     }
 }
 
+fn params_select_path(expr: &Expr) -> Option<(String, Vec<String>)> {
+    match expr {
+        Expr::Ident(name, _) if name == "params" => Some((String::new(), Vec::new())),
+        Expr::Select(base, field, _) => {
+            let (first, mut rest) = params_select_path(base)?;
+            if first.is_empty() {
+                Some((field.clone(), Vec::new()))
+            } else {
+                rest.push(field.clone());
+                Some((first, rest))
+            }
+        }
+        _ => None,
+    }
+}
+
 fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
     match expr {
         Expr::Null(_) => Ok(Value::Null),
@@ -1499,10 +1747,51 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         Expr::Select(base, field, span) => {
             if let Expr::Ident(name, _) = &**base
                 && name == "params"
-                && frame.params_scope.get()
-                && frame.fields.borrow().contains_key(field)
+                && frame.params_context.borrow().is_some()
+                && !frame.params_shadowed()
             {
-                return frame.eval_field(field, *span);
+                return frame.params_value(field, *span);
+            }
+            if let Some((first, rest)) = params_select_path(expr)
+                && !first.is_empty()
+                && frame.params_context.borrow().is_some()
+                && !frame.params_shadowed()
+                && frame.field_in_progress(&first)
+                && !rest.is_empty()
+            {
+                let Some(first_field) = rest.first() else {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        "cyclic params selection",
+                    ));
+                };
+                let mut value = if frame.fields.borrow().contains_key(first_field) {
+                    frame.eval_field(first_field, *span)?
+                } else {
+                    frame.lookup(first_field, *span)?
+                };
+                for field in rest.iter().skip(1) {
+                    value = match value.concretize() {
+                        Value::Struct(map) | Value::Definition { fields: map, .. } => {
+                            map.get(field).cloned().ok_or_else(|| {
+                                LangError::eval(
+                                    span.line,
+                                    span.col,
+                                    format!("field `{field}` not found in struct"),
+                                )
+                            })?
+                        }
+                        other => {
+                            return Err(LangError::eval(
+                                span.line,
+                                span.col,
+                                format!("cannot select `{field}` from {}", other.type_name()),
+                            ));
+                        }
+                    };
+                }
+                return Ok(value);
             }
             let base = eval_expr(base, frame)?.concretize().clone();
             match base {
@@ -2658,7 +2947,161 @@ fn regex_arg(arguments: &[Value], index: usize, span: Span) -> Result<&str, Lang
     }
 }
 
+fn quantifier_end(chars: &[char], start: usize) -> Option<usize> {
+    if chars.get(start) != Some(&'{') {
+        return None;
+    }
+    let mut index = start + 1;
+    let digits_start = index;
+    while index < chars.len() && chars[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index == digits_start {
+        return None;
+    }
+    if chars.get(index) == Some(&',') {
+        index += 1;
+        while index < chars.len() && chars[index].is_ascii_digit() {
+            index += 1;
+        }
+    }
+    if chars.get(index) == Some(&'}') {
+        Some(index)
+    } else {
+        None
+    }
+}
+
+fn escape_invalid_braces(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::with_capacity(pattern.len());
+    let mut index = 0usize;
+    let mut in_class = false;
+    while index < chars.len() {
+        let character = chars[index];
+        match character {
+            '\\' => {
+                out.push(character);
+                index += 1;
+                if let Some(next) = chars.get(index) {
+                    out.push(*next);
+                    index += 1;
+                }
+            }
+            '[' if !in_class => {
+                in_class = true;
+                out.push(character);
+                index += 1;
+            }
+            ']' if in_class => {
+                in_class = false;
+                out.push(character);
+                index += 1;
+            }
+            '{' if !in_class => {
+                if let Some(end) = quantifier_end(&chars, index) {
+                    for value in &chars[index..=end] {
+                        out.push(*value);
+                    }
+                    index = end + 1;
+                } else {
+                    out.push('\\');
+                    out.push('{');
+                    index += 1;
+                }
+            }
+            '}' if !in_class => {
+                out.push('\\');
+                out.push('}');
+                index += 1;
+            }
+            _ => {
+                out.push(character);
+                index += 1;
+            }
+        }
+    }
+    out
+}
+
+fn validate_quantifiers(pattern: &str) -> Result<(), String> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut index = 0usize;
+    let mut in_class = false;
+    let mut last_quantifier = false;
+    let mut lazy_used = false;
+    while index < chars.len() {
+        let character = chars[index];
+        match character {
+            '\\' => {
+                if chars.get(index + 1) == Some(&'Q') {
+                    index += 2;
+                    while index < chars.len() {
+                        if chars[index] == '\\' && chars.get(index + 1) == Some(&'E') {
+                            index += 2;
+                            break;
+                        }
+                        index += 1;
+                    }
+                } else {
+                    index += 2;
+                }
+                last_quantifier = false;
+                lazy_used = false;
+                continue;
+            }
+            '[' if !in_class => {
+                in_class = true;
+                index += 1;
+                last_quantifier = false;
+                lazy_used = false;
+                continue;
+            }
+            ']' if in_class => {
+                in_class = false;
+                index += 1;
+                last_quantifier = false;
+                lazy_used = false;
+                continue;
+            }
+            '*' | '+' | '?' if !in_class => {
+                if last_quantifier {
+                    if character == '?' && !lazy_used {
+                        lazy_used = true;
+                    } else {
+                        return Err("invalid nested repetition operator".to_owned());
+                    }
+                } else {
+                    last_quantifier = true;
+                    lazy_used = false;
+                }
+                index += 1;
+                continue;
+            }
+            '{' if !in_class => {
+                if let Some(end) = quantifier_end(&chars, index) {
+                    if last_quantifier {
+                        return Err("invalid nested repetition operator".to_owned());
+                    }
+                    last_quantifier = true;
+                    lazy_used = false;
+                    index = end + 1;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        last_quantifier = false;
+        lazy_used = false;
+        index += 1;
+    }
+    Ok(())
+}
+
 fn translate_re2_pattern(pattern: &str) -> Result<String, String> {
+    let escaped = escape_invalid_braces(pattern);
+    let pattern = escaped.as_str();
+    validate_quantifiers(pattern)?;
     let mut out = String::with_capacity(pattern.len());
     let mut chars = pattern.chars().peekable();
     let mut in_class = false;
