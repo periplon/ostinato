@@ -5006,6 +5006,11 @@ i: time.Split("2024-03-05T06:07:08.12Z")
 j: time.FormatDuration(3723000500000)
 k: time.Second
 l: time.FormatString("15:04 -07:00", "2024-03-05T06:07:08+24:00")
+m: time.ParseDuration("0." + ("9"*100) + "s")
+n: time.Parse(".999.", ".")
+o: time.Parse("15:04:05.", "12:30:00.")
+p: time.ParseDuration("0.999999999999999999s")
+q: time.ParseDuration("0.99999999999999999s")
 "#;
     let file = ostinato_lang::parse(source).expect("parse");
     let mut imports = BTreeMap::new();
@@ -5028,6 +5033,11 @@ l: time.FormatString("15:04 -07:00", "2024-03-05T06:07:08+24:00")
     assert_eq!(json["j"], "1h2m3.0005s");
     assert_eq!(json["k"], 1_000_000_000i64);
     assert_eq!(json["l"], "06:07 +24:00");
+    assert_eq!(json["m"], 1_000_000_000i64);
+    assert_eq!(json["n"], "0000-01-01T00:00:00Z");
+    assert_eq!(json["o"], "0000-01-01T12:30:00Z");
+    assert_eq!(json["p"], 1_000_000_000i64);
+    assert_eq!(json["q"], 1_000_000_000i64);
 
     let fractions = r#"
 package demo
@@ -5065,4 +5075,26 @@ b: time.Parse("2006-01-02T15:04:05.999Z07:00", "2024-03-05T06:07:08.1234567891Z"
             "invalid time input must fail: {source}"
         );
     }
+}
+
+#[test]
+fn string_and_bytes_repetition_match_cue() {
+    let source = r#"
+package demo
+a: "ab" * 3
+b: 2 * "xy"
+c: "z" * 0
+d: 'ab' * 2
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("repeat");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], "ababab");
+    assert_eq!(json["b"], "xyxy");
+    assert_eq!(json["c"], "");
+    assert_eq!(json["d"], "YWJhYg==");
+
+    let negative = "package demo\na: \"x\" * -1\n";
+    let file = ostinato_lang::parse(negative).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
 }

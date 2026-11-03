@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.10.5
+
+- Go-compatible duration rounding at all fraction lengths, literal fraction
+  separators and string/bytes repetition.
+- 275 tests (48 CLI E2E, 1 conformance, 213 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.4
 
 - Year-day field validation, short-token lowercase guard, `_2006`, optional

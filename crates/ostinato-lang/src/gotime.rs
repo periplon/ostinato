@@ -269,6 +269,14 @@ fn fraction_nanos(digits: &str, used: usize) -> Option<u32> {
     Some(nanos)
 }
 
+fn fraction_digit_follows(input: &str) -> bool {
+    let mut characters = input.chars();
+    matches!(characters.next(), Some('.' | ','))
+        && characters
+            .next()
+            .is_some_and(|value| value.is_ascii_digit())
+}
+
 fn parse_fraction(input: &str, digits: usize, trim: bool) -> Option<(u32, &str)> {
     let rest = input.strip_prefix(['.', ','])?;
     let count = rest.chars().take_while(char::is_ascii_digit).count();
@@ -531,7 +539,7 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
                 let (value, next) = take_number(rest, if fixed { 2 } else { 1 }, 2)?;
                 second = value;
                 rest = next;
-                let fraction_follows = rest.starts_with(['.', ',']);
+                let fraction_follows = fraction_digit_follows(rest);
                 let next_is_fraction = matches!(items.get(index + 1), Some(Item::Fraction { .. }));
                 if fraction_follows && !next_is_fraction {
                     let (value, next) = parse_nanoseconds(rest)?;
@@ -540,7 +548,7 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
                 }
             }
             Item::Fraction { digits, trim, .. } => {
-                if rest.starts_with(['.', ',']) {
+                if fraction_digit_follows(rest) {
                     let (value, next) = parse_fraction(rest, *digits, *trim)?;
                     nanos = value;
                     rest = next;

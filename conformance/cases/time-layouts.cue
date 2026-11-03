@@ -45,6 +45,9 @@ params: {
 	trailing_space:      time.Parse("2006-01-02 ", "2024-03-05")
 	utc_shortcut:        time.Parse("MSTX", "UTCX")
 	duration_round:      time.ParseDuration("1.999999999999999999999s")
+	duration_long:       time.ParseDuration("0." + ("9"*100) + "s")
+	fraction_literal:    time.Parse(".999.", ".")
+	seconds_literal:     time.Parse("15:04:05.", "12:30:00.")
 }
 
 workflow: {

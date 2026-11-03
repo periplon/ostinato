@@ -4340,6 +4340,32 @@ fn time_arg(arguments: &[Value], index: usize, span: Span) -> Result<&str, LangE
     }
 }
 
+fn leading_fraction(input: &str) -> (u64, f64) {
+    let mut value = 0u64;
+    let mut scale = 1f64;
+    let mut overflow = false;
+    for byte in input.bytes() {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        if overflow {
+            continue;
+        }
+        if value > ((1u64 << 63) - 1) / 10 {
+            overflow = true;
+            continue;
+        }
+        let next = value * 10 + u64::from(byte - b'0');
+        if next > 1u64 << 63 {
+            overflow = true;
+            continue;
+        }
+        value = next;
+        scale *= 10.0;
+    }
+    (value, scale)
+}
+
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 fn parse_duration_nanos(text: &str) -> Option<i64> {
     if text == "0" || text == "+0" || text == "-0" {
@@ -4362,17 +4388,14 @@ fn parse_duration_nanos(text: &str) -> Option<i64> {
             rest[..integer_len].parse().ok()?
         };
         rest = &rest[integer_len..];
-        let mut fraction: i128 = 0;
-        let mut fraction_digits = 0u32;
+        let mut fraction = 0u64;
+        let mut fraction_scale = 1f64;
         if let Some(after) = rest.strip_prefix('.') {
             let digit_len = after.chars().take_while(char::is_ascii_digit).count();
             if integer_len == 0 && digit_len == 0 {
                 return None;
             }
-            if digit_len > 0 {
-                fraction = after[..digit_len].parse().ok()?;
-                fraction_digits = u32::try_from(digit_len).ok()?;
-            }
+            (fraction, fraction_scale) = leading_fraction(after);
             rest = &after[digit_len..];
         } else if integer_len == 0 {
             return None;
@@ -4392,14 +4415,9 @@ fn parse_duration_nanos(text: &str) -> Option<i64> {
         .copied()?;
         rest = &rest[unit.len()..];
         let mut value = integer.checked_mul(scale)?;
-        if fraction_digits > 0 {
-            if fraction_digits > 18 {
-                let ratio = fraction as f64 / 10f64.powi(i32::try_from(fraction_digits).ok()?);
-                value = value.checked_add((ratio * scale as f64) as i128)?;
-            } else {
-                let divisor = 10i128.checked_pow(fraction_digits)?;
-                value = value.checked_add(fraction.checked_mul(scale)?.checked_div(divisor)?)?;
-            }
+        if fraction > 0 {
+            value =
+                value.checked_add((fraction as f64 * (scale as f64 / fraction_scale)) as i128)?;
         }
         total = total.checked_add(value)?;
     }
@@ -4835,7 +4853,15 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
             _ => type_error("add", left, right, span),
         },
         BinOp::Sub => numeric(op, left, right, span, |a, b| a - b, |a, b| a - b),
-        BinOp::Mul => numeric(op, left, right, span, |a, b| a * b, |a, b| a * b),
+        BinOp::Mul => {
+            match (left, right) {
+                (Value::String(text), Value::Int(count))
+                | (Value::Int(count), Value::String(text)) => repeat_string(text, *count, span),
+                (Value::Bytes(bytes), Value::Int(count))
+                | (Value::Int(count), Value::Bytes(bytes)) => repeat_bytes(bytes, *count, span),
+                _ => numeric(op, left, right, span, |a, b| a * b, |a, b| a * b),
+            }
+        }
         BinOp::Div => {
             let zero = matches!(right, Value::Int(0))
                 || matches!(right, Value::Float(value) if value == &BigDecimal::from(0));
@@ -4877,6 +4903,49 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
             _ => left.truthy() || right.truthy(),
         })),
     }
+}
+
+const MAX_REPEAT_BYTES: usize = 64 * 1024 * 1024;
+
+fn repeat_count(count: i64, span: Span) -> Result<usize, LangError> {
+    usize::try_from(count).map_err(|_| {
+        LangError::conflict(
+            span.line,
+            span.col,
+            "cannot convert negative number to uint64",
+        )
+    })
+}
+
+fn repeat_string(text: &str, count: i64, span: Span) -> Result<Value, LangError> {
+    let count = repeat_count(count, span)?;
+    let length = text.len().checked_mul(count).ok_or_else(|| {
+        LangError::conflict(span.line, span.col, "string repetition is too large")
+    })?;
+    if length > MAX_REPEAT_BYTES {
+        return Err(LangError::conflict(
+            span.line,
+            span.col,
+            "string repetition is too large",
+        ));
+    }
+    Ok(Value::String(text.repeat(count)))
+}
+
+fn repeat_bytes(bytes: &[u8], count: i64, span: Span) -> Result<Value, LangError> {
+    let count = repeat_count(count, span)?;
+    let length = bytes
+        .len()
+        .checked_mul(count)
+        .ok_or_else(|| LangError::conflict(span.line, span.col, "bytes repetition is too large"))?;
+    if length > MAX_REPEAT_BYTES {
+        return Err(LangError::conflict(
+            span.line,
+            span.col,
+            "bytes repetition is too large",
+        ));
+    }
+    Ok(Value::Bytes(bytes.repeat(count)))
 }
 
 fn numeric(

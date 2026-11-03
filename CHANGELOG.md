@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.10.5
+
+Duration rounding, literal fraction separators and string repetition.
+
+- `time.ParseDuration` mirrors Go's `leadingFraction`/`float64` rounding for
+  every fraction length (16/17/18/21/39/100-digit cases), instead of only very
+  long fractions.
+- Trimmed fractional layouts treat a separator not followed by a digit as an
+  omitted fraction, so literal `.`/`,` remain valid (`.999.`, `15:04:05.`).
+- String and bytes multiplication (`"ab" * 3`, `2 * "xy"`, `'ab' * 2`) is
+  implemented; negative counts error like CUE.
+- 275 tests (48 CLI E2E, 1 conformance, 213 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.4
 
 Time layout fidelity follow-up.
