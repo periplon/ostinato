@@ -65,6 +65,8 @@ pub struct Attribute {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
+    /// Stable identity assigned by the package loader.
+    pub id: usize,
     pub label: Label,
     pub value: Expr,
     pub optional: bool,

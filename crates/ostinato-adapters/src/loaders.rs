@@ -4,7 +4,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use ostinato_application::{LoadRequest, LoadedWorkflow, PortError, PortResult, SpecLoader};
-use ostinato_lang::ast::{Expr, Field, Label, Span, StructItem};
+use ostinato_lang::ast::{Expr, Span, StructItem};
 use ostinato_lang::{
     Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode, parse,
     rename_file_locals,
@@ -104,6 +104,7 @@ fn evaluate_path(
         imports.insert(import.alias.clone(), value);
     }
 
+    ostinato_lang::assign_field_ids(&mut combined);
     let tags = ostinato_lang::parameter_tags(&combined)?;
     let mut injected = BTreeMap::new();
     for (key, raw) in overrides {
@@ -111,12 +112,7 @@ fn evaluate_path(
             for info in infos {
                 let value = parse_override_value(raw, Some(info.ty))?;
                 let expr = override_expr(value)?;
-                let injected_tag = if let Some(origin) = info.origin.as_deref() {
-                    inject_tag(&mut combined.items, Some(origin), &info.origin_path, &expr)
-                } else {
-                    inject_tag(&mut combined.items, None, &info.path, &expr)
-                };
-                if !injected_tag {
+                if !inject_field(&mut combined.items, info.field_id, &expr) {
                     return Err(ostinato_lang::LangError::Workflow(format!(
                         "cannot inject @tag `{key}`: declaration not found"
                     )));
@@ -550,115 +546,109 @@ fn override_expr(value: Value) -> Result<Expr, ostinato_lang::LangError> {
     ostinato_lang::parse_expr_fragment(&text)
 }
 
-fn inject_tag(
-    items: &mut [StructItem],
-    origin: Option<&str>,
-    path: &[ostinato_lang::TagSegment],
-    value: &Expr,
-) -> bool {
-    if let Some(origin) = origin {
-        return inject_declaration(items, origin, path, value);
-    }
-    let mut matched = false;
-    for item in items {
-        let StructItem::Field(field) = item else {
-            continue;
-        };
-        if matches!(&field.label, Label::Name(name, _) if name == "params") {
-            matched |= inject_expr(&mut field.value, path, value);
-        }
-    }
-    matched
-}
-
-fn inject_declaration(
-    items: &mut [StructItem],
-    origin: &str,
-    path: &[ostinato_lang::TagSegment],
-    value: &Expr,
-) -> bool {
-    let mut matched = false;
+fn inject_field(items: &mut [StructItem], id: usize, value: &Expr) -> bool {
+    let span = Span::default();
     for item in items {
         match item {
             StructItem::Field(field) => {
-                let label_matches = matches!(&field.label, Label::Name(name, _) if name == origin)
-                    || field.alias.as_deref() == Some(origin);
-                if label_matches {
-                    matched |= inject_expr(&mut field.value, path, value);
-                }
-                matched |= inject_declaration_expr(&mut field.value, origin, path, value);
-            }
-            StructItem::Let {
-                name,
-                value: let_value,
-                ..
-            } => {
-                if name == origin {
-                    matched |= inject_expr(let_value, path, value);
-                }
-                matched |= inject_declaration_expr(let_value, origin, path, value);
-            }
-            _ => {}
-        }
-    }
-    matched
-}
-
-fn inject_declaration_expr(
-    expr: &mut Expr,
-    origin: &str,
-    path: &[ostinato_lang::TagSegment],
-    value: &Expr,
-) -> bool {
-    match expr {
-        Expr::Struct(items, _) => inject_declaration(items, origin, path, value),
-        Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-            inject_declaration_expr(inner, origin, path, value)
-        }
-        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            inject_declaration_expr(left, origin, path, value)
-                || inject_declaration_expr(right, origin, path, value)
-        }
-        _ => false,
-    }
-}
-
-fn segment_matches(field: &Field, segment: &ostinato_lang::TagSegment) -> bool {
-    matches!(&field.label, Label::Name(name, _) if name == &segment.name)
-        && field.quoted == segment.quoted
-        && field.definition == segment.definition
-}
-
-fn inject_expr(expr: &mut Expr, path: &[ostinato_lang::TagSegment], value: &Expr) -> bool {
-    let span = Span::default();
-    if path.is_empty() {
-        *expr = Expr::Unify(Box::new(expr.clone()), Box::new(value.clone()), span);
-        return true;
-    }
-    match expr {
-        Expr::Struct(items, _) => {
-            for item in items {
-                let StructItem::Field(field) = item else {
-                    continue;
-                };
-                if !segment_matches(field, &path[0]) {
-                    continue;
-                }
-                if path.len() == 1 {
+                if field.id == id {
                     let old = field.value.clone();
                     field.value = Expr::Unify(Box::new(old), Box::new(value.clone()), span);
-                } else {
-                    inject_expr(&mut field.value, &path[1..], value);
+                    return true;
                 }
-                return true;
+                if inject_field_expr(&mut field.value, id, value) {
+                    return true;
+                }
             }
-            false
+            StructItem::Let {
+                value: let_value, ..
+            }
+            | StructItem::Pattern {
+                value: let_value, ..
+            } => {
+                if inject_field_expr(let_value, id, value) {
+                    return true;
+                }
+            }
+            StructItem::For { source, body, .. } => {
+                if inject_field_expr(source, id, value) {
+                    return true;
+                }
+                if inject_field(body, id, value) {
+                    return true;
+                }
+            }
+            StructItem::If { cond, body, .. } => {
+                if inject_field_expr(cond, id, value) {
+                    return true;
+                }
+                if inject_field(body, id, value) {
+                    return true;
+                }
+            }
+            StructItem::Ellipsis(_) => {}
         }
-        Expr::Paren(inner, _) | Expr::Default(inner, _) => inject_expr(inner, path, value),
-        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            inject_expr(left, path, value) || inject_expr(right, path, value)
+    }
+    false
+}
+
+fn inject_field_expr(expr: &mut Expr, id: usize, value: &Expr) -> bool {
+    match expr {
+        Expr::Struct(items, _) => inject_field(items, id, value),
+        Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Bound(_, inner, _)
+        | Expr::Unary(_, inner, _) => inject_field_expr(inner, id, value),
+        Expr::Index(base, index, _) => {
+            inject_field_expr(base, id, value) || inject_field_expr(index, id, value)
         }
-        _ => false,
+        Expr::Call(callee, arguments, _) => {
+            inject_field_expr(callee, id, value)
+                || arguments
+                    .iter_mut()
+                    .any(|argument| inject_field_expr(argument, id, value))
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => items
+            .iter_mut()
+            .any(|item| inject_field_expr(item, id, value)),
+        Expr::OpenList(Some(inner), _) => inject_field_expr(inner, id, value),
+        Expr::ListComp { clauses, body, .. } => {
+            for clause in clauses {
+                match clause {
+                    ostinato_lang::ast::CompClause::For { source, .. } => {
+                        if inject_field_expr(source, id, value) {
+                            return true;
+                        }
+                    }
+                    ostinato_lang::ast::CompClause::If { cond, .. } => {
+                        if inject_field_expr(cond, id, value) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            inject_field_expr(body, id, value)
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            inject_field_expr(left, id, value) || inject_field_expr(right, id, value)
+        }
+        Expr::Str(parts, _) => parts.iter_mut().any(|part| {
+            if let ostinato_lang::ast::StrPart::Interp(inner) = part {
+                inject_field_expr(inner, id, value)
+            } else {
+                false
+            }
+        }),
+        Expr::Null(_)
+        | Expr::Bool(_, _)
+        | Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Bytes(_, _)
+        | Expr::Ident(_, _)
+        | Expr::Select(_, _, _, _)
+        | Expr::OpenList(None, _) => false,
     }
 }
 

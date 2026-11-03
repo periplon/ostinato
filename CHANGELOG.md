@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.5
+
+Stable tag identities.
+
+- Every AST field receives a package-unique id; tag injection mutates exactly
+  the declaring field, so shadowed definitions/lets are not overwritten.
+- Tag discovery resolves selector/index-backed params (`params: config.database`)
+  and injects the exact disjunction branch, leaving untagged defaults alone.
+- 258 tests (42 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.4
 
 Leaf `@tag` injection.
