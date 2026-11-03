@@ -1208,3 +1208,31 @@ workflow: {name: "p", steps: {a: {kind: "noop"}}}
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("must be a struct"));
 }
+
+#[test]
+fn quoted_labels_do_not_leak_evaluator_state_to_stderr() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("quoted.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+a: {"len": 1, b: len("ab")}
+workflow: {name: "n", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let db = db.to_str().expect("utf8 db");
+    let workflow = workflow.to_str().expect("utf8 workflow");
+    let output = ost(&["--db", db, "validate", workflow]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
