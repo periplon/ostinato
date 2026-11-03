@@ -1209,39 +1209,29 @@ impl<'a> Frame<'a> {
         path: &[(String, bool)],
         span: Span,
     ) -> Option<Result<Value, LangError>> {
-        let mut prefix = Vec::new();
-        let mut prefix_frame = self;
-        let mut cursor = Some(self);
-        while let Some(current) = cursor {
-            let current_prefix = current.params_prefix.borrow().clone();
-            if !current_prefix.is_empty() {
-                prefix = current_prefix;
-                prefix_frame = current;
-                break;
-            }
-            cursor = current.parent;
-        }
-        if !prefix.is_empty() {
-            let matches_prefix = path.len() > prefix.len()
-                && path[..prefix.len()]
-                    .iter()
-                    .map(|(segment, _)| segment.as_str())
-                    .eq(prefix.iter().map(String::as_str));
-            if !matches_prefix {
-                return None;
-            }
-            let suffix = &path[prefix.len()..];
-            if let Some(result) = prefix_frame.resolve_local_segment(suffix, span) {
-                return Some(result);
-            }
-            if suffix.len() > 1 {
-                return self.resolve_local_segment(&suffix[1..], span);
-            }
-        }
         let ((first, quoted), rest) = path.split_first()?;
         let mut frame = Some(self);
         let mut value = None;
         while let Some(current) = frame {
+            let current_prefix = current.params_prefix.borrow().clone();
+            if !current_prefix.is_empty() {
+                let matches_prefix = path.len() > current_prefix.len()
+                    && path[..current_prefix.len()]
+                        .iter()
+                        .map(|(segment, _)| segment.as_str())
+                        .eq(current_prefix.iter().map(String::as_str));
+                if matches_prefix {
+                    let suffix = &path[current_prefix.len()..];
+                    if let Some(result) = current.resolve_local_segment(suffix, span) {
+                        return Some(result);
+                    }
+                    if suffix.len() > 1 {
+                        return self.resolve_local_segment(&suffix[1..], span);
+                    }
+                }
+                frame = current.parent;
+                continue;
+            }
             if let Some(key) = current.segment_field_key(first, *quoted) {
                 if current.evaluating.borrow().contains(&key) {
                     return self.resolve_local_segment(rest, span);
@@ -1266,6 +1256,9 @@ impl<'a> Frame<'a> {
             frame = current.parent;
         }
         let Some(mut value) = value else {
+            if !self.params_prefix.borrow().is_empty() {
+                return None;
+            }
             return self.resolve_local_segment(path, span);
         };
         for (field, quoted) in rest {
