@@ -1076,6 +1076,22 @@ impl<'a> Frame<'a> {
         Ok(())
     }
 
+    fn generated_optional_key(&self, field: &str, quoted: bool) -> Option<String> {
+        let optionals = self.generated_optionals.borrow();
+        if quoted {
+            if field.starts_with([HIDDEN_PREFIX, ESCAPED_PREFIX, NON_DEFINITION_PREFIX]) {
+                let key = escaped_field(field);
+                return optionals.contains_key(&key).then_some(key);
+            }
+            if optionals.contains_key(field) {
+                return Some(field.to_owned());
+            }
+            let key = escaped_field(field);
+            return optionals.contains_key(&key).then_some(key);
+        }
+        Frame::map_identifier_key(&optionals, field).cloned()
+    }
+
     fn display_storage_key(&self, key: &str) -> Option<String> {
         if is_hidden_key(key) {
             return self
@@ -1929,11 +1945,7 @@ impl<'a> Frame<'a> {
         closed_by_default: bool,
     ) -> Result<Value, LangError> {
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
-        *child.definition_context.borrow_mut() = self
-            .next_definition
-            .borrow()
-            .clone()
-            .or_else(|| self.definition_context.borrow().clone());
+        *child.definition_context.borrow_mut() = self.next_definition.borrow().clone();
         if let Some(segment) = self.params_segment.borrow().clone() {
             let mut prefix = self.nearest_params_prefix();
             prefix.push(segment);
@@ -2440,22 +2452,35 @@ fn self_definition_select(
             // identifier/selector path resolve it.
             return Ok(None);
         }
-        if current.definition_context.borrow().as_deref() == Some(name.as_str())
-            && let Some(key) = current.segment_field_key(field, quoted)
-        {
-            let optional = current
-                .fields
-                .borrow()
-                .get(&key)
-                .is_some_and(|definition| definition.optional);
-            if optional {
+        if current.definition_context.borrow().as_deref() == Some(name.as_str()) {
+            if let Some(key) = current.segment_field_key(field, quoted) {
+                let optional = current
+                    .fields
+                    .borrow()
+                    .get(&key)
+                    .is_some_and(|definition| definition.optional);
+                if optional {
+                    return Err(LangError::eval(
+                        span.line,
+                        span.col,
+                        format!("cannot reference optional field `{field}`"),
+                    ));
+                }
+                return current.eval_field_key(&key, span).map(Some);
+            }
+            if let Some(key) = current.generated_optional_key(field, quoted) {
+                let _ = key;
                 return Err(LangError::eval(
                     span.line,
                     span.col,
                     format!("cannot reference optional field `{field}`"),
                 ));
             }
-            return current.eval_field_key(&key, span).map(Some);
+            if let Some(key) = current.generated_value_key(field, quoted)
+                && let Some(value) = current.values.borrow().get(&key).cloned()
+            {
+                return Ok(Some(value));
+            }
         }
         candidate = current.parent;
     }

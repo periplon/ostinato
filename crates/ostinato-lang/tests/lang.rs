@@ -5858,6 +5858,11 @@ package demo
 base: {b: 1}
 #FromBase: base & {a: #FromBase.b}
 #Outer: {#Inner: {a: #Outer.b}, b: 1, x: #Inner.a}
+#G: {if true {b: 1}, a: #G.b}
+#G2: {for k, v in {b: 2} {"\(k)": v}, a: #G2.b}
+#G3: {for i, v in [{b: 3}] {"x": v.b}, a: #G3.x}
+#G4: {if true {_b: 1}, a: #G4._b}
+#GS: {for k, v in {b: 9, y: #GS.b} {"out-\(k)": v}, b: 1}
 regular: {a: regular.b, b: 1}
 regular_deep: {inner: {a: regular_deep.b}, b: 1}
 #Shadow: {#Shadow: {b: 9}, a: #Shadow.b, b: 1}
@@ -5874,6 +5879,12 @@ composed: #Composed
 from_base: #FromBase
 outer: #Outer
 shadow_def: #Shadow
+g: #G
+g2: #G2
+g3: #G3
+g4: #G4
+gs_y: #GS."out-y"
+gs_b: #GS."out-b"
 "#;
     let file = ostinato_lang::parse(source).expect("parse self-selection");
     let value = ostinato_lang::eval_file(&file).expect("eval self-selection");
@@ -5893,11 +5904,18 @@ shadow_def: #Shadow
     assert_eq!(json["regular_deep"]["inner"]["a"], 1);
     assert_eq!(json["shadow_def"]["a"], 9);
     assert_eq!(json["shadow"]["a"], 9);
+    assert_eq!(json["g"]["a"], 1);
+    assert_eq!(json["g2"]["a"], 2);
+    assert_eq!(json["g3"]["a"], 3);
+    assert_eq!(json["g4"]["a"], 1);
+    assert_eq!(json["gs_y"], 1);
+    assert_eq!(json["gs_b"], 9);
 
     for source in [
         "#D: {a: #D.b, b?: int}",
         "#D: {a: #D.b, b?: int | *1}",
         "#D: {a: #D.b, b: #D.a}",
+        "#D: {if true {b?: int}, a: #D.b}",
     ] {
         let file =
             ostinato_lang::parse(&format!("package demo\n{source}\nx: #D.a\n")).expect("parse");
