@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.13.0
+
+Self-selection of a definition's or struct field's own fields.
+
+- `#D: {a: #D.b, b: 1}` and `x: {a: x.b, b: 1}` resolve the in-progress
+  body's fields, including nested paths, list indexes, hidden definitions,
+  quoted labels, defaults, arithmetic and composed definitions.
+- Lexical bindings that shadow the definition still take precedence; optional
+  fields remain unreferenceable by self-selection and true cycles still error.
+- 333 tests (61 CLI E2E, 1 conformance, 229 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+- SCOPE narrows to split composed non-definition literals.
+
 ## v0.12.0
 
 First-class workflow gateways: XOR/OR/AND splits and joins.

@@ -12,6 +12,14 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.13.0
+
+- Self-selection of a definition's or struct field's own fields, including
+  nested/list/hidden/quoted/defaulted/arithmetic and composed definitions,
+  with lexical shadowing preserved.
+- 333 tests (61 CLI E2E, 1 conformance, 229 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.11.4
 
 - Bare-CR line-start whitespace (including the closing line) for multiline
