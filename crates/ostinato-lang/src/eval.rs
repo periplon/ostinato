@@ -380,10 +380,23 @@ fn json_to_value(value: &Json) -> Option<Value> {
     })
 }
 
+#[derive(Clone)]
 struct FieldDef {
     exprs: Vec<Expr>,
     optional: bool,
     definition: bool,
+    bindable: bool,
+}
+
+/// Prefix for a regular field whose label collides with a definition name.
+const NON_DEFINITION_PREFIX: char = '\u{1}';
+
+fn prefixed_field(name: &str) -> String {
+    format!("{NON_DEFINITION_PREFIX}{name}")
+}
+
+fn display_field_name(key: &str) -> &str {
+    key.strip_prefix(NON_DEFINITION_PREFIX).unwrap_or(key)
 }
 
 struct Frame<'a> {
@@ -444,6 +457,7 @@ impl<'a> Frame<'a> {
                             field.value.clone(),
                             field.optional,
                             field.definition,
+                            !field.quoted,
                         );
                         if let Some(alias) = &field.alias {
                             frame
@@ -482,7 +496,13 @@ impl<'a> Frame<'a> {
                                 "dynamic field label must evaluate to a string",
                             ));
                         };
-                        self.insert_field(key.clone(), field.value.clone(), field.optional, false);
+                        self.insert_field(
+                            key.clone(),
+                            field.value.clone(),
+                            field.optional,
+                            false,
+                            false,
+                        );
                         if let Some(alias) = &field.alias {
                             self.aliases.borrow_mut().insert(alias.clone(), key);
                         }
@@ -544,20 +564,78 @@ impl<'a> Frame<'a> {
         Ok(())
     }
 
-    fn insert_field(&self, name: String, expr: Expr, optional: bool, definition: bool) {
+    fn insert_field(
+        &self,
+        name: String,
+        expr: Expr,
+        optional: bool,
+        definition: bool,
+        bindable: bool,
+    ) {
         let mut fields = self.fields.borrow_mut();
+        let key = if definition {
+            // A definition and a quoted regular field of the same name are
+            // distinct fields; keep the regular one under a marked key.
+            if let Some(existing) = fields.remove(&name) {
+                if existing.definition {
+                    fields.insert(name.clone(), existing);
+                } else {
+                    fields.insert(prefixed_field(&name), existing);
+                }
+            }
+            name
+        } else if fields.get(&name).is_some_and(|def| def.definition) {
+            prefixed_field(&name)
+        } else {
+            name
+        };
         fields
-            .entry(name)
+            .entry(key)
             .and_modify(|def| {
                 def.exprs.push(expr.clone());
                 def.optional = def.optional && optional;
                 def.definition = def.definition || definition;
+                def.bindable = def.bindable || bindable;
             })
             .or_insert(FieldDef {
                 exprs: vec![expr],
                 optional,
                 definition,
+                bindable,
             });
+    }
+
+    fn bindable_field_key(&self, name: &str) -> Option<String> {
+        let fields = self.fields.borrow();
+        if fields.get(name).is_some_and(|def| def.bindable) {
+            return Some(name.to_owned());
+        }
+        let prefixed = prefixed_field(name);
+        if fields.get(&prefixed).is_some_and(|def| def.bindable) {
+            return Some(prefixed);
+        }
+        None
+    }
+
+    fn stored_field_key(&self, name: &str) -> Option<String> {
+        let fields = self.fields.borrow();
+        if fields.contains_key(name) {
+            return Some(name.to_owned());
+        }
+        let prefixed = prefixed_field(name);
+        fields.contains_key(&prefixed).then_some(prefixed)
+    }
+
+    fn regular_field_key(&self, name: &str) -> Option<String> {
+        let fields = self.fields.borrow();
+        if fields.get(name).is_some_and(|def| !def.definition) {
+            return Some(name.to_owned());
+        }
+        let prefixed = prefixed_field(name);
+        if fields.get(&prefixed).is_some_and(|def| !def.definition) {
+            return Some(prefixed);
+        }
+        None
     }
 
     fn reconcile_generated_required_fields(&self) -> Result<(), LangError> {
@@ -566,16 +644,18 @@ impl<'a> Frame<'a> {
             .borrow()
             .keys()
             .filter(|name| {
-                self.fields
-                    .borrow()
-                    .get(*name)
-                    .is_some_and(|field| !field.optional)
+                self.regular_field_key(name)
+                    .and_then(|key| self.fields.borrow().get(&key).map(|field| !field.optional))
+                    .unwrap_or(false)
             })
             .cloned()
             .collect();
         for name in names {
             if let Some(constraint) = self.generated_optionals.borrow_mut().remove(&name) {
-                let value = self.eval_field(&name, Span::default())?;
+                let key = self
+                    .regular_field_key(&name)
+                    .unwrap_or_else(|| name.clone());
+                let value = self.eval_field_key(&key, Span::default())?;
                 let merged = unify_values(&value, &constraint, Span::default())?;
                 self.values.borrow_mut().insert(name.clone(), merged);
                 self.materialized.borrow_mut().insert(name);
@@ -585,27 +665,27 @@ impl<'a> Frame<'a> {
     }
 
     fn merge_generated_constraint(&self, name: String, value: Value) -> Result<(), LangError> {
-        let declared = self
-            .fields
-            .borrow()
-            .get(&name)
-            .map(|definition| (definition.optional, definition.definition));
+        let key = self.regular_field_key(&name);
+        let declared = key
+            .as_ref()
+            .and_then(|key| self.fields.borrow().get(key).map(|field| field.optional));
         let forced_required = match declared {
-            Some((false, false)) => true,
-            Some(_) => false,
+            Some(false) => true,
+            Some(true) => false,
             None => {
                 self.materialized.borrow().contains(&name)
                     || self.values.borrow().contains_key(&name)
             }
         };
         if forced_required {
-            let cached = self.values.borrow().get(&name).cloned();
+            let key = key.unwrap_or_else(|| name.clone());
+            let cached = self.values.borrow().get(&key).cloned();
             let current = match cached {
                 Some(value) => value,
-                None => self.eval_field(&name, Span::default())?,
+                None => self.eval_field_key(&key, Span::default())?,
             };
             let merged = unify_values(&current, &value, Span::default())?;
-            self.values.borrow_mut().insert(name.clone(), merged);
+            self.values.borrow_mut().insert(key, merged);
             self.materialized.borrow_mut().insert(name);
         } else {
             merge_generated_optional(&self.generated_optionals, &name, value)?;
@@ -630,8 +710,9 @@ impl<'a> Frame<'a> {
             let existing = self.values.borrow().get(&key).cloned();
             let existing = match existing {
                 Some(existing) => Some(existing),
-                None if self.fields.borrow().contains_key(&key) => {
-                    Some(self.eval_field(&key, Span::default())?)
+                None if self.regular_field_key(&key).is_some() => {
+                    let stored = self.regular_field_key(&key).unwrap_or_else(|| key.clone());
+                    Some(self.eval_field_key(&stored, Span::default())?)
                 }
                 None => None,
             };
@@ -646,11 +727,11 @@ impl<'a> Frame<'a> {
             .fields
             .borrow()
             .iter()
-            .filter(|(_, definition)| definition.optional)
+            .filter(|(_, definition)| definition.optional && !definition.definition)
             .map(|(name, _)| name.clone())
             .collect();
         for name in optional_names {
-            let value = child.eval_field(&name, Span::default())?;
+            let value = child.eval_field_key(&name, Span::default())?;
             self.merge_generated_constraint(name, value)?;
         }
         let generated: Vec<(String, Value)> = child
@@ -668,6 +749,12 @@ impl<'a> Frame<'a> {
     fn lookup(&self, name: &str, span: Span) -> Result<Value, LangError> {
         if let Some(value) = self.vars.borrow().get(name) {
             return Ok(value.clone());
+        }
+        if self.fields.borrow().contains_key(name) && self.bindable_field_key(name).is_none() {
+            eprintln!(
+                "NONBINDABLE lookup {name:?} keys={:?}",
+                self.fields.borrow().keys().collect::<Vec<_>>()
+            );
         }
         if self.lets.borrow().contains_key(name) {
             // A `let` is not in scope in its own value: a same-named
@@ -687,10 +774,17 @@ impl<'a> Frame<'a> {
             return self.eval_let(name, span);
         }
         if let Some(target) = self.aliases.borrow().get(name).cloned() {
+            let Some(key) = self.stored_field_key(&target) else {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("undefined reference `{target}`"),
+                ));
+            };
             let optional = self
                 .fields
                 .borrow()
-                .get(&target)
+                .get(&key)
                 .is_some_and(|definition| definition.optional);
             if optional {
                 return Err(LangError::eval(
@@ -699,25 +793,27 @@ impl<'a> Frame<'a> {
                     format!("cannot reference optional field `{target}`"),
                 ));
             }
-            return self.eval_field(&target, span);
+            return self.eval_field_key(&key, span);
         }
-        if let Some(value) = self.values.borrow().get(name) {
+        if let Some(key) = self.bindable_field_key(name) {
+            let optional = self
+                .fields
+                .borrow()
+                .get(&key)
+                .is_some_and(|definition| definition.optional);
+            if optional {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("cannot reference optional field `{name}`"),
+                ));
+            }
+            return self.eval_field_key(&key, span);
+        }
+        if !self.fields.borrow().contains_key(name)
+            && let Some(value) = self.values.borrow().get(name)
+        {
             return Ok(value.clone());
-        }
-        let optional = self
-            .fields
-            .borrow()
-            .get(name)
-            .is_some_and(|definition| definition.optional);
-        if optional {
-            return Err(LangError::eval(
-                span.line,
-                span.col,
-                format!("cannot reference optional field `{name}`"),
-            ));
-        }
-        if self.fields.borrow().contains_key(name) {
-            return self.eval_field(name, span);
         }
         if let Some(parent) = self.parent
             && parent.has_name(name)
@@ -741,19 +837,31 @@ impl<'a> Frame<'a> {
     }
 
     fn has_name(&self, name: &str) -> bool {
-        self.values.borrow().contains_key(name)
-            || self.fields.borrow().contains_key(name)
+        self.bindable_field_key(name).is_some()
             || self.vars.borrow().contains_key(name)
             || self.lets.borrow().contains_key(name)
             || self.aliases.borrow().contains_key(name)
+            || (!self.fields.borrow().contains_key(name) && self.values.borrow().contains_key(name))
             || self.parent.is_some_and(|parent| parent.has_name(name))
     }
 
     fn eval_field(&self, name: &str, span: Span) -> Result<Value, LangError> {
-        if let Some(value) = self.values.borrow().get(name) {
+        let Some(key) = self.bindable_field_key(name) else {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("undefined reference `{name}`"),
+            ));
+        };
+        self.eval_field_key(&key, span)
+    }
+
+    fn eval_field_key(&self, key: &str, span: Span) -> Result<Value, LangError> {
+        let name = display_field_name(key);
+        if let Some(value) = self.values.borrow().get(key) {
             return Ok(value.clone());
         }
-        if self.evaluating.borrow().contains(name) {
+        if self.evaluating.borrow().contains(key) {
             return Err(LangError::eval(
                 span.line,
                 span.col,
@@ -762,7 +870,7 @@ impl<'a> Frame<'a> {
         }
         let (exprs, is_definition) = {
             let fields = self.fields.borrow();
-            let Some(def) = fields.get(name) else {
+            let Some(def) = fields.get(key) else {
                 return Err(LangError::eval(
                     span.line,
                     span.col,
@@ -778,14 +886,14 @@ impl<'a> Frame<'a> {
             return self.eval_params_struct(&items, span);
         }
         if is_definition {
-            if self.evaluating.borrow().contains(name) {
+            if self.evaluating.borrow().contains(key) {
                 return Err(LangError::eval(
                     span.line,
                     span.col,
                     format!("cyclic reference while evaluating `{name}`"),
                 ));
             }
-            self.evaluating.borrow_mut().insert(name.to_owned());
+            self.evaluating.borrow_mut().insert(key.to_owned());
             let mut flattened = false;
             let result = if let Some(items) = self.params_items(&exprs) {
                 flattened = true;
@@ -821,7 +929,7 @@ impl<'a> Frame<'a> {
                     None => Ok(close_composed_definition(&result)),
                 }
             };
-            self.evaluating.borrow_mut().remove(name);
+            self.evaluating.borrow_mut().remove(key);
             let mut result = result?;
             let mut references = Vec::new();
             if flattened {
@@ -843,10 +951,10 @@ impl<'a> Frame<'a> {
             }
             self.values
                 .borrow_mut()
-                .insert(name.to_owned(), result.clone());
+                .insert(key.to_owned(), result.clone());
             return Ok(result);
         }
-        self.evaluating.borrow_mut().insert(name.to_owned());
+        self.evaluating.borrow_mut().insert(key.to_owned());
         let mut result = Value::Bottom;
         for (index, expr) in exprs.iter().enumerate() {
             let value = eval_expr(expr, self)?;
@@ -856,10 +964,10 @@ impl<'a> Frame<'a> {
                 unify_values(&result, &value, span)?
             };
         }
-        self.evaluating.borrow_mut().remove(name);
+        self.evaluating.borrow_mut().remove(key);
         self.values
             .borrow_mut()
-            .insert(name.to_owned(), result.clone());
+            .insert(key.to_owned(), result.clone());
         Ok(result)
     }
 
@@ -877,15 +985,6 @@ impl<'a> Frame<'a> {
         child.closed.set(closed_by_default);
         child.expand(items)?;
         child.reconcile_generated_required_fields()?;
-        let mut definition_names = BTreeSet::new();
-        for item in items {
-            if let StructItem::Field(field) = item
-                && field.definition
-                && let crate::ast::Label::Name(name, _) = &field.label
-            {
-                definition_names.insert(name.clone());
-            }
-        }
         let mut names: Vec<String> = child.fields.borrow().keys().cloned().collect();
         names.extend(child.values.borrow().keys().cloned());
         names.extend(child.generated_optionals.borrow().keys().cloned());
@@ -895,28 +994,22 @@ impl<'a> Frame<'a> {
         let mut optional = BTreeMap::new();
         let mut definitions = BTreeMap::new();
         for name in names {
-            if definition_names.contains(&name) {
-                let optional = child
-                    .fields
-                    .borrow()
-                    .get(&name)
-                    .is_some_and(|definition| definition.optional);
+            let display = display_field_name(&name).to_owned();
+            let defined = child.fields.borrow().get(&name).cloned();
+            if defined.as_ref().is_some_and(|field| field.definition) {
+                let optional = defined.as_ref().is_some_and(|field| field.optional);
                 if !optional {
-                    definitions.insert(name.clone(), child.eval_field(&name, span)?);
+                    definitions.insert(display, child.eval_field_key(&name, span)?);
                 }
                 continue;
             }
-            let declared_optional = child
-                .fields
-                .borrow()
-                .get(&name)
-                .is_some_and(|definition| definition.optional);
-            let generated = child.generated_optionals.borrow().get(&name).cloned();
-            let materialized = child.materialized.borrow().contains(&name);
+            let declared_optional = defined.as_ref().is_some_and(|field| field.optional);
+            let generated = child.generated_optionals.borrow().get(&display).cloned();
+            let materialized = child.materialized.borrow().contains(&display);
             let optional_field = !materialized && (declared_optional || generated.is_some());
             if optional_field {
                 let mut value = if child.fields.borrow().contains_key(&name) {
-                    match child.eval_field(&name, span) {
+                    match child.eval_field_key(&name, span) {
                         Ok(value) => value,
                         Err(err) => Value::Conflict(err.to_string()),
                     }
@@ -932,13 +1025,13 @@ impl<'a> Frame<'a> {
                     };
                 }
                 child.values.borrow_mut().remove(&name);
-                optional.insert(name, value);
+                optional.insert(display, value);
             } else {
-                let mut value = child.eval_field(&name, span)?;
+                let mut value = child.eval_field_key(&name, span)?;
                 if let Some(constraint) = generated {
                     value = unify_values(&value, &constraint, span)?;
                 }
-                fields.insert(name, value);
+                fields.insert(display, value);
             }
         }
         let mut patterns = Vec::new();
@@ -1147,7 +1240,7 @@ impl<'a> Frame<'a> {
                 .iter()
                 .filter(|(name, definition)| {
                     (include_definitions || !definition.definition)
-                        && !generated.contains_key(*name)
+                        && !generated.contains_key(display_field_name(name))
                 })
                 .map(|(name, _)| name.clone())
                 .collect()
@@ -1164,8 +1257,8 @@ impl<'a> Frame<'a> {
                 // concrete export, even when their value is known.
                 continue;
             }
-            let value = self.eval_field(&name, Span::default())?;
-            out.insert(name, value);
+            let value = self.eval_field_key(&name, Span::default())?;
+            out.insert(display_field_name(&name).to_owned(), value);
         }
         for (name, value) in self.values.borrow().iter() {
             let definition = self
@@ -1174,9 +1267,12 @@ impl<'a> Frame<'a> {
                 .get(name)
                 .is_some_and(|definition| definition.definition);
             if (include_definitions || !definition)
-                && !self.generated_optionals.borrow().contains_key(name)
+                && !self
+                    .generated_optionals
+                    .borrow()
+                    .contains_key(display_field_name(name))
             {
-                out.insert(name.clone(), value.clone());
+                out.insert(display_field_name(name).to_owned(), value.clone());
             }
         }
         Ok(Value::Struct(out))
@@ -1227,11 +1323,12 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     optional,
                     ..
                 } => {
-                    if let Some(value) = fields
-                        .get(field)
-                        .or_else(|| definitions.get(field))
-                        .cloned()
-                    {
+                    let selected = if field.starts_with('#') {
+                        definitions.get(field).cloned()
+                    } else {
+                        fields.get(field).cloned()
+                    };
+                    if let Some(value) = selected {
                         Ok(value)
                     } else if optional.contains_key(field) {
                         Err(LangError::eval(
@@ -1275,16 +1372,36 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         LangError::eval(span.line, span.col, "list index out of range")
                     })
                 }
+                (Value::Struct(map), Value::String(key)) => {
+                    map.get(&key).cloned().ok_or_else(|| {
+                        LangError::eval(
+                            span.line,
+                            span.col,
+                            format!("field `{key}` not found in struct"),
+                        )
+                    })
+                }
                 (
-                    Value::Struct(map) | Value::Definition { fields: map, .. },
+                    Value::Definition {
+                        fields,
+                        definitions,
+                        ..
+                    },
                     Value::String(key),
-                ) => map.get(&key).cloned().ok_or_else(|| {
-                    LangError::eval(
-                        span.line,
-                        span.col,
-                        format!("field `{key}` not found in struct"),
-                    )
-                }),
+                ) => {
+                    let selected = if key.starts_with('#') {
+                        definitions.get(&key).cloned()
+                    } else {
+                        fields.get(&key).cloned()
+                    };
+                    selected.ok_or_else(|| {
+                        LangError::eval(
+                            span.line,
+                            span.col,
+                            format!("field `{key}` not found in struct"),
+                        )
+                    })
+                }
                 (other, _) => Err(LangError::eval(
                     span.line,
                     span.col,

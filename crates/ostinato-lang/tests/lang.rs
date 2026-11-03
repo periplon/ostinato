@@ -2149,3 +2149,84 @@ d: A
     let value = ostinato_lang::eval_file(&file).expect("acyclic chain");
     assert_eq!(value.to_json().expect("json")["b"]["c"], 3);
 }
+
+#[test]
+fn quoted_labels_are_not_identifier_bindings() {
+    let literal = r#"
+package demo
+let X = 2
+a: {"X": 1, "Z": X}
+b: {"X": X}
+"#;
+    let file = ostinato_lang::parse(literal).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"]["X"], 1);
+    assert_eq!(json["a"]["Z"], 2);
+    assert_eq!(json["b"]["X"], 2);
+
+    let alias = r#"
+package demo
+X=a: 1
+b: {"X": 2, Y: X}
+"#;
+    let file = ostinato_lang::parse(alias).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["b"]["X"], 2);
+    assert_eq!(json["b"]["Y"], 1);
+
+    let dynamic = r#"
+package demo
+let X = 2
+a: {("X"): 1, Z: X}
+"#;
+    let file = ostinato_lang::parse(dynamic).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"]["X"], 1);
+    assert_eq!(json["a"]["Z"], 2);
+}
+
+#[test]
+fn quoted_hash_labels_are_distinct_from_definitions() {
+    let source = r##"
+package demo
+params: {"#D": 1, #D: 2}
+workflow: {name: "n", steps: {s: {kind: "noop"}}}
+"##;
+    let compiled = ostinato_lang::compile(source).expect("quoted label and definition");
+    let params = compiled.resolve_params(&BTreeMap::new()).expect("params");
+    assert_eq!(params["#D"], 1);
+
+    let selector = r##"
+package demo
+#P: {"#h": 9, a: 2}
+x: #P.#h
+"##;
+    let file = ostinato_lang::parse(selector).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let quoted_export = r##"
+package demo
+#P: {"#h": 9, a: 2}
+x: #P
+"##;
+    let file = ostinato_lang::parse(quoted_export).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["#h"], 9);
+    assert_eq!(json["x"]["a"], 2);
+}
+
+#[test]
+fn quoted_parameter_names_use_identifier_values() {
+    let source = r#"
+package demo
+let X = "real"
+params: {"X": "fake", "Z": X}
+workflow: {name: "\(params.Z)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile(source).expect("quoted params");
+    assert_eq!(compiled.spec.name, "real");
+}
