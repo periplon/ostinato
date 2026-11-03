@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.8.6
+
+Selector tag discovery.
+
+- Tags on selected leaf fields and inside definition-valued selector chains are
+  collected, including duplicate declarations.
+- Nested definitions shadowed inside a referenced struct resolve to the inner
+  declaration.
+- Conformance overrides now exercise nested-tag identity/selector cases.
+- 259 tests (43 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.5
 
 Stable tag identities.
