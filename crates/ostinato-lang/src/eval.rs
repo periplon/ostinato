@@ -1197,6 +1197,12 @@ impl<'a> Frame<'a> {
         span: Span,
     ) -> Option<Result<Value, LangError>> {
         let ((first, quoted), tail) = rest.split_first()?;
+        if self.segment_field_key(first, *quoted).is_none()
+            && self.generated_value_key(first, *quoted).is_none()
+            && !tail.is_empty()
+        {
+            return self.resolve_local_segment(tail, span);
+        }
         let mut value = match self.segment_field_key(first, *quoted) {
             Some(key) => {
                 if self.evaluating.borrow().contains(&key)
@@ -1914,7 +1920,7 @@ impl<'a> Frame<'a> {
             apply_patterns(&patterns, map, span)?;
         }
         for expr in exprs {
-            self.apply_closed_params(expr, &mut result, span)?;
+            self.apply_closed_params(expr, &child, &mut result, span)?;
         }
         Ok(result)
     }
@@ -1922,19 +1928,44 @@ impl<'a> Frame<'a> {
     fn apply_closed_params(
         &self,
         expr: &Expr,
+        params_frame: &Frame<'_>,
         result: &mut Value,
         span: Span,
     ) -> Result<(), LangError> {
         match expr {
             Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-                self.apply_closed_params(inner, result, span)?;
+                self.apply_closed_params(inner, params_frame, result, span)?;
             }
             Expr::Unify(left, right, _) => {
-                self.apply_closed_params(left, result, span)?;
-                self.apply_closed_params(right, result, span)?;
+                self.apply_closed_params(left, params_frame, result, span)?;
+                self.apply_closed_params(right, params_frame, result, span)?;
             }
             Expr::Ident(name, _) if name != "params" => {
-                let value = self.lookup(name, span)?;
+                let value = if self.overrides.borrow().is_empty() {
+                    self.lookup(name, span)?
+                } else if let Some(exprs) = self
+                    .fields
+                    .borrow()
+                    .get(name)
+                    .map(|definition| definition.exprs.clone())
+                {
+                    if let Some(items) = self.params_items(&exprs) {
+                        let def = Frame::from_static(&items, Some(params_frame), HashMap::new())?;
+                        def.closed.set(true);
+                        for key in self.overrides.borrow().keys() {
+                            if let Some(value) = params_frame.values.borrow().get(key) {
+                                def.values.borrow_mut().insert(key.clone(), value.clone());
+                            }
+                        }
+                        def.expand(&items)?;
+                        def.reconcile_generated_required_fields()?;
+                        def.to_struct_value_mode(true)?
+                    } else {
+                        self.lookup(name, span)?
+                    }
+                } else {
+                    self.lookup(name, span)?
+                };
                 if matches!(value, Value::Definition { closed: true, .. }) {
                     *result = unify_values(result, &value, span)?;
                 }
@@ -2152,6 +2183,21 @@ fn params_select_path(expr: &Expr) -> Option<Vec<(String, bool)>> {
             path.push((field.clone(), *quoted));
             Some(path)
         }
+        Expr::Index(base, index, _) => {
+            let mut path = params_select_path(base)?;
+            let Expr::Str(parts, _) = &**index else {
+                return None;
+            };
+            let mut key = String::new();
+            for part in parts {
+                match part {
+                    StrPart::Text(text) => key.push_str(text),
+                    StrPart::Interp(_) => return None,
+                }
+            }
+            path.push((key, true));
+            Some(path)
+        }
         _ => None,
     }
 }
@@ -2302,13 +2348,12 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             apply_builtin(&callee, &values, *span)
         }
         Expr::Index(base, index, span) => {
-            if let Expr::Ident(name, _) = &**base
-                && name == "params"
-                && frame.params_context.borrow().is_some()
+            if frame.params_context.borrow().is_some()
                 && !frame.params_shadowed()
+                && let Some(mut path) = params_select_path(base)
                 && let Value::String(key) = eval_expr(index, frame)?.concretize()
             {
-                let path = vec![(key.clone(), true)];
+                path.push((key.clone(), true));
                 return frame.params_path_value(&path, *span);
             }
             let base = eval_expr(base, frame)?.concretize().clone();
