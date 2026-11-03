@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.4
+
+Leaf `@tag` injection.
+
+- Tag overrides mutate the declaring AST leaf (`field.value & override`) instead
+  of appending synthetic `params` conjuncts, preserving lexical frames.
+- Dependents inside quoted/hidden/shorthand groups see the override; definitions
+  nested under groups, inline definitions, aliases to definitions, top-level
+  lets and struct-local lets all inject at their origins.
+- Unknown `-p` names are rejected again.
+- 257 tests (41 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.2
 
 Nested definition tag origins.

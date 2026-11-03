@@ -95,6 +95,8 @@ fn tag_info(
 struct Collector<'a> {
     tags: &'a mut BTreeMap<String, Vec<TagInfo>>,
     definitions: &'a BTreeMap<String, Vec<Expr>>,
+    definition_aliases: &'a BTreeMap<String, String>,
+    local_definitions: Vec<BTreeMap<String, Vec<Expr>>>,
     visiting: &'a mut Vec<String>,
 }
 
@@ -116,16 +118,31 @@ impl Collector<'_> {
                 self.expr(right, prefix, origin, origin_prefix)
             }
             Expr::Ident(name, _) => {
-                let Some(values) = self.definitions.get(name) else {
-                    return Ok(());
+                let target = self
+                    .definition_aliases
+                    .get(name)
+                    .map_or(name.as_str(), String::as_str);
+                let local = self
+                    .local_definitions
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(target));
+                let values = match local {
+                    Some(values) => values.clone(),
+                    None => {
+                        let Some(values) = self.definitions.get(target) else {
+                            return Ok(());
+                        };
+                        values.clone()
+                    }
                 };
-                if self.visiting.contains(name) {
+                if self.visiting.iter().any(|value| value == target) {
                     return Ok(());
                 }
-                self.visiting.push(name.clone());
+                self.visiting.push(target.to_owned());
                 let mut result = Ok(());
-                for value in values {
-                    result = self.expr(value, prefix, Some(name), &[]);
+                for value in &values {
+                    result = self.expr(value, prefix, Some(target), &[]);
                     if result.is_err() {
                         break;
                     }
@@ -138,6 +155,28 @@ impl Collector<'_> {
     }
 
     fn items(
+        &mut self,
+        items: &[StructItem],
+        prefix: &[TagSegment],
+        origin: Option<&str>,
+        origin_prefix: &[TagSegment],
+    ) -> Result<(), LangError> {
+        let mut local = BTreeMap::new();
+        for item in items {
+            if let StructItem::Let { name, value, .. } = item {
+                local
+                    .entry(name.clone())
+                    .or_insert_with(Vec::new)
+                    .push(value.clone());
+            }
+        }
+        self.local_definitions.push(local);
+        let result = self.items_inner(items, prefix, origin, origin_prefix);
+        self.local_definitions.pop();
+        result
+    }
+
+    fn items_inner(
         &mut self,
         items: &[StructItem],
         prefix: &[TagSegment],
@@ -185,6 +224,7 @@ impl Collector<'_> {
 /// Returns an evaluation error for unknown `@tag` types.
 pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, LangError> {
     let mut definitions: BTreeMap<String, Vec<Expr>> = BTreeMap::new();
+    let mut definition_aliases: BTreeMap<String, String> = BTreeMap::new();
     for item in &file.items {
         match item {
             StructItem::Field(field) => {
@@ -199,6 +239,11 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
                         .entry(alias.clone())
                         .or_default()
                         .push(field.value.clone());
+                    if let crate::ast::Label::Name(name, _) = &field.label
+                        && name.starts_with('#')
+                    {
+                        definition_aliases.insert(alias.clone(), name.clone());
+                    }
                 }
             }
             StructItem::Let { name, value, .. } => {
@@ -215,6 +260,8 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
     let mut collector = Collector {
         tags: &mut tags,
         definitions: &definitions,
+        definition_aliases: &definition_aliases,
+        local_definitions: Vec::new(),
         visiting: &mut visiting,
     };
     let mut saw_params = false;

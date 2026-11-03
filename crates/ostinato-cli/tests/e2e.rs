@@ -2049,3 +2049,113 @@ workflow: {name: "\(params.n.inner.host)|\(params.n.inner.copy)", steps: {s: {ki
     assert_eq!(report["params"]["n"]["inner"]["copy"], "x");
     assert!(report["params"]["n"].get("#Inner").is_none());
 }
+
+#[test]
+fn leaf_tag_injection_preserves_lexical_scopes() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let cases = [
+        (
+            "quoted",
+            r#"
+package demo
+params: {"_q": {host: string | *"d" @tag(host), copy: host}}
+workflow: {name: "\(params."_q".host)|\(params."_q".copy)", steps: {s: {kind: "noop"}}}
+"#,
+            "x|x",
+        ),
+        (
+            "group-definition",
+            r#"
+package demo
+#Outer: {grp: {#Inner: {host: string | *"d" @tag(host), copy: host}}, inner: grp.#Inner}
+params: {n: #Outer}
+workflow: {name: "\(params.n.inner.host)|\(params.n.inner.copy)", steps: {s: {kind: "noop"}}}
+"#,
+            "x|x",
+        ),
+        (
+            "inner-definition",
+            r#"
+package demo
+params: {#Inner: {host: string | *"d" @tag(host)}, inner: #Inner}
+workflow: {name: "\(params.inner.host)", steps: {s: {kind: "noop"}}}
+"#,
+            "x",
+        ),
+        (
+            "alias",
+            r#"
+package demo
+A=#P: {host: string | *"d" @tag(host), copy: host}
+params: {n: A}
+workflow: {name: "\(params.n.host)|\(params.n.copy)", steps: {s: {kind: "noop"}}}
+"#,
+            "x|x",
+        ),
+        (
+            "outer-let",
+            r#"
+package demo
+let extra = {host: string | *"d" @tag(host), copy: host}
+params: {e: extra}
+workflow: {name: "\(params.e.host)|\(params.e.copy)", steps: {s: {kind: "noop"}}}
+"#,
+            "x|x",
+        ),
+        (
+            "local-let",
+            r#"
+package demo
+params: {let extra = {host: string | *"d" @tag(host), copy: host}, e: extra}
+workflow: {name: "\(params.e.host)|\(params.e.copy)", steps: {s: {kind: "noop"}}}
+"#,
+            "x|x",
+        ),
+    ];
+    for (name, source, expected) in cases {
+        let case_dir = directory.path().join(name);
+        std::fs::create_dir_all(&case_dir).expect("case dir");
+        let workflow = case_dir.join("main.cue");
+        write(&workflow, source);
+        let output = ost(&[
+            "--db",
+            db.to_str().expect("db"),
+            "--json",
+            "validate",
+            workflow.to_str().expect("workflow"),
+            "-p",
+            "host=x",
+        ]);
+        assert!(
+            output.status.success(),
+            "{name} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(json(&output)["workflow"]["name"], expected, "{name}");
+    }
+
+    let unknown_dir = directory.path().join("unknown");
+    std::fs::create_dir_all(&unknown_dir).expect("unknown dir");
+    let unknown = unknown_dir.join("main.cue");
+    write(
+        &unknown,
+        r#"
+package demo
+params: {db: {host: string | *"localhost" @tag(host)}}
+workflow: {name: "\(params.db.host)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "validate",
+        unknown.to_str().expect("unknown"),
+        "-p",
+        "zzz=9",
+    ]);
+    assert!(
+        !output.status.success(),
+        "unknown parameter must be rejected"
+    );
+}

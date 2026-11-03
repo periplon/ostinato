@@ -110,16 +110,16 @@ fn evaluate_path(
         if let Some(infos) = tags.get(key) {
             for info in infos {
                 let value = parse_override_value(raw, Some(info.ty))?;
-                if let Some(origin) = info.origin.as_ref()
-                    && origin.starts_with('#')
-                {
-                    combined
-                        .items
-                        .push(nested_constraint_item(origin, &info.origin_path, value)?);
-                } else if info.path.len() == 1 {
-                    injected.insert(info.field.clone(), value);
+                let expr = override_expr(value)?;
+                let injected_tag = if let Some(origin) = info.origin.as_deref() {
+                    inject_tag(&mut combined.items, Some(origin), &info.origin_path, &expr)
                 } else {
-                    combined.items.push(nested_params_item(&info.path, value)?);
+                    inject_tag(&mut combined.items, None, &info.path, &expr)
+                };
+                if !injected_tag {
+                    return Err(ostinato_lang::LangError::Workflow(format!(
+                        "cannot inject @tag `{key}`: declaration not found"
+                    )));
                 }
             }
         } else {
@@ -540,62 +540,126 @@ fn validate_number_literal(text: &str) -> Option<String> {
     Some(normalized)
 }
 
-fn field_item(label: String, quoted: bool, definition: bool, value: Expr) -> StructItem {
-    let span = Span::default();
-    StructItem::Field(Field {
-        label: Label::Name(label, span),
-        value,
-        optional: false,
-        definition,
-        alias: None,
-        quoted,
-        attributes: Vec::new(),
-        span,
-    })
-}
-
-fn nested_expr(
-    path: &[ostinato_lang::TagSegment],
-    value: Value,
-    definitions: bool,
-) -> Result<Expr, ostinato_lang::LangError> {
+fn override_expr(value: Value) -> Result<Expr, ostinato_lang::LangError> {
     let json = value.to_json().ok_or_else(|| {
         ostinato_lang::LangError::Workflow("parameter value is not concrete".to_owned())
     })?;
     let text = serde_json::to_string(&json).map_err(|err| {
         ostinato_lang::LangError::Workflow(format!("cannot encode parameter value: {err}"))
     })?;
-    let span = Span::default();
-    let mut expr = ostinato_lang::parse_expr_fragment(&text)?;
-    for segment in path.iter().rev() {
-        expr = Expr::Struct(
-            vec![field_item(
-                segment.name.clone(),
-                segment.quoted,
-                definitions && segment.definition,
-                expr,
-            )],
-            span,
-        );
-    }
-    Ok(expr)
+    ostinato_lang::parse_expr_fragment(&text)
 }
 
-fn nested_params_item(
+fn inject_tag(
+    items: &mut [StructItem],
+    origin: Option<&str>,
     path: &[ostinato_lang::TagSegment],
-    value: Value,
-) -> Result<StructItem, ostinato_lang::LangError> {
-    let expr = nested_expr(path, value, false)?;
-    Ok(field_item("params".to_owned(), false, false, expr))
+    value: &Expr,
+) -> bool {
+    if let Some(origin) = origin {
+        return inject_declaration(items, origin, path, value);
+    }
+    let mut matched = false;
+    for item in items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        if matches!(&field.label, Label::Name(name, _) if name == "params") {
+            matched |= inject_expr(&mut field.value, path, value);
+        }
+    }
+    matched
 }
 
-fn nested_constraint_item(
+fn inject_declaration(
+    items: &mut [StructItem],
     origin: &str,
     path: &[ostinato_lang::TagSegment],
-    value: Value,
-) -> Result<StructItem, ostinato_lang::LangError> {
-    let expr = nested_expr(path, value, true)?;
-    Ok(field_item(origin.to_owned(), false, true, expr))
+    value: &Expr,
+) -> bool {
+    let mut matched = false;
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                let label_matches = matches!(&field.label, Label::Name(name, _) if name == origin)
+                    || field.alias.as_deref() == Some(origin);
+                if label_matches {
+                    matched |= inject_expr(&mut field.value, path, value);
+                }
+                matched |= inject_declaration_expr(&mut field.value, origin, path, value);
+            }
+            StructItem::Let {
+                name,
+                value: let_value,
+                ..
+            } => {
+                if name == origin {
+                    matched |= inject_expr(let_value, path, value);
+                }
+                matched |= inject_declaration_expr(let_value, origin, path, value);
+            }
+            _ => {}
+        }
+    }
+    matched
+}
+
+fn inject_declaration_expr(
+    expr: &mut Expr,
+    origin: &str,
+    path: &[ostinato_lang::TagSegment],
+    value: &Expr,
+) -> bool {
+    match expr {
+        Expr::Struct(items, _) => inject_declaration(items, origin, path, value),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+            inject_declaration_expr(inner, origin, path, value)
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            inject_declaration_expr(left, origin, path, value)
+                || inject_declaration_expr(right, origin, path, value)
+        }
+        _ => false,
+    }
+}
+
+fn segment_matches(field: &Field, segment: &ostinato_lang::TagSegment) -> bool {
+    matches!(&field.label, Label::Name(name, _) if name == &segment.name)
+        && field.quoted == segment.quoted
+        && field.definition == segment.definition
+}
+
+fn inject_expr(expr: &mut Expr, path: &[ostinato_lang::TagSegment], value: &Expr) -> bool {
+    let span = Span::default();
+    if path.is_empty() {
+        *expr = Expr::Unify(Box::new(expr.clone()), Box::new(value.clone()), span);
+        return true;
+    }
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                let StructItem::Field(field) = item else {
+                    continue;
+                };
+                if !segment_matches(field, &path[0]) {
+                    continue;
+                }
+                if path.len() == 1 {
+                    let old = field.value.clone();
+                    field.value = Expr::Unify(Box::new(old), Box::new(value.clone()), span);
+                } else {
+                    inject_expr(&mut field.value, &path[1..], value);
+                }
+                return true;
+            }
+            false
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => inject_expr(inner, path, value),
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            inject_expr(left, path, value) || inject_expr(right, path, value)
+        }
+        _ => false,
+    }
 }
 
 fn collect_parameter_tags(
