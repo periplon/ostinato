@@ -1978,7 +1978,6 @@ impl<'a> Frame<'a> {
         }
         for key in overrides.keys() {
             let known = child.fields.borrow().contains_key(key)
-                || child.values.borrow().contains_key(key)
                 || child.materialized.borrow().contains(key)
                 || child.generated_optionals.borrow().contains_key(key);
             if !known {
