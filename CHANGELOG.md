@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.12
+
+Quoted-label comprehension and admission corrections.
+
+- Comprehension/`if` bodies keep a quoted `"#D"` field alongside the definition
+  `#D`, using regular storage keys.
+- Definitions no longer admit a regular field of the same label in closedness
+  checks, in nested, composed and pattern cases.
+- Static cycles now include required definitions: let/alias cycles routed
+  through non-optional fields are rejected while optional-field cycles remain
+  valid.
+- 152 tests (24 CLI E2E, 1 conformance, 117 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.11
 
 Imported quoted-hash fields.
