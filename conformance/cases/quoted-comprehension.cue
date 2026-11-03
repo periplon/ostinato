@@ -3,6 +3,7 @@ package quotedcomprehension
 #P: {
 	#D: 8
 	for _, x in [1] {"#D": x}
+	for _, x in [1] {"#D"?: x}
 }
 
 #Q: {

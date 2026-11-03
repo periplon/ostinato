@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.4.13
+
+- Generated quoted constraints target regular fields; dead comprehension
+  bodies no longer infer cycles.
+- 154 tests (24 CLI E2E, 1 conformance, 119 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.12
 
 - Quoted fields in comprehension/`if` bodies, definition admission of same-label

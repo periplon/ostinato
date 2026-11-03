@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.13
+
+Generated quoted constraints and dead-body cycles.
+
+- Generated optional constraints for a quoted `"#D"` target the regular field
+  (the prefixed storage slot), not the definition `#D`.
+- Static cycles are only inferred for statically live `if`/`for`/list-comp
+  bodies; dead bodies (`if false`, empty sources) no longer create false
+  cycles while live bodies still do.
+- 154 tests (24 CLI E2E, 1 conformance, 119 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.12
 
 Quoted-label comprehension and admission corrections.

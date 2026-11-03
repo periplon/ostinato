@@ -631,6 +631,15 @@ impl<'a> Frame<'a> {
         None
     }
 
+    fn field_storage_key(&self, name: &str) -> Option<String> {
+        self.regular_field_key(name).or_else(|| {
+            self.fields
+                .borrow()
+                .contains_key(name)
+                .then(|| prefixed_field(name))
+        })
+    }
+
     fn stored_field_key(&self, name: &str) -> Option<String> {
         let fields = self.fields.borrow();
         if fields.contains_key(name) {
@@ -679,7 +688,7 @@ impl<'a> Frame<'a> {
     }
 
     fn merge_generated_constraint(&self, name: String, value: Value) -> Result<(), LangError> {
-        let key = self.regular_field_key(&name);
+        let key = self.field_storage_key(&name);
         let declared = key
             .as_ref()
             .and_then(|key| self.fields.borrow().get(key).map(|field| field.optional));
@@ -688,6 +697,9 @@ impl<'a> Frame<'a> {
             Some(true) => false,
             None => {
                 self.materialized.borrow().contains(&name)
+                    || key
+                        .as_ref()
+                        .is_some_and(|key| self.values.borrow().contains_key(key))
                     || self.values.borrow().contains_key(&name)
             }
         };
@@ -721,13 +733,7 @@ impl<'a> Frame<'a> {
                 Some(constraint) => unify_values(&value, &constraint, Span::default())?,
                 None => value,
             };
-            let storage_key = self.regular_field_key(&key).unwrap_or_else(|| {
-                if self.fields.borrow().contains_key(&key) {
-                    prefixed_field(&key)
-                } else {
-                    key.clone()
-                }
-            });
+            let storage_key = self.field_storage_key(&key).unwrap_or_else(|| key.clone());
             let existing = self.values.borrow().get(&storage_key).cloned();
             let existing = match existing {
                 Some(existing) => Some(existing),
