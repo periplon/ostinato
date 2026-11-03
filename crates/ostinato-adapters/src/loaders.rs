@@ -602,6 +602,7 @@ fn inject_field_expr(expr: &mut Expr, id: usize, value: &Expr) -> bool {
         Expr::Index(base, index, _) => {
             inject_field_expr(base, id, value) || inject_field_expr(index, id, value)
         }
+        Expr::Select(base, _, _, _) => inject_field_expr(base, id, value),
         Expr::Call(callee, arguments, _) => {
             inject_field_expr(callee, id, value)
                 || arguments
@@ -647,7 +648,6 @@ fn inject_field_expr(expr: &mut Expr, id: usize, value: &Expr) -> bool {
         | Expr::Float(_, _)
         | Expr::Bytes(_, _)
         | Expr::Ident(_, _)
-        | Expr::Select(_, _, _, _)
         | Expr::OpenList(None, _) => false,
     }
 }

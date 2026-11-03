@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.8.8
+
+CUE label identity and full selector scopes for `@tag` discovery.
+
+- Quoted/index selectors and dot selectors address fields by CUE label identity,
+  so `config["database"]["host"]` and dot selection over quoted labels agree.
+- Selector resolution carries the full lexical scope chain, so nested
+  definitions at depth >= 2 (`helper.wrap.direct: #P.port`) resolve to the
+  declaring scope.
+- Expression-valued bases (field aliases, inline structs, unification and
+  disjunction bases) are normalized before selecting, and tags are discovered
+  in unselected branches too.
+- 261 tests (45 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.7
 
 Scope-aware selector tag discovery.

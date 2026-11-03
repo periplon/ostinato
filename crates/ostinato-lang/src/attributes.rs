@@ -97,11 +97,69 @@ fn tag_info(
 
 type DefinitionMap = BTreeMap<String, Vec<(Vec<usize>, Expr)>>;
 
-type ResolvedSelector = (Vec<usize>, Expr, Vec<TagSegment>, Option<crate::ast::Field>);
+type Lookup = (Vec<(Vec<usize>, Expr)>, Option<usize>);
+
+type ResolvedSelector = (
+    Vec<usize>,
+    Expr,
+    Vec<TagSegment>,
+    Option<crate::ast::Field>,
+    Vec<DefinitionMap>,
+);
 
 struct Selected {
     value: Expr,
     field: Option<crate::ast::Field>,
+    scopes: Vec<DefinitionMap>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LabelKind {
+    Regular,
+    Hidden,
+    Definition,
+}
+
+fn selector_kind(name: &str) -> LabelKind {
+    if name.starts_with('#') || name.starts_with("_#") {
+        LabelKind::Definition
+    } else if name.starts_with('_') {
+        LabelKind::Hidden
+    } else {
+        LabelKind::Regular
+    }
+}
+
+fn field_kind(field: &crate::ast::Field, name: &str) -> LabelKind {
+    if field.definition {
+        LabelKind::Definition
+    } else if !field.quoted
+        && !name.starts_with('#')
+        && !name.starts_with("_#")
+        && name.starts_with('_')
+    {
+        LabelKind::Hidden
+    } else {
+        LabelKind::Regular
+    }
+}
+
+/// CUE label identity: quoted selectors address regular fields only,
+/// unquoted identifiers address the field in the matching namespace
+/// (regular, hidden `_x` or definition `#X`).
+fn label_matches(field: &crate::ast::Field, name: &str, quoted: bool) -> bool {
+    let Label::Name(label, _) = &field.label else {
+        return false;
+    };
+    if label != name {
+        return false;
+    }
+    let kind = field_kind(field, name);
+    if quoted {
+        kind == LabelKind::Regular
+    } else {
+        kind == selector_kind(name)
+    }
 }
 
 fn scope_map(items: &[StructItem]) -> DefinitionMap {
@@ -142,7 +200,9 @@ struct Collector<'a> {
     local_definitions: Vec<DefinitionMap>,
     selecting: Vec<String>,
     selectors: Vec<Expr>,
+    resolving: Vec<Expr>,
     visiting: &'a mut Vec<String>,
+    structural: bool,
 }
 
 impl Collector<'_> {
@@ -163,13 +223,24 @@ impl Collector<'_> {
                 self.expr(left, prefix, origin, origin_prefix, item_base)?;
                 self.expr(right, prefix, origin, origin_prefix, item_base)
             }
-            Expr::Select(_, _, _, _) | Expr::Index(_, _, _) => {
-                if self.selectors.contains(expr) || self.selectors.len() > 64 {
+            Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+                if self.structural {
                     return Ok(());
                 }
-                self.selectors.push(expr.clone());
+                if self.resolving.contains(expr) || self.resolving.len() > 64 {
+                    return Ok(());
+                }
+                self.resolving.push(expr.clone());
+                // Discover tags anywhere in the referenced declarations, even
+                // in branches the selector does not choose. Nested selectors
+                // are skipped in this pass to keep it structural.
+                let previous = std::mem::replace(&mut self.structural, true);
+                let discovered = self.expr(base, prefix, origin, origin_prefix, item_base);
+                self.structural = previous;
+                discovered?;
+                let scopes = self.local_definitions.clone();
                 let mut result = Ok(());
-                for (path, value, relative, field) in self.resolve_selector_all(expr) {
+                for (path, value, relative, field, _) in self.resolve_selector_all(expr, &scopes) {
                     if let Some(field) = &field
                         && let Some(field_name) = label_name(field)
                         && let Some((tag_name, ty)) = tag_info(field_name, field)?
@@ -188,7 +259,7 @@ impl Collector<'_> {
                         break;
                     }
                 }
-                self.selectors.pop();
+                self.resolving.pop();
                 result
             }
             Expr::Ident(name, _) => {
@@ -228,140 +299,184 @@ impl Collector<'_> {
         }
     }
 
-    fn lookup(&self, name: &str) -> Option<Vec<(Vec<usize>, Expr)>> {
+    fn lookup_scoped(&self, scopes: &[DefinitionMap], name: &str) -> Option<Lookup> {
         let target = self
             .definition_aliases
             .get(name)
             .map_or(name, String::as_str);
-        if let Some(values) = self
-            .local_definitions
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(target))
-        {
-            return Some(values.clone());
+        for (index, scope) in scopes.iter().enumerate().rev() {
+            if let Some(values) = scope.get(target) {
+                return Some((values.clone(), Some(index)));
+            }
         }
-        self.definitions.get(target).cloned()
+        self.definitions
+            .get(target)
+            .cloned()
+            .map(|values| (values, None))
     }
 
-    fn select_in_expr(&mut self, expr: &Expr, field: &str, quoted: bool) -> Vec<Selected> {
+    fn scope_upto(scopes: &[DefinitionMap], level: Option<usize>) -> Vec<DefinitionMap> {
+        match level {
+            Some(level) => scopes[..=level].to_vec(),
+            None => Vec::new(),
+        }
+    }
+
+    fn select_in_expr(
+        &mut self,
+        expr: &Expr,
+        field: &str,
+        quoted: bool,
+        scopes: &[DefinitionMap],
+    ) -> Vec<Selected> {
         match expr {
             Expr::Struct(items, _) => {
-                let local = scope_map(items);
-                self.local_definitions.push(local);
+                let mut inner = scopes.to_vec();
+                inner.push(scope_map(items));
                 let mut out = Vec::new();
                 for item in items {
                     let StructItem::Field(candidate) = item else {
                         continue;
                     };
-                    let Label::Name(name, _) = &candidate.label else {
-                        continue;
-                    };
-                    if name != field || candidate.quoted != quoted {
+                    if !label_matches(candidate, field, quoted) {
                         continue;
                     }
-                    match &candidate.value {
-                        Expr::Ident(target, _) => {
-                            let values = self.lookup(target).unwrap_or_default();
-                            if values.is_empty() {
-                                out.push(Selected {
-                                    value: candidate.value.clone(),
-                                    field: Some(candidate.clone()),
-                                });
-                            } else {
-                                for (_, value) in values {
-                                    out.push(Selected {
-                                        value,
-                                        field: Some(candidate.clone()),
-                                    });
-                                }
-                            }
-                        }
-                        Expr::Select(_, _, _, _) | Expr::Index(_, _, _) => {
-                            if self.selectors.contains(&candidate.value)
-                                || self.selectors.len() > 64
-                            {
-                                out.push(Selected {
-                                    value: candidate.value.clone(),
-                                    field: Some(candidate.clone()),
-                                });
-                                continue;
-                            }
-                            self.selectors.push(candidate.value.clone());
-                            let resolved = self.resolve_selector_all(&candidate.value);
-                            self.selectors.pop();
-                            if resolved.is_empty() {
-                                out.push(Selected {
-                                    value: candidate.value.clone(),
-                                    field: Some(candidate.clone()),
-                                });
-                            } else {
-                                for (_, value, _, selected) in resolved {
-                                    out.push(Selected {
-                                        value,
-                                        field: selected.or_else(|| Some(candidate.clone())),
-                                    });
-                                }
-                            }
-                        }
-                        other => out.push(Selected {
-                            value: other.clone(),
-                            field: Some(candidate.clone()),
-                        }),
-                    }
+                    out.extend(self.deref_selected(&candidate.value, candidate, &inner));
                 }
-                self.local_definitions.pop();
                 out
             }
             Expr::Ident(name, _) => {
-                let target = self
-                    .definition_aliases
-                    .get(name)
-                    .map_or(name.as_str(), String::as_str);
-                if self.selecting.iter().any(|value| value == target) {
+                if self.selecting.iter().any(|value| value == name) || self.selecting.len() > 64 {
                     return Vec::new();
                 }
-                let Some(values) = self.lookup(name) else {
+                let Some((values, level)) = self.lookup_scoped(scopes, name) else {
                     return Vec::new();
                 };
-                self.selecting.push(target.to_owned());
+                let sub_scopes = Self::scope_upto(scopes, level);
+                self.selecting.push(name.clone());
                 let mut out = Vec::new();
                 for (_, value) in values {
-                    out.extend(self.select_in_expr(&value, field, quoted));
+                    out.extend(self.select_in_expr(&value, field, quoted, &sub_scopes));
                 }
                 self.selecting.pop();
                 out
             }
+            Expr::Select(_, _, _, _) | Expr::Index(_, _, _) => {
+                let resolved = self.resolve_selector_all(expr, scopes);
+                let mut out = Vec::new();
+                for (_, value, _, selected, next_scopes) in resolved {
+                    for inner in self.select_in_expr(&value, field, quoted, &next_scopes) {
+                        out.push(Selected {
+                            value: inner.value,
+                            field: inner.field.or_else(|| selected.clone()),
+                            scopes: inner.scopes,
+                        });
+                    }
+                }
+                out
+            }
             Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-                self.select_in_expr(inner, field, quoted)
+                self.select_in_expr(inner, field, quoted, scopes)
             }
             Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-                let mut out = self.select_in_expr(left, field, quoted);
-                out.extend(self.select_in_expr(right, field, quoted));
+                let mut out = self.select_in_expr(left, field, quoted, scopes);
+                out.extend(self.select_in_expr(right, field, quoted, scopes));
                 out
             }
             _ => Vec::new(),
         }
     }
 
-    fn resolve_selector_all(&mut self, expr: &Expr) -> Vec<ResolvedSelector> {
+    /// Follow an alias/selector-valued field to the field that actually
+    /// declares the value (and therefore any `@tag`).
+    fn deref_selected(
+        &mut self,
+        value: &Expr,
+        candidate: &crate::ast::Field,
+        scopes: &[DefinitionMap],
+    ) -> Vec<Selected> {
+        let direct = || Selected {
+            value: value.clone(),
+            field: Some(candidate.clone()),
+            scopes: scopes.to_vec(),
+        };
+        if candidate
+            .attributes
+            .iter()
+            .any(|attribute| attribute.name == "tag")
+        {
+            return vec![direct()];
+        }
+        match value {
+            Expr::Ident(name, _) => {
+                if self.selecting.iter().any(|value| value == name) || self.selecting.len() > 64 {
+                    return vec![direct()];
+                }
+                let Some((values, level)) = self.lookup_scoped(scopes, name) else {
+                    return vec![direct()];
+                };
+                let sub_scopes = Self::scope_upto(scopes, level);
+                self.selecting.push(name.clone());
+                let mut out = Vec::new();
+                for (_, target) in values {
+                    out.extend(self.deref_selected(&target, candidate, &sub_scopes));
+                }
+                self.selecting.pop();
+                if out.is_empty() {
+                    out.push(direct());
+                }
+                out
+            }
+            Expr::Select(_, _, _, _) | Expr::Index(_, _, _) => {
+                let resolved = self.resolve_selector_all(value, scopes);
+                if resolved.is_empty() {
+                    return vec![direct()];
+                }
+                resolved
+                    .into_iter()
+                    .map(|(_, target, _, selected, next_scopes)| Selected {
+                        value: target,
+                        field: selected.or_else(|| Some(candidate.clone())),
+                        scopes: next_scopes,
+                    })
+                    .collect()
+            }
+            Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+                self.deref_selected(inner, candidate, scopes)
+            }
+            _ => vec![direct()],
+        }
+    }
+
+    fn resolve_selector_all(
+        &mut self,
+        expr: &Expr,
+        scopes: &[DefinitionMap],
+    ) -> Vec<ResolvedSelector> {
         match expr {
-            Expr::Ident(name, _) => self
-                .lookup(name)
-                .map(|values| {
+            Expr::Ident(name, _) => match self.lookup_scoped(scopes, name) {
+                Some((values, level)) => {
+                    let sub_scopes = Self::scope_upto(scopes, level);
                     values
                         .into_iter()
-                        .map(|(path, value)| (path, value, Vec::new(), None))
+                        .map(|(path, value)| (path, value, Vec::new(), None, sub_scopes.clone()))
                         .collect()
-                })
-                .unwrap_or_default(),
+                }
+                None => Vec::new(),
+            },
             Expr::Select(base, field, quoted, _) => {
+                if self.selectors.contains(expr) || self.selectors.len() > 64 {
+                    return Vec::new();
+                }
+                self.selectors.push(expr.clone());
                 let mut out = Vec::new();
-                for (path, value, relative, _) in self.resolve_selector_all(base) {
-                    for selected in self.select_in_expr(&value, field, *quoted) {
+                for (path, value, relative, base_field, base_scopes) in
+                    self.resolve_selector_all(base, scopes)
+                {
+                    for selected in self.select_in_expr(&value, field, *quoted, &base_scopes) {
                         let mut next = relative.clone();
-                        let definition = selected
-                            .field
+                        let selected_field = selected.field.clone().or(base_field.clone());
+                        let definition = selected_field
                             .as_ref()
                             .is_some_and(|field| field.definition);
                         next.push(TagSegment {
@@ -369,9 +484,16 @@ impl Collector<'_> {
                             quoted: *quoted,
                             definition,
                         });
-                        out.push((path.clone(), selected.value, next, selected.field));
+                        out.push((
+                            path.clone(),
+                            selected.value,
+                            next,
+                            selected.field.or_else(|| base_field.clone()),
+                            selected.scopes,
+                        ));
                     }
                 }
+                self.selectors.pop();
                 out
             }
             Expr::Index(base, index, _) => {
@@ -391,14 +513,21 @@ impl Collector<'_> {
                         crate::ast::StrPart::Interp(_) => None,
                     })
                     .collect();
+                if self.selectors.contains(expr) || self.selectors.len() > 64 {
+                    return Vec::new();
+                }
+                self.selectors.push(expr.clone());
                 let mut out = Vec::new();
-                for (path, value, mut relative, _) in self.resolve_selector_all(base) {
-                    for selected in self.select_in_expr(&value, &field, true) {
-                        let definition = selected
-                            .field
+                for (path, value, relative, base_field, base_scopes) in
+                    self.resolve_selector_all(base, scopes)
+                {
+                    for selected in self.select_in_expr(&value, &field, true, &base_scopes) {
+                        let mut next = relative.clone();
+                        let selected_field = selected.field.clone().or(base_field.clone());
+                        let definition = selected_field
                             .as_ref()
                             .is_some_and(|field| field.definition);
-                        relative.push(TagSegment {
+                        next.push(TagSegment {
                             name: field.clone(),
                             quoted: true,
                             definition,
@@ -406,14 +535,21 @@ impl Collector<'_> {
                         out.push((
                             path.clone(),
                             selected.value,
-                            relative.clone(),
-                            selected.field,
+                            next,
+                            selected.field.or_else(|| base_field.clone()),
+                            selected.scopes,
                         ));
                     }
                 }
+                self.selectors.pop();
                 out
             }
-            Expr::Paren(inner, _) | Expr::Default(inner, _) => self.resolve_selector_all(inner),
+            Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+                self.resolve_selector_all(inner, scopes)
+            }
+            Expr::Struct(_, _) | Expr::Unify(_, _, _) | Expr::Disjunction(_, _, _) => {
+                vec![(Vec::new(), expr.clone(), Vec::new(), None, scopes.to_vec())]
+            }
             _ => Vec::new(),
         }
     }
@@ -426,18 +562,7 @@ impl Collector<'_> {
         origin_prefix: &[TagSegment],
         item_base: &[usize],
     ) -> Result<(), LangError> {
-        let mut local = DefinitionMap::new();
-        for (index, item) in items.iter().enumerate() {
-            if let StructItem::Let { name, value, .. } = item {
-                let mut path = item_base.to_vec();
-                path.push(index);
-                local
-                    .entry(name.clone())
-                    .or_default()
-                    .push((path, value.clone()));
-            }
-        }
-        self.local_definitions.push(local);
+        self.local_definitions.push(scope_map(items));
         let result = self.items_inner(items, prefix, origin, origin_prefix, item_base);
         self.local_definitions.pop();
         result
@@ -539,7 +664,9 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
         local_definitions: Vec::new(),
         selecting: Vec::new(),
         selectors: Vec::new(),
+        resolving: Vec::new(),
         visiting: &mut visiting,
+        structural: false,
     };
     let mut saw_params = false;
     for (index, item) in file.items.iter().enumerate() {

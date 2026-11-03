@@ -2301,3 +2301,80 @@ workflow: {
     );
     assert_eq!(json(&output)["workflow"]["name"], "x|x|2|5|5");
 }
+
+#[test]
+fn nested_tags_follow_label_identity_depth_and_expression_bases() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let cases = [
+        (
+            "quoted-identity",
+            r#"
+package demo
+config: database: {host: string | *"d" @tag(host), copy: host}
+quoted: {"database": {port: int | *1 @tag(port, type=int)}}
+params: {
+    db: config["database"]["host"]
+    full: config["database"]
+    q: quoted.database.port
+}
+workflow: {name: "\(params.db)|\(params.full.copy)|\(params.q)", steps: {s: {kind: "noop"}}}
+"#,
+            &["-p", "host=x", "-p", "port=9"][..],
+            "x|x|9",
+        ),
+        (
+            "depth-shadow",
+            r#"
+package demo
+#P: {port: int | *1 @tag(n, type=int)}
+helper: {#P: {port: int | *1 @tag(n, type=int)}, wrap: {direct: #P.port}}
+params: {b: helper.wrap.direct, other: {port: int | *1 @tag(n, type=int)}}
+workflow: {name: "\(params.b):\(params.other.port)", steps: {s: {kind: "noop"}}}
+"#,
+            &["-p", "n=5"][..],
+            "5:5",
+        ),
+        (
+            "expression-bases",
+            r#"
+package demo
+config: database: {host: string | *"d" @tag(host), copy: host}
+h: config.database
+params: {
+    x: h.host
+    c: h.copy
+    inline: ({port: int | *1 @tag(port, type=int)}).port
+    unified: ({a: int} & {b: int | *2 @tag(b, type=int)}).b
+    chosen: (*{a: int | *3} | {b: int | *4 @tag(unused, type=int)}).a
+}
+workflow: {name: "\(params.x)|\(params.c)|\(params.inline)|\(params.unified)|\(params.chosen)", steps: {s: {kind: "noop"}}}
+"#,
+            &[
+                "-p", "host=x", "-p", "port=7", "-p", "b=8", "-p", "unused=9",
+            ][..],
+            "x|x|7|8|3",
+        ),
+    ];
+    for (name, source, overrides, expected) in cases {
+        let case_dir = directory.path().join(name);
+        std::fs::create_dir_all(&case_dir).expect("case dir");
+        let workflow = case_dir.join("main.cue");
+        write(&workflow, source);
+        let mut arguments = vec![
+            "--db",
+            db.to_str().expect("db"),
+            "--json",
+            "validate",
+            workflow.to_str().expect("workflow"),
+        ];
+        arguments.extend_from_slice(overrides);
+        let output = ost(&arguments);
+        assert!(
+            output.status.success(),
+            "{name} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(json(&output)["workflow"]["name"], expected, "{name}");
+    }
+}
