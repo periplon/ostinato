@@ -4171,3 +4171,57 @@ fn aliases_to_control_prefix_quoted_labels_resolve() {
     let value = ostinato_lang::eval_file(&file).expect("alias to control label");
     assert_eq!(value.to_json().expect("json")["s"]["v"], 1);
 }
+
+#[test]
+fn definition_selectors_and_quoted_hash_fields_in_params_paths() {
+    let definition = r##"
+package demo
+#P: {#D: 1, "#D": 2}
+params: {g: #P, v: params.g.#D}
+"##;
+    let file = ostinato_lang::parse(definition).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("definition selector");
+    assert_eq!(value.to_json().expect("json")["params"]["v"], 1);
+
+    let single = r##"
+package demo
+#P: {#D: 1}
+params: {g: #P, v: params.g.#D}
+"##;
+    let file = ostinato_lang::parse(single).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("definition-only selector");
+    assert_eq!(value.to_json().expect("json")["params"]["v"], 1);
+
+    let quoted_only = r##"
+package demo
+params: {"#D": 2, v: params.#D}
+"##;
+    let file = ostinato_lang::parse(quoted_only).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "identifier #D must not reach a quoted #D field"
+    );
+}
+
+#[test]
+fn generated_quoted_hash_and_control_labels_are_selectable() {
+    let hash = r##"
+package demo
+params: {#D: 1, for k in ["#D"] {"\(k)": 2}, v: params."#D"}
+"##;
+    let file = ostinato_lang::parse(hash).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated quote");
+    assert_eq!(value.to_json().expect("json")["params"]["v"], 2);
+
+    let control =
+        "package demo\nparams: {for k in [\"\u{3}a\"] {\"\\(k)\": 1}, v: params.\"\u{3}a\"}\n";
+    let file = ostinato_lang::parse(control).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated control");
+    assert_eq!(value.to_json().expect("json")["params"]["v"], 1);
+
+    let escaped =
+        "package demo\nparams: {for k in [\"\u{4}a\"] {\"\\(k)\": 1}, v: params.\"\u{4}a\"}\n";
+    let file = ostinato_lang::parse(escaped).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated escaped");
+    assert_eq!(value.to_json().expect("json")["params"]["v"], 1);
+}
