@@ -171,9 +171,12 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
             .map(|node| names[node].clone())
             .collect();
         if !cyclic_steps.is_empty() {
-            return Err(DomainError::GatewayCycleUnsupported {
-                steps: cyclic_steps,
-            });
+            let steps = cyclic_steps
+                .iter()
+                .map(|step| format!("workflow.steps.{step}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(DomainError::GatewayCycleUnsupported { steps });
         }
         for (node, name) in names.iter().enumerate() {
             let is_gateway = spec.steps[name].kind == StepKind::Gateway;

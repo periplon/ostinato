@@ -68,9 +68,9 @@ pub enum DomainError {
         reference: String,
     },
     #[error(
-        "workflow combines gateways and cycles (workflow.steps.{steps:?}); gateways inside cycles are not supported in v1"
+        "workflow combines gateways and cycles ({steps}); gateways inside cycles are not supported in v1"
     )]
-    GatewayCycleUnsupported { steps: Vec<String> },
+    GatewayCycleUnsupported { steps: String },
     #[error(
         "workflow.steps.{0} has more than one incoming edge in a gateway workflow; use an explicit join gateway"
     )]

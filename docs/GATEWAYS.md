@@ -268,10 +268,10 @@ workflow: {
             gateway: {
                 split: "xor"
                 branches: {
-                    fast: "steps.test.score >= 0.9"
-                    slow: true          // fallback only; selected via `default`
+                    deployFast: "steps.test.score >= 0.9"
+                    deploySlow: true    // fallback only; selected via `default`
                 }
-                default: "slow"
+                default: "deploySlow"
             }
         }
 
