@@ -1,12 +1,12 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.rLFG5mkGvh/db.sqlite trials 3918cd6d-5c3b-44c7-be44-43161f54ba4e
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.g4Qxbde0k8/db.sqlite trials c17e93eb-a0a5-45d4-8de3-072dbce3f635
 
 STEP                 ROUND ATTEMPT STATUS   SCORE      DUR(ms)  ERROR
-setup                0     0      succeeded 1.000      22       
-refine               0     0      succeeded 1.000      9        
-review               0     0      succeeded 0.300      16       
-refine               1     0      succeeded 1.000      9        
-review               1     0      succeeded 0.600      13       
-refine               2     0      succeeded 1.000      7        
-review               2     0      succeeded 0.900      14       
+setup                0     0      succeeded 1.000      10       
+refine               0     0      succeeded 1.000      5        
+review               0     0      succeeded 0.300      9        
+refine               1     0      succeeded 1.000      5        
+review               1     0      succeeded 0.600      8        
+refine               2     0      succeeded 1.000      5        
+review               2     0      succeeded 0.900      9        
 
 exit=0

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.9
+
+Imported hidden fields and sentinel labels.
+
+- Imported packages drop package-hidden `_name` fields at the boundary, so
+  importer hidden fields stay distinct and cannot read `lib._h`.
+- Quoted selectors/indexes for labels beginning with internal sentinel
+  characters consult only escaped storage; U+0001 labels round-trip.
+- 229 tests (35 CLI E2E, 1 conformance, 183 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.8
 
 Quoted hash labels on struct values.

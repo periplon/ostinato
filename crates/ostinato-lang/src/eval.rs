@@ -735,7 +735,10 @@ impl<'a> Frame<'a> {
         hidden: bool,
     ) {
         let mut fields = self.fields.borrow_mut();
-        let name = if !hidden && !definition && name.starts_with([HIDDEN_PREFIX, ESCAPED_PREFIX]) {
+        let name = if !hidden
+            && !definition
+            && name.starts_with([HIDDEN_PREFIX, ESCAPED_PREFIX, NON_DEFINITION_PREFIX])
+        {
             escaped_field(&name)
         } else {
             name
@@ -1958,6 +1961,14 @@ impl<'a> Frame<'a> {
     }
 }
 
+fn quoted_lookup<'m, V>(map: &'m BTreeMap<String, V>, field: &str) -> Option<&'m V> {
+    if field.starts_with([HIDDEN_PREFIX, ESCAPED_PREFIX, NON_DEFINITION_PREFIX]) {
+        map.get(&escaped_field(field))
+    } else {
+        map.get(field).or_else(|| map.get(&escaped_field(field)))
+    }
+}
+
 fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<Value, LangError> {
     let missing = || {
         LangError::eval(
@@ -1972,7 +1983,7 @@ fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<
                 return Err(missing());
             }
             let selected = if quoted {
-                map.get(field).or_else(|| map.get(&escaped_field(field)))
+                quoted_lookup(map, field)
             } else {
                 Frame::map_identifier_key(map, field).and_then(|key| map.get(key))
             };
@@ -1984,10 +1995,7 @@ fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<
             ..
         } => {
             let selected = if quoted {
-                fields
-                    .get(field)
-                    .or_else(|| fields.get(&escaped_field(field)))
-                    .cloned()
+                quoted_lookup(fields, field).cloned()
             } else if field.starts_with('#') {
                 definitions.get(field).cloned()
             } else {
@@ -2079,7 +2087,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         ));
                     }
                     let selected = if *quoted {
-                        map.get(field).or_else(|| map.get(&escaped_field(field)))
+                        quoted_lookup(&map, field)
                     } else {
                         Frame::map_identifier_key(&map, field).and_then(|key| map.get(key))
                     };
@@ -2098,10 +2106,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     ..
                 } => {
                     let selected = if *quoted {
-                        fields
-                            .get(field)
-                            .or_else(|| fields.get(&escaped_field(field)))
-                            .cloned()
+                        quoted_lookup(&fields, field).cloned()
                     } else if field.starts_with('#') {
                         definitions.get(field).cloned()
                     } else {
@@ -2197,17 +2202,15 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                             format!("field `{key}` not found in struct"),
                         )
                     }),
-                (Value::Definition { fields, .. }, Value::String(key)) => fields
-                    .get(&key)
-                    .or_else(|| fields.get(&escaped_field(&key)))
-                    .cloned()
-                    .ok_or_else(|| {
+                (Value::Definition { fields, .. }, Value::String(key)) => {
+                    { quoted_lookup(&fields, &key).cloned() }.ok_or_else(|| {
                         LangError::eval(
                             span.line,
                             span.col,
                             format!("field `{key}` not found in struct"),
                         )
-                    }),
+                    })
+                }
                 (other, _) => Err(LangError::eval(
                     span.line,
                     span.col,
@@ -2564,6 +2567,57 @@ fn close_nested(value: &Value) -> Value {
             defaults.clone(),
         ),
         other => other.clone(),
+    }
+}
+
+/// Remove package-hidden `_name` fields from an imported package value.
+#[must_use]
+pub fn strip_hidden(value: Value) -> Value {
+    match value {
+        Value::Struct(fields) => Value::Struct(
+            fields
+                .into_iter()
+                .filter(|(key, _)| !is_hidden_key(key))
+                .map(|(key, value)| (key, strip_hidden(value)))
+                .collect(),
+        ),
+        Value::Definition {
+            fields,
+            optional,
+            definitions,
+            patterns,
+            closed,
+            open,
+            admissions,
+        } => Value::Definition {
+            fields: fields
+                .into_iter()
+                .filter(|(key, _)| !is_hidden_key(key))
+                .map(|(key, value)| (key, strip_hidden(value)))
+                .collect(),
+            optional: optional
+                .into_iter()
+                .filter(|(key, _)| !is_hidden_key(key))
+                .map(|(key, value)| (key, strip_hidden(value)))
+                .collect(),
+            definitions: definitions
+                .into_iter()
+                .map(|(key, value)| (key, strip_hidden(value)))
+                .collect(),
+            patterns: patterns
+                .into_iter()
+                .map(|(pattern, value)| (pattern, strip_hidden(value)))
+                .collect(),
+            closed,
+            open,
+            admissions,
+        },
+        Value::List(values) => Value::List(values.into_iter().map(strip_hidden).collect()),
+        Value::Disjunction(alternatives, defaults) => Value::Disjunction(
+            alternatives.into_iter().map(strip_hidden).collect(),
+            defaults,
+        ),
+        other => other,
     }
 }
 
