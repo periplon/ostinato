@@ -4324,3 +4324,23 @@ x: lib.h._h
     let file = ostinato_lang::parse(leak).expect("parse");
     assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
 }
+
+#[test]
+fn struct_string_indexes_respect_sentinel_namespaces() {
+    let mixed = "package demo\ns: {_h: 3, \"\u{3}_h\": 4}\ni: s[\"\u{3}_h\"]\n";
+    let file = ostinato_lang::parse(mixed).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("sentinel index");
+    assert_eq!(value.to_json().expect("json")["i"], 4);
+
+    let hidden_only = "package demo\ns: {_h: 3}\ni: s[\"\u{3}_h\"]\n";
+    let file = ostinato_lang::parse(hidden_only).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "sentinel index must not read hidden storage"
+    );
+
+    let params = "package demo\nparams: {s: {_h: 3, \"\u{3}_h\": 4}, i: params.s[\"\u{3}_h\"]}\n";
+    let file = ostinato_lang::parse(params).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("params sentinel index");
+    assert_eq!(value.to_json().expect("json")["params"]["i"], 4);
+}
