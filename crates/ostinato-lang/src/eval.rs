@@ -487,16 +487,29 @@ fn prefixed_field(name: &str) -> String {
     format!("{NON_DEFINITION_PREFIX}{name}")
 }
 
+/// Prefix for an identifier-hidden field (`_name`).
+const HIDDEN_PREFIX: char = '\u{3}';
+
+fn hidden_field(name: &str) -> String {
+    format!("{HIDDEN_PREFIX}{name}")
+}
+
+fn is_hidden_key(key: &str) -> bool {
+    key.starts_with(HIDDEN_PREFIX)
+}
+
 fn display_field_name(key: &str) -> &str {
-    key.strip_prefix(NON_DEFINITION_PREFIX).unwrap_or(key)
+    key.strip_prefix(NON_DEFINITION_PREFIX)
+        .or_else(|| key.strip_prefix(HIDDEN_PREFIX))
+        .unwrap_or(key)
 }
 
 #[derive(Debug)]
 struct ParamsContext {
     items: Vec<StructItem>,
     overrides: BTreeMap<String, Value>,
-    values: RefCell<BTreeMap<String, Value>>,
-    evaluating: RefCell<HashSet<String>>,
+    values: RefCell<BTreeMap<Vec<String>, Value>>,
+    evaluating: RefCell<HashSet<Vec<String>>>,
 }
 
 struct Frame<'a> {
@@ -564,6 +577,7 @@ impl<'a> Frame<'a> {
                             field.optional,
                             field.definition,
                             !field.quoted,
+                            !field.quoted && name.starts_with('_'),
                         );
                         if let Some(alias) = &field.alias {
                             frame.aliases.borrow_mut().insert(
@@ -609,6 +623,7 @@ impl<'a> Frame<'a> {
                             key.clone(),
                             field.value.clone(),
                             field.optional,
+                            false,
                             false,
                             false,
                         );
@@ -686,9 +701,12 @@ impl<'a> Frame<'a> {
         optional: bool,
         definition: bool,
         bindable: bool,
+        hidden: bool,
     ) {
         let mut fields = self.fields.borrow_mut();
-        let key = if definition {
+        let key = if hidden && !definition {
+            hidden_field(&name)
+        } else if definition {
             // A definition and a quoted regular field of the same name are
             // distinct fields; keep the regular one under a marked key.
             if let Some(existing) = fields.remove(&name) {
@@ -725,34 +743,44 @@ impl<'a> Frame<'a> {
         if fields.get(name).is_some_and(|def| def.bindable) {
             return Some(name.to_owned());
         }
-        let prefixed = prefixed_field(name);
-        if fields.get(&prefixed).is_some_and(|def| def.bindable) {
-            return Some(prefixed);
-        }
-        None
+        [prefixed_field(name), hidden_field(name)]
+            .into_iter()
+            .find(|prefixed| fields.get(prefixed).is_some_and(|def| def.bindable))
     }
 
-    fn field_storage_key(&self, name: &str) -> Option<String> {
-        self.regular_field_key(name).or_else(|| {
-            self.fields
-                .borrow()
-                .contains_key(name)
-                .then(|| prefixed_field(name))
-        })
-    }
-
-    fn stored_field_key(&self, name: &str) -> Option<String> {
+    fn any_field_key(&self, name: &str) -> Option<String> {
         let fields = self.fields.borrow();
         if fields.contains_key(name) {
             return Some(name.to_owned());
         }
-        let prefixed = prefixed_field(name);
-        fields.contains_key(&prefixed).then_some(prefixed)
+        [prefixed_field(name), hidden_field(name)]
+            .into_iter()
+            .find(|prefixed| fields.contains_key(prefixed))
+    }
+
+    fn field_storage_key(&self, name: &str) -> Option<String> {
+        self.regular_field_key(name).or_else(|| {
+            let fields = self.fields.borrow();
+            if fields.contains_key(name) {
+                Some(prefixed_field(name))
+            } else if fields.contains_key(&hidden_field(name)) {
+                Some(hidden_field(name))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn stored_field_key(&self, name: &str) -> Option<String> {
+        self.any_field_key(name)
     }
 
     fn regular_field_key(&self, name: &str) -> Option<String> {
         let fields = self.fields.borrow();
-        if fields.get(name).is_some_and(|def| !def.definition) {
+        if fields
+            .get(name)
+            .is_some_and(|def| !def.definition && !is_hidden_key(name))
+        {
             return Some(name.to_owned());
         }
         let prefixed = prefixed_field(name);
@@ -1017,7 +1045,7 @@ impl<'a> Frame<'a> {
                 "params are not being evaluated",
             ));
         };
-        let cache_key = path.join(".");
+        let cache_key = path.to_vec();
         if let Some(value) = context.values.borrow().get(&cache_key) {
             return Ok(value.clone());
         }
@@ -1025,126 +1053,119 @@ impl<'a> Frame<'a> {
             return Err(LangError::eval(
                 span.line,
                 span.col,
-                format!("cyclic reference while evaluating `params.{cache_key}`"),
+                format!(
+                    "cyclic reference while evaluating `params.{}`",
+                    path.join(".")
+                ),
             ));
         }
         context.evaluating.borrow_mut().insert(cache_key.clone());
         let result = (|| {
             let root = self.root_frame();
             let mut items = context.items.clone();
-            for segment in &path[..path.len().saturating_sub(1)] {
-                let mut value_expr = None;
-                for item in &items {
-                    if let StructItem::Field(field) = item
-                        && let crate::ast::Label::Name(name, _) = &field.label
-                        && name == segment
-                    {
-                        value_expr = Some(field.value.clone());
-                        break;
+            for (index, segment) in path.iter().enumerate() {
+                let child = Frame::from_static(&items, Some(root), HashMap::new())?;
+                child.params_scope.set(true);
+                child.expand(&items)?;
+                if index == 0 {
+                    for (key, value) in &context.overrides {
+                        child.values.borrow_mut().insert(key.clone(), value.clone());
                     }
                 }
-                let Some(value_expr) = value_expr else {
+                child.reconcile_generated_required_fields()?;
+                let field_key = child.any_field_key(segment);
+                let overridden = index == 0 && context.overrides.contains_key(segment);
+                if let Some(key) = &field_key {
+                    let optional = child
+                        .fields
+                        .borrow()
+                        .get(key)
+                        .is_some_and(|definition| definition.optional);
+                    if optional
+                        && !overridden
+                        && !child.materialized.borrow().contains(segment)
+                        && !child.values.borrow().contains_key(segment)
+                        && !child.values.borrow().contains_key(key)
+                    {
+                        return Err(LangError::eval(
+                            span.line,
+                            span.col,
+                            format!("cannot reference optional field `{segment}`"),
+                        ));
+                    }
+                }
+                let is_final = index + 1 == path.len();
+                if overridden {
+                    let value = context
+                        .overrides
+                        .get(segment)
+                        .cloned()
+                        .unwrap_or(Value::Bottom);
+                    if is_final {
+                        return Ok(value);
+                    }
+                    let mut value = value;
+                    for field in &path[index + 1..] {
+                        value = select_value(&value, field, span)?;
+                    }
+                    return Ok(value);
+                }
+                if let Some(key) = field_key {
+                    if is_final {
+                        return child.eval_field_key(&key, span);
+                    }
+                    let struct_items = {
+                        let exprs = child
+                            .fields
+                            .borrow()
+                            .get(&key)
+                            .map(|definition| definition.exprs.clone())
+                            .unwrap_or_default();
+                        let mut out = Vec::new();
+                        let mut seen = HashSet::new();
+                        let mut complete = true;
+                        for expr in &exprs {
+                            if child
+                                .collect_struct_items(expr, &mut out, &mut seen, 0)
+                                .is_none()
+                            {
+                                complete = false;
+                                break;
+                            }
+                        }
+                        if complete && !out.is_empty() {
+                            Some(out)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(next_items) = struct_items {
+                        items = next_items;
+                        continue;
+                    }
+                    let mut value = child.eval_field_key(&key, span)?;
+                    for field in &path[index + 1..] {
+                        value = select_value(&value, field, span)?;
+                    }
+                    return Ok(value);
+                }
+                let generated = child.values.borrow().get(segment).cloned();
+                let Some(mut value) = generated else {
                     return Err(LangError::eval(
                         span.line,
                         span.col,
                         format!("field `{segment}` not found in params"),
                     ));
                 };
-                let struct_expr = match &value_expr {
-                    Expr::Struct(inner, _) => inner.clone(),
-                    Expr::Paren(inner, _) => match &**inner {
-                        Expr::Struct(inner, _) => inner.clone(),
-                        _ => {
-                            let child = Frame::from_static(&items, Some(root), HashMap::new())?;
-                            child.expand(&items)?;
-                            let mut value = eval_expr(&value_expr, &child)?;
-                            let remaining = path
-                                .iter()
-                                .position(|value| value == segment)
-                                .map_or(&[][..], |index| &path[index + 1..]);
-                            for field in remaining {
-                                value = select_value(&value, field, span)?;
-                            }
-                            return Ok(value);
-                        }
-                    },
-                    _ => {
-                        let child = Frame::from_static(&items, Some(root), HashMap::new())?;
-                        child.expand(&items)?;
-                        let mut value = eval_expr(&value_expr, &child)?;
-                        let remaining = path
-                            .iter()
-                            .position(|value| value == segment)
-                            .map_or(&[][..], |index| &path[index + 1..]);
-                        for field in remaining {
-                            value = select_value(&value, field, span)?;
-                        }
-                        return Ok(value);
-                    }
-                };
-                items = struct_expr;
-            }
-            let Some(final_name) = path.last() else {
-                return Err(LangError::eval(span.line, span.col, "empty params path"));
-            };
-            let child = Frame::from_static(&items, Some(root), HashMap::new())?;
-            child.params_scope.set(true);
-            child.expand(&items)?;
-            child.reconcile_generated_required_fields()?;
-            for (key, value) in &context.overrides {
-                child.values.borrow_mut().insert(key.clone(), value.clone());
-            }
-            let optional = child
-                .fields
-                .borrow()
-                .get(final_name)
-                .is_some_and(|definition| definition.optional);
-            let overridden = path.len() == 1 && context.overrides.contains_key(final_name);
-            if optional
-                && !overridden
-                && !child.materialized.borrow().contains(final_name)
-                && !child.values.borrow().contains_key(final_name)
-            {
-                return Err(LangError::eval(
-                    span.line,
-                    span.col,
-                    format!("cannot reference optional field `{final_name}`"),
-                ));
-            }
-            if overridden {
-                child.values.borrow_mut().remove(final_name);
-                let exprs = child
-                    .fields
-                    .borrow()
-                    .get(final_name)
-                    .map(|definition| definition.exprs.clone())
-                    .unwrap_or_default();
-                let override_value = context
-                    .overrides
-                    .get(final_name)
-                    .cloned()
-                    .unwrap_or(Value::Bottom);
-                let mut result: Option<Value> = None;
-                for expr in &exprs {
-                    let candidate = eval_with_override(expr, &child, &override_value, span)?;
-                    result = Some(match result {
-                        None => candidate,
-                        Some(current) => unify_values(&current, &candidate, span)?,
-                    });
+                if is_final {
+                    return Ok(value);
                 }
-                result.ok_or_else(|| {
-                    LangError::eval(
-                        span.line,
-                        span.col,
-                        format!("unknown parameter `{final_name}`"),
-                    )
-                })
-            } else {
-                let key = child
-                    .regular_field_key(final_name)
-                    .unwrap_or_else(|| final_name.clone());
-                child.eval_field_key(&key, span)
+                for field in &path[index + 1..] {
+                    value = select_value(&value, field, span)?;
+                }
+                return Ok(value);
             }
+            Err(LangError::eval(span.line, span.col, "empty params path"))
         })();
         context.evaluating.borrow_mut().remove(&cache_key);
         let value = result?;
@@ -1311,6 +1332,9 @@ impl<'a> Frame<'a> {
         let mut optional = BTreeMap::new();
         let mut definitions = BTreeMap::new();
         for name in names {
+            if is_hidden_key(&name) {
+                continue;
+            }
             let display = display_field_name(&name).to_owned();
             let defined = child.fields.borrow().get(&name).cloned();
             if defined.as_ref().is_some_and(|field| field.definition) {
@@ -1560,9 +1584,8 @@ impl<'a> Frame<'a> {
                 self.apply_closed_params(right, result, span)?;
             }
             Expr::Ident(name, _) if name != "params" => {
-                if let Ok(value) = self.lookup(name, span)
-                    && matches!(value, Value::Definition { closed: true, .. })
-                {
+                let value = self.lookup(name, span)?;
+                if matches!(value, Value::Definition { closed: true, .. }) {
                     *result = unify_values(result, &value, span)?;
                 }
             }
@@ -1630,7 +1653,8 @@ impl<'a> Frame<'a> {
             fields
                 .iter()
                 .filter(|(name, definition)| {
-                    (include_definitions || !definition.definition)
+                    !is_hidden_key(name)
+                        && (include_definitions || !definition.definition)
                         && !generated.contains_key(display_field_name(name))
                 })
                 .map(|(name, _)| name.clone())
@@ -1663,6 +1687,9 @@ impl<'a> Frame<'a> {
             }
         }
         for (name, value) in self.values.borrow().iter() {
+            if is_hidden_key(name) {
+                continue;
+            }
             let definition = self
                 .fields
                 .borrow()
@@ -2277,7 +2304,7 @@ fn close_nested(value: &Value) -> Value {
 }
 
 fn admitted(admissions: &[Admission], key: &str, span: Span) -> Result<bool, LangError> {
-    if admissions.is_empty() || key.starts_with('_') {
+    if admissions.is_empty() || is_hidden_key(key) {
         return Ok(true);
     }
     for admission in admissions {
