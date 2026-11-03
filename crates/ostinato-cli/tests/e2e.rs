@@ -2252,3 +2252,52 @@ workflow: {
     );
     assert_eq!(json(&output)["workflow"]["name"], "Z|H:9|5|5");
 }
+
+#[test]
+fn selector_tags_follow_definitions_duplicates_and_scope() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("selector-scope.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+#Config: {database: {host: string | *"d" @tag(h), copy: host}}
+config: #Config
+A: {host: string | *"d" @tag(a)}
+B: {port: int | *1 @tag(b, type=int)}
+local: database: {def: A, def: B, db: def}
+#P: {port: int | *1 @tag(n, type=int)}
+helper: {#P: {port: int | *1 @tag(n, type=int)}, direct: #P.port}
+params: {
+    db: config.database
+    x: local.database.db
+    b: helper.direct
+    other: {port: int | *1 @tag(n, type=int)}
+}
+workflow: {
+    name: "\(params.db.host)|\(params.db.copy)|\(params.x.port)|\(params.b)|\(params.other.port)"
+    steps: {s: {kind: "noop"}}
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "h=x",
+        "-p",
+        "b=2",
+        "-p",
+        "n=5",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json(&output)["workflow"]["name"], "x|x|2|5|5");
+}
