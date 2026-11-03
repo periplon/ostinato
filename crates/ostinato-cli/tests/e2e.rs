@@ -2378,3 +2378,49 @@ workflow: {name: "\(params.x)|\(params.c)|\(params.inline)|\(params.unified)|\(p
         assert_eq!(json(&output)["workflow"]["name"], expected, "{name}");
     }
 }
+
+#[test]
+fn nested_tag_aliases_resolve_at_their_written_scope() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("alias-scope.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+A=#Q: {port: int | *1 @tag(glob, type=int)}
+outer: {
+    #Q: {port: int | *2 @tag(loc, type=int)}
+    v: A.port
+    w: #Q.port
+}
+C=#S: {port: int | *1 @tag(n, type=int)}
+outer2: {
+    #S: {port: int | *2 @tag(n, type=int)}
+    v: C.port
+    w: #S.port
+}
+params: {x: outer.v, y: outer.w, m: outer2.v, k: outer2.w}
+workflow: {name: "\(params.x)|\(params.y)|\(params.m)|\(params.k)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "glob=5",
+        "-p",
+        "loc=6",
+        "-p",
+        "n=7",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json(&output)["workflow"]["name"], "5|6|7|7");
+}

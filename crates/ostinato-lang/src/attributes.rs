@@ -263,28 +263,28 @@ impl Collector<'_> {
                 result
             }
             Expr::Ident(name, _) => {
-                let target = self
-                    .definition_aliases
-                    .get(name)
-                    .map_or(name.as_str(), String::as_str);
                 let local = self
                     .local_definitions
                     .iter()
                     .rev()
-                    .find_map(|scope| scope.get(target));
-                let values = match local {
-                    Some(values) => values.clone(),
+                    .find_map(|scope| scope.get(name));
+                let (values, target) = match local {
+                    Some(values) => (values.clone(), name.clone()),
                     None => {
+                        let target = self
+                            .definition_aliases
+                            .get(name)
+                            .map_or(name.as_str(), String::as_str);
                         let Some(values) = self.definitions.get(target) else {
                             return Ok(());
                         };
-                        values.clone()
+                        (values.clone(), target.to_owned())
                     }
                 };
-                if self.visiting.iter().any(|value| value == target) {
+                if self.visiting.iter().any(|value| value == &target) {
                     return Ok(());
                 }
-                self.visiting.push(target.to_owned());
+                self.visiting.push(target);
                 let mut result = Ok(());
                 for (path, value) in &values {
                     result = self.expr(value, prefix, Some(path), &[], path);
@@ -300,15 +300,16 @@ impl Collector<'_> {
     }
 
     fn lookup_scoped(&self, scopes: &[DefinitionMap], name: &str) -> Option<Lookup> {
+        // Lexical bindings win over package-level aliases.
+        for (index, scope) in scopes.iter().enumerate().rev() {
+            if let Some(values) = scope.get(name) {
+                return Some((values.clone(), Some(index)));
+            }
+        }
         let target = self
             .definition_aliases
             .get(name)
             .map_or(name, String::as_str);
-        for (index, scope) in scopes.iter().enumerate().rev() {
-            if let Some(values) = scope.get(target) {
-                return Some((values.clone(), Some(index)));
-            }
-        }
         self.definitions
             .get(target)
             .cloned()

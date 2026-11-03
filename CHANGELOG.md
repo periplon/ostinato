@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.8.9
+
+Alias scope resolution for `@tag` discovery.
+
+- Lexical bindings win over package-level definition aliases, so `A=#Q` inside
+  a struct that also declares a local `#Q` resolves `A` to the package-level
+  declaration and injects its tag.
+- Same-name and distinct-name alias/local shadowing match CUE for discovery and
+  injection.
+- 262 tests (46 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.8
 
 CUE label identity and full selector scopes for `@tag` discovery.
