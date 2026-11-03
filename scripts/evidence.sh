@@ -99,6 +99,15 @@ AGENT_RUN=$("$BIN" --db "$WORK/agent.sqlite" --json runs | python3 -c 'import js
 section 15-improve "$BIN" --db "$WORK/agent.sqlite" improve "$AGENT_RUN" --rounds 2 --agent-cmd "$ROOT/examples/agent.sh"
 section 16-children "$BIN" --db "$WORK/agent.sqlite" runs
 
+# Gateways: XOR routing, dead-path skips, OR join, metrics and audit.
+section 18-gateways-run "$BIN" --db "$WORK/gateway.sqlite" --cue "$CUE_BIN" run examples/gateway.cue
+GATEWAY_RUN=$("$BIN" --db "$WORK/gateway.sqlite" --json runs | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
+section 18-gateways-status "$BIN" --db "$WORK/gateway.sqlite" status "$GATEWAY_RUN"
+section 18-gateways-logs "$BIN" --db "$WORK/gateway.sqlite" logs "$GATEWAY_RUN"
+section 18-gateways-trials "$BIN" --db "$WORK/gateway.sqlite" trials "$GATEWAY_RUN"
+section 18-gateways-metrics "$BIN" --db "$WORK/gateway.sqlite" metrics --run "$GATEWAY_RUN" --format prometheus
+section 18-gateways-audit "$BIN" --db "$WORK/gateway.sqlite" audit verify "$GATEWAY_RUN"
+
 # Tamper detection: mutate an audit payload and prove verification fails.
 python3 - "$BIN" "$WORK/agent.sqlite" "$AGENT_RUN" <<'PY' >evidence/17-tamper.txt 2>&1 || true
 import sqlite3, subprocess, sys

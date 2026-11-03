@@ -142,12 +142,22 @@ ostinato_runs_failed_total
 ostinato_runs_running
 ostinato_steps_total
 ostinato_steps_failed_total
+ostinato_steps_skipped_total
+ostinato_gateways_evaluated_total
 ostinato_attempts_total
 ostinato_retries_total
 ostinato_attempt_duration_ms_avg
 ```
 
 For a scrape endpoint, run `ostinato metrics --format prometheus` from a tiny cron/systemd timer and serve the file with your existing exporter. Ostinato itself stays CLI-only.
+
+`steps_skipped` counts dead-path rows (`status = "skipped"`) and
+`gateways_evaluated` counts `gateway.evaluated` + `gateway.joined` events. A
+gateway re-evaluated after a failed group is resumed is counted again; this is
+an evaluation counter, not a distinct-node counter. Skipped rows are never
+counted as failures. Use `ostinato status <run>` to see `skipped` rows and
+`ostinato logs <run>` for `step.skipped`, `gateway.evaluated`,
+`gateway.joined` and `gateway.failed` details.
 
 ## Logs
 

@@ -67,8 +67,9 @@ The Rust evaluator handles package selection, same-package sibling files, import
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `kind` | `"exec"`, `"agent"`, `"improve"`, `"noop"` | `"exec"` | Step implementation |
+| `kind` | `"exec"`, `"agent"`, `"improve"`, `"noop"`, `"gateway"` | `"exec"` | Step implementation |
 | `needs` | `[...string]` or `string` | `[]` | Dependencies |
+| `gateway` | object | none | Split/join routing; required for `kind: "gateway"`, forbidden otherwise |
 | `retry` | object or int | `{}` | Retry policy; an int is shorthand for `max` |
 | `retry.max` | `int 0..=100` | `0` | Retries **after** the first attempt |
 | `retry.baseMs` | `int >= 0` | `100` | Base backoff |
@@ -140,6 +141,69 @@ The same primitive is exposed as `ostinato improve <run> --rounds N`, which crea
 - Steps with no dependency edge between them may share a plan group and run concurrently, bounded by `maxParallel`.
 - A dependency on a step in an earlier group always waits for that group's transaction.
 - A step cannot depend on itself unless it declares a `cycle`; that is a self-loop cycle.
+
+## Gateways
+
+A gateway is a normal step with `kind: "gateway"` and a `gateway` payload. It
+performs no I/O and is recorded as a `steps` row whose output captures the
+routing decision. Gateways are either a **split** (one input, zero or more
+outgoing branches) or a **join** (several inputs, one output).
+
+```cue
+route: {
+	kind:  "gateway"
+	needs: ["test"]
+	gateway: {
+		split: "xor"                    // "xor" | "or" | "and"
+		branches: {
+			deployFast: "steps.test.score >= 0.9"
+			deploySlow: true            // fallback, selected via `default`
+		}
+		default: "deploySlow"           // XOR/OR only
+	}
+}
+merge: {
+	kind:  "gateway"
+	needs: ["deployFast", "deploySlow"]
+	gateway: {join: "or"}               // "and" | "or" | "xor"
+}
+```
+
+Rules:
+
+- `branches` is keyed by **target step name**. The compiler adds the implicit
+  `route -> target` edge; branch targets must have an empty `needs`.
+- A split gateway selects branches by evaluating each condition against
+  `params`, `run_id`, `workflow`, `round`, `steps` and `stepStatus`.
+- `and` activates every branch and forbids conditions and `default`.
+- `or` activates every branch whose condition is true; `true` is
+  unconditional. If none is true the `default` branch is used.
+- `xor` activates exactly one branch: the unique true condition, or `default`.
+  More than one true condition is a run failure (`ambiguous`).
+- A join requires `needs` and forbids `branches`/`default`. `and` requires all
+  inputs active; `or` requires at least one; `xor` requires exactly one.
+- Once a workflow uses gateways, convergence must be an explicit join gateway:
+  a non-gateway step may have at most one incoming edge
+  (`ImplicitJoinWithGateways`).
+- Gateways and cycles cannot be combined in v1
+  (`GatewayCycleUnsupported`).
+- Branch conditions may only reference `params`, `run_id`, `workflow`,
+  `round`, `stepStatus` and outputs of transitive predecessor steps.
+- `retry`, `cycle`, `exec`, `agent`, `improve`, `timeoutMs` and
+  `continueOnError` are rejected on a gateway.
+
+`stepStatus.<step>` is derived from every committed step row, including
+`skipped` and `failed` (with `continueOnError`) rows. `steps.<step>` contains
+successful outputs only, so use `stepStatus.deploySlow == "skipped"` instead of
+reading a skipped step's output. Dead branches are recorded with
+`status = "skipped"`, `visits = 0` and `attempts = 0`, and emit a
+`step.skipped` audit event. A run whose remaining tail is entirely dead still
+succeeds.
+
+Joins are **barriers**: the materialised plan schedules a join after every
+incoming branch has reached a terminal state, so an `or` join fires once the
+group is reachable rather than as soon as one branch finishes. This preserves a
+static plan and exact `resume_index`.
 
 ## Cycles
 

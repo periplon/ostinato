@@ -11,6 +11,7 @@ use ostinato_lang::{eval_condition, render};
 use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
 
+use crate::activation::{self, Activation, ActivationError};
 use crate::error::{EngineError, Result};
 use crate::improve::{ImproveRequest, propose_improvement};
 use crate::ports::{
@@ -71,10 +72,17 @@ pub struct Engine {
 }
 
 struct NodeResult {
+    index: usize,
     step: StepRecord,
     event: NewEvent,
     hard_failure: bool,
     continue_on_error: bool,
+    skipped: bool,
+}
+
+struct GatewayFailure {
+    step: String,
+    error: String,
 }
 
 struct AttemptOutcome {
@@ -333,11 +341,19 @@ impl Engine {
         }
         let mut index = index;
 
-        let mut outputs: BTreeMap<String, Json> = self
+        let mut records: BTreeMap<String, StepRecord> = self
             .store
             .steps(&run.id)?
             .into_iter()
-            .filter_map(|step| step.output.map(|output| (step.name, output)))
+            .map(|step| (step.name.clone(), step))
+            .collect();
+        let mut outputs: BTreeMap<String, Json> = records
+            .values()
+            .filter_map(|step| {
+                step.output
+                    .clone()
+                    .map(|output| (step.name.clone(), output))
+            })
             .collect();
 
         while index < plan.nodes.len() {
@@ -354,8 +370,53 @@ impl Engine {
                 end += 1;
             }
             let group = plan.nodes[index..end].to_vec();
-            let context = self.context(&run, group[0].round, &outputs);
-            let results = self.execute_group(&run, &group, &context)?;
+            let context = self.context(&run, group[0].round, &outputs, &records);
+            let (mut results, to_execute, gateway_failure) =
+                self.activate_group(&run, &group, &context, &mut records, &mut outputs)?;
+
+            if let Some(failure) = gateway_failure {
+                let now = self.clock.now();
+                let resume_index = i64::try_from(group[0].index).unwrap_or(i64::MAX);
+                let error = failure.error.clone();
+                let mut group_events: Vec<NewEvent> =
+                    results.iter().map(|result| result.event.clone()).collect();
+                group_events.push(NewEvent::new(
+                    "run.failed",
+                    Some(failure.step.clone()),
+                    json!({"error": error, "resumeIndex": resume_index}),
+                ));
+                let completion = Completion {
+                    run_id: run.id.clone(),
+                    resume_index,
+                    status: RunStatus::Failed,
+                    error: Some(error.clone()),
+                    updated_at: now.clone(),
+                    steps: results.iter().map(|result| result.step.clone()).collect(),
+                    events: group_events,
+                };
+                let events = match self.store.complete(completion) {
+                    Ok(events) => events,
+                    Err(PortError::Cancelled(_)) => {
+                        run.status = RunStatus::Cancelled;
+                        run.updated_at = now;
+                        return self.report(&run, started);
+                    }
+                    Err(err) => return Err(err.into()),
+                };
+                for event in &events {
+                    self.telemetry.event(event);
+                }
+                self.emit_result_metrics(&results, &run.spec);
+                run.status = RunStatus::Failed;
+                run.error = Some(error);
+                run.resume_index = resume_index;
+                run.updated_at = now;
+                return self.report(&run, started);
+            }
+
+            let executed = self.execute_group(&run, &to_execute, &context)?;
+            results.extend(executed);
+            results.sort_by_key(|result| result.index);
 
             let aborting = results
                 .iter()
@@ -411,24 +472,18 @@ impl Engine {
             }
 
             for result in &results {
-                if result.step.status == StepStatus::Succeeded {
+                records.insert(result.step.name.clone(), result.step.clone());
+                if result.skipped {
+                    outputs.remove(&result.step.name);
+                } else if result.step.status == StepStatus::Succeeded {
                     if let Some(output) = &result.step.output {
                         outputs.insert(result.step.name.clone(), output.clone());
                     }
-                    self.telemetry.metric(
-                        "ostinato_step_success_total",
-                        1.0,
-                        &[("step", &result.step.name)],
-                    );
                 } else {
                     outputs.remove(&result.step.name);
-                    self.telemetry.metric(
-                        "ostinato_step_failure_total",
-                        1.0,
-                        &[("step", &result.step.name)],
-                    );
                 }
             }
+            self.emit_result_metrics(&results, &run.spec);
 
             if aborting {
                 run.status = RunStatus::Failed;
@@ -451,7 +506,7 @@ impl Engine {
                     continue;
                 };
                 round_checked = true;
-                let context = self.context(&run, node.round, &outputs);
+                let context = self.context(&run, node.round, &outputs, &records);
                 let done = match eval_condition(until, &context) {
                     Ok(done) => done,
                     Err(err) => {
@@ -622,10 +677,23 @@ impl Engine {
         })
     }
 
-    fn context(&self, run: &RunRecord, round: u32, outputs: &BTreeMap<String, Json>) -> Json {
+    fn context(
+        &self,
+        run: &RunRecord,
+        round: u32,
+        outputs: &BTreeMap<String, Json>,
+        records: &BTreeMap<String, StepRecord>,
+    ) -> Json {
         let mut steps = Map::new();
         for (name, value) in outputs {
             steps.insert(name.clone(), value.clone());
+        }
+        let mut step_status = Map::new();
+        for (name, record) in records {
+            step_status.insert(
+                name.clone(),
+                Json::String(record.status.as_str().to_owned()),
+            );
         }
         json!({
             "run_id": run.id,
@@ -633,7 +701,346 @@ impl Engine {
             "round": round,
             "params": run.params.clone(),
             "steps": steps,
+            "stepStatus": step_status,
         })
+    }
+
+    /// Pure activation pass over a group. Produces gateway/skip rows and
+    /// returns the normal steps that still need execution.
+    fn activate_group(
+        &self,
+        run: &RunRecord,
+        group: &[PlanNode],
+        context: &Json,
+        records: &mut BTreeMap<String, StepRecord>,
+        outputs: &mut BTreeMap<String, Json>,
+    ) -> Result<(Vec<NodeResult>, Vec<PlanNode>, Option<GatewayFailure>)> {
+        let mut results = Vec::new();
+        let mut to_execute = Vec::new();
+
+        for node in group {
+            let activation = activation::decide(node, records, &run.spec)
+                .map_err(|err| EngineError::InvalidState(err.to_string()))?;
+            match activation {
+                Activation::Dead { reason } => {
+                    if records
+                        .get(&node.step)
+                        .is_some_and(|record| record.status == StepStatus::Skipped)
+                    {
+                        // The row and its event were committed by a previous
+                        // attempt of this group. Do not duplicate the audit
+                        // event or the skip metric on resume.
+                        continue;
+                    }
+                    let now = self.clock.now();
+                    let record = StepRecord {
+                        run_id: run.id.clone(),
+                        name: node.step.clone(),
+                        status: StepStatus::Skipped,
+                        visits: 0,
+                        attempts: 0,
+                        output: None,
+                        error: None,
+                        updated_at: now,
+                    };
+                    let event = NewEvent::new(
+                        "step.skipped",
+                        Some(node.step.clone()),
+                        json!({
+                            "step": node.step,
+                            "reason": reason,
+                            "round": node.round,
+                        }),
+                    );
+                    records.insert(node.step.clone(), record.clone());
+                    outputs.remove(&node.step);
+                    results.push(NodeResult {
+                        index: node.index,
+                        step: record,
+                        event,
+                        hard_failure: false,
+                        continue_on_error: false,
+                        skipped: true,
+                    });
+                }
+                Activation::Fail { error } => {
+                    let now = self.clock.now();
+                    let record = StepRecord {
+                        run_id: run.id.clone(),
+                        name: node.step.clone(),
+                        status: StepStatus::Failed,
+                        visits: node.round,
+                        attempts: 0,
+                        output: None,
+                        error: Some(error.clone()),
+                        updated_at: now,
+                    };
+                    let mode = node.gateway.as_ref().map_or("gateway", |gateway| {
+                        if gateway.split.is_some() {
+                            "split"
+                        } else {
+                            "join"
+                        }
+                    });
+                    let event = NewEvent::new(
+                        "gateway.failed",
+                        Some(node.step.clone()),
+                        json!({
+                            "gateway": node.step,
+                            "mode": mode,
+                            "error": error,
+                            "round": node.round,
+                        }),
+                    );
+                    records.insert(node.step.clone(), record.clone());
+                    outputs.remove(&node.step);
+                    results.push(NodeResult {
+                        index: node.index,
+                        step: record,
+                        event,
+                        hard_failure: true,
+                        continue_on_error: false,
+                        skipped: false,
+                    });
+                    return Ok((
+                        results,
+                        to_execute,
+                        Some(GatewayFailure {
+                            step: node.step.clone(),
+                            error,
+                        }),
+                    ));
+                }
+                Activation::Active => {
+                    let Some(gateway) = &node.gateway else {
+                        to_execute.push(node.clone());
+                        continue;
+                    };
+                    if gateway.split.is_some() {
+                        let decision = match activation::evaluate_split(node, context) {
+                            Ok(decision) => decision,
+                            Err(ActivationError::Gateway { error, .. }) => {
+                                let message = error.to_string();
+                                let now = self.clock.now();
+                                let record = StepRecord {
+                                    run_id: run.id.clone(),
+                                    name: node.step.clone(),
+                                    status: StepStatus::Failed,
+                                    visits: node.round,
+                                    attempts: 0,
+                                    output: None,
+                                    error: Some(message.clone()),
+                                    updated_at: now,
+                                };
+                                let event = NewEvent::new(
+                                    "gateway.failed",
+                                    Some(node.step.clone()),
+                                    json!({
+                                        "gateway": node.step,
+                                        "mode": "split",
+                                        "error": message,
+                                        "round": node.round,
+                                    }),
+                                );
+                                records.insert(node.step.clone(), record.clone());
+                                outputs.remove(&node.step);
+                                results.push(NodeResult {
+                                    index: node.index,
+                                    step: record,
+                                    event,
+                                    hard_failure: true,
+                                    continue_on_error: false,
+                                    skipped: false,
+                                });
+                                return Ok((
+                                    results,
+                                    to_execute,
+                                    Some(GatewayFailure {
+                                        step: node.step.clone(),
+                                        error: message,
+                                    }),
+                                ));
+                            }
+                            Err(err) => {
+                                return Err(EngineError::InvalidState(err.to_string()));
+                            }
+                        };
+                        let output = activation::split_output(gateway, &decision, node.round);
+                        let event = NewEvent::new(
+                            "gateway.evaluated",
+                            Some(node.step.clone()),
+                            json!({
+                                "gateway": node.step,
+                                "split": gateway.split.map(|mode| mode.as_str()),
+                                "evaluated": output.get("evaluated").cloned().unwrap_or(Json::Null),
+                                "chosen": decision.chosen,
+                                "default": gateway.default,
+                                "usedDefault": decision.used_default,
+                                "round": node.round,
+                            }),
+                        );
+                        let record = gateway_record(run, node, output, &self.clock.now());
+                        records.insert(node.step.clone(), record.clone());
+                        outputs.insert(
+                            node.step.clone(),
+                            record.output.clone().unwrap_or(Json::Null),
+                        );
+                        results.push(NodeResult {
+                            index: node.index,
+                            step: record,
+                            event,
+                            hard_failure: false,
+                            continue_on_error: false,
+                            skipped: false,
+                        });
+                    } else if gateway.join.is_some() {
+                        let edges = activation::incoming_edges(node, records, &run.spec)
+                            .map_err(|err| EngineError::InvalidState(err.to_string()))?;
+                        let incoming: Vec<String> =
+                            edges.iter().map(|(edge, _)| edge.from.clone()).collect();
+                        let active: Vec<String> = edges
+                            .iter()
+                            .filter(|(_, state)| state.is_active())
+                            .map(|(edge, _)| edge.from.clone())
+                            .collect();
+                        let dead: Vec<String> = edges
+                            .iter()
+                            .filter(|(_, state)| !state.is_active())
+                            .map(|(edge, _)| edge.from.clone())
+                            .collect();
+                        let output = activation::join_output(
+                            gateway, &incoming, &active, &dead, "taken", node.round,
+                        );
+                        let event = NewEvent::new(
+                            "gateway.joined",
+                            Some(node.step.clone()),
+                            json!({
+                                "gateway": node.step,
+                                "join": gateway.join.map(|mode| mode.as_str()),
+                                "incoming": incoming,
+                                "active": active,
+                                "dead": dead,
+                                "decision": "taken",
+                                "round": node.round,
+                            }),
+                        );
+                        let record = gateway_record(run, node, output, &self.clock.now());
+                        records.insert(node.step.clone(), record.clone());
+                        outputs.insert(
+                            node.step.clone(),
+                            record.output.clone().unwrap_or(Json::Null),
+                        );
+                        results.push(NodeResult {
+                            index: node.index,
+                            step: record,
+                            event,
+                            hard_failure: false,
+                            continue_on_error: false,
+                            skipped: false,
+                        });
+                    } else {
+                        return Err(EngineError::InvalidState(format!(
+                            "gateway `{}` has neither split nor join",
+                            node.step
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok((results, to_execute, None))
+    }
+
+    /// Emit telemetry after the group transaction has committed, so counters
+    /// never include work that was rolled back or cancelled.
+    fn emit_result_metrics(&self, results: &[NodeResult], spec: &ostinato_domain::WorkflowSpec) {
+        for result in results {
+            let name = &result.step.name;
+            let gateway = spec.steps.get(name).and_then(|step| step.gateway.as_ref());
+            if result.skipped {
+                self.telemetry.metric(
+                    "ostinato_step_skipped_total",
+                    1.0,
+                    &[("step", name), ("reason", "dead_path")],
+                );
+                if let Some(gateway) = gateway {
+                    if let Some(mode) = gateway.join {
+                        self.telemetry.metric(
+                            "ostinato_gateway_join_total",
+                            1.0,
+                            &[
+                                ("gateway", name),
+                                ("mode", mode.as_str()),
+                                ("decision", "dead"),
+                            ],
+                        );
+                    }
+                    if let Some(mode) = gateway.split {
+                        for branch in gateway.branches.keys() {
+                            self.telemetry.metric(
+                                "ostinato_gateway_branch_total",
+                                1.0,
+                                &[
+                                    ("gateway", name),
+                                    ("mode", mode.as_str()),
+                                    ("branch", branch),
+                                    ("decision", "skipped"),
+                                ],
+                            );
+                        }
+                    }
+                }
+            } else if result.step.status == StepStatus::Succeeded {
+                if let Some(gateway) = gateway {
+                    if let Some(mode) = gateway.split {
+                        let chosen = result
+                            .step
+                            .output
+                            .as_ref()
+                            .and_then(|output| output.get("chosen"))
+                            .and_then(Json::as_array);
+                        for branch in gateway.branches.keys() {
+                            let decision = if chosen.is_some_and(|chosen| {
+                                chosen
+                                    .iter()
+                                    .any(|value| value.as_str() == Some(branch.as_str()))
+                            }) {
+                                "taken"
+                            } else {
+                                "skipped"
+                            };
+                            self.telemetry.metric(
+                                "ostinato_gateway_branch_total",
+                                1.0,
+                                &[
+                                    ("gateway", name),
+                                    ("mode", mode.as_str()),
+                                    ("branch", branch),
+                                    ("decision", decision),
+                                ],
+                            );
+                        }
+                    }
+                    if let Some(mode) = gateway.join {
+                        self.telemetry.metric(
+                            "ostinato_gateway_join_total",
+                            1.0,
+                            &[
+                                ("gateway", name),
+                                ("mode", mode.as_str()),
+                                ("decision", "taken"),
+                            ],
+                        );
+                    }
+                } else {
+                    self.telemetry
+                        .metric("ostinato_step_success_total", 1.0, &[("step", name)]);
+                }
+            } else {
+                self.telemetry
+                    .metric("ostinato_step_failure_total", 1.0, &[("step", name)]);
+            }
+        }
     }
 
     fn execute_group(
@@ -713,10 +1120,12 @@ impl Engine {
             }),
         );
         Ok(NodeResult {
+            index: node.index,
             step,
             event,
             hard_failure: !success,
             continue_on_error: step_spec.continue_on_error,
+            skipped: false,
         })
     }
 
@@ -794,6 +1203,10 @@ impl Engine {
             StepKind::Exec => self.execute_exec(run, node, spec, context),
             StepKind::Agent => self.execute_agent(run, node, spec, context),
             StepKind::Improve => self.execute_improve(run, node, spec),
+            StepKind::Gateway => Err(EngineError::Internal(format!(
+                "gateway `{}` reached the execution pass; gateways must be evaluated during activation",
+                node.step
+            ))),
         }
     }
 
@@ -1068,6 +1481,19 @@ impl Engine {
             }
             Err(err) => Ok(failure(input, err.to_string(), 0.0)),
         }
+    }
+}
+
+fn gateway_record(run: &RunRecord, node: &PlanNode, output: Json, now: &str) -> StepRecord {
+    StepRecord {
+        run_id: run.id.clone(),
+        name: node.step.clone(),
+        status: StepStatus::Succeeded,
+        visits: node.round + 1,
+        attempts: 0,
+        output: Some(output),
+        error: None,
+        updated_at: now.to_owned(),
     }
 }
 

@@ -47,10 +47,15 @@ run(file, params)
   └─ drive(run)
         │
         ├─ plan = build_plan(spec)
-        ├─ outputs = Store.steps(run).outputs
+        ├─ records = Store.steps(run); outputs = records.outputs
         └─ for each group:
-              ├─ context = {run_id, workflow, round, params, steps}
-              ├─ execute steps in chunks of maxParallel (std::thread::scope)
+              ├─ context = {run_id, workflow, round, params, steps, stepStatus}
+              ├─ activation pass (pure, PlanNode.incoming + records):
+              │     ├─ dead edge      → skipped row + step.skipped
+              │     ├─ split gateway  → evaluate_split → gateway row + event
+              │     ├─ join gateway   → join decision → gateway row + event
+              │     └─ active normal  → mark for execution
+              ├─ execute marked steps in chunks of maxParallel (std::thread::scope)
               │     └─ each attempt: port call + Store.record_trial
               ├─ Store.complete(group)  ── one transaction:
               │     step rows + run checkpoint + audit events
@@ -65,9 +70,11 @@ run(file, params)
 
 `build_plan` is pure and deterministic:
 
-1. validate dependencies and `maxParallel`;
-2. build the execution graph (`dependency → dependent`);
-3. Tarjan SCCs;
+1. validate dependencies, gateways and `maxParallel`;
+2. build the execution graph (`dependency → dependent`) and add implicit
+   split-gateway branch edges (`gateway → branch target`);
+3. reject gateways combined with cycles and implicit joins in gateway
+   workflows; Tarjan SCCs;
 4. condense to a DAG and Kahn-level it; acyclic components on the same level share a parallel group;
 5. for a cyclic component:
    - take the strictest `cycle.max` among members;
@@ -76,7 +83,9 @@ run(file, params)
    - mark the last node of each round with `is_round_end` and the cycle condition;
 6. assign a stable `index` to every node.
 
-The materialised plan is what makes resume exact: `runs.resume_index` is an index into this list, not a semantic guess. `ostinato graph --format json` prints it.
+The materialised plan is what makes resume exact: `runs.resume_index` is an index into this list, not a semantic guess. `ostinato graph --format json` prints it, including `has_gateways`, each node's `incoming` edges (`dependency` or `branch {gateway, branch}`) and its `gateway` payload.
+
+Gateway activation is a separate pure step in `ostinato-application/src/activation.rs`. It derives `Active`/`Dead`/`Fail` from persisted predecessor records and materialises gateway and skipped rows alongside executed rows in the same `Completion` transaction. No new table is required: the gateway output contains `chosen` for splits and `active`/`dead`/`decision` for joins.
 
 ## Transaction boundary
 

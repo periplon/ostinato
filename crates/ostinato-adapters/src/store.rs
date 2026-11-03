@@ -703,20 +703,31 @@ impl Store for SqliteStore {
                 },
             )
             .map_err(|err| PortError::Store(format!("metrics runs: {err}")))?;
-        let steps: (u64, u64) = connection
+        let steps: (u64, u64, u64) = connection
             .query_row(
                 "SELECT COUNT(*),
-                        COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0)
+                        COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0)
                  FROM steps WHERE (?1 IS NULL OR run_id = ?1)",
                 params![run_id],
                 |row| {
                     Ok((
                         row.get::<_, i64>(0)?.max(0) as u64,
                         row.get::<_, i64>(1)?.max(0) as u64,
+                        row.get::<_, i64>(2)?.max(0) as u64,
                     ))
                 },
             )
             .map_err(|err| PortError::Store(format!("metrics steps: {err}")))?;
+        let gateways_evaluated: u64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM events
+                 WHERE kind IN ('gateway.evaluated', 'gateway.joined')
+                   AND (?1 IS NULL OR run_id = ?1)",
+                params![run_id],
+                |row| Ok(row.get::<_, i64>(0)?.max(0) as u64),
+            )
+            .map_err(|err| PortError::Store(format!("metrics gateways: {err}")))?;
         let attempts: (u64, u64, f64) = connection
             .query_row(
                 "SELECT COUNT(*),
@@ -740,6 +751,8 @@ impl Store for SqliteStore {
             runs_running: runs.3,
             steps_total: steps.0,
             steps_failed: steps.1,
+            steps_skipped: steps.2,
+            gateways_evaluated,
             attempts_total: attempts.0,
             retries_total: attempts.1,
             avg_attempt_ms: attempts.2,

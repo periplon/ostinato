@@ -5375,3 +5375,470 @@ a: """
         );
     }
 }
+
+const GATEWAY_SOURCE: &str = r#"
+package demo
+
+params: {
+    fast: bool | *true
+}
+
+workflow: {
+    name: "gateway"
+    steps: {
+        test: { kind: "noop" }
+        route: {
+            kind:  "gateway"
+            needs: ["test"]
+            gateway: {
+                split: "xor"
+                branches: {
+                    deployFast: "params.fast && steps.test.exitCode == 0"
+                    deploySlow: true
+                }
+                default: "deploySlow"
+            }
+        }
+        deployFast: { kind: "noop" }
+        deploySlow: { kind: "noop" }
+        merge: {
+            kind:  "gateway"
+            needs: ["deployFast", "deploySlow"]
+            gateway: {join: "or"}
+        }
+        notify: { kind: "noop", needs: ["merge"] }
+    }
+}
+"#;
+
+fn gateway_step_source(split: &str, branches: &str, default: &str) -> String {
+    format!(
+        r#"
+package demo
+params: {{ x: bool | *true }}
+workflow: {{
+    name: "mode"
+    steps: {{
+        test: {{ kind: "noop" }}
+        route: {{
+            kind: "gateway"
+            needs: ["test"]
+            gateway: {{ split: "{split}", branches: {{ {branches} }}{default} }}
+        }}
+        a: {{ kind: "noop" }}
+        b: {{ kind: "noop" }}
+    }}
+}}
+"#
+    )
+}
+
+fn compile_error(source: &str) -> String {
+    ostinato_lang::compile(source)
+        .expect_err("must reject")
+        .to_string()
+}
+
+#[test]
+fn compiles_every_split_and_join_mode() {
+    for (mode, branches, default) in [
+        ("and", "a: true, b: true", ""),
+        ("or", "a: \"params.x\", b: true", ""),
+        ("xor", "a: \"params.x\", b: true", ", default: \"b\""),
+    ] {
+        let source = gateway_step_source(mode, branches, default);
+        let compiled = ostinato_lang::compile(&source).expect("compile split");
+        let gateway = compiled
+            .spec
+            .step("route")
+            .and_then(|step| step.gateway.as_ref())
+            .expect("gateway");
+        assert!(gateway.split.is_some(), "split mode {mode}");
+    }
+    for mode in ["and", "or", "xor"] {
+        let source = format!(
+            r#"
+package demo
+workflow: {{
+    name: "join"
+    steps: {{
+        a: {{ kind: "noop" }}
+        b: {{ kind: "noop" }}
+        merge: {{ kind: "gateway", needs: ["a", "b"], gateway: {{ join: "{mode}" }} }}
+    }}
+}}
+"#
+        );
+        let compiled = ostinato_lang::compile(&source).expect("compile join");
+        assert!(
+            compiled
+                .spec
+                .step("merge")
+                .and_then(|step| step.gateway.as_ref())
+                .and_then(|gateway| gateway.join)
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn gateway_conditions_and_step_status_are_accepted() {
+    let compiled = ostinato_lang::compile(GATEWAY_SOURCE).expect("compile");
+    let gateway = compiled
+        .spec
+        .step("route")
+        .and_then(|step| step.gateway.as_ref())
+        .expect("gateway");
+    assert_eq!(gateway.default.as_deref(), Some("deploySlow"));
+    assert_eq!(
+        gateway.branches["deployFast"].condition.as_deref(),
+        Some("params.fast && steps.test.exitCode == 0")
+    );
+    assert!(gateway.branches["deploySlow"].condition.is_none());
+    assert_eq!(
+        compiled.spec.step("route").expect("route").kind,
+        StepKind::Gateway
+    );
+}
+
+#[test]
+fn gateway_payload_rules_are_rejected_with_full_paths() {
+    let cases = [
+        (
+            r#"a: {kind:"gateway"}
+               b: {kind:"noop"}"#,
+            "workflow.steps.a.gateway is required",
+        ),
+        (
+            r#"a: {kind:"exec", exec:{cmd:["true"]}, gateway:{split:"and", branches:{b:true}}}
+               b: {kind:"noop"}"#,
+            "workflow.steps.a.gateway is only allowed",
+        ),
+        (
+            r#"a: {kind:"gateway", needs:["b"], gateway:{split:"and", join:"and", branches:{b:true}}}
+               b: {kind:"noop"}"#,
+            "exactly one of `split` and `join`",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"xor", branches:{}}}
+               b: {kind:"noop"}"#,
+            "must contain at least one branch",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{b:"true"}}}
+               b: {kind:"noop"}"#,
+            "must be unconditional",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"xor", branches:{b:true}}}
+               b: {kind:"noop"}"#,
+            "requires a condition",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"xor", branches:{b:"params.x"}, default:"missing"}}
+               b: {kind:"noop"}"#,
+            "is not one of the declared branches",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{join:"or"}}
+               b: {kind:"noop"}"#,
+            "must not be empty",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{b:true}}}
+               b: {kind:"noop", needs:["a"]}"#,
+            "must not list split gateway",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{b:true}}}
+               b: {kind:"noop", needs:["c"]}
+               c: {kind:"noop"}"#,
+            "must be empty",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{b:true}}}
+               b: {kind:"gateway", needs:["c"], gateway:{join:"and"}}
+               c: {kind:"noop"}"#,
+            "joins cannot be branch targets",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{missing:true}}}
+               b: {kind:"noop"}"#,
+            "targets unknown step",
+        ),
+    ];
+    for (steps, expected) in cases {
+        let source =
+            format!("package demo\nworkflow: {{ name: \"bad\"\n steps: {{ {steps} }} }}\n");
+        let error = compile_error(&source);
+        assert!(
+            error.contains(expected),
+            "expected `{expected}` in error: {error}"
+        );
+    }
+}
+
+#[test]
+fn branch_condition_scope_is_enforced_at_compile_time() {
+    let downstream = r#"
+package demo
+workflow: {
+    name: "scope"
+    steps: {
+        test: { kind: "noop" }
+        route: {
+            kind: "gateway"
+            needs: ["test"]
+            gateway: { split: "xor", branches: {
+                deployFast: "steps.deployFast.exitCode == 0"
+                deploySlow: true
+            }, default: "deploySlow" }
+        }
+        deployFast: { kind: "noop" }
+        deploySlow: { kind: "noop" }
+    }
+}
+"#;
+    let error = compile_error(downstream);
+    assert!(error.contains("not a transitive predecessor"), "{error}");
+
+    let predecessor = r#"
+package demo
+workflow: {
+    name: "scope"
+    steps: {
+        test: { kind: "noop" }
+        route: {
+            kind: "gateway"
+            needs: ["test"]
+            gateway: { split: "xor", branches: {
+                deployFast: "stepStatus.test == \"succeeded\""
+                deploySlow: true
+            }, default: "deploySlow" }
+        }
+        deployFast: { kind: "noop" }
+        deploySlow: { kind: "noop" }
+    }
+}
+"#;
+    ostinato_lang::compile(predecessor).expect("predecessor status is in scope");
+
+    let unknown_step = predecessor.replace("stepStatus.test", "stepStatus.nope");
+    let error = compile_error(&unknown_step);
+    assert!(
+        error.contains("unknown reference") || error.contains("not a transitive predecessor"),
+        "{error}"
+    );
+
+    let unknown_param = predecessor.replace("stepStatus.test", "params.nope");
+    let error = compile_error(&unknown_param);
+    assert!(error.contains("unknown reference"), "{error}");
+}
+
+#[test]
+fn gateway_compiles_identically_through_value_and_json() {
+    let file = ostinato_lang::parse(GATEWAY_SOURCE).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let from_value = ostinato_lang::compile_value(&value).expect("compile value");
+    let json = value.to_json().expect("to json");
+    let from_json = ostinato_lang::compile_json(&json).expect("compile json");
+    assert_eq!(from_value, from_json);
+}
+
+#[test]
+fn gateway_additional_validation_rules_are_path_qualified() {
+    let cases = [
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{b:true}}}
+               b: {kind:"noop"}
+               c: {kind:"noop", needs:["a"]}"#,
+            "workflow.steps.c.needs must not list split gateway `a`",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{b:true}}}
+               b: {kind:"noop"}
+               m: {kind:"gateway", needs:["a"], gateway:{join:"or"}}"#,
+            "workflow.steps.m.needs must not list split gateway `a`",
+        ),
+        (
+            r#"a: {kind:"noop"}
+               m: {kind:"gateway", needs:["a"], gateway:{join:"or", branches:{}}}"#,
+            "a join gateway must not declare `branches` or `default`",
+        ),
+        (
+            r#"a: {kind:"noop"}
+               m: {kind:"gateway", needs:["a"], gateway:{join:"or", default:"a"}}"#,
+            "a join gateway must not declare `branches` or `default`",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{}}"#,
+            "one of `split` or `join` is required",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{a:true}}}"#,
+            "must not target the gateway itself",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"nand", branches:{b:true}}}
+               b: {kind:"noop"}"#,
+            "unknown split mode",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{b:false}}}
+               b: {kind:"noop"}"#,
+            "`false` branches are not allowed",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{b:{x:1}}}}
+               b: {kind:"noop"}"#,
+            "must be `true` or a condition string",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{b:true}, extra:1}}
+               b: {kind:"noop"}"#,
+            "unknown field `extra`",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"and", branches:{b:true}, default:"b"}}
+               b: {kind:"noop"}"#,
+            "not allowed on an AND split",
+        ),
+        (
+            r#"a: {kind:"gateway", gateway:{split:"xor", branches:{b:"true", c:"true"}, default:"c"}}
+               b: {kind:"noop"}
+               c: {kind:"noop"}"#,
+            "is the default branch and must be `true`",
+        ),
+        (
+            r#"a: {kind:"gateway", retry:{max:1}, gateway:{split:"and", branches:{b:true}}}
+               b: {kind:"noop"}"#,
+            "retry is not allowed",
+        ),
+        (
+            r#"a: {kind:"gateway", continueOnError:true, gateway:{split:"and", branches:{b:true}}}
+               b: {kind:"noop"}"#,
+            "continueOnError is not allowed",
+        ),
+        (
+            r#"a: {kind:"gateway", timeoutMs:5, gateway:{split:"and", branches:{b:true}}}
+               b: {kind:"noop"}"#,
+            "timeoutMs is not allowed",
+        ),
+        (
+            r#"test: {kind:"noop"}
+               a: {kind:"gateway", needs:["test"], gateway:{split:"xor", branches:{b:"steps.test.score >=", c:true}, default:"c"}}
+               b: {kind:"noop"}
+               c: {kind:"noop"}"#,
+            "is invalid",
+        ),
+    ];
+    for (steps, expected) in cases {
+        let source =
+            format!("package demo\nworkflow: {{ name: \"bad\"\n steps: {{ {steps} }} }}\n");
+        let error = compile_error(&source);
+        assert!(
+            error.contains(expected),
+            "expected `{expected}` in error: {error}"
+        );
+    }
+}
+
+#[test]
+fn gateway_cycles_and_implicit_joins_are_rejected_at_compile_time() {
+    let cycle = r#"
+package demo
+workflow: {
+    name: "both"
+    steps: {
+        a: { kind: "noop", needs: ["b"] }
+        b: { kind: "noop", needs: ["a"], cycle: {max: 2} }
+        gate: { kind: "gateway", gateway: { split: "and", branches: {c: true} } }
+        c: { kind: "noop" }
+    }
+}
+"#;
+    let error = compile_error(cycle);
+    assert!(error.contains("gateways and cycles"), "{error}");
+    assert!(error.contains("workflow.steps."), "{error}");
+
+    let implicit = r#"
+package demo
+workflow: {
+    name: "implicit"
+    steps: {
+        a: { kind: "noop" }
+        b: { kind: "noop" }
+        c: { kind: "noop", needs: ["a", "b"] }
+        gate: { kind: "gateway", gateway: { split: "and", branches: {d: true} } }
+        d: { kind: "noop" }
+    }
+}
+"#;
+    let error = compile_error(implicit);
+    assert!(error.contains("workflow.steps.c"), "{error}");
+}
+
+#[test]
+fn gateway_condition_scope_accepts_transitive_predecessors_and_ignores_string_literals() {
+    let transitive = r#"
+package demo
+params: { label: string | *"steps.deployFast" }
+workflow: {
+    name: "scope-ok"
+    steps: {
+        test: { kind: "noop" }
+        mid: { kind: "noop", needs: ["test"] }
+        route: {
+            kind: "gateway"
+            needs: ["mid"]
+            gateway: { split: "xor", branches: {
+                deployFast: "steps.test.exitCode == 0 && params.label == \"steps.deployFast\""
+                deploySlow: true
+            }, default: "deploySlow" }
+        }
+        deployFast: { kind: "noop" }
+        deploySlow: { kind: "noop" }
+    }
+}
+"#;
+    ostinato_lang::compile(transitive)
+        .expect("transitive predecessor and string literal are accepted");
+}
+
+#[test]
+fn gateway_definition_backed_branches_compile_identically() {
+    let source = r#"
+package demo
+params: { fast: bool | *true }
+#Branches: {
+    deployFast: "params.fast"
+    deploySlow: true
+}
+workflow: {
+    name: "definitions"
+    steps: {
+        test: { kind: "noop" }
+        route: {
+            kind: "gateway"
+            needs: ["test"]
+            gateway: { split: "xor", branches: #Branches, default: "deploySlow" }
+        }
+        deployFast: { kind: "noop" }
+        deploySlow: { kind: "noop" }
+    }
+}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let from_value = ostinato_lang::compile_value(&value).expect("compile value");
+    let from_json = ostinato_lang::compile_json(&value.to_json().expect("json")).expect("json");
+    assert_eq!(from_value, from_json);
+    assert_eq!(
+        from_value
+            .step("route")
+            .and_then(|step| step.gateway.as_ref())
+            .and_then(|gateway| gateway.branches.get("deployFast"))
+            .and_then(|branch| branch.condition.as_deref()),
+        Some("params.fast")
+    );
+}

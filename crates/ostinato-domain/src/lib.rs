@@ -14,9 +14,10 @@ pub mod workflow;
 
 pub use audit::{AuditEvent, NewEvent, lifecycle_status, state_digest};
 pub use error::DomainError;
-pub use plan::{Plan, PlanNode, build_plan};
+pub use plan::{EdgeOrigin, Plan, PlanEdge, PlanNode, build_plan};
 pub use run::{RunRecord, RunReport, RunStatus, StepRecord, StepStatus};
 pub use trial::{Improvement, NewImprovement, NewTrial, Trial, TrialStatus};
 pub use workflow::{
-    AgentSpec, CycleSpec, ExecSpec, ImproveSpec, RetryPolicy, StepKind, StepSpec, WorkflowSpec,
+    AgentSpec, BranchSpec, CycleSpec, ExecSpec, GatewaySpec, ImproveSpec, JoinMode, RetryPolicy,
+    SplitMode, StepKind, StepSpec, WorkflowSpec,
 };

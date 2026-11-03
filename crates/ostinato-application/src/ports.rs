@@ -145,6 +145,8 @@ pub struct MetricsSummary {
     pub runs_running: u64,
     pub steps_total: u64,
     pub steps_failed: u64,
+    pub steps_skipped: u64,
+    pub gateways_evaluated: u64,
     pub attempts_total: u64,
     pub retries_total: u64,
     pub avg_attempt_ms: f64,
