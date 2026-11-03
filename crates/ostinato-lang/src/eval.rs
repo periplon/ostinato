@@ -4623,6 +4623,14 @@ fn apply_regexp_builtin(
             let limit = match arguments.get(2) {
                 Some(Value::Int(limit)) => *limit,
                 Some(Value::BigInt(limit)) => {
+                    let bound = BigInt::from(u64::MAX);
+                    if limit > &bound || limit < &-bound {
+                        return Err(LangError::conflict(
+                            span.line,
+                            span.col,
+                            "regexp.FindAll: integer limit overflows int64",
+                        ));
+                    }
                     if limit < &BigInt::from(0) {
                         -1
                     } else {
@@ -4810,6 +4818,19 @@ fn apply_math_builtin(
                     ));
                 }
                 if let Ok(exponent) = u32::try_from(&exponent) {
+                    let estimated_digits = base
+                        .bits()
+                        .saturating_sub(1)
+                        .saturating_mul(u64::from(exponent))
+                        .saturating_mul(30_103)
+                        / 100_000;
+                    if estimated_digits > 100_000 {
+                        return Err(LangError::conflict(
+                            span.line,
+                            span.col,
+                            "math.Pow: exponent out of range",
+                        ));
+                    }
                     return Ok(value_from_bigint(base.pow(exponent)));
                 }
             }
@@ -5035,18 +5056,29 @@ fn apply_time_builtin(
             let nanos = match arguments.first() {
                 Some(Value::Int(nanos)) => *nanos,
                 Some(Value::BigInt(nanos)) => {
+                    let limit = BigInt::from(u64::MAX);
                     if let Ok(value) = i64::try_from(nanos) {
                         value
-                    } else if nanos > &BigInt::from(i64::MAX) && nanos <= &BigInt::from(u64::MAX) {
+                    } else if nanos > &BigInt::from(i64::MAX) {
+                        if nanos > &limit {
+                            return Err(LangError::conflict(
+                                span.line,
+                                span.col,
+                                "time.FormatDuration argument overflows int64",
+                            ));
+                        }
                         i64::MAX
                     } else if nanos < &BigInt::from(i64::MIN) {
+                        if nanos < &-limit {
+                            return Err(LangError::conflict(
+                                span.line,
+                                span.col,
+                                "time.FormatDuration argument overflows int64",
+                            ));
+                        }
                         i64::MIN
                     } else {
-                        return Err(LangError::conflict(
-                            span.line,
-                            span.col,
-                            "time.FormatDuration argument overflows int64",
-                        ));
+                        i64::MIN
                     }
                 }
                 _ => {
