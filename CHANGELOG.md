@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.14.0
+
+Optional-dependent required fields.
+
+- Required field expressions can reference optional fields supplied by a
+  later unification (`#P: {name?: string, greeting: "Hello \(name)"}`;
+  `#P & {name: "Alice"}`), including arithmetic, chains, `if`, lists, nested
+  structs, params groups and list-of-struct elements.
+- Unmaterialized optional references still error; list-of-list element
+  constraints remain documented in SCOPE.
+- 335 tests (61 CLI E2E, 1 conformance, 231 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.13.3
 
 Self-selection same-body comprehension limit documented.

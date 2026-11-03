@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.13.3 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.14.0 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -27,7 +27,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | `for` / `if` struct comprehensions | ✅ | Including clause sequences and nested `for` |
 | List comprehensions (`[for ... { expr }]`) | ✅ | |
 | Nested field shorthand (`exec: cmd: [...]`) | ✅ | |
-| Definitions (`#Foo`) and unification (`&`) | ✅ | Closed by default, `...` opens, nested closedness, optional constraints and patterns. Recursive materialization of optional/self-referential and mutually recursive definitions (`#Tree: {children?: [...#Tree]}`) is implemented; self-selection resolves the in-progress body's fields (except split composed non-definition literals and fields materialized by the same comprehension body), and required expressions that depend on optional fields remain out of scope |
+| Definitions (`#Foo`) and unification (`&`) | ✅ | Closed by default, `...` opens, nested closedness, optional constraints and patterns. Recursive materialization of optional/self-referential and mutually recursive definitions (`#Tree: {children?: [...#Tree]}`) is implemented; self-selection resolves the in-progress body's fields (except split composed non-definition literals and fields materialized by the same comprehension body), and required expressions that depend on optional fields are resolved when the optional is materialized by unification (except list-of-list element constraints) |
 | Pattern constraints (`[string]: T`, `[=~"re"]: T`) | ✅ | String and regex patterns; other pattern expressions are out of scope |
 | Defaults and multi-branch disjunctions | ✅ | Alternatives, defaults, `&` narrowing, disjunction intersection and duplicate-default collapsing |
 | Numeric/string bounds | ✅ | `>=`, `>`, `<=`, `<`, `!=`, `=~`, `!~`; conjunction with values, types and disjunctions |
