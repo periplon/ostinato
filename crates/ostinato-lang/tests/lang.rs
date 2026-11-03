@@ -2540,3 +2540,34 @@ fn live_struct_sources_and_constant_conditions_keep_cycles() {
         );
     }
 }
+
+#[test]
+fn alias_shadowing_keeps_dead_bodies_dead() {
+    for source in [
+        "let C = 1 == 1\nc: C\nlet X = #A\n#A: {C = x: false, if C {v: X}}\nparams: {v: 1}",
+        "let C = !false\nc: C\nlet X = #A\n#A: {C = x: false, if C {v: X}}\nparams: {v: 1}",
+        "let C = true && true\nc: C\nlet X = #A\n#A: {C = x: false, if C {v: X}}\nparams: {v: 1}",
+        "let S = {a: 1}\ns: S\nlet X = #A\n#A: {S = x: {}, v: [for k in S {X}]}\nparams: {v: 1}",
+        "let S = {a: 1}\ns: S\nlet X = #A\n#A: {S = x: {}, for k in S {v: X}}\nparams: {v: 1}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_ok(),
+            "alias shadowing must keep the body dead: {source}"
+        );
+    }
+}
+
+#[test]
+fn unification_sources_are_live_when_either_side_is_live() {
+    for source in [
+        "let S = {a: 1} & {}\nlet X = #A\n#A: {for k, v in S {v: X}}\nparams: {v: 1}",
+        "let S = {} & {a: 1}\nlet X = #A\n#A: {for k, v in S {v: X}}\nparams: {v: 1}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "live unification must keep the cycle: {source}"
+        );
+    }
+}

@@ -193,6 +193,11 @@ impl AliasCtx {
                     if let Some(value) = self.scopes[*scope].let_values.get(name) {
                         return self.const_scalar(value, chain, depth + 1);
                     }
+                    if self.scopes[*scope].required_fields.contains(name)
+                        || self.scopes[*scope].aliases.contains_key(name)
+                    {
+                        return None;
+                    }
                 }
                 None
             }
@@ -214,6 +219,11 @@ impl AliasCtx {
                 for scope in chain.iter().rev() {
                     if let Some(value) = self.scopes[*scope].let_values.get(name) {
                         return self.const_bool(value, chain, depth + 1);
+                    }
+                    if self.scopes[*scope].required_fields.contains(name)
+                        || self.scopes[*scope].aliases.contains_key(name)
+                    {
+                        return None;
                     }
                 }
                 None
@@ -253,13 +263,18 @@ impl AliasCtx {
             }),
             Expr::Unify(left, right, _) => {
                 self.static_non_empty(left, chain, depth + 1)
-                    && self.static_non_empty(right, chain, depth + 1)
+                    || self.static_non_empty(right, chain, depth + 1)
             }
             Expr::Paren(inner, _) => self.static_non_empty(inner, chain, depth + 1),
             Expr::Ident(name, _) => {
                 for scope in chain.iter().rev() {
                     if let Some(value) = self.scopes[*scope].let_values.get(name) {
                         return self.static_non_empty(value, chain, depth + 1);
+                    }
+                    if self.scopes[*scope].required_fields.contains(name)
+                        || self.scopes[*scope].aliases.contains_key(name)
+                    {
+                        return false;
                     }
                 }
                 false

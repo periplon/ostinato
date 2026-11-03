@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.4.16
+
+- Constant/liveness resolution respects alias shadowing; unification sources
+  are live when either side is live.
+- 158 tests (24 CLI E2E, 1 conformance, 123 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.15
 
 - Constant folding for let expressions and live sources; no short-circuit fold

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.16
+
+Constant resolution respects shadowing.
+
+- Constant/liveness resolution stops at a shadowing alias or required field,
+  so an inner alias over an outer `let` keeps dead bodies dead.
+- Unification sources are live when either operand is live.
+- 158 tests (24 CLI E2E, 1 conformance, 123 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.15
 
 Constant folding and short-circuit corrections.
