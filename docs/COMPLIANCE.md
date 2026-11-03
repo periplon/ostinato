@@ -27,7 +27,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | `for` / `if` struct comprehensions | ✅ | Including clause sequences and nested `for` |
 | List comprehensions (`[for ... { expr }]`) | ✅ | |
 | Nested field shorthand (`exec: cmd: [...]`) | ✅ | |
-| Definitions (`#Foo`) and unification (`&`) | ✅ | Closed by default, `...` opens, nested closedness, optional constraints and patterns. Recursive materialization, self-selection and required expressions that depend on optional fields are out of scope |
+| Definitions (`#Foo`) and unification (`&`) | ✅ | Closed by default, `...` opens, nested closedness, optional constraints and patterns. Recursive materialization of optional/self-referential and mutually recursive definitions (`#Tree: {children?: [...#Tree]}`) is implemented; self-selection and required expressions that depend on optional fields are out of scope |
 | Pattern constraints (`[string]: T`, `[=~"re"]: T`) | ✅ | String and regex patterns; other pattern expressions are out of scope |
 | Defaults and multi-branch disjunctions | ✅ | Alternatives, defaults, `&` narrowing, disjunction intersection and duplicate-default collapsing |
 | Numeric/string bounds | ✅ | `>=`, `>`, `<=`, `<`, `!=`, `=~`, `!~`; conjunction with values, types and disjunctions |
