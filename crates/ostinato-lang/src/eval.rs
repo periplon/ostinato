@@ -512,7 +512,7 @@ fn escaped_field(name: &str) -> String {
     format!("{ESCAPED_PREFIX}{name}")
 }
 
-fn is_hidden_key(key: &str) -> bool {
+pub(crate) fn is_hidden_key(key: &str) -> bool {
     key.starts_with(HIDDEN_PREFIX)
 }
 
@@ -671,9 +671,15 @@ impl<'a> Frame<'a> {
                     match source_value {
                         Value::Struct(map) | Value::Definition { fields: map, .. } => {
                             for (entry_key, entry_value) in map {
+                                if is_hidden_key(&entry_key) {
+                                    continue;
+                                }
                                 let mut bindings = HashMap::new();
                                 if let Some(key) = key {
-                                    bindings.insert(key.clone(), Value::String(entry_key));
+                                    bindings.insert(
+                                        key.clone(),
+                                        Value::String(output_field_name(&entry_key)),
+                                    );
                                 }
                                 bindings.insert(value.clone(), entry_value);
                                 self.expand_body(body, bindings)?;
@@ -1072,7 +1078,32 @@ impl<'a> Frame<'a> {
         false
     }
 
-    fn params_path_value(&self, path: &[String], span: Span) -> Result<Value, LangError> {
+    fn segment_field_key(&self, name: &str, quoted: bool) -> Option<String> {
+        if !quoted {
+            return self.any_field_key(name);
+        }
+        let fields = self.fields.borrow();
+        let escaped = escaped_field(name);
+        if fields.contains_key(&escaped) {
+            return Some(escaped);
+        }
+        if fields
+            .get(name)
+            .is_some_and(|definition| !definition.definition && !is_hidden_key(name))
+        {
+            return Some(name.to_owned());
+        }
+        let prefixed = prefixed_field(name);
+        if fields
+            .get(&prefixed)
+            .is_some_and(|definition| !definition.definition)
+        {
+            return Some(prefixed);
+        }
+        None
+    }
+
+    fn params_path_value(&self, path: &[(String, bool)], span: Span) -> Result<Value, LangError> {
         let Some(context) = self.params_context.borrow().clone() else {
             return Err(LangError::eval(
                 span.line,
@@ -1080,7 +1111,16 @@ impl<'a> Frame<'a> {
                 "params are not being evaluated",
             ));
         };
-        let cache_key = path.to_vec();
+        let cache_key: Vec<String> = path
+            .iter()
+            .map(|(segment, quoted)| {
+                if *quoted {
+                    format!("\u{5}{segment}")
+                } else {
+                    segment.clone()
+                }
+            })
+            .collect();
         if let Some(value) = context.values.borrow().get(&cache_key) {
             return Ok(value.clone());
         }
@@ -1090,7 +1130,10 @@ impl<'a> Frame<'a> {
                 span.col,
                 format!(
                     "cyclic reference while evaluating `params.{}`",
-                    path.join(".")
+                    path.iter()
+                        .map(|(segment, _)| segment.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".")
                 ),
             ));
         }
@@ -1099,7 +1142,7 @@ impl<'a> Frame<'a> {
             let root = self.root_frame();
             let mut items = context.items.clone();
             let mut bindings: HashMap<String, Value> = HashMap::new();
-            for (index, segment) in path.iter().enumerate() {
+            for (index, (segment, quoted)) in path.iter().enumerate() {
                 let child = Frame::from_static(&items, Some(root), HashMap::new())?;
                 child.params_scope.set(true);
                 child.expand(&items)?;
@@ -1117,7 +1160,7 @@ impl<'a> Frame<'a> {
                     }
                 }
                 child.reconcile_generated_required_fields()?;
-                let field_key = child.any_field_key(segment);
+                let field_key = child.segment_field_key(segment, *quoted);
                 let overridden = index == 0 && context.overrides.contains_key(segment);
                 if let Some(key) = &field_key {
                     let optional = child
@@ -1149,8 +1192,8 @@ impl<'a> Frame<'a> {
                         return Ok(value);
                     }
                     let mut value = value;
-                    for field in &path[index + 1..] {
-                        value = select_value(&value, field, span)?;
+                    for (field, quoted) in &path[index + 1..] {
+                        value = select_value(&value, field, *quoted, span)?;
                     }
                     return Ok(value);
                 }
@@ -1208,8 +1251,8 @@ impl<'a> Frame<'a> {
                         continue;
                     }
                     let mut value = child.eval_field_key(&key, span)?;
-                    for field in &path[index + 1..] {
-                        value = select_value(&value, field, span)?;
+                    for (field, quoted) in &path[index + 1..] {
+                        value = select_value(&value, field, *quoted, span)?;
                     }
                     return Ok(value);
                 }
@@ -1224,8 +1267,8 @@ impl<'a> Frame<'a> {
                 if is_final {
                     return Ok(value);
                 }
-                for field in &path[index + 1..] {
-                    value = select_value(&value, field, span)?;
+                for (field, quoted) in &path[index + 1..] {
+                    value = select_value(&value, field, *quoted, span)?;
                 }
                 return Ok(value);
             }
@@ -1851,19 +1894,22 @@ impl<'a> Frame<'a> {
     }
 }
 
-fn select_value(value: &Value, field: &str, span: Span) -> Result<Value, LangError> {
+fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<Value, LangError> {
     match value.concretize() {
-        Value::Struct(map) | Value::Definition { fields: map, .. } => map
-            .get(field)
-            .or_else(|| map.get(&hidden_field(field)))
-            .cloned()
-            .ok_or_else(|| {
+        Value::Struct(map) | Value::Definition { fields: map, .. } => {
+            let selected = if quoted {
+                map.get(field).or_else(|| map.get(&escaped_field(field)))
+            } else {
+                map.get(field).or_else(|| map.get(&hidden_field(field)))
+            };
+            selected.cloned().ok_or_else(|| {
                 LangError::eval(
                     span.line,
                     span.col,
                     format!("field `{field}` not found in struct"),
                 )
-            }),
+            })
+        }
         other => Err(LangError::eval(
             span.line,
             span.col,
@@ -1872,17 +1918,13 @@ fn select_value(value: &Value, field: &str, span: Span) -> Result<Value, LangErr
     }
 }
 
-fn params_select_path(expr: &Expr) -> Option<(String, Vec<String>)> {
+fn params_select_path(expr: &Expr) -> Option<Vec<(String, bool)>> {
     match expr {
-        Expr::Ident(name, _) if name == "params" => Some((String::new(), Vec::new())),
-        Expr::Select(base, field, _) => {
-            let (first, mut rest) = params_select_path(base)?;
-            if first.is_empty() {
-                Some((field.clone(), Vec::new()))
-            } else {
-                rest.push(field.clone());
-                Some((first, rest))
-            }
+        Expr::Ident(name, _) if name == "params" => Some(Vec::new()),
+        Expr::Select(base, field, quoted, _) => {
+            let mut path = params_select_path(base)?;
+            path.push((field.clone(), *quoted));
+            Some(path)
         }
         _ => None,
     }
@@ -1931,14 +1973,12 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             Ok(Value::String(out))
         }
         Expr::Ident(name, span) => frame.lookup(name, *span),
-        Expr::Select(base, field, span) => {
-            if let Some((first, rest)) = params_select_path(expr)
-                && !first.is_empty()
+        Expr::Select(base, field, quoted, span) => {
+            if let Some(path) = params_select_path(expr)
+                && !path.is_empty()
                 && frame.params_context.borrow().is_some()
                 && !frame.params_shadowed()
             {
-                let mut path = vec![first];
-                path.extend(rest);
                 return frame.params_path_value(&path, *span);
             }
             let base = eval_expr(base, frame)?.concretize().clone();
@@ -1951,16 +1991,18 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                             format!("field `{field}` not found in struct"),
                         ));
                     }
-                    map.get(field)
-                        .or_else(|| map.get(&hidden_field(field)))
-                        .cloned()
-                        .ok_or_else(|| {
-                            LangError::eval(
-                                span.line,
-                                span.col,
-                                format!("field `{field}` not found in struct"),
-                            )
-                        })
+                    let selected = if *quoted {
+                        map.get(field).or_else(|| map.get(&escaped_field(field)))
+                    } else {
+                        map.get(field).or_else(|| map.get(&hidden_field(field)))
+                    };
+                    selected.cloned().ok_or_else(|| {
+                        LangError::eval(
+                            span.line,
+                            span.col,
+                            format!("field `{field}` not found in struct"),
+                        )
+                    })
                 }
                 Value::Definition {
                     fields,
@@ -1968,7 +2010,12 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     optional,
                     ..
                 } => {
-                    let selected = if field.starts_with('#') {
+                    let selected = if *quoted {
+                        fields
+                            .get(field)
+                            .or_else(|| fields.get(&escaped_field(field)))
+                            .cloned()
+                    } else if field.starts_with('#') {
                         definitions.get(field).cloned()
                     } else {
                         fields
@@ -2039,7 +2086,8 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 && !frame.params_shadowed()
                 && let Value::String(key) = eval_expr(index, frame)?.concretize()
             {
-                return frame.params_path_value(std::slice::from_ref(key), *span);
+                let path = vec![(key.clone(), true)];
+                return frame.params_path_value(&path, *span);
             }
             let base = eval_expr(base, frame)?.concretize().clone();
             let index = eval_expr(index, frame)?.concretize().clone();
@@ -2052,18 +2100,20 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         LangError::eval(span.line, span.col, "list index out of range")
                     })
                 }
-                (Value::Struct(map), Value::String(key)) => {
-                    map.get(&key).cloned().ok_or_else(|| {
+                (Value::Struct(map), Value::String(key)) => map
+                    .get(&key)
+                    .or_else(|| map.get(&escaped_field(&key)))
+                    .cloned()
+                    .ok_or_else(|| {
                         LangError::eval(
                             span.line,
                             span.col,
                             format!("field `{key}` not found in struct"),
                         )
-                    })
-                }
+                    }),
                 (Value::Definition { fields, .. }, Value::String(key)) => fields
                     .get(&key)
-                    .or_else(|| fields.get(&hidden_field(&key)))
+                    .or_else(|| fields.get(&escaped_field(&key)))
                     .cloned()
                     .ok_or_else(|| {
                         LangError::eval(
@@ -2235,7 +2285,8 @@ fn eval_list_comp(
             let entries: Vec<(Option<Value>, Value)> = match source {
                 Value::Struct(map) | Value::Definition { fields: map, .. } => map
                     .into_iter()
-                    .map(|(key, value)| (Some(Value::String(key)), value))
+                    .filter(|(key, _)| !is_hidden_key(key))
+                    .map(|(key, value)| (Some(Value::String(output_field_name(&key))), value))
                     .collect(),
                 Value::List(values) | Value::OpenListPrefix(values, _) => values
                     .into_iter()
@@ -2429,13 +2480,14 @@ fn admitted(admissions: &[Admission], key: &str, span: Span) -> Result<bool, Lan
     if admissions.is_empty() || is_hidden_key(key) {
         return Ok(true);
     }
+    let label = display_field_name(key);
     for admission in admissions {
-        if admission.names.contains(key) {
+        if admission.names.contains(key) || admission.names.contains(label) {
             continue;
         }
         let mut matched = false;
         for pattern in &admission.patterns {
-            if pattern_matches(pattern, key, span)? {
+            if pattern_matches(pattern, label, span)? {
                 matched = true;
                 break;
             }
@@ -2514,7 +2566,9 @@ fn apply_patterns(
         if is_hidden_key(key) {
             continue;
         }
-        if let Some(constrained) = pattern_constraint(patterns, key, value, span)? {
+        if let Some(constrained) =
+            pattern_constraint(patterns, display_field_name(key), value, span)?
+        {
             *value = constrained;
         }
     }
@@ -2531,12 +2585,12 @@ fn apply_optional_patterns(
             continue;
         }
         for (pattern, _) in patterns {
-            pattern_matches(pattern, key, span)?;
+            pattern_matches(pattern, display_field_name(key), span)?;
         }
         if matches!(value, Value::Conflict(_)) {
             continue;
         }
-        match pattern_constraint(patterns, key, value, span) {
+        match pattern_constraint(patterns, display_field_name(key), value, span) {
             Ok(Some(constrained)) => *value = constrained,
             Ok(None) => {}
             Err(err) if err.to_string().contains("invalid pattern regex") => return Err(err),
@@ -2956,9 +3010,11 @@ fn values_identical(left: &Value, right: &Value) -> bool {
             Value::Struct(a) | Value::Definition { fields: a, .. },
             Value::Struct(b) | Value::Definition { fields: b, .. },
         ) => {
-            a.len() == b.len()
-                && a.iter().all(|(key, value)| {
-                    b.get(key)
+            let visible_a: Vec<_> = a.iter().filter(|(key, _)| !is_hidden_key(key)).collect();
+            let visible_b: Vec<_> = b.iter().filter(|(key, _)| !is_hidden_key(key)).collect();
+            visible_a.len() == visible_b.len()
+                && visible_a.iter().all(|(key, value)| {
+                    b.get(*key)
                         .is_some_and(|other| values_identical(value, other))
                 })
         }
@@ -4132,7 +4188,8 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                 }
                 Some(Value::OpenList(_)) => Ok(Value::Int(0)),
                 Some(Value::Struct(values) | Value::Definition { fields: values, .. }) => {
-                    Ok(Value::Int(i64::try_from(values.len()).unwrap_or(i64::MAX)))
+                    let visible = values.keys().filter(|key| !is_hidden_key(key)).count();
+                    Ok(Value::Int(i64::try_from(visible).unwrap_or(i64::MAX)))
                 }
                 Some(Value::String(value)) => {
                     Ok(Value::Int(i64::try_from(value.len()).unwrap_or(i64::MAX)))
@@ -4363,8 +4420,9 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     }
                     fields.insert(key.clone(), unify_values(&constraint, value, span)?);
                 } else if admitted(admissions, key, span)? {
-                    let value = pattern_constraint_closed(patterns, key, value, span)?
-                        .unwrap_or_else(|| value.clone());
+                    let value =
+                        pattern_constraint_closed(patterns, display_field_name(key), value, span)?
+                            .unwrap_or_else(|| value.clone());
                     fields.insert(key.clone(), value);
                 } else {
                     return Err(closed_error(span, key));
@@ -4414,8 +4472,13 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     }
                     fields.insert(key.clone(), unify_values(&constraint, value, span)?);
                 } else if admitted(admissions_a, key, span)? {
-                    let value = pattern_constraint_closed(patterns_a, key, value, span)?
-                        .unwrap_or_else(|| value.clone());
+                    let value = pattern_constraint_closed(
+                        patterns_a,
+                        display_field_name(key),
+                        value,
+                        span,
+                    )?
+                    .unwrap_or_else(|| value.clone());
                     fields.insert(key.clone(), value);
                 } else {
                     return Err(closed_error(span, key));
@@ -4431,7 +4494,7 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 if !b.contains_key(key)
                     && !optional_b.contains_key(key)
                     && let Some(constrained) =
-                        pattern_constraint_closed(patterns_b, key, value, span)?
+                        pattern_constraint_closed(patterns_b, display_field_name(key), value, span)?
                 {
                     fields.insert(key.clone(), constrained);
                 }
@@ -4453,7 +4516,12 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                 let mut current = value.clone();
                 let mut conflict = None;
                 if !optional_a_keys.contains(key) {
-                    match pattern_constraint_closed(patterns_a, key, &current, span) {
+                    match pattern_constraint_closed(
+                        patterns_a,
+                        display_field_name(key),
+                        &current,
+                        span,
+                    ) {
                         Ok(Some(constrained)) => current = constrained,
                         Ok(None) => {}
                         Err(err) if err.to_string().contains("invalid pattern regex") => {
@@ -4463,7 +4531,12 @@ fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangEr
                     }
                 }
                 if conflict.is_none() && !optional_b_keys.contains(key) {
-                    match pattern_constraint_closed(patterns_b, key, &current, span) {
+                    match pattern_constraint_closed(
+                        patterns_b,
+                        display_field_name(key),
+                        &current,
+                        span,
+                    ) {
                         Ok(Some(constrained)) => current = constrained,
                         Ok(None) => {}
                         Err(err) if err.to_string().contains("invalid pattern regex") => {

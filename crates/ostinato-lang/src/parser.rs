@@ -744,10 +744,10 @@ impl Parser {
             match self.peek_tok().clone() {
                 Tok::Dot => {
                     self.bump();
-                    let name = match self.peek_tok().clone() {
+                    let (name, quoted) = match self.peek_tok().clone() {
                         Tok::Ident(name) => {
                             self.bump();
-                            name
+                            (name, false)
                         }
                         Tok::Str(raw) => {
                             self.bump();
@@ -763,11 +763,11 @@ impl Parser {
                                     }
                                 }
                             }
-                            text
+                            (text, true)
                         }
                         _ => return Err(self.error("expected selector")),
                     };
-                    expr = Expr::Select(Box::new(expr), name, span);
+                    expr = Expr::Select(Box::new(expr), name, quoted, span);
                 }
                 Tok::LBracket => {
                     self.bump();

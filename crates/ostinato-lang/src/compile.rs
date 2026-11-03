@@ -8,7 +8,7 @@ use serde_json::{Map, Value as Json};
 
 use crate::condition::validate_condition;
 use crate::error::LangError;
-use crate::eval::{TypeKind, Value, eval_file, value_from_json};
+use crate::eval::{TypeKind, Value, eval_file, is_hidden_key, value_from_json};
 use crate::parser::parse;
 
 type Struct = BTreeMap<String, Value>;
@@ -225,7 +225,7 @@ fn extract_workflow(value: &Value) -> Result<WorkflowSpec, LangError> {
         .get("steps")
         .ok_or_else(|| LangError::Workflow("workflow.steps is required".to_owned()))?;
     let steps_map = expect_struct(steps_value, "workflow.steps")?;
-    if steps_map.is_empty() {
+    if steps_map.keys().all(|key| is_hidden_key(key)) {
         return Err(LangError::Workflow(
             "workflow.steps must contain at least one step".to_owned(),
         ));
@@ -233,6 +233,9 @@ fn extract_workflow(value: &Value) -> Result<WorkflowSpec, LangError> {
 
     let mut steps = BTreeMap::new();
     for (step_name, step_value) in steps_map {
+        if is_hidden_key(step_name) {
+            continue;
+        }
         let step = extract_step(step_name, step_value)?;
         steps.insert(step_name.clone(), step);
     }
@@ -462,6 +465,9 @@ fn extract_exec(value: &Value, path: &str) -> Result<ExecSpec, LangError> {
             let env_map = expect_struct(value, &format!("{path}.env"))?;
             let mut env = BTreeMap::new();
             for (key, value) in env_map {
+                if is_hidden_key(key) {
+                    continue;
+                }
                 env.insert(key.clone(), as_string(value, &format!("{path}.env.{key}"))?);
             }
             env
@@ -525,6 +531,9 @@ fn extract_improve(value: &Value, path: &str) -> Result<ImproveSpec, LangError> 
 
 fn reject_unknown(map: &Struct, path: &str, allowed: &[&str]) -> Result<(), LangError> {
     for key in map.keys() {
+        if is_hidden_key(key) {
+            continue;
+        }
         if !allowed.contains(&key.as_str()) {
             return Err(LangError::Workflow(format!(
                 "{path}: unknown field `{key}` (allowed: {})",
@@ -542,6 +551,9 @@ fn dummy_params(root: &Struct) -> Json {
     };
     let mut out = Map::new();
     for (key, value) in params {
+        if is_hidden_key(key) {
+            continue;
+        }
         out.insert(key.clone(), dummy_value(value));
     }
     Json::Object(out)
@@ -561,6 +573,7 @@ fn dummy_value(value: &Value) -> Json {
         }
         Value::Struct(map) | Value::Definition { fields: map, .. } => Json::Object(
             map.iter()
+                .filter(|(key, _)| !is_hidden_key(key))
                 .map(|(key, value)| (key.clone(), dummy_value(value)))
                 .collect(),
         ),

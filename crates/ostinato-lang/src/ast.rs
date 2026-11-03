@@ -152,7 +152,7 @@ pub enum Expr {
     Str(Vec<StrPart>, Span),
     Bytes(Vec<u8>, Span),
     Ident(String, Span),
-    Select(Box<Expr>, String, Span),
+    Select(Box<Expr>, String, bool, Span),
     Index(Box<Expr>, Box<Expr>, Span),
     Call(Box<Expr>, Vec<Expr>, Span),
     Bound(BoundOp, Box<Expr>, Span),
@@ -184,7 +184,7 @@ impl Expr {
             | Self::Bytes(_, span)
             | Self::Str(_, span)
             | Self::Ident(_, span)
-            | Self::Select(_, _, span)
+            | Self::Select(_, _, _, span)
             | Self::Index(_, _, span)
             | Self::Call(_, _, span)
             | Self::Bound(_, _, span)

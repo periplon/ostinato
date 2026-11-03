@@ -1728,3 +1728,48 @@ workflow: {
     let report = json(&output);
     assert_eq!(report["params"]["tags"], serde_json::json!([]));
 }
+
+#[test]
+fn hidden_metadata_is_allowed_throughout_the_workflow_schema() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("hidden-metadata.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: {a: 1}
+workflow: {
+    name: "x"
+    _h: 1
+    steps: {
+        s: {
+            kind: "noop"
+            _sh: 2
+            retry: {_r: 1, max: 2}
+            exec: {_e: 1, cmd: ["true"], env: {_env: "x", A: "1"}}
+        }
+    }
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["workflow"]["steps"]["s"]["exec"]["env"]["A"], "1");
+    assert!(
+        report["workflow"]["steps"]["s"]["exec"]["env"]
+            .get("\u{3}_env")
+            .is_none()
+    );
+}
