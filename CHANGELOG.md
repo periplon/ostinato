@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.11
+
+Division scientific-notation boundary.
+
+- Division padding follows CUE's 34-digit pre-reduce exponent, so scientific
+  results at/after 1e33 stay unpadded (`1e33/1` → `1E+33`, `1e40/2` → `5E+39`,
+  `1.5e33/1` → `1.5E+33`) while smaller results keep `1.0E+2` style.
+- 276 tests (48 CLI E2E, 1 conformance, 214 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.10
 
 Division scale normalization and Sqrt scientific notation.

@@ -45,6 +45,12 @@ params: {
 	sqrt_exp4_s:    "\(math.Sqrt(4e2))"
 	sqrt_exp8_s:    "\(math.Sqrt(1e4))"
 	sqrt_exp100_s:  "\(math.Sqrt(1e100))"
+	exp_div_large_boundary_s: "\(1e32 / 1)"
+	exp_div_large_s:          "\(1e33 / 1)"
+	exp_div_large_neg_s:      "\(1e100 / 1e-100)"
+	exp_div_large_half_s:     "\(1e40 / 2)"
+	exp_div_large_frac_s:     "\(1.5e33 / 1)"
+	exp_div_large_123_s:      "\(1.23e33 / 1)"
 }
 
 workflow: {
