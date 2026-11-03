@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.16
+
+Nested params scope and generated chains.
+
+- Nested params groups resolve their own `params.<path>` references and chained
+  comprehension-generated siblings without false cycles.
+- Nested group expansion sees outer lexical fields and params-level `let`s.
+- 242 tests (35 CLI E2E, 1 conformance, 196 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.15
 
 Params comprehensions and override timing.

@@ -4555,3 +4555,32 @@ workflow: {name: "\(params.b)", steps: {s: {kind: "noop"}}}
     .expect("loop override");
     assert_eq!(compiled.spec.name, "2");
 }
+
+#[test]
+fn nested_params_groups_and_generated_chains_avoid_false_cycles() {
+    let cases = [
+        "params: {db: {host: \"h\", if params.db.host == \"h\" {port: 1}}}",
+        "params: {a: 1, for k in [params.a] {b: k}, for j in [params.b] {c: j}}",
+        "params: {let x = 1, g: {b: x}}",
+        "params: {a: 1, b: 2, for k in [params.a] {c: k}, if params.c == 1 {d: 2}}",
+    ];
+    for source in cases {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        ostinato_lang::eval_file(&file).expect("nested params sibling");
+    }
+}
+
+#[test]
+fn nested_params_groups_see_outer_overrides() {
+    let source = r#"
+package demo
+params: {a: int @tag(a, type=int), g: {for k in [a] {b: k}}}
+workflow: {name: "\(params.g.b)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([("a".to_owned(), "2".to_owned())]),
+    )
+    .expect("outer override in group");
+    assert_eq!(compiled.spec.name, "2");
+}
