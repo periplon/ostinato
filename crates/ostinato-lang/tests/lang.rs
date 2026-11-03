@@ -4391,3 +4391,57 @@ params: #D & {a: 2}
     let value = ostinato_lang::eval_file(&file).expect("generated hidden optional");
     assert_eq!(value.to_json().expect("json")["params"]["a"], 2);
 }
+
+#[test]
+fn materialized_sentinel_fields_stay_required_and_conflict_checked() {
+    let source = "package demo\nparams: {\"\u{3}_x\"?: 2, for k in [\"x\"] {\"\u{3}_x\": 2}, for k in [\"x\"] {\"\u{3}_x\"?: 2}}\n";
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("materialized optional");
+    assert_eq!(value.to_json().expect("json")["params"]["\u{3}_x"], 2);
+
+    let conflict = "package demo\nparams: {\"\u{3}_x\"?: 2, for k in [\"x\"] {\"\u{3}_x\": 2}, for k in [\"x\"] {\"\u{3}_x\"?: 3}}\n";
+    let file = ostinato_lang::parse(conflict).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "conflict must surface"
+    );
+}
+
+#[test]
+fn generated_root_optionals_do_not_hide_definitions() {
+    let lib = r##"
+package lib
+#D: 1
+for k in ["x"] {"#D"?: 3}
+"##;
+    let file = ostinato_lang::parse(lib).expect("parse");
+    let value =
+        ostinato_lang::eval_file_with_imports_mode(&file, &BTreeMap::new(), &BTreeMap::new(), true)
+            .expect("evaluate lib");
+    let mut imports = BTreeMap::new();
+    imports.insert("lib".to_owned(), ostinato_lang::strip_hidden(value));
+
+    let main = r#"
+package main
+params: {v: lib.#D}
+"#;
+    let file = ostinato_lang::parse(main).expect("parse");
+    let value = ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new())
+        .expect("definition survives generated optional");
+    assert_eq!(value.to_json().expect("json")["params"]["v"], 1);
+}
+
+#[test]
+fn materialized_hidden_fields_do_not_satisfy_quoted_optionals() {
+    for source in [
+        "params: {if true {_h: 1}, \"\u{3}_h\"?: 2, v: params[\"\u{3}_h\"]}",
+        "params: {if true {_h: 1}, \"\u{3}_h\"?: 2, v: params.\"\u{3}_h\"}",
+        "params: {g: {if true {_h: 1}, \"\u{3}_h\"?: 2}, v: params.g.\"\u{3}_h\"}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "hidden materialization must not satisfy quoted optional: {source}"
+        );
+    }
+}

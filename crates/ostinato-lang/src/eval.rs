@@ -903,15 +903,14 @@ impl<'a> Frame<'a> {
         let declared = key
             .as_ref()
             .and_then(|key| self.fields.borrow().get(key).map(|field| field.optional));
+        let materialized_here = self.materialized.borrow().contains(&name)
+            || key
+                .as_ref()
+                .is_some_and(|key| self.values.borrow().contains_key(key));
         let forced_required = match declared {
             Some(false) => true,
-            Some(true) => false,
-            None => {
-                self.materialized.borrow().contains(&name)
-                    || key
-                        .as_ref()
-                        .is_some_and(|key| self.values.borrow().contains_key(key))
-            }
+            Some(true) => materialized_here,
+            None => materialized_here,
         };
         if forced_required {
             let key = key.unwrap_or_else(|| name.clone());
@@ -1232,8 +1231,7 @@ impl<'a> Frame<'a> {
                         .is_some_and(|definition| definition.optional);
                     if optional
                         && !overridden
-                        && !child.materialized.borrow().contains(segment)
-                        && !child.values.borrow().contains_key(segment)
+                        && !child.materialized.borrow().contains(key)
                         && !child.values.borrow().contains_key(key)
                     {
                         return Err(LangError::eval(
@@ -1895,12 +1893,13 @@ impl<'a> Frame<'a> {
                 .iter()
                 .filter(|(name, definition)| {
                     (include_definitions || !definition.definition)
-                        && !generated.contains_key(*name)
-                        && (name.starts_with([
-                            HIDDEN_PREFIX,
-                            ESCAPED_PREFIX,
-                            NON_DEFINITION_PREFIX,
-                        ]) || !generated.contains_key(display_field_name(name)))
+                        && (definition.definition
+                            || (!generated.contains_key(*name)
+                                && (name.starts_with([
+                                    HIDDEN_PREFIX,
+                                    ESCAPED_PREFIX,
+                                    NON_DEFINITION_PREFIX,
+                                ]) || !generated.contains_key(display_field_name(name)))))
                 })
                 .map(|(name, _)| name.clone())
                 .collect()
