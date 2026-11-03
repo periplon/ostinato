@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.9.1
+
+- Open-list unified elements, depth-unlimited equality, on-demand stack growth
+  and deferred structural-cycle validation for recursive definitions.
+- 267 tests (47 CLI E2E, 1 conformance, 209 language, 6 domain, 3 store, 1 unit).
+
 ## v0.9.0
 
 - Recursive definition materialization for self/mutually recursive definitions,

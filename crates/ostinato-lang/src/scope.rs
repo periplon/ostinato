@@ -442,6 +442,19 @@ impl AliasCtx {
         shadowed: &HashSet<String>,
         from: Option<&(usize, String)>,
     ) -> Result<usize, LangError> {
+        stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+            self.scope_impl(items, parent, visible, shadowed, from)
+        })
+    }
+
+    fn scope_impl(
+        &mut self,
+        items: &[StructItem],
+        parent: Option<usize>,
+        visible: &[usize],
+        shadowed: &HashSet<String>,
+        from: Option<&(usize, String)>,
+    ) -> Result<usize, LangError> {
         let id = self.scopes.len();
         self.scopes.push(AliasScope {
             parent,
@@ -623,6 +636,18 @@ impl AliasCtx {
     }
 
     fn expr(
+        &mut self,
+        expr: &Expr,
+        chain: &[usize],
+        shadowed: &HashSet<String>,
+        from: Option<&(usize, String)>,
+    ) -> Result<(), LangError> {
+        stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+            self.expr_impl(expr, chain, shadowed, from)
+        })
+    }
+
+    fn expr_impl(
         &mut self,
         expr: &Expr,
         chain: &[usize],
