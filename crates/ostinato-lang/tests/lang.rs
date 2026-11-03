@@ -5842,3 +5842,68 @@ workflow: {
         Some("params.fast")
     );
 }
+#[test]
+fn definitions_can_select_their_own_fields() {
+    let source = r#"
+package demo
+#D: {a: #D.b, b: 1}
+#N: {a: #N.b.c, b: {c: 2}}
+#P: {a: #P.b, b: int | *1}
+#Deep: {inner: {x: #Deep.b}, b: 1}
+#List: {a: #List.l[0], l: [7, 8]}
+#Hidden: {a: #Hidden.#I, #I: 3}
+#Quoted: {a: #Quoted["b"], b: 1}
+#Arith: {a: #Arith.b + 1, b: 1}
+#Composed: {a: #Composed.b} & {b: 1}
+base: {b: 1}
+#FromBase: base & {a: #FromBase.b}
+#Outer: {#Inner: {a: #Outer.b}, b: 1, x: #Inner.a}
+regular: {a: regular.b, b: 1}
+regular_deep: {inner: {a: regular_deep.b}, b: 1}
+#Shadow: {#Shadow: {b: 9}, a: #Shadow.b, b: 1}
+shadow: {shadow: {b: 9}, a: shadow.b, b: 1}
+d: #D
+n: #N
+p: #P
+deep: #Deep
+list: #List
+hidden: #Hidden
+quoted: #Quoted
+arith: #Arith
+composed: #Composed
+from_base: #FromBase
+outer: #Outer
+shadow_def: #Shadow
+"#;
+    let file = ostinato_lang::parse(source).expect("parse self-selection");
+    let value = ostinato_lang::eval_file(&file).expect("eval self-selection");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["d"]["a"], 1);
+    assert_eq!(json["n"]["a"], 2);
+    assert_eq!(json["p"]["a"], 1);
+    assert_eq!(json["deep"]["inner"]["x"], 1);
+    assert_eq!(json["list"]["a"], 7);
+    assert_eq!(json["hidden"]["a"], 3);
+    assert_eq!(json["quoted"]["a"], 1);
+    assert_eq!(json["arith"]["a"], 2);
+    assert_eq!(json["composed"]["a"], 1);
+    assert_eq!(json["from_base"]["a"], 1);
+    assert_eq!(json["outer"]["x"], 1);
+    assert_eq!(json["regular"]["a"], 1);
+    assert_eq!(json["regular_deep"]["inner"]["a"], 1);
+    assert_eq!(json["shadow_def"]["a"], 9);
+    assert_eq!(json["shadow"]["a"], 9);
+
+    for source in [
+        "#D: {a: #D.b, b?: int}",
+        "#D: {a: #D.b, b?: int | *1}",
+        "#D: {a: #D.b, b: #D.a}",
+    ] {
+        let file =
+            ostinato_lang::parse(&format!("package demo\n{source}\nx: #D.a\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "optional or cyclic self-selection must fail: {source}"
+        );
+    }
+}

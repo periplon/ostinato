@@ -597,6 +597,8 @@ fn json_frame(context: &Json) -> Frame<'static> {
         params_prefix: RefCell::new(Vec::new()),
         params_segment: RefCell::new(None),
         recursive_handles: RefCell::new(BTreeMap::new()),
+        definition_context: RefCell::new(None),
+        next_definition: RefCell::new(None),
     };
     if let Json::Object(map) = context {
         let mut values = BTreeMap::new();
@@ -709,6 +711,8 @@ struct Frame<'a> {
     params_prefix: RefCell<Vec<String>>,
     params_segment: RefCell<Option<String>>,
     recursive_handles: RefCell<BTreeMap<String, Rc<RecursiveSlot>>>,
+    definition_context: RefCell<Option<String>>,
+    next_definition: RefCell<Option<String>>,
 }
 
 impl<'a> Frame<'a> {
@@ -748,6 +752,8 @@ impl<'a> Frame<'a> {
             params_prefix: RefCell::new(Vec::new()),
             params_segment: RefCell::new(None),
             recursive_handles: RefCell::new(BTreeMap::new()),
+            definition_context: RefCell::new(None),
+            next_definition: RefCell::new(None),
         };
 
         // Pass 1: static fields and lazy let bindings.
@@ -1264,6 +1270,14 @@ impl<'a> Frame<'a> {
         }
     }
 
+    fn has_local_name(&self, name: &str) -> bool {
+        self.bindable_field_key(name).is_some()
+            || self.vars.borrow().contains_key(name)
+            || self.lets.borrow().contains_key(name)
+            || self.aliases.borrow().contains_key(name)
+            || (!self.fields.borrow().contains_key(name) && self.values.borrow().contains_key(name))
+    }
+
     fn has_name(&self, name: &str) -> bool {
         self.bindable_field_key(name).is_some()
             || self.vars.borrow().contains_key(name)
@@ -1757,6 +1771,9 @@ impl<'a> Frame<'a> {
                 .or_insert_with(|| Rc::new(RecursiveSlot::new()))
                 .clone();
             self.evaluating.borrow_mut().insert(key.to_owned());
+            let previous_next = self
+                .next_definition
+                .replace(Some(display_field_name(key).to_owned()));
             let mut flattened = false;
             let result = if let Some(items) = self.params_items(&exprs) {
                 flattened = true;
@@ -1792,6 +1809,7 @@ impl<'a> Frame<'a> {
                     None => Ok(close_composed_definition(&result)),
                 }
             };
+            self.next_definition.replace(previous_next);
             self.evaluating.borrow_mut().remove(key);
             let mut result = result?;
             let mut references = Vec::new();
@@ -1820,25 +1838,33 @@ impl<'a> Frame<'a> {
             return Ok(result);
         }
         self.evaluating.borrow_mut().insert(key.to_owned());
+        let previous_next = self
+            .next_definition
+            .replace(Some(display_field_name(key).to_owned()));
         let segment = self
             .within_params()
             .then(|| display_field_name(key).to_owned());
-        let mut result = Value::Bottom;
-        for (index, expr) in exprs.iter().enumerate() {
-            let previous = segment
-                .as_ref()
-                .map(|segment| self.params_segment.replace(Some(segment.clone())));
-            let value = eval_expr(expr, self);
-            if let Some(previous) = previous {
-                *self.params_segment.borrow_mut() = previous;
+        let outcome = (|| -> Result<Value, LangError> {
+            let mut result = Value::Bottom;
+            for (index, expr) in exprs.iter().enumerate() {
+                let previous = segment
+                    .as_ref()
+                    .map(|segment| self.params_segment.replace(Some(segment.clone())));
+                let value = eval_expr(expr, self);
+                if let Some(previous) = previous {
+                    *self.params_segment.borrow_mut() = previous;
+                }
+                let value = value?;
+                result = if index == 0 {
+                    value
+                } else {
+                    unify_values(&result, &value, span)?
+                };
             }
-            let value = value?;
-            result = if index == 0 {
-                value
-            } else {
-                unify_values(&result, &value, span)?
-            };
-        }
+            Ok(result)
+        })();
+        self.next_definition.replace(previous_next);
+        let result = outcome?;
         self.evaluating.borrow_mut().remove(key);
         self.values
             .borrow_mut()
@@ -1903,6 +1929,11 @@ impl<'a> Frame<'a> {
         closed_by_default: bool,
     ) -> Result<Value, LangError> {
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
+        *child.definition_context.borrow_mut() = self
+            .next_definition
+            .borrow()
+            .clone()
+            .or_else(|| self.definition_context.borrow().clone());
         if let Some(segment) = self.params_segment.borrow().clone() {
             let mut prefix = self.nearest_params_prefix();
             prefix.push(segment);
@@ -2388,6 +2419,49 @@ fn quoted_lookup<'m, V>(map: &'m BTreeMap<String, V>, field: &str) -> Option<&'m
     }
 }
 
+fn self_definition_select(
+    frame: &Frame<'_>,
+    base: &Expr,
+    field: &str,
+    quoted: bool,
+    span: Span,
+) -> Result<Option<Value>, LangError> {
+    let mut base = base;
+    while let Expr::Paren(inner, _) | Expr::Default(inner, _) = base {
+        base = inner;
+    }
+    let Expr::Ident(name, _) = base else {
+        return Ok(None);
+    };
+    let mut candidate = Some(frame);
+    while let Some(current) = candidate {
+        if current.has_local_name(name) {
+            // A closer lexical binding shadows the definition; let the normal
+            // identifier/selector path resolve it.
+            return Ok(None);
+        }
+        if current.definition_context.borrow().as_deref() == Some(name.as_str())
+            && let Some(key) = current.segment_field_key(field, quoted)
+        {
+            let optional = current
+                .fields
+                .borrow()
+                .get(&key)
+                .is_some_and(|definition| definition.optional);
+            if optional {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("cannot reference optional field `{field}`"),
+                ));
+            }
+            return current.eval_field_key(&key, span).map(Some);
+        }
+        candidate = current.parent;
+    }
+    Ok(None)
+}
+
 fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<Value, LangError> {
     let missing = || {
         LangError::eval(
@@ -2562,6 +2636,9 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         }
         Expr::Ident(name, span) => frame.lookup(name, *span),
         Expr::Select(base, field, quoted, span) => {
+            if let Some(value) = self_definition_select(frame, base, field, *quoted, *span)? {
+                return Ok(value);
+            }
             if let Some(path) = params_select_path(expr, frame)
                 && !path.is_empty()
                 && frame.params_context.borrow().is_some()
@@ -2664,6 +2741,24 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             apply_builtin(&callee, &values, *span)
         }
         Expr::Index(base, index, span) => {
+            if let Expr::Str(parts, _) = &**index {
+                let mut key = String::new();
+                let mut literal = true;
+                for part in parts {
+                    match part {
+                        StrPart::Text(text) => key.push_str(text),
+                        StrPart::Interp(_) => {
+                            literal = false;
+                            break;
+                        }
+                    }
+                }
+                if literal
+                    && let Some(value) = self_definition_select(frame, base, &key, true, *span)?
+                {
+                    return Ok(value);
+                }
+            }
             if frame.params_context.borrow().is_some()
                 && !frame.params_shadowed()
                 && let Some(mut path) = params_select_path(base, frame)
