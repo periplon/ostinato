@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.14
+
+Generated quoted optionals and constant gating.
+
+- Generated optional constraints no longer treat a cached definition value as
+  a materialized regular field.
+- Static cycle gating understands constant comparisons, `let`-bound constants,
+  negation and live struct-literal sources; dead bodies remain dead.
+- 156 tests (24 CLI E2E, 1 conformance, 121 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.13
 
 Generated quoted constraints and dead-body cycles.

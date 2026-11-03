@@ -2473,3 +2473,61 @@ fn dead_comprehension_bodies_do_not_create_required_cycles() {
         );
     }
 }
+
+#[test]
+fn generated_quoted_optionals_do_not_touch_materialized_definitions() {
+    let source = r##"
+package demo
+#P: {
+    #D: 8
+    if true {a: #D}
+    if true {"#D"?: int}
+}
+params: {a: #P.a, w: #P.#D}
+"##;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated optional after definition");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["a"], 8);
+    assert_eq!(json["params"]["w"], 8);
+
+    let ordered = r##"
+package demo
+#P: {#D: 8, if #D == 8 {"#D"?: int}, if true {"#D": 9}}
+params: {v: #P["#D"], w: #P.#D}
+"##;
+    let file = ostinato_lang::parse(ordered).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("order independent");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["v"], 9);
+    assert_eq!(json["params"]["w"], 8);
+}
+
+#[test]
+fn live_struct_sources_and_constant_conditions_keep_cycles() {
+    for source in [
+        "let X = #A\n#A: {for k, x in {a: 1} {w: X}}\nparams: {v: 1}",
+        "let X = #A\n#A: {if 1 == 1 {v: X}}\nparams: {v: 1}",
+        "let C = true\nlet X = #A\n#A: {if C {v: X}}\nparams: {v: 1}",
+        "let X = #A\n#A: {if \"a\" < \"b\" {v: X}}\nparams: {v: 1}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "live body must keep the cycle: {source}"
+        );
+    }
+
+    for source in [
+        "let X = #A\n#A: {for k, x in {} {w: X}}\nparams: {v: 1}",
+        "let X = #A\n#A: {if 1 == 2 {v: X}}\nparams: {v: 1}",
+        "let C = false\nlet X = #A\n#A: {if C {v: X}}\nparams: {v: 1}",
+        "let X = #A\n#A: {if \"b\" < \"a\" {v: X}}\nparams: {v: 1}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_ok(),
+            "dead body must not create a cycle: {source}"
+        );
+    }
+}

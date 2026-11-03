@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{CompClause, Expr, File, Label, Span, StrPart, StructItem};
+use crate::ast::{BinOp, CompClause, Expr, File, Label, Span, StrPart, StructItem, UnOp};
 use crate::error::LangError;
 
 /// Rewrite file-local imports, `let` bindings and aliases to unique names.
@@ -49,22 +49,6 @@ pub fn rename_file_locals(file: &mut File, file_index: usize) -> Result<(), Lang
     Ok(())
 }
 
-fn statically_true(expr: &Expr) -> bool {
-    match expr {
-        Expr::Bool(true, _) => true,
-        Expr::Paren(inner, _) => statically_true(inner),
-        _ => false,
-    }
-}
-
-fn statically_non_empty(expr: &Expr) -> bool {
-    match expr {
-        Expr::List(items, _) => !items.is_empty(),
-        Expr::Paren(inner, _) => statically_non_empty(inner),
-        _ => false,
-    }
-}
-
 fn field_node(name: &str) -> String {
     format!("\u{2}{name}")
 }
@@ -73,12 +57,85 @@ fn is_field_node(name: &str) -> bool {
     name.starts_with('\u{2}')
 }
 
+#[derive(Debug, Clone)]
+enum Scalar {
+    Int(i64),
+    Float(f64),
+    String(String),
+    Bool(bool),
+}
+
+impl Scalar {
+    fn compare(&self, op: BinOp, other: &Self) -> Option<bool> {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => Some(match op {
+                BinOp::Eq => a == b,
+                BinOp::Ne => a != b,
+                BinOp::Lt => a < b,
+                BinOp::Le => a <= b,
+                BinOp::Gt => a > b,
+                BinOp::Ge => a >= b,
+                _ => return None,
+            }),
+            (Self::Float(a), Self::Float(b)) => Some(match op {
+                BinOp::Eq => a == b,
+                BinOp::Ne => a != b,
+                BinOp::Lt => a < b,
+                BinOp::Le => a <= b,
+                BinOp::Gt => a > b,
+                BinOp::Ge => a >= b,
+                _ => return None,
+            }),
+            (Self::String(a), Self::String(b)) => Some(match op {
+                BinOp::Eq => a == b,
+                BinOp::Ne => a != b,
+                BinOp::Lt => a < b,
+                BinOp::Le => a <= b,
+                BinOp::Gt => a > b,
+                BinOp::Ge => a >= b,
+                _ => return None,
+            }),
+            (Self::Bool(a), Self::Bool(b)) => match op {
+                BinOp::Eq => Some(a == b),
+                BinOp::Ne => Some(a != b),
+                _ => None,
+            },
+            (Self::Int(a), Self::Float(b)) => {
+                let a = *a as f64;
+                Some(match op {
+                    BinOp::Eq => a == *b,
+                    BinOp::Ne => a != *b,
+                    BinOp::Lt => a < *b,
+                    BinOp::Le => a <= *b,
+                    BinOp::Gt => a > *b,
+                    BinOp::Ge => a >= *b,
+                    _ => return None,
+                })
+            }
+            (Self::Float(a), Self::Int(b)) => {
+                let b = *b as f64;
+                Some(match op {
+                    BinOp::Eq => *a == b,
+                    BinOp::Ne => *a != b,
+                    BinOp::Lt => *a < b,
+                    BinOp::Le => *a <= b,
+                    BinOp::Gt => *a > b,
+                    BinOp::Ge => *a >= b,
+                    _ => return None,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct AliasScope {
     parent: Option<usize>,
     fields: HashSet<String>,
     required_fields: HashSet<String>,
     lets: HashSet<String>,
+    let_values: HashMap<String, Expr>,
     let_spans: HashMap<String, Span>,
     let_used: HashSet<String>,
     bindings: HashSet<String>,
@@ -113,6 +170,103 @@ impl AliasCtx {
         false
     }
 
+    fn const_scalar(&self, expr: &Expr, chain: &[usize], depth: usize) -> Option<Scalar> {
+        if depth > 32 {
+            return None;
+        }
+        match expr {
+            Expr::Int(value, _) => Some(Scalar::Int(*value)),
+            Expr::Float(value, _) => Some(Scalar::Float(*value)),
+            Expr::Bool(value, _) => Some(Scalar::Bool(*value)),
+            Expr::Paren(inner, _) => self.const_scalar(inner, chain, depth + 1),
+            Expr::Str(parts, _) if parts.len() == 1 => match &parts[0] {
+                StrPart::Text(text) => Some(Scalar::String(text.clone())),
+                StrPart::Interp(_) => None,
+            },
+            Expr::Unary(UnOp::Neg, inner, _) => match self.const_scalar(inner, chain, depth + 1)? {
+                Scalar::Int(value) => Some(Scalar::Int(-value)),
+                Scalar::Float(value) => Some(Scalar::Float(-value)),
+                _ => None,
+            },
+            Expr::Ident(name, _) => {
+                for scope in chain.iter().rev() {
+                    if let Some(value) = self.scopes[*scope].let_values.get(name) {
+                        return self.const_scalar(value, chain, depth + 1);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn const_bool(&self, expr: &Expr, chain: &[usize], depth: usize) -> Option<bool> {
+        if depth > 32 {
+            return None;
+        }
+        match expr {
+            Expr::Bool(value, _) => Some(*value),
+            Expr::Paren(inner, _) => self.const_bool(inner, chain, depth + 1),
+            Expr::Unary(UnOp::Not, inner, _) => {
+                self.const_bool(inner, chain, depth + 1).map(|value| !value)
+            }
+            Expr::Ident(_, _) => match self.const_scalar(expr, chain, depth + 1)? {
+                Scalar::Bool(value) => Some(value),
+                _ => None,
+            },
+            Expr::Binary(op, left, right, _) => match op {
+                BinOp::And => {
+                    if self.const_bool(left, chain, depth + 1) == Some(false) {
+                        Some(false)
+                    } else {
+                        self.const_bool(right, chain, depth + 1)
+                    }
+                }
+                BinOp::Or => {
+                    if self.const_bool(left, chain, depth + 1) == Some(true) {
+                        Some(true)
+                    } else {
+                        self.const_bool(right, chain, depth + 1)
+                    }
+                }
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    let left = self.const_scalar(left, chain, depth + 1)?;
+                    let right = self.const_scalar(right, chain, depth + 1)?;
+                    left.compare(*op, &right)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn static_non_empty(&self, expr: &Expr, chain: &[usize], depth: usize) -> bool {
+        if depth > 32 {
+            return false;
+        }
+        match expr {
+            Expr::List(items, _) => !items.is_empty(),
+            Expr::Struct(items, _) => self.struct_has_required(items, chain, depth + 1),
+            Expr::Paren(inner, _) => self.static_non_empty(inner, chain, depth + 1),
+            _ => false,
+        }
+    }
+
+    fn struct_has_required(&self, items: &[StructItem], chain: &[usize], depth: usize) -> bool {
+        items.iter().any(|item| match item {
+            StructItem::Field(field) => !field.definition && !field.optional,
+            StructItem::If { cond, body, .. } => {
+                self.const_bool(cond, chain, depth + 1) == Some(true)
+                    && self.struct_has_required(body, chain, depth + 1)
+            }
+            StructItem::For { source, body, .. } => {
+                self.static_non_empty(source, chain, depth + 1)
+                    && self.struct_has_required(body, chain, depth + 1)
+            }
+            _ => false,
+        })
+    }
+
     fn scope(
         &mut self,
         items: &[StructItem],
@@ -127,6 +281,7 @@ impl AliasCtx {
             fields: HashSet::new(),
             required_fields: HashSet::new(),
             lets: HashSet::new(),
+            let_values: HashMap::new(),
             let_spans: HashMap::new(),
             let_used: HashSet::new(),
             bindings: HashSet::new(),
@@ -178,7 +333,9 @@ impl AliasCtx {
                         self.scopes[id].aliases.insert(alias.clone(), alias_id);
                     }
                 }
-                StructItem::Let { name, span, .. } => {
+                StructItem::Let {
+                    name, value, span, ..
+                } => {
                     if name == "_" {
                         return Err(LangError::eval(
                             span.line,
@@ -194,6 +351,9 @@ impl AliasCtx {
                         ));
                     }
                     self.scopes[id].let_spans.insert(name.clone(), *span);
+                    self.scopes[id]
+                        .let_values
+                        .insert(name.clone(), value.clone());
                 }
                 _ => {}
             }
@@ -263,7 +423,7 @@ impl AliasCtx {
                         body_shadow.insert(key.clone());
                     }
                     body_shadow.insert(value.clone());
-                    let body_from = if statically_non_empty(source) {
+                    let body_from = if self.static_non_empty(source, &chain, 0) {
                         from
                     } else {
                         None
@@ -282,7 +442,11 @@ impl AliasCtx {
                 }
                 StructItem::If { cond, body, .. } => {
                     self.expr(cond, &chain, &local_shadow, from)?;
-                    let body_from = if statically_true(cond) { from } else { None };
+                    let body_from = if self.const_bool(cond, &chain, 0) == Some(true) {
+                        from
+                    } else {
+                        None
+                    };
                     self.scope(body, Some(id), &chain, &local_shadow, body_from)?;
                 }
                 StructItem::Ellipsis(_) => {}
@@ -384,6 +548,7 @@ impl AliasCtx {
                     fields: HashSet::new(),
                     required_fields: HashSet::new(),
                     lets: HashSet::new(),
+                    let_values: HashMap::new(),
                     let_spans: HashMap::new(),
                     let_used: HashSet::new(),
                     bindings: HashSet::new(),
@@ -403,7 +568,7 @@ impl AliasCtx {
                             span,
                         } => {
                             self.expr(source, chain, shadowed, if may_run { from } else { None })?;
-                            may_run = may_run && statically_non_empty(source);
+                            may_run = may_run && self.static_non_empty(source, chain, 0);
                             if let Some(key) = key {
                                 body_shadow.insert(key.clone());
                                 self.scopes[comp_id].bindings.insert(key.clone());
@@ -424,7 +589,8 @@ impl AliasCtx {
                                 &body_shadow,
                                 if may_run { from } else { None },
                             )?;
-                            may_run = may_run && statically_true(cond);
+                            may_run =
+                                may_run && self.const_bool(cond, &comp_chain, 0) == Some(true);
                         }
                     }
                 }
