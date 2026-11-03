@@ -2419,3 +2419,57 @@ params: {v: 1}
     let file = ostinato_lang::parse(optional).expect("parse");
     assert!(ostinato_lang::eval_file(&file).is_ok());
 }
+
+#[test]
+fn generated_quoted_optionals_target_the_regular_field() {
+    let source = r##"
+package demo
+#P: {#D: 8, for _, x in [1] {"#D": x}, for _, x in [1] {"#D"?: x}}
+params: {v: #P["#D"], w: #P.#D}
+"##;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated quoted optional");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["v"], 1);
+    assert_eq!(json["params"]["w"], 8);
+
+    let conflict = r##"
+package demo
+#P: {#D: 8, "#D": 1, "#D"?: 8}
+params: {v: #P["#D"], w: #P.#D}
+"##;
+    let file = ostinato_lang::parse(conflict).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn dead_comprehension_bodies_do_not_create_required_cycles() {
+    for source in [
+        "let X = #A\n#A: {if false {v: X}}\nparams: {v: 1}",
+        "let C = false\nlet X = #A\n#A: {if C {v: X}}\nparams: {v: 1}",
+        "let X = #A\n#A: {if 1 > 2 {v: X}}\nparams: {v: 1}",
+        "let X = #A\n#A: {for k in [] {v: X}}\nparams: {v: 1}",
+        "let X = #A\n#A: {for k, v in {} {v: X}}\nparams: {v: 1}",
+        "let X = #A\n#A: {v: [for k in [] {X}]}\nparams: {v: 1}",
+        "let X = #A\n#A: {if false {#B: {v: X}}}\nparams: {v: 1}",
+        "let X = #A\n#A: {for k in [1] if false {v: X}}\nparams: {v: 1}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_ok(),
+            "dead body must not create a cycle: {source}"
+        );
+    }
+
+    for source in [
+        "let X = #A\n#A: {if true {v: X}}\nparams: {v: 1}",
+        "let X = #A\n#A: {for k in [1] {v: X}}\nparams: {v: 1}",
+        "let X = #A\n#A: {v: [for k in [1] {X}]}\nparams: {v: 1}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "live body must keep the cycle: {source}"
+        );
+    }
+}

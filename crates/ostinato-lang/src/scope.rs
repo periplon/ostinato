@@ -49,6 +49,22 @@ pub fn rename_file_locals(file: &mut File, file_index: usize) -> Result<(), Lang
     Ok(())
 }
 
+fn statically_true(expr: &Expr) -> bool {
+    match expr {
+        Expr::Bool(true, _) => true,
+        Expr::Paren(inner, _) => statically_true(inner),
+        _ => false,
+    }
+}
+
+fn statically_non_empty(expr: &Expr) -> bool {
+    match expr {
+        Expr::List(items, _) => !items.is_empty(),
+        Expr::Paren(inner, _) => statically_non_empty(inner),
+        _ => false,
+    }
+}
+
 fn field_node(name: &str) -> String {
     format!("\u{2}{name}")
 }
@@ -247,7 +263,12 @@ impl AliasCtx {
                         body_shadow.insert(key.clone());
                     }
                     body_shadow.insert(value.clone());
-                    let body_id = self.scope(body, Some(id), &chain, &body_shadow, from)?;
+                    let body_from = if statically_non_empty(source) {
+                        from
+                    } else {
+                        None
+                    };
+                    let body_id = self.scope(body, Some(id), &chain, &body_shadow, body_from)?;
                     if let Some(key) = key {
                         self.scopes[body_id].bindings.insert(key.clone());
                         self.scopes[body_id]
@@ -261,7 +282,8 @@ impl AliasCtx {
                 }
                 StructItem::If { cond, body, .. } => {
                     self.expr(cond, &chain, &local_shadow, from)?;
-                    self.scope(body, Some(id), &chain, &local_shadow, from)?;
+                    let body_from = if statically_true(cond) { from } else { None };
+                    self.scope(body, Some(id), &chain, &local_shadow, body_from)?;
                 }
                 StructItem::Ellipsis(_) => {}
             }
@@ -371,6 +393,7 @@ impl AliasCtx {
                 let mut comp_chain = chain.to_vec();
                 comp_chain.push(comp_id);
                 let mut body_shadow = shadowed.clone();
+                let mut may_run = true;
                 for clause in clauses {
                     match clause {
                         CompClause::For {
@@ -379,7 +402,8 @@ impl AliasCtx {
                             source,
                             span,
                         } => {
-                            self.expr(source, chain, shadowed, from)?;
+                            self.expr(source, chain, shadowed, if may_run { from } else { None })?;
+                            may_run = may_run && statically_non_empty(source);
                             if let Some(key) = key {
                                 body_shadow.insert(key.clone());
                                 self.scopes[comp_id].bindings.insert(key.clone());
@@ -394,11 +418,22 @@ impl AliasCtx {
                                 .push((value.clone(), *span));
                         }
                         CompClause::If { cond, .. } => {
-                            self.expr(cond, &comp_chain, &body_shadow, from)?;
+                            self.expr(
+                                cond,
+                                &comp_chain,
+                                &body_shadow,
+                                if may_run { from } else { None },
+                            )?;
+                            may_run = may_run && statically_true(cond);
                         }
                     }
                 }
-                self.expr(body, &comp_chain, &body_shadow, from)?;
+                self.expr(
+                    body,
+                    &comp_chain,
+                    &body_shadow,
+                    if may_run { from } else { None },
+                )?;
             }
             Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
                 self.expr(left, chain, shadowed, from)?;
