@@ -2340,3 +2340,82 @@ params: {q: lib["#D"], d: lib.#D, u: lib.use}
     assert_eq!(json["params"]["d"], 8);
     assert_eq!(json["params"]["u"], 9);
 }
+
+#[test]
+fn comprehension_bodies_keep_quoted_hash_fields_next_to_definitions() {
+    let source = r##"
+package demo
+#P: {
+    #D: 8
+    for _, x in [1] {"#D": x}
+}
+params: {v: #P["#D"], w: #P.#D}
+
+#Q: {
+    #E: 7
+    if true {"#E": 9}
+}
+other: {v: #Q["#E"], w: #Q.#E}
+"##;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["v"], 1);
+    assert_eq!(json["params"]["w"], 8);
+    assert_eq!(json["other"]["v"], 9);
+    assert_eq!(json["other"]["w"], 7);
+}
+
+#[test]
+fn definitions_do_not_admit_regular_fields_of_the_same_label() {
+    for source in [
+        "#P: {#D: 8}\na: #P & {\"#D\": 9}",
+        "#P: {Q: {#D: 8}}\na: #P & {Q: {\"#D\": 9}}",
+        "#P: {#D: 8}\n#P: {x: 1}\na: #P & {\"#D\": 9}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "regular field must not be admitted: {source}"
+        );
+    }
+
+    let generated = r##"
+package demo
+#P: {#D: 8, if true {"#D"?: 9}}
+params: {w: #P.#D}
+"##;
+    let file = ostinato_lang::parse(generated).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated optional");
+    assert_eq!(value.to_json().expect("json")["params"]["w"], 8);
+
+    let optional_reference = r##"
+package demo
+#P: {#D: 8, if true {"#D"?: 9}}
+v: #P["#D"]
+"##;
+    let file = ostinato_lang::parse(optional_reference).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn let_cycles_through_required_definitions_are_rejected() {
+    for source in [
+        "let X = #A\n#A: {v: X}\nparams: {v: 1}",
+        "let X = A\nA=#D: {v: X}\nparams: {v: 1}",
+        "A=#D: {v: B}\nB=#E: {v: A}\nparams: {v: 1}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        let error = ostinato_lang::eval_file(&file).expect_err("definition cycle");
+        assert!(error.to_string().contains("cyclic"), "{error}");
+    }
+
+    let optional = r#"
+package demo
+let X = f
+f?: X
+params: {v: 1}
+"#;
+    let file = ostinato_lang::parse(optional).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_ok());
+}

@@ -49,10 +49,19 @@ pub fn rename_file_locals(file: &mut File, file_index: usize) -> Result<(), Lang
     Ok(())
 }
 
+fn field_node(name: &str) -> String {
+    format!("\u{2}{name}")
+}
+
+fn is_field_node(name: &str) -> bool {
+    name.starts_with('\u{2}')
+}
+
 #[derive(Debug)]
 struct AliasScope {
     parent: Option<usize>,
     fields: HashSet<String>,
+    required_fields: HashSet<String>,
     lets: HashSet<String>,
     let_spans: HashMap<String, Span>,
     let_used: HashSet<String>,
@@ -64,6 +73,7 @@ struct AliasScope {
 #[derive(Debug)]
 struct AliasInfo {
     name: String,
+    target: Option<String>,
     scope: usize,
     span: Span,
     used: bool,
@@ -99,6 +109,7 @@ impl AliasCtx {
         self.scopes.push(AliasScope {
             parent,
             fields: HashSet::new(),
+            required_fields: HashSet::new(),
             lets: HashSet::new(),
             let_spans: HashMap::new(),
             let_used: HashSet::new(),
@@ -114,6 +125,12 @@ impl AliasCtx {
                         && !field.quoted
                     {
                         self.scopes[id].fields.insert(name.clone());
+                        if !field.optional {
+                            self.scopes[id].required_fields.insert(name.clone());
+                            self.scopes[id]
+                                .let_spans
+                                .insert(field_node(name), field.span);
+                        }
                     }
                     if let Some(alias) = &field.alias {
                         if alias == "_" {
@@ -131,8 +148,13 @@ impl AliasCtx {
                             ));
                         }
                         let alias_id = self.aliases.len();
+                        let target = match &field.label {
+                            Label::Name(name, _) => Some(name.clone()),
+                            Label::Dynamic(_, _) => None,
+                        };
                         self.aliases.push(AliasInfo {
                             name: alias.clone(),
+                            target,
                             scope: id,
                             span: field.span,
                             used: false,
@@ -169,9 +191,34 @@ impl AliasCtx {
             match item {
                 StructItem::Field(field) => {
                     if let Label::Dynamic(expr, _) = &field.label {
-                        self.expr(expr, &chain, &local_shadow, from)?;
+                        self.expr(expr, &chain, &local_shadow, None)?;
+                        self.expr(&field.value, &chain, &local_shadow, None)?;
+                        continue;
                     }
-                    self.expr(&field.value, &chain, &local_shadow, from)?;
+                    let required = if let Label::Name(name, _) = &field.label {
+                        !field.quoted && !field.optional && {
+                            let node = (id, field_node(name));
+                            if let Some(from) = from {
+                                let edge = (from.clone(), node.clone());
+                                if !self.let_edges.contains(&edge) {
+                                    self.let_edges.push(edge);
+                                }
+                            }
+                            true
+                        }
+                    } else {
+                        false
+                    };
+                    let field_from = if required {
+                        if let Label::Name(name, _) = &field.label {
+                            Some((id, field_node(name)))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    self.expr(&field.value, &chain, &local_shadow, field_from.as_ref())?;
                 }
                 StructItem::Let { name, value, .. } => {
                     // A `let` is not in scope in its own value; a same-named
@@ -245,8 +292,29 @@ impl AliasCtx {
                         }
                         return Ok(());
                     }
+                    if self.scopes[*scope].required_fields.contains(name) {
+                        if let Some(from) = from {
+                            let edge = (from.clone(), (*scope, field_node(name)));
+                            if !self.let_edges.contains(&edge) {
+                                self.let_edges.push(edge);
+                            }
+                        }
+                        return Ok(());
+                    }
                     if let Some(alias) = self.scopes[*scope].aliases.get(name) {
-                        self.aliases[*alias].used = true;
+                        let alias = *alias;
+                        self.aliases[alias].used = true;
+                        if let Some(from) = from
+                            && let Some(target) = self.aliases[alias].target.clone()
+                        {
+                            let alias_scope = self.aliases[alias].scope;
+                            if self.scopes[alias_scope].required_fields.contains(&target) {
+                                let edge = (from.clone(), (alias_scope, field_node(&target)));
+                                if !self.let_edges.contains(&edge) {
+                                    self.let_edges.push(edge);
+                                }
+                            }
+                        }
                         return Ok(());
                     }
                 }
@@ -292,6 +360,7 @@ impl AliasCtx {
                 self.scopes.push(AliasScope {
                     parent: chain.last().copied(),
                     fields: HashSet::new(),
+                    required_fields: HashSet::new(),
                     lets: HashSet::new(),
                     let_spans: HashMap::new(),
                     let_used: HashSet::new(),
@@ -499,8 +568,24 @@ fn detect_let_cycles(ctx: &AliasCtx) -> Result<(), LangError> {
         state.insert(node.clone(), 2);
         Ok(())
     }
-    let nodes: Vec<(usize, String)> = adjacency.keys().cloned().collect();
-    for node in nodes {
+    let alias_targets: HashSet<(usize, String)> = ctx
+        .aliases
+        .iter()
+        .filter_map(|alias| {
+            alias.target.as_ref().and_then(|target| {
+                ctx.scopes[alias.scope]
+                    .required_fields
+                    .contains(target)
+                    .then(|| (alias.scope, field_node(target)))
+            })
+        })
+        .collect();
+    let roots: Vec<(usize, String)> = adjacency
+        .keys()
+        .filter(|node| !is_field_node(&node.1) || alias_targets.contains(*node))
+        .cloned()
+        .collect();
+    for node in roots {
         visit(&node, &adjacency, &mut state, ctx)?;
     }
     Ok(())

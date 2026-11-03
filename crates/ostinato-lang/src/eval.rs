@@ -671,7 +671,7 @@ impl<'a> Frame<'a> {
                     .unwrap_or_else(|| name.clone());
                 let value = self.eval_field_key(&key, Span::default())?;
                 let merged = unify_values(&value, &constraint, Span::default())?;
-                self.values.borrow_mut().insert(name.clone(), merged);
+                self.values.borrow_mut().insert(key, merged);
                 self.materialized.borrow_mut().insert(name);
             }
         }
@@ -721,12 +721,18 @@ impl<'a> Frame<'a> {
                 Some(constraint) => unify_values(&value, &constraint, Span::default())?,
                 None => value,
             };
-            let existing = self.values.borrow().get(&key).cloned();
+            let storage_key = self.regular_field_key(&key).unwrap_or_else(|| {
+                if self.fields.borrow().contains_key(&key) {
+                    prefixed_field(&key)
+                } else {
+                    key.clone()
+                }
+            });
+            let existing = self.values.borrow().get(&storage_key).cloned();
             let existing = match existing {
                 Some(existing) => Some(existing),
                 None if self.regular_field_key(&key).is_some() => {
-                    let stored = self.regular_field_key(&key).unwrap_or_else(|| key.clone());
-                    Some(self.eval_field_key(&stored, Span::default())?)
+                    Some(self.eval_field_key(&storage_key, Span::default())?)
                 }
                 None => None,
             };
@@ -735,7 +741,7 @@ impl<'a> Frame<'a> {
                 None => value,
             };
             self.materialized.borrow_mut().insert(key.clone());
-            self.values.borrow_mut().insert(key, merged);
+            self.values.borrow_mut().insert(storage_key, merged);
         }
         let optional_names: Vec<String> = child
             .fields
@@ -1010,9 +1016,12 @@ impl<'a> Frame<'a> {
             let display = display_field_name(&name).to_owned();
             let defined = child.fields.borrow().get(&name).cloned();
             if defined.as_ref().is_some_and(|field| field.definition) {
-                let optional = defined.as_ref().is_some_and(|field| field.optional);
-                if !optional {
-                    definitions.insert(display, child.eval_field_key(&name, span)?);
+                let is_optional = defined.as_ref().is_some_and(|field| field.optional);
+                if !is_optional {
+                    definitions.insert(display.clone(), child.eval_field_key(&name, span)?);
+                }
+                if let Some(constraint) = child.generated_optionals.borrow_mut().remove(&display) {
+                    optional.insert(display, constraint);
                 }
                 continue;
             }
@@ -1067,7 +1076,6 @@ impl<'a> Frame<'a> {
         let admissions = if closed_by_default && !open {
             let mut names: BTreeSet<String> = fields.keys().cloned().collect();
             names.extend(optional.keys().cloned());
-            names.extend(definitions.keys().cloned());
             vec![Admission {
                 names,
                 patterns: patterns
@@ -1696,7 +1704,6 @@ fn close_composed_definition(value: &Value) -> Value {
             if !*open {
                 let mut names: BTreeSet<String> = fields.keys().cloned().collect();
                 names.extend(optional.keys().cloned());
-                names.extend(definitions.keys().cloned());
                 admissions.push(Admission {
                     names,
                     patterns: patterns
@@ -1762,7 +1769,6 @@ fn close_nested(value: &Value) -> Value {
             } else if admissions.is_empty() {
                 let mut names: BTreeSet<String> = fields.keys().cloned().collect();
                 names.extend(optional.keys().cloned());
-                names.extend(definitions.keys().cloned());
                 vec![Admission {
                     names,
                     patterns: patterns
