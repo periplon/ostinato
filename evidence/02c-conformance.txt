@@ -1,7 +1,7 @@
 ### /Users/joanmarc/dailywork/jmca/ostinato/scripts/conformance.sh
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
-     Running tests/conformance.rs (target/debug/deps/conformance-99d13f5bb49afb17)
+     Running tests/conformance.rs (target/debug/deps/conformance-d969ded453422c7d)
 
 running 1 test
 test rust_matches_official_cue_on_the_conformance_corpus ... ok

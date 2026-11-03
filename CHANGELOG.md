@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.6
+
+`let` cycle and shadowing corrections.
+
+- Self-references in a `let` RHS resolve to the enclosing scope lexically, so
+  `let X = X + 1` shadows correctly without hiding the binding from other
+  declarations.
+- Indirect `let` cycles (`let Y = X, let X = Y`) are rejected again.
+- Static validation mirrors the lexical rule: a `let` is out of scope in its
+  own value, so shadowing uses the outer binding and unused inner lets are
+  reported.
+- 139 tests (23 CLI E2E, 1 conformance, 105 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.5
 
 List-comprehension and inner-`let` corrections.
