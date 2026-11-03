@@ -2309,3 +2309,34 @@ x: a.X
     let value = ostinato_lang::eval_file(&file).expect("eval");
     assert_eq!(value.to_json().expect("json")["x"], 9);
 }
+
+#[test]
+fn imported_packages_keep_quoted_hash_fields_next_to_definitions() {
+    let lib = r##"
+package lib
+A="#D": 9
+#D: 8
+use: A
+"##;
+    let lib_file = ostinato_lang::parse(lib).expect("lib parse");
+    let lib_value = ostinato_lang::eval_file_with_imports_mode(
+        &lib_file,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        true,
+    )
+    .expect("lib eval");
+
+    let main = r##"
+package main
+params: {q: lib["#D"], d: lib.#D, u: lib.use}
+"##;
+    let main_file = ostinato_lang::parse(main).expect("main parse");
+    let imports = BTreeMap::from([("lib".to_owned(), lib_value)]);
+    let value = ostinato_lang::eval_file_with_imports(&main_file, &imports, &BTreeMap::new())
+        .expect("main");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["q"], 9);
+    assert_eq!(json["params"]["d"], 8);
+    assert_eq!(json["params"]["u"], 9);
+}
