@@ -2071,3 +2071,41 @@ d: X
     assert_eq!(json["b"]["c"], 3);
     assert_eq!(json["d"], 2);
 }
+
+#[test]
+fn let_cycles_are_rejected() {
+    for source in [
+        "let X = 1\na: {let Y = X, let X = Y, c: X}\nd: X",
+        "let X = X\na: X",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        let error = ostinato_lang::eval_file(&file).expect_err("let cycle");
+        assert!(
+            error.to_string().contains("cyclic let binding")
+                || error.to_string().contains("undefined reference"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn let_shadowing_does_not_require_an_outer_reference() {
+    let valid = r#"
+package demo
+let X = 1
+b: {let X = X + 1, c: X}
+"#;
+    let file = ostinato_lang::parse(valid).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("outer let is used by the RHS");
+    assert_eq!(value.to_json().expect("json")["b"]["c"], 2);
+
+    let unused = r#"
+package demo
+let X = 1
+b: {let X = X + 1}
+d: X
+"#;
+    let file = ostinato_lang::parse(unused).expect("parse");
+    let error = ostinato_lang::eval_file(&file).expect_err("inner let is unreferenced");
+    assert!(error.to_string().contains("unreferenced"));
+}

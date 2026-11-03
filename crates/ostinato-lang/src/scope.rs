@@ -171,8 +171,15 @@ impl AliasCtx {
                     }
                     self.expr(&field.value, &chain, &local_shadow)?;
                 }
-                StructItem::Let { value, .. } => {
-                    self.expr(value, &chain, &local_shadow)?;
+                StructItem::Let { name, value, .. } => {
+                    // A `let` is not in scope in its own value; a same-named
+                    // identifier resolves to an enclosing let or alias.
+                    let hidden = self.scopes[id].lets.remove(name);
+                    let result = self.expr(value, &chain, &local_shadow);
+                    if hidden {
+                        self.scopes[id].lets.insert(name.clone());
+                    }
+                    result?;
                 }
                 StructItem::Pattern { value, .. } => {
                     self.expr(value, &chain, &local_shadow)?;

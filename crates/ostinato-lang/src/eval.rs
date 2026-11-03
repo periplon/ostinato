@@ -345,6 +345,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         closed: Cell::new(false),
         overrides: RefCell::new(BTreeMap::new()),
         evaluating: RefCell::new(HashSet::new()),
+        self_rhs: RefCell::new(None),
     };
     if let Json::Object(map) = context {
         let mut values = BTreeMap::new();
@@ -398,6 +399,7 @@ struct Frame<'a> {
     closed: Cell<bool>,
     overrides: RefCell<BTreeMap<String, Value>>,
     evaluating: RefCell<HashSet<String>>,
+    self_rhs: RefCell<Option<String>>,
 }
 
 impl<'a> Frame<'a> {
@@ -429,6 +431,7 @@ impl<'a> Frame<'a> {
             closed: Cell::new(parent.is_some_and(|parent| parent.closed.get())),
             overrides: RefCell::new(BTreeMap::new()),
             evaluating: RefCell::new(HashSet::new()),
+            self_rhs: RefCell::new(None),
         };
 
         // Pass 1: static fields and lazy let bindings.
@@ -667,6 +670,20 @@ impl<'a> Frame<'a> {
             return Ok(value.clone());
         }
         if self.lets.borrow().contains_key(name) {
+            // A `let` is not in scope in its own value: a same-named
+            // identifier in the RHS resolves to an enclosing let or alias.
+            if self.evaluating.borrow().contains(name)
+                && self.self_rhs.borrow().as_deref() == Some(name)
+            {
+                if let Some(parent) = self.parent {
+                    return parent.lookup(name, span);
+                }
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("undefined reference `{name}`"),
+                ));
+            }
             return self.eval_let(name, span);
         }
         if let Some(target) = self.aliases.borrow().get(name).cloned() {
@@ -1097,9 +1114,7 @@ impl<'a> Frame<'a> {
                 format!("cyclic let binding while evaluating `{name}`"),
             ));
         }
-        // A `let` is not in scope in its own value: a same-named identifier
-        // in the RHS resolves to an enclosing let or alias.
-        let expr = self.lets.borrow_mut().remove(name);
+        let expr = self.lets.borrow().get(name).cloned();
         let Some(expr) = expr else {
             return Err(LangError::eval(
                 span.line,
@@ -1108,9 +1123,10 @@ impl<'a> Frame<'a> {
             ));
         };
         self.evaluating.borrow_mut().insert(name.to_owned());
+        let previous = self.self_rhs.replace(Some(name.to_owned()));
         let result = eval_expr(&expr, self);
+        *self.self_rhs.borrow_mut() = previous;
         self.evaluating.borrow_mut().remove(name);
-        self.lets.borrow_mut().insert(name.to_owned(), expr);
         let value = result?;
         self.vars
             .borrow_mut()

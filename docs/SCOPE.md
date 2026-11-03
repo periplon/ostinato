@@ -42,6 +42,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Required fields that depend on optional fields (`#P: {name?: string, greeting: "Hello \\(name)"}`) | Definitions are evaluated eagerly; required-field expressions are not deferred until the optional field is materialized. Use a named definition that flattens the materialization (`#Q: #P & {name: "Alice"}`; `params: #Q`) or the oracle |
 | Self-selection inside a definition (`#D: {a: #D.b, b: 1}`) | Resolving a definition's own selector against its in-progress body is not implemented. Use the oracle |
 | Tool packages (`tool/...`) and `cue` commands | Ostinato has its own execution engine |
+| `let` cycles mediated by fields (`let X = f, f: X`) | Direct and indirect `let` cycles are rejected; a cycle routed through a field is reported as an error rather than solved as an incomplete value. Use the oracle for that shape |
 | Bytes, regexp/math/time builtins beyond `strings`/`list`/`len` | Not used by workflow declarations |
 | Arbitrary CUE packages with package-level patterns | Oracle territory |
 
