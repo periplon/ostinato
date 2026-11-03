@@ -934,6 +934,83 @@ fn parse_str_parts(raw: &str, span: Span) -> Result<Vec<StrPart>, LangError> {
             let expr = parse_expr_fragment(&inner)?;
             parts.push(StrPart::Interp(expr));
             index = end + 1;
+        } else if chars[index] == '\\' {
+            let Some(escaped) = chars.get(index + 1).copied() else {
+                return Err(LangError::parse(
+                    span.line,
+                    span.col,
+                    "unterminated escape sequence",
+                ));
+            };
+            match escaped {
+                'a' => {
+                    text.push('\u{7}');
+                    index += 2;
+                }
+                'b' => {
+                    text.push('\u{8}');
+                    index += 2;
+                }
+                'f' => {
+                    text.push('\u{c}');
+                    index += 2;
+                }
+                'n' => {
+                    text.push('\n');
+                    index += 2;
+                }
+                'r' => {
+                    text.push('\r');
+                    index += 2;
+                }
+                't' => {
+                    text.push('\t');
+                    index += 2;
+                }
+                'v' => {
+                    text.push('\u{b}');
+                    index += 2;
+                }
+                '\\' => {
+                    text.push('\\');
+                    index += 2;
+                }
+                '"' => {
+                    text.push('"');
+                    index += 2;
+                }
+                '\'' => {
+                    text.push('\'');
+                    index += 2;
+                }
+                'u' | 'U' => {
+                    let count = if escaped == 'u' { 4 } else { 8 };
+                    let start = index + 2;
+                    if start + count > chars.len() {
+                        return Err(LangError::parse(
+                            span.line,
+                            span.col,
+                            "invalid unicode escape",
+                        ));
+                    }
+                    let digits: String = chars[start..start + count].iter().collect();
+                    let value = u32::from_str_radix(&digits, 16).map_err(|_| {
+                        LangError::parse(span.line, span.col, "invalid unicode escape")
+                    })?;
+                    let character = char::from_u32(value).ok_or_else(|| {
+                        LangError::parse(span.line, span.col, "invalid unicode escape")
+                    })?;
+                    text.push(character);
+                    index = start + count;
+                }
+                other => {
+                    return Err(LangError::parse(
+                        span.line,
+                        span.col,
+                        format!("unknown escape sequence `\\{other}`"),
+                    ));
+                }
+            }
         } else {
             text.push(chars[index]);
             index += 1;

@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.6.1 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.6.2 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -48,7 +48,7 @@ Unsupported features fail explicitly or are documented here. Use `--evaluator cu
 
 The Rust evaluator accepts `-p key=value` and injects values before evaluation, so compile-time `\(params.x)` and runtime `{{ params.x }}` see the same override.
 
-Injection types follow `@tag(name,type=string|int|bool|number)`: untyped values keep the JSON-style fallback (`5` integer, `true` boolean, otherwise string), typed values use the declared type. Boolean aliases (`TRUE`, `t`, `1`, ...), integer hex/underscores and numbers are accepted. Nested `@tag` injection is not implemented.
+Injection types follow `@tag(name,type=string|int|bool|number)`: untyped values keep the JSON-style fallback (`5` integer, `true` boolean, otherwise string), typed values use the declared type. Boolean aliases (`TRUE`, `t`, `1`, ...), CUE integer literals (`0x`, `0o`, `0b`, signs, validated underscores) and numbers are accepted; invalid values for a declared type are errors. Duplicate tag names inject every top-level field; nested `@tag` injection is not implemented.
 
 ## Official CUE oracle
 

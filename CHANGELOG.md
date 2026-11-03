@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.6.2
+
+Builtin and attribute second review corrections.
+
+- `time` layouts accept fractional seconds and comma separators; durations use
+  checked integer arithmetic, signed zero, `μs` and reject overflow/spaces.
+- Duplicate `@tag` names inject every top-level field; nested tags stay metadata.
+- `@tag` types use CUE literal grammar: `0x`/`0o`/`0b`, signs, validated
+  underscores, leading-zero rejection, number literals and strict booleans;
+  unknown `type=` values are errors.
+- String literals decode CUE escapes (`\a \b \f \n \r \t \v \u \U`),
+  reject `\x`/octal/unknown escapes, and `\\(` is a literal backslash-paren.
+- 181 tests (28 CLI E2E, 1 conformance, 142 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.1
 
 Attributes, bytes and builtin review corrections.

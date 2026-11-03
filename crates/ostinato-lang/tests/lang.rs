@@ -3058,7 +3058,7 @@ fn regexp_quote_find_and_re2_classes_match_cue() {
 package demo
 import "regexp"
 q: regexp.QuoteMeta("a b-c.d+e#&~")
-m: regexp.Match("\Qa.b\E", "a.b")
+m: regexp.Match("\\Qa.b\\E", "a.b")
 "#;
     let file = ostinato_lang::parse(source).expect("parse");
     let mut imports = BTreeMap::new();
@@ -3152,5 +3152,62 @@ p2: time.Parse("2006-01-02 15:04:05", "2020-01-02 12:30:00")
             ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err(),
             "{source}"
         );
+    }
+}
+
+#[test]
+fn string_escapes_are_decoded_and_invalid_ones_rejected() {
+    let source = r#"
+package demo
+a: "caf\u00e9"
+b: "a\\(b)"
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], "café");
+    assert_eq!(json["b"], "a\\(b)");
+
+    for source in [r#"a: "x\qy""#, r#"a: "x\x41y""#, r#"a: "x\101y""#] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n"));
+        assert!(file.is_err(), "{source}");
+    }
+}
+
+#[test]
+fn time_fractional_layouts_and_duration_edges() {
+    let source = r#"
+package demo
+import "time"
+a: time.Parse("15:04:05", "12:30:00.5")
+b: time.Format("12:30:00.5", "15:04:05")
+c: time.Parse("2006-01-02 15:04:05", "2020-01-02 12:30:00.25")
+d: time.ParseDuration("9007199254740993ns")
+e: time.ParseDuration("-0")
+f: time.ParseDuration("1μs")
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "time".to_owned(),
+        ostinato_lang::builtin_module("time").expect("time"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], "0000-01-01T12:30:00.5Z");
+    assert_eq!(json["b"], true);
+    assert_eq!(json["c"], "2020-01-02T12:30:00.25Z");
+    assert_eq!(json["d"], 9_007_199_254_740_993i64);
+    assert_eq!(json["e"], 0);
+    assert_eq!(json["f"], 1_000);
+
+    for source in [
+        "a: time.ParseDuration(\"2562048h\")",
+        "a: time.ParseDuration(\" 1h\")",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\nimport \"time\"\n{source}\n"))
+            .expect("parse");
+        assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
     }
 }
