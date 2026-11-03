@@ -402,18 +402,34 @@ impl AliasCtx {
         local: Option<&LocalEnv<'_>>,
         depth: usize,
     ) -> bool {
-        items.iter().any(|item| match item {
-            StructItem::Field(field) => !field.definition && !field.optional,
-            StructItem::If { cond, body, .. } => {
-                self.const_bool(cond, chain, local, depth + 1) == Some(true)
-                    && self.struct_has_required(body, chain, local, depth + 1)
+        // Body-local bindings shadow the enclosing literal's bindings.
+        for item in items {
+            match item {
+                StructItem::Field(field) => {
+                    if !field.definition && !field.optional {
+                        return true;
+                    }
+                }
+                StructItem::If { cond, body, .. } => {
+                    let env = LocalEnv::from_items(body, local);
+                    if self.const_bool(cond, chain, local, depth + 1) == Some(true)
+                        && self.struct_has_required(body, chain, Some(&env), depth + 1)
+                    {
+                        return true;
+                    }
+                }
+                StructItem::For { source, body, .. } => {
+                    let env = LocalEnv::from_items(body, local);
+                    if self.static_non_empty(source, chain, local, depth + 1)
+                        && self.struct_has_required(body, chain, Some(&env), depth + 1)
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
             }
-            StructItem::For { source, body, .. } => {
-                self.static_non_empty(source, chain, local, depth + 1)
-                    && self.struct_has_required(body, chain, local, depth + 1)
-            }
-            _ => false,
-        })
+        }
+        false
     }
 
     fn scope(
