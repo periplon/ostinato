@@ -12,6 +12,11 @@ package selfselection
 base: {b: 1}
 #FromBase: base & {a: #FromBase.b}
 #Outer: {#Inner: {a: #Outer.b}, b: 1, x: #Inner.a}
+#G: {if true {b: 1}, a: #G.b}
+#G2: {for k, v in {b: 2} {"\(k)": v}, a: #G2.b}
+#G3: {for i, v in [{b: 3}] {"x": v.b}, a: #G3.x}
+#G4: {if true {_b: 1}, a: #G4._b}
+#GS: {for k, v in {b: 9, y: #GS.b} {"out-\(k)": v}, b: 1}
 
 params: {
 	basic:       #D
@@ -25,6 +30,12 @@ params: {
 	composed:    #Composed.a
 	from_base:   #FromBase.a
 	nested_def:  #Outer.x
+	generated_if:     #G.a
+	generated_for:    #G2.a
+	generated_list:   #G3.a
+	generated_hidden: #G4.a
+	generated_shadow_y: #GS."out-y"
+	generated_shadow_b: #GS."out-b"
 }
 
 workflow: {
