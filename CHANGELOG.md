@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.7.13
+
+Optional/generated sentinel corrections.
+
+- A materialized generated field stays required even when a static optional
+  declaration exists, so sentinel-labelled params export and conflicts surface.
+- Root generated optionals no longer hide imported definitions.
+- Materialized hidden fields no longer satisfy distinct quoted optional
+  sentinel labels.
+- 236 tests (35 CLI E2E, 1 conformance, 190 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.12
 
 Generated hidden optionals and sentinel exports.
