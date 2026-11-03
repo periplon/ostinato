@@ -25,6 +25,10 @@ params: {
 	sqrt_add:      math.Sqrt(4) + 1
 	zero_add:      1.0 + (-1.0)
 	zero_mul:      1.0 * 0.0
+	zero_mul_s:    "\(1.0 * 0.0)"
+	one_mul_s:     "\(1.00 * 1.00)"
+	abs_scale_s:   "\(math.Abs(-2.50))"
+	two_mul_s:     "\(1.0 * 2.00)"
 }
 
 workflow: {

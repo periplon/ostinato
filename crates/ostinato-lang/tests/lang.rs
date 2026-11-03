@@ -5144,4 +5144,11 @@ abs: math.Abs(-2)
         ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err(),
         "Sqrt must stay a float"
     );
+
+    let zero_power = "package demo\nimport \"math\"\nbad: math.Pow(0, 0)\n";
+    let file = ostinato_lang::parse(zero_power).expect("parse");
+    assert!(
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err(),
+        "Pow(0,0) is invalid in CUE"
+    );
 }

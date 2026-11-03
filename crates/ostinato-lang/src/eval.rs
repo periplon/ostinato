@@ -309,11 +309,10 @@ impl Value {
             Self::Int(value) => Some(Json::Number(Number::from(*value))),
             Self::Float(value) => {
                 let (_, scale) = value.as_bigint_and_exponent();
-                let mut text = value.to_string();
-                if scale != 0 && !text.contains(['.', 'e', 'E']) {
-                    text.push_str(".0");
-                }
-                text.parse::<Number>().ok().map(Json::Number)
+                float_text(value, scale)
+                    .parse::<Number>()
+                    .ok()
+                    .map(Json::Number)
             }
             Self::String(value) => Some(Json::String(value.clone())),
             Self::Bytes(value) => Some(Json::String(base64_encode(value))),
@@ -424,11 +423,7 @@ impl Value {
             Self::Int(value) => value.to_string(),
             Self::Float(value) => {
                 let (_, scale) = value.as_bigint_and_exponent();
-                let mut text = value.to_string();
-                if scale != 0 && !text.contains(['.', 'e', 'E']) {
-                    text.push_str(".0");
-                }
-                text
+                float_text(value, scale)
             }
             Self::String(value) => value.clone(),
             Self::Bytes(value) => format!("'{}'", String::from_utf8_lossy(value)),
@@ -4318,7 +4313,13 @@ fn apply_math_builtin(
                 .checked_abs()
                 .map(Value::Int)
                 .ok_or_else(|| overflow(span)),
-            Some(Value::Float(value)) => Ok(math_decimal_number(value.abs().normalized())),
+            Some(Value::Float(value)) => {
+                let magnitude = value.abs();
+                match magnitude.normalized().to_string().parse::<i64>() {
+                    Ok(int) => Ok(Value::Int(int)),
+                    Err(_) => Ok(Value::Float(magnitude)),
+                }
+            }
             _ => Err(LangError::conflict(
                 span.line,
                 span.col,
@@ -4350,10 +4351,19 @@ fn apply_math_builtin(
             if let (Some(base), Some(exponent)) = (arguments.first(), arguments.get(1))
                 && let Some(base) = integral_i64(base)
                 && let Some(exponent) = integral_i64(exponent)
-                && let Ok(exponent) = u32::try_from(exponent)
-                && let Some(result) = base.checked_pow(exponent)
             {
-                return Ok(Value::Int(result));
+                if base == 0 && exponent == 0 {
+                    return Err(LangError::conflict(
+                        span.line,
+                        span.col,
+                        "math.Pow: invalid operation",
+                    ));
+                }
+                if let Ok(exponent) = u32::try_from(exponent)
+                    && let Some(result) = base.checked_pow(exponent)
+                {
+                    return Ok(Value::Int(result));
+                }
             }
             Ok(math_number(
                 math_arg(arguments, 0, span)?.powf(math_arg(arguments, 1, span)?),
@@ -4982,9 +4992,21 @@ fn repeat_bytes(bytes: &[u8], count: i64, span: Span) -> Result<Value, LangError
     Ok(Value::Bytes(bytes.repeat(count)))
 }
 
+fn float_text(value: &BigDecimal, scale: i64) -> String {
+    if value == &BigDecimal::from(0) && scale > 0 {
+        let zeros = usize::try_from(scale).unwrap_or(0);
+        return format!("0.{}", "0".repeat(zeros));
+    }
+    let mut text = value.to_string();
+    if scale != 0 && !text.contains(['.', 'e', 'E']) {
+        text.push_str(".0");
+    }
+    text
+}
+
 fn float_arithmetic(value: BigDecimal, desired_scale: i64) -> BigDecimal {
     let (_, scale) = value.as_bigint_and_exponent();
-    if scale <= 0 && desired_scale > 0 {
+    if scale < desired_scale {
         value.with_scale(desired_scale)
     } else {
         value

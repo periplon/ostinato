@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.10.8
+
+- Exact decimal scale padding, Abs fractional-scale preservation and Pow(0,0).
+- 276 tests (48 CLI E2E, 1 conformance, 214 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.7
 
 - Per-operation float scale, `math.Abs` int normalisation and exact integral
