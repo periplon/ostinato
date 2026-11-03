@@ -4915,6 +4915,31 @@ y: [1, ...int] & [1, 2, ...int] & [1, 2, 3]
     let json = value.to_json().expect("json");
     assert_eq!(json["x"], serde_json::json!([{"value": 1}]));
     assert_eq!(json["y"], serde_json::json!([1, 2, 3]));
+
+    let tails = r#"
+package demo
+empty: [...int] & [...string]
+prefixed: [1, ...int] & [1, ...string]
+prefixed_other: [1, ...int] & [1, 2, ...string]
+mixed: [...int] & [1, ...string]
+"#;
+    let file = ostinato_lang::parse(tails).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("incompatible tails collapse");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["empty"], serde_json::json!([]));
+    assert_eq!(json["prefixed"], serde_json::json!([1]));
+    assert_eq!(json["prefixed_other"], serde_json::json!([1, 2]));
+    assert_eq!(json["mixed"], serde_json::json!([1]));
+
+    let positional = r#"
+package demo
+bad: [1, 2, ...int] & [1, ...string]
+"#;
+    let file = ostinato_lang::parse(positional).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "prefix-position conflicts must remain errors"
+    );
 }
 
 #[test]
@@ -4923,6 +4948,9 @@ fn equality_requires_concrete_operands() {
         "a: int\nparams: {eq: a == a}",
         "#N: {value: int, next: #N}\nn: #N\nparams: {eq: n == n}",
         "#N: {value: int, next?: #N}\nn: #N\nparams: {eq: n != n}",
+        "params: {eq: [int, ...int] == [int, ...int]}",
+        "params: {eq: [>=1, ...int] == [>=1, ...int]}",
+        "params: {eq: [int, ...int] == [1]}",
     ] {
         let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
         assert!(
@@ -4931,10 +4959,13 @@ fn equality_requires_concrete_operands() {
         );
     }
 
-    let concrete = "package demo\na: 1\nb: 1\nparams: {eq: a == b, neq: a != b}\n";
+    let concrete = "package demo\na: 1\nb: 1\nparams: {eq: a == b, neq: a != b, same: [1, ...int] == [1], cross: [...int] == [...string], diff: [1, ...int] == [...int]}\n";
     let file = ostinato_lang::parse(concrete).expect("parse");
     let value = ostinato_lang::eval_file(&file).expect("concrete equality");
     let json = value.to_json().expect("json");
     assert_eq!(json["params"]["eq"], true);
     assert_eq!(json["params"]["neq"], false);
+    assert_eq!(json["params"]["same"], true);
+    assert_eq!(json["params"]["cross"], true);
+    assert_eq!(json["params"]["diff"], false);
 }

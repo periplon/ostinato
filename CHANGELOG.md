@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.3
+
+Open-list equality and tail-correction follow-up.
+
+- Open-list prefixes are only comparable when their fixed prefix values are
+  concrete (`[int, ...int] == [int, ...int]` errors like CUE), while
+  `[...int]`-style comparisons remain valid.
+- Incompatible open-list tails collapse to the finite closed prefix
+  (`[...int] & [...string]` is `[]`, `[1, ...int] & [1, ...string]` is `[1]`)
+  instead of erroring; prefix-position conflicts still error.
+- 270 tests (48 CLI E2E, 1 conformance, 211 language, 6 domain, 3 store, 1 unit).
+
 ## v0.9.2
 
 Recursive materialization follow-up corrections.
