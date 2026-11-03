@@ -1536,6 +1536,17 @@ impl<'a> Frame<'a> {
         Ok(value)
     }
 
+    fn struct_conjunct(expr: &Expr) -> bool {
+        match expr {
+            Expr::Struct(_, _) => true,
+            Expr::Paren(inner, _) | Expr::Default(inner, _) => Self::struct_conjunct(inner),
+            Expr::Unify(left, right, _) => {
+                Self::struct_conjunct(left) && Self::struct_conjunct(right)
+            }
+            _ => false,
+        }
+    }
+
     fn eval_field_key(&self, key: &str, span: Span) -> Result<Value, LangError> {
         let name = display_field_name(key);
         if let Some(value) = self.values.borrow().get(key) {
@@ -1651,6 +1662,19 @@ impl<'a> Frame<'a> {
                     Err(err) => return Err(err),
                 }
             }
+            self.values
+                .borrow_mut()
+                .insert(key.to_owned(), result.clone());
+            return Ok(result);
+        }
+        if exprs.len() > 1
+            && exprs.iter().all(Self::struct_conjunct)
+            && let Some(items) = self.params_items(&exprs)
+        {
+            self.evaluating.borrow_mut().insert(key.to_owned());
+            let result = self.eval_struct_items(&items, span, false);
+            self.evaluating.borrow_mut().remove(key);
+            let result = result?;
             self.values
                 .borrow_mut()
                 .insert(key.to_owned(), result.clone());

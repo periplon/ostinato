@@ -95,6 +95,7 @@ fn tag_info(
 struct Collector<'a> {
     tags: &'a mut BTreeMap<String, Vec<TagInfo>>,
     definitions: &'a BTreeMap<String, Vec<Expr>>,
+    definition_aliases: &'a BTreeMap<String, String>,
     visiting: &'a mut Vec<String>,
 }
 
@@ -123,9 +124,13 @@ impl Collector<'_> {
                     return Ok(());
                 }
                 self.visiting.push(name.clone());
+                let origin = self
+                    .definition_aliases
+                    .get(name)
+                    .map_or(name.as_str(), String::as_str);
                 let mut result = Ok(());
                 for value in values {
-                    result = self.expr(value, prefix, Some(name), &[]);
+                    result = self.expr(value, prefix, Some(origin), &[]);
                     if result.is_err() {
                         break;
                     }
@@ -185,6 +190,7 @@ impl Collector<'_> {
 /// Returns an evaluation error for unknown `@tag` types.
 pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, LangError> {
     let mut definitions: BTreeMap<String, Vec<Expr>> = BTreeMap::new();
+    let mut definition_aliases: BTreeMap<String, String> = BTreeMap::new();
     for item in &file.items {
         match item {
             StructItem::Field(field) => {
@@ -199,6 +205,11 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
                         .entry(alias.clone())
                         .or_default()
                         .push(field.value.clone());
+                    if let crate::ast::Label::Name(name, _) = &field.label
+                        && name.starts_with('#')
+                    {
+                        definition_aliases.insert(alias.clone(), name.clone());
+                    }
                 }
             }
             StructItem::Let { name, value, .. } => {
@@ -215,6 +226,7 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
     let mut collector = Collector {
         tags: &mut tags,
         definitions: &definitions,
+        definition_aliases: &definition_aliases,
         visiting: &mut visiting,
     };
     let mut saw_params = false;

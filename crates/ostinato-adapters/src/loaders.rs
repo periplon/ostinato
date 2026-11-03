@@ -585,7 +585,7 @@ fn nested_params_item(
     path: &[ostinato_lang::TagSegment],
     value: Value,
 ) -> Result<StructItem, ostinato_lang::LangError> {
-    let expr = nested_expr(path, value, false)?;
+    let expr = nested_expr(path, value, true)?;
     Ok(field_item("params".to_owned(), false, false, expr))
 }
 

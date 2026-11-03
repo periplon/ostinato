@@ -157,6 +157,7 @@ fn rust_matches_official_cue_on_the_conformance_corpus() {
             Some("params-nested-tag") => &["host=db.example", "port=5432", "name=svc"],
             Some("params-nested-tag-def") => &["host=x", "dbhost=a", "qhost=b", "short=c"],
             Some("params-nested-tag-inner") => &["host=x"],
+            Some("params-nested-tag-origin") => &["host=x", "ihost=y", "lhost=z"],
             _ => &[],
         };
         compare(&cue, &path, params);
