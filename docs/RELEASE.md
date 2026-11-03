@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.8.5
+
+- Stable field ids for tag injection, selector-backed params and exact
+  disjunction-branch injection.
+- 258 tests (42 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.4
 
 - Leaf-field tag injection preserving lexical scopes, with group/definition/

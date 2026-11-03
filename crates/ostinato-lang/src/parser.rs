@@ -358,6 +358,7 @@ impl Parser {
                     attributes.push(self.parse_attribute()?);
                 }
                 Ok(Some(StructItem::Field(Field {
+                    id: 0,
                     label,
                     value,
                     optional,
@@ -582,6 +583,7 @@ impl Parser {
             }
             Ok(Expr::Struct(
                 vec![StructItem::Field(Field {
+                    id: 0,
                     label,
                     value,
                     optional,

@@ -2159,3 +2159,47 @@ workflow: {name: "\(params.db.host)", steps: {s: {kind: "noop"}}}
         "unknown parameter must be rejected"
     );
 }
+
+#[test]
+fn tag_identity_handles_shadowing_selectors_and_disjunctions() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("tag-identity.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+config: database: {host: string | *"d" @tag(dhost), copy: host}
+#P: {host: string | *"d" @tag(phost), copy: host}
+params: {
+    a: #P
+    b: {#P: {host: string | *"d"}, v: #P}
+    db: config.database
+    g: *{host: string | *"d"} | {host: string | *"e" @tag(ghost)}
+}
+workflow: {
+    name: "\(params.a.host)|\(params.a.copy)|\(params.b.v.host)|\(params.db.host)|\(params.db.copy)|\(params.g.host)"
+    steps: {s: {kind: "noop"}}
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "dhost=x",
+        "-p",
+        "phost=y",
+        "-p",
+        "ghost=z",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json(&output)["workflow"]["name"], "y|y|d|x|x|d");
+}
