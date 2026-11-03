@@ -4993,6 +4993,20 @@ fn repeat_bytes(bytes: &[u8], count: i64, span: Span) -> Result<Value, LangError
 }
 
 fn float_text(value: &BigDecimal, scale: i64) -> String {
+    if scale < 0 {
+        let (coefficient, _) = value.as_bigint_and_exponent();
+        let raw = coefficient.to_string();
+        let negative = raw.starts_with('-');
+        let digits = raw.trim_start_matches('-');
+        let exponent = -scale + i64::try_from(digits.len()).unwrap_or(0) - 1;
+        let mantissa = if digits.len() > 1 {
+            format!("{}.{}", &digits[..1], &digits[1..])
+        } else {
+            digits.to_owned()
+        };
+        let sign = if negative { "-" } else { "" };
+        return format!("{sign}{mantissa}E{:+}", exponent);
+    }
     if value == &BigDecimal::from(0) && scale > 0 {
         let zeros = usize::try_from(scale).unwrap_or(0);
         return format!("0.{}", "0".repeat(zeros));
@@ -5006,7 +5020,7 @@ fn float_text(value: &BigDecimal, scale: i64) -> String {
 
 fn float_arithmetic(value: BigDecimal, desired_scale: i64) -> BigDecimal {
     let (_, scale) = value.as_bigint_and_exponent();
-    if scale < desired_scale {
+    if scale < desired_scale || (value.to_string() == "0" && scale != desired_scale) {
         value.with_scale(desired_scale)
     } else {
         value
@@ -5026,7 +5040,7 @@ fn numeric(
     float_op: impl Fn(BigDecimal, BigDecimal) -> BigDecimal,
 ) -> Result<Value, LangError> {
     let scale = |value: &Value| match value {
-        Value::Float(value) => value.as_bigint_and_exponent().1.max(0),
+        Value::Float(value) => value.as_bigint_and_exponent().1,
         _ => 0,
     };
     let desired_scale = match op {

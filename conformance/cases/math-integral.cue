@@ -29,6 +29,12 @@ params: {
 	one_mul_s:     "\(1.00 * 1.00)"
 	abs_scale_s:   "\(math.Abs(-2.50))"
 	two_mul_s:     "\(1.0 * 2.00)"
+	exp_lit_s:     "\(1e2)"
+	exp_add_s:     "\(1e2 + 2)"
+	exp_mul_s:     "\(1e2 * 1.0)"
+	exp_sub_s:     "\(1e2 - 1e2)"
+	exp_frac_s:    "\(1e-2)"
+	exp_15_s:      "\(1.5e2)"
 }
 
 workflow: {

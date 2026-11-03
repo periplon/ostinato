@@ -400,12 +400,6 @@ impl Lexer {
             }
             let value = BigDecimal::from_str(&text)
                 .map_err(|_| LangError::parse(line, col, format!("invalid float `{text}`")))?;
-            let (_, scale) = value.as_bigint_and_exponent();
-            let value = if scale <= 0 {
-                value.with_scale(1)
-            } else {
-                value
-            };
             return Ok(Tok::Float(value));
         }
         let value: i64 = text
