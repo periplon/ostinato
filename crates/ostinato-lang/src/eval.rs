@@ -1235,7 +1235,7 @@ impl<'a> Frame<'a> {
                 .borrow()
                 .get(&key)
                 .is_some_and(|definition| definition.optional);
-            if optional {
+            if optional && !self.optional_is_materialized(&key) {
                 return Err(LangError::eval(
                     span.line,
                     span.col,
@@ -1250,7 +1250,7 @@ impl<'a> Frame<'a> {
                 .borrow()
                 .get(&key)
                 .is_some_and(|definition| definition.optional);
-            if optional {
+            if optional && !self.optional_is_materialized(&key) {
                 return Err(LangError::eval(
                     span.line,
                     span.col,
@@ -1362,6 +1362,11 @@ impl<'a> Frame<'a> {
             cursor = current.parent;
         }
         false
+    }
+
+    fn optional_is_materialized(&self, key: &str) -> bool {
+        let materialized = self.materialized.borrow();
+        materialized.contains(key) || materialized.contains(display_field_name(key))
     }
 
     fn generated_value_key(&self, name: &str, quoted: bool) -> Option<String> {
@@ -2459,7 +2464,7 @@ fn self_definition_select(
                     .borrow()
                     .get(&key)
                     .is_some_and(|definition| definition.optional);
-                if optional {
+                if optional && !current.optional_is_materialized(&key) {
                     return Err(LangError::eval(
                         span.line,
                         span.col,
@@ -2468,8 +2473,9 @@ fn self_definition_select(
                 }
                 return current.eval_field_key(&key, span).map(Some);
             }
-            if let Some(key) = current.generated_optional_key(field, quoted) {
-                let _ = key;
+            if let Some(key) = current.generated_optional_key(field, quoted)
+                && !current.optional_is_materialized(&key)
+            {
                 return Err(LangError::eval(
                     span.line,
                     span.col,
