@@ -43,7 +43,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
 | Arbitrary-precision integer literals | Decimal values are arbitrary precision; integer literals must fit in `i64` |
-| Math functions with integral results | `Sqrt`/`Pow`/`Exp`/`Log` return an `int` when the result is integral (CUE types it as float); `Floor`/`Ceil`/`Round`/`Trunc` are decimal-exact |
+| `math` transcendental precision | `Pow`/`Exp`/`Log` and other transcendental helpers use native floating-point conversion where CUE uses its 34-digit decimal context; JSON export matches, but string interpolation can show fewer digits |
 | Multiline bytes literals and bytes interpolation | Single-line `'...'` bytes are supported; `'''...'''` and `\(...)` inside bytes are not |
 | Decimal division digit count | Division uses `BigDecimal` precision, which can differ from CUE's 34-digit decimal expansion |
 | JSON export of high-precision decimals | Arithmetic is arbitrary precision, but `to_json` rounds non-integral values through f64; string interpolation and comparisons use the exact value |

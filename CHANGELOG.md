@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.10.6
+
+Math integral result kinds and float rendering.
+
+- `math.Sqrt` returns a float even for integral results (`math.Sqrt(4) & int`
+  now conflicts like CUE), while `Pow`/`Exp`/`Log` and the rounding helpers stay
+  int-compatible when integral.
+- Float values render/export with the CUE decimal scale (arithmetic and float
+  literals keep `.0`; builtin integral floats keep their integer spelling).
+- 276 tests (48 CLI E2E, 1 conformance, 214 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.5
 
 Duration rounding, literal fraction separators and string repetition.
