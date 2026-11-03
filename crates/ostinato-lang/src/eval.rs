@@ -4282,7 +4282,8 @@ fn integral_i64(value: &Value) -> Option<i64> {
 fn math_float_number(value: f64) -> Value {
     format!("{value}")
         .parse::<BigDecimal>()
-        .map_or(Value::Bottom, Value::Float)
+        .map(|value| Value::Float(value.normalized()))
+        .unwrap_or(Value::Bottom)
 }
 
 fn math_number(value: f64) -> Value {
@@ -5028,7 +5029,21 @@ fn float_arithmetic(value: BigDecimal, desired_scale: i64) -> BigDecimal {
 }
 
 fn float_division(left: &BigDecimal, right: &BigDecimal) -> BigDecimal {
-    float_arithmetic(left / right, 1)
+    let quotient = left / right;
+    let (_, left_scale) = left.as_bigint_and_exponent();
+    let (_, right_scale) = right.as_bigint_and_exponent();
+    let old_exponent = if quotient.to_string() == "0" {
+        right_scale - left_scale
+    } else {
+        -1
+    };
+    let reduced = quotient.normalized();
+    let (_, reduced_scale) = reduced.as_bigint_and_exponent();
+    if old_exponent < 0 && reduced_scale <= 0 {
+        reduced.with_scale(reduced_scale + 1)
+    } else {
+        reduced
+    }
 }
 
 fn numeric(

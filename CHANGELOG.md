@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.10.10
+
+Division scale normalization and Sqrt scientific notation.
+
+- Division applies CUE's `reduceKeepingFloats` normalization: `1e2/2` → `50`,
+  `1e2/1` → `1.0E+2`, `1e2/0.5` → `2.0E+2`, `1.00/2` → `0.5`, `0e2/2` → `0`.
+- Exact-power-of-ten `math.Sqrt` results render in scientific notation
+  (`Sqrt(1e2)` → `1E+1`, `Sqrt(1e4)` → `1E+2`, `Sqrt(1e100)` → `1E+50`).
+- 276 tests (48 CLI E2E, 1 conformance, 214 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
+## v0.10.9
+
+Exponent float scale and scientific notation.
+
+- Exponent literals preserve their scale and render in CUE scientific
+  notation (`1e2` → `1E+2`, `1.5e2` → `1.5E+2`, `1.0e2` → `1.0E+2`).
+- Arithmetic uses real operand scales (`1e2 * 1.0` → `1.0E+2`,
+  `1e2 * 2` → `2E+2`, `1e2 - 1e2` → `0E+2`).
+- 276 tests (48 CLI E2E, 1 conformance, 214 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
+## v0.10.8
+
+Exact decimal scale padding, Abs fractional scale and Pow domain.
+
+- Arithmetic results pad to CUE's decimal scale including zeros
+  (`1.0 * 0.0` → `0.00`, `1.00 * 1.00` → `1.0000`).
+- `math.Abs` preserves fractional scale while normalising integral kinds;
+  `math.Pow(0, 0)` errors.
+- 276 tests (48 CLI E2E, 1 conformance, 214 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.7
 
 Math kind and float-scale review follow-up.
