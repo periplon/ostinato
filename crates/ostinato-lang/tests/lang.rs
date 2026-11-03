@@ -4364,3 +4364,30 @@ fn generated_hidden_params_are_not_reachable_through_quoted_selectors() {
     let value = ostinato_lang::eval_file(&file).expect("generated escaped label");
     assert_eq!(value.to_json().expect("json")["params"]["n"], 2);
 }
+
+#[test]
+fn generated_hidden_optionals_do_not_hide_visible_sentinel_labels() {
+    let static_visible = "package demo\nparams: {if true {_h?: 1}, \"\u{3}_h\": 2}\n";
+    let file = ostinato_lang::parse(static_visible).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("static visible");
+    assert_eq!(value.to_json().expect("json")["params"]["\u{3}_h"], 2);
+
+    let generated_visible = "package demo\nparams: {for k in [\"x\"] {_h?: 1, \"\u{3}_h\": 2}, n: params[\"\u{3}_h\"]}\n";
+    let file = ostinato_lang::parse(generated_visible).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated visible");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["\u{3}_h"], 2);
+    assert_eq!(json["params"]["n"], 2);
+}
+
+#[test]
+fn generated_hidden_optionals_in_definitions_are_optional() {
+    let source = r#"
+package demo
+#D: {if true {_h?: 1}, a: 2}
+params: #D & {a: 2}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated hidden optional");
+    assert_eq!(value.to_json().expect("json")["params"]["a"], 2);
+}

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.12
+
+Generated hidden optionals and sentinel exports.
+
+- Generated hidden optional fields no longer hide required visible labels that
+  share their storage label; visible sentinel params export correctly.
+- Comprehension/`if`-generated hidden optionals in definitions stay optional.
+- 233 tests (35 CLI E2E, 1 conformance, 187 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.11
 
 Generated hidden params and quoted lookups.
