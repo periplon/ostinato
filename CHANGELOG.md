@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.21
+
+Params prefix resolution across generated frames.
+
+- Absolute `params.<path>` references inside generated groups resolve at the
+  matching ancestor/root instead of being shadowed by a deeper prefix.
+- Cross-conditional generated groups share materialized values.
+- 251 tests (35 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.20
 
 Params cycle precision and deferred generation.

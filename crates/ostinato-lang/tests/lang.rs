@@ -4721,3 +4721,35 @@ fn params_items_can_depend_on_later_generated_siblings() {
         ostinato_lang::eval_file(&file).expect("deferred generated sibling");
     }
 }
+
+#[test]
+fn absolute_params_references_inside_generated_groups_resolve() {
+    let source = r#"
+package demo
+params: {x: 1, if true {g: {x: 2, y: params.x}}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("absolute path in group");
+    assert_eq!(value.to_json().expect("json")["params"]["g"]["y"], 1);
+
+    let looped = r#"
+package demo
+params: {x: 1, for k in ["g"] {"\(k)": {x: 2, y: params.x}}}
+"#;
+    let file = ostinato_lang::parse(looped).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("absolute path in for group");
+    assert_eq!(value.to_json().expect("json")["params"]["g"]["y"], 1);
+}
+
+#[test]
+fn cross_conditional_params_groups_share_materialized_values() {
+    let source = r#"
+package demo
+params: {if true {g: {x: 1, y: params.g.x}}, if true {h: {z: params.g.y}}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("cross conditional groups");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["g"]["y"], 1);
+    assert_eq!(json["params"]["h"]["z"], 1);
+}
