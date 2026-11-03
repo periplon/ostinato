@@ -1129,7 +1129,7 @@ impl<'a> Frame<'a> {
         if quoted {
             [escaped_field(name), prefixed_field(name), name.to_owned()]
                 .into_iter()
-                .find(|key| values.contains_key(key))
+                .find(|key| !is_hidden_key(key) && values.contains_key(key))
         } else if name.starts_with('_') {
             let key = hidden_field(name);
             values.contains_key(&key).then_some(key)
