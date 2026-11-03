@@ -35,6 +35,16 @@ params: {
 	exp_sub_s:     "\(1e2 - 1e2)"
 	exp_frac_s:    "\(1e-2)"
 	exp_15_s:      "\(1.5e2)"
+	exp_div_one_s:  "\(1e2 / 1)"
+	exp_div_two_s:  "\(1e2 / 2)"
+	exp_div_half_s: "\(1e2 / 0.5)"
+	exp_div_neg_s:  "\(1e2 / 1e-2)"
+	exp_div_zero_s: "\(0e2 / 2)"
+	dec_div_scale_s: "\(1.00 / 2)"
+	sqrt_exp_s:     "\(math.Sqrt(1e2))"
+	sqrt_exp4_s:    "\(math.Sqrt(4e2))"
+	sqrt_exp8_s:    "\(math.Sqrt(1e4))"
+	sqrt_exp100_s:  "\(math.Sqrt(1e100))"
 }
 
 workflow: {
