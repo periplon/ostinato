@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.4.10
+
+Quoted-label selector/index corrections.
+
+- Aliases to quoted `"#..."` labels resolve the regular field, not a
+  same-named definition, in both alias and dynamic-label form.
+- String index (`v["label"]`) addresses regular fields only; `#P["#D"]` no
+  longer reads definitions.
+- Identifier select never reaches a quoted `#...` field of a plain struct.
+- Imported packages are exposed as definition values, so imported nested
+  definitions keep working with the stricter selector rule.
+- Removed a debug stderr trace from the evaluator.
+- 148 tests (24 CLI E2E, 1 conformance, 113 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.9
 
 Quoted-label semantics.

@@ -6,7 +6,12 @@ use serde_json::{Map, Number, Value as Json};
 use crate::ast::{BinOp, CompClause, Expr, File, Pattern, Span, StrPart, StructItem, UnOp};
 use crate::error::LangError;
 
-/// Runtime value produced by the CUE-compatible evaluator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AliasTarget {
+    name: String,
+    definition: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Admission {
     pub names: BTreeSet<String>,
@@ -408,7 +413,7 @@ struct Frame<'a> {
     generated_optionals: RefCell<BTreeMap<String, Value>>,
     materialized: RefCell<BTreeSet<String>>,
     patterns: RefCell<Vec<(Pattern, Expr)>>,
-    aliases: RefCell<BTreeMap<String, String>>,
+    aliases: RefCell<BTreeMap<String, AliasTarget>>,
     closed: Cell<bool>,
     overrides: RefCell<BTreeMap<String, Value>>,
     evaluating: RefCell<HashSet<String>>,
@@ -460,10 +465,13 @@ impl<'a> Frame<'a> {
                             !field.quoted,
                         );
                         if let Some(alias) = &field.alias {
-                            frame
-                                .aliases
-                                .borrow_mut()
-                                .insert(alias.clone(), name.clone());
+                            frame.aliases.borrow_mut().insert(
+                                alias.clone(),
+                                AliasTarget {
+                                    name: name.clone(),
+                                    definition: field.definition,
+                                },
+                            );
                         }
                     }
                 }
@@ -504,7 +512,13 @@ impl<'a> Frame<'a> {
                             false,
                         );
                         if let Some(alias) = &field.alias {
-                            self.aliases.borrow_mut().insert(alias.clone(), key);
+                            self.aliases.borrow_mut().insert(
+                                alias.clone(),
+                                AliasTarget {
+                                    name: key.clone(),
+                                    definition: false,
+                                },
+                            );
                         }
                     }
                 }
@@ -750,12 +764,6 @@ impl<'a> Frame<'a> {
         if let Some(value) = self.vars.borrow().get(name) {
             return Ok(value.clone());
         }
-        if self.fields.borrow().contains_key(name) && self.bindable_field_key(name).is_none() {
-            eprintln!(
-                "NONBINDABLE lookup {name:?} keys={:?}",
-                self.fields.borrow().keys().collect::<Vec<_>>()
-            );
-        }
         if self.lets.borrow().contains_key(name) {
             // A `let` is not in scope in its own value: a same-named
             // identifier in the RHS resolves to an enclosing let or alias.
@@ -774,11 +782,16 @@ impl<'a> Frame<'a> {
             return self.eval_let(name, span);
         }
         if let Some(target) = self.aliases.borrow().get(name).cloned() {
-            let Some(key) = self.stored_field_key(&target) else {
+            let key = if target.definition {
+                self.stored_field_key(&target.name)
+            } else {
+                self.regular_field_key(&target.name)
+            };
+            let Some(key) = key else {
                 return Err(LangError::eval(
                     span.line,
                     span.col,
-                    format!("undefined reference `{target}`"),
+                    format!("undefined reference `{}`", target.name),
                 ));
             };
             let optional = self
@@ -790,7 +803,7 @@ impl<'a> Frame<'a> {
                 return Err(LangError::eval(
                     span.line,
                     span.col,
-                    format!("cannot reference optional field `{target}`"),
+                    format!("cannot reference optional field `{}`", target.name),
                 ));
             }
             return self.eval_field_key(&key, span);
@@ -1275,6 +1288,31 @@ impl<'a> Frame<'a> {
                 out.insert(display_field_name(name).to_owned(), value.clone());
             }
         }
+        if include_definitions {
+            let mut fields = BTreeMap::new();
+            let mut definitions = BTreeMap::new();
+            for (name, value) in out {
+                let is_definition = self
+                    .fields
+                    .borrow()
+                    .get(&name)
+                    .is_some_and(|field| field.definition);
+                if is_definition {
+                    definitions.insert(name, value);
+                } else {
+                    fields.insert(name, value);
+                }
+            }
+            return Ok(Value::Definition {
+                fields,
+                optional: BTreeMap::new(),
+                definitions,
+                patterns: Vec::new(),
+                closed: false,
+                open: true,
+                admissions: Vec::new(),
+            });
+        }
         Ok(Value::Struct(out))
     }
 }
@@ -1310,13 +1348,22 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         Expr::Select(base, field, span) => {
             let base = eval_expr(base, frame)?.concretize().clone();
             match base {
-                Value::Struct(map) => map.get(field).cloned().ok_or_else(|| {
-                    LangError::eval(
-                        span.line,
-                        span.col,
-                        format!("field `{field}` not found in struct"),
-                    )
-                }),
+                Value::Struct(map) => {
+                    if field.starts_with('#') {
+                        return Err(LangError::eval(
+                            span.line,
+                            span.col,
+                            format!("field `{field}` not found in struct"),
+                        ));
+                    }
+                    map.get(field).cloned().ok_or_else(|| {
+                        LangError::eval(
+                            span.line,
+                            span.col,
+                            format!("field `{field}` not found in struct"),
+                        )
+                    })
+                }
                 Value::Definition {
                     fields,
                     definitions,
@@ -1381,20 +1428,8 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         )
                     })
                 }
-                (
-                    Value::Definition {
-                        fields,
-                        definitions,
-                        ..
-                    },
-                    Value::String(key),
-                ) => {
-                    let selected = if key.starts_with('#') {
-                        definitions.get(&key).cloned()
-                    } else {
-                        fields.get(&key).cloned()
-                    };
-                    selected.ok_or_else(|| {
+                (Value::Definition { fields, .. }, Value::String(key)) => {
+                    fields.get(&key).cloned().ok_or_else(|| {
                         LangError::eval(
                             span.line,
                             span.col,

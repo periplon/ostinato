@@ -2230,3 +2230,82 @@ workflow: {name: "\(params.Z)", steps: {s: {kind: "noop"}}}
     let compiled = ostinato_lang::compile(source).expect("quoted params");
     assert_eq!(compiled.spec.name, "real");
 }
+
+#[test]
+fn aliases_to_quoted_hash_labels_resolve_the_regular_field() {
+    let source = r##"
+package demo
+A="#D": 9
+#D: 8
+params: {v: A, w: #D}
+"##;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["v"], 9);
+    assert_eq!(json["params"]["w"], 8);
+
+    let dynamic = r##"
+package demo
+A=("#D"): 9
+#D: 8
+v: A
+"##;
+    let file = ostinato_lang::parse(dynamic).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["v"], 9);
+
+    let nested = r##"
+package demo
+#P: {A="#h": 5, #h: 6, z: A}
+w: #P
+"##;
+    let file = ostinato_lang::parse(nested).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["w"]["#h"], 5);
+    assert_eq!(json["w"]["z"], 5);
+}
+
+#[test]
+fn string_index_addresses_regular_fields_only() {
+    let source = r##"
+package demo
+#P: {#D: 8, "#D": 9}
+a: #P["#D"]
+b: #P.#D
+"##;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 9);
+    assert_eq!(json["b"], 8);
+
+    let missing = r##"
+package demo
+#P: {#D: 8}
+x: #P["#D"]
+"##;
+    let file = ostinato_lang::parse(missing).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
+
+#[test]
+fn identifier_select_does_not_reach_quoted_hash_fields() {
+    let source = r##"
+package demo
+a: {"#D": 9}
+x: a.#D
+"##;
+    let file = ostinato_lang::parse(source).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+
+    let normal = r##"
+package demo
+a: {"X": 9}
+x: a.X
+"##;
+    let file = ostinato_lang::parse(normal).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    assert_eq!(value.to_json().expect("json")["x"], 9);
+}

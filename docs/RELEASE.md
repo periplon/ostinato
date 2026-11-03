@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.4.10
+
+- Quoted-label selector/index corrections: aliases target regular fields,
+  string index is fields-only, identifier select rejects quoted `#` fields,
+  imports keep nested definitions, and debug stderr is gone.
+- 148 tests (24 CLI E2E, 1 conformance, 113 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.9
 
 - Quoted labels are export-only and not identifier bindings; quoted `"#D"` is
