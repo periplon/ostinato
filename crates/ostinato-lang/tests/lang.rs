@@ -2591,3 +2591,27 @@ fn struct_literal_shadowing_keeps_dead_bodies_dead() {
         "inner live binding must keep the cycle"
     );
 }
+
+#[test]
+fn nested_comprehension_bodies_shadow_in_static_liveness() {
+    for source in [
+        "let C = true\nc: C\nlet S = {for x in [1] {let C = false, if C {a: 1}}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A",
+        "let C = true\nc: C\nlet S = {if true {let C = false, if C {a: 1}}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A",
+        "let C = true\nc: C\nlet S = {for x in [1] {C = #y: false, if C {a: 1}}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A",
+        "let C = true\nc: C\nlet S = {for x in [1] {for y in [1] {let C = false, if C {a: 1}}}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A",
+        "let C = true\nc: C\nlet S = {for x in [1] {let C = {}, for k in C {a: 1}}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A",
+        "let C = true\nc: C\nlet S = {for x in [1] if true {let C = false, if C {a: 1}}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A",
+        "let C = true\nc: C\nlet S = {for x in [1] {let C = false, if C == true {a: 1}}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        let value = ostinato_lang::eval_file(&file).expect("dead nested body must stay dead");
+        assert_eq!(value.to_json().expect("json")["s"], serde_json::json!({}));
+    }
+
+    let live = "let C = false\nc: C\nlet S = {for x in [1] {let C = true, if C {a: 1}}}\ns: S\nlet X = #A\n#A: {for k in S {v: X}}\nout: #A";
+    let file = ostinato_lang::parse(&format!("package demo\n{live}\n")).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "live nested binding must keep the cycle"
+    );
+}

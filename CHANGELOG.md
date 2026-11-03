@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.18
+
+Nested comprehension-body shadowing.
+
+- Static liveness builds a local environment for every nested `if`/`for` body,
+  including clause sequences, so inner lets/aliases shadow outer bindings at
+  any depth.
+- 160 tests (24 CLI E2E, 1 conformance, 125 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.17
 
 Nested struct-literal shadowing.
