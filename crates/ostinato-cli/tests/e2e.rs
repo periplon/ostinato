@@ -1285,3 +1285,48 @@ workflow: {
     assert_eq!(report["params"]["f"], 1.5);
     assert_eq!(report["workflow"]["name"], "5-5-true-1.5");
 }
+
+#[test]
+fn tag_names_and_value_grammar_follow_cue() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("tagged-names.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: {
+    renamed: string @tag(other, type=string)
+    hex: int @tag(hex, type=int)
+    flag: bool @tag(flag, type=bool)
+}
+workflow: {
+    name: "\(params.renamed)-\(params.hex)-\(params.flag)"
+    steps: {s: {kind: "noop"}}
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "other=5",
+        "-p",
+        "hex=0x10",
+        "-p",
+        "flag=TRUE",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["renamed"], "5");
+    assert_eq!(report["params"]["hex"], 16);
+    assert_eq!(report["params"]["flag"], true);
+    assert_eq!(report["workflow"]["name"], "5-16-true");
+}

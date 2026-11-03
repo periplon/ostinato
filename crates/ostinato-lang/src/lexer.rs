@@ -68,6 +68,14 @@ impl Tok {
     }
 }
 
+fn append_code_point(out: &mut Vec<u8>, value: u32, line: u32, col: u32) -> Result<(), LangError> {
+    let character = char::from_u32(value)
+        .ok_or_else(|| LangError::parse(line, col, "invalid unicode escape"))?;
+    let mut buffer = [0u8; 4];
+    out.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+    Ok(())
+}
+
 /// Token with source position.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
@@ -404,27 +412,56 @@ impl Lexer {
                 };
                 self.bump();
                 match escaped {
+                    'a' => out.push(0x07),
+                    'b' => out.push(0x08),
+                    'f' => out.push(0x0c),
                     'n' => out.push(b'\n'),
-                    't' => out.push(b'\t'),
                     'r' => out.push(b'\r'),
+                    't' => out.push(b'\t'),
+                    'v' => out.push(0x0b),
                     '\\' => out.push(b'\\'),
                     '\'' => out.push(b'\''),
-                    '0' => out.push(0),
                     'x' => {
-                        let mut hex = String::new();
+                        let value = self.read_hex_digits(2, line, col)?;
+                        out.push(u8::try_from(value).map_err(|_| {
+                            LangError::parse(line, col, "invalid hexadecimal escape")
+                        })?);
+                    }
+                    'u' => {
+                        let value = self.read_hex_digits(4, line, col)?;
+                        append_code_point(&mut out, value, line, col)?;
+                    }
+                    'U' => {
+                        let value = self.read_hex_digits(8, line, col)?;
+                        append_code_point(&mut out, value, line, col)?;
+                    }
+                    digit if digit.is_digit(8) => {
+                        let mut value = digit.to_digit(8).unwrap_or(0);
                         for _ in 0..2 {
-                            if let Some(c) = self.peek() {
-                                hex.push(c);
-                                self.bump();
+                            match self.peek() {
+                                Some(next) if next.is_digit(8) => {
+                                    value = value * 8 + next.to_digit(8).unwrap_or(0);
+                                    self.bump();
+                                }
+                                _ => {
+                                    return Err(LangError::parse(
+                                        line,
+                                        col,
+                                        "octal escape requires three digits",
+                                    ));
+                                }
                             }
                         }
-                        let value = u8::from_str_radix(&hex, 16).map_err(|_| {
-                            LangError::parse(line, col, "invalid hexadecimal escape")
-                        })?;
-                        out.push(value);
+                        out.push(u8::try_from(value).map_err(|_| {
+                            LangError::parse(line, col, "octal escape out of range")
+                        })?);
                     }
-                    other => {
-                        out.extend(other.to_string().as_bytes());
+                    _ => {
+                        return Err(LangError::parse(
+                            line,
+                            col,
+                            format!("unknown escape sequence `\\{escaped}`"),
+                        ));
                     }
                 }
                 continue;
@@ -434,6 +471,23 @@ impl Lexer {
             out.extend_from_slice(text.as_bytes());
             self.bump();
         }
+    }
+
+    fn read_hex_digits(&mut self, count: usize, line: u32, col: u32) -> Result<u32, LangError> {
+        let mut text = String::new();
+        for _ in 0..count {
+            match self.peek() {
+                Some(value) if value.is_ascii_hexdigit() => {
+                    text.push(value);
+                    self.bump();
+                }
+                _ => {
+                    return Err(LangError::parse(line, col, "invalid hexadecimal escape"));
+                }
+            }
+        }
+        u32::from_str_radix(&text, 16)
+            .map_err(|_| LangError::parse(line, col, "invalid hexadecimal escape"))
     }
 
     fn read_string(&mut self, line: u32, col: u32) -> Result<String, LangError> {

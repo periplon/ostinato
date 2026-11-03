@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.1
+
+Attributes, bytes and builtin review corrections.
+
+- `@if` and standalone trailing attributes parse; attributes remain metadata.
+- Bytes literals implement Go escapes (`\a \b \f \v`, octal, `\x`, `\u`, `\U`),
+  reject unknown escapes, and interpolate as raw text.
+- `@tag` keys by tag name, accepts `name=...`, hex/underscore ints and boolean
+  aliases; nested tags remain metadata.
+- `regexp`: Go-compatible QuoteMeta, `\Q...\E`, and "no match" errors.
+- `math`: decimal-exact Floor/Ceil/Round/Trunc; `Sqrt`/`Pow`/`Exp`/`Log`
+  documented as int-valued when integral.
+- `time`: RFC3339Nano trimming, normalized nanoseconds, validated Format,
+  Go-style signed/fractional durations and extra layouts.
+- 177 tests (26 CLI E2E, 1 conformance, 140 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.0
 
 Attributes, bytes and standard builtins.

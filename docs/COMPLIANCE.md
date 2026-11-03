@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.6.0 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.6.1 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -40,7 +40,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | CUE aliases (`X=field: value`) | ✅ | Field aliases, struct-scoped and file-scoped; value aliases are not separate syntax |
 | Quoted labels (`"x": v`) | ✅ | Exported but not identifier-bindable; a quoted `"#D"` stays distinct from the definition `#D` |
 | Full disjunction lattice over patterns | ⚠️ | Alternatives, defaults, bounds, `&` narrowing and intersection work; richer pattern intersections are out of scope |
-| Bytes, regexp/math/time, tool packages, `cue` commands | ❌ | |
+| Tool packages / `@cmd` tool commands | ❌ | `_tool.cue` files stay excluded; Ostinato has its own workflow engine |
 
 Unsupported features fail explicitly or are documented here. Use `--evaluator cue` for a workflow that needs them.
 
@@ -48,7 +48,7 @@ Unsupported features fail explicitly or are documented here. Use `--evaluator cu
 
 The Rust evaluator accepts `-p key=value` and injects values before evaluation, so compile-time `\(params.x)` and runtime `{{ params.x }}` see the same override.
 
-Values are JSON-coerced: `5` becomes an integer, `true` a boolean, `["a"]` a list, otherwise a string. Official CUE `@tag` injection is string-typed unless `@tag(name,type=int|bool|number)` is used; this is the main deliberate difference. Keep parameters string-typed or use the oracle if exact `@tag` coercion matters.
+Injection types follow `@tag(name,type=string|int|bool|number)`: untyped values keep the JSON-style fallback (`5` integer, `true` boolean, otherwise string), typed values use the declared type. Boolean aliases (`TRUE`, `t`, `1`, ...), integer hex/underscores and numbers are accepted. Nested `@tag` injection is not implemented.
 
 ## Official CUE oracle
 
