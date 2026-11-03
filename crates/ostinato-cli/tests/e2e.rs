@@ -1647,3 +1647,29 @@ workflow: {name: "\(params.name)-\(params.size)-\(params.note)", steps: {s: {kin
     assert_eq!(report["params"]["size"], 16);
     assert_eq!(report["params"]["note"], "hello");
 }
+
+#[test]
+fn params_self_reference_with_overrides_fails_cleanly() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("params-cycle.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: {a: int @tag(a, type=int), b: params.a}
+workflow: {name: "x", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "a=2",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cyclic"), "stderr: {stderr}");
+}

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.7
+
+Open-list and interpolation corrections.
+
+- `params.<field>` self-references during override evaluation fail with a
+  clean cyclic error instead of overflowing the stack.
+- Open-list prefixes behave as lists for equality, `len`, indexing, `for`
+  sources and `list.Concat`.
+- String interpolation is limited to strings, bytes, numbers and booleans;
+  lists/structs/open lists are rejected like CUE.
+- 193 tests (33 CLI E2E, 1 conformance, 149 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.6
 
 Tag-backed params and open-list compilation.
