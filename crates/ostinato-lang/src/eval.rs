@@ -46,6 +46,33 @@ pub struct BoundSet {
     pub ty: Option<TypeKind>,
 }
 
+/// A deferred self-reference inside a recursive definition.
+pub struct RecursiveSlot {
+    value: RefCell<Option<Value>>,
+}
+
+impl RecursiveSlot {
+    fn new() -> Self {
+        Self {
+            value: RefCell::new(None),
+        }
+    }
+}
+
+impl std::fmt::Debug for RecursiveSlot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Recursive(..)")
+    }
+}
+
+impl PartialEq for RecursiveSlot {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl Eq for RecursiveSlot {}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
@@ -82,6 +109,8 @@ pub enum Value {
     Bottom,
     /// A deferred constraint conflict (only stored in optional maps).
     Conflict(String),
+    /// A self-reference to a definition that is currently being materialized.
+    Recursive(Rc<RecursiveSlot>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +181,7 @@ impl Value {
                 TypeKind::Bool => "bool",
                 TypeKind::Bytes => "bytes",
             },
+            Self::Recursive(_) => "recursive",
             Self::Bottom | Self::Conflict(_) => "_",
         }
     }
@@ -179,7 +209,7 @@ impl Value {
     #[must_use]
     pub fn is_concrete(&self) -> bool {
         match self {
-            Self::Disjunction(_, _) => self.to_json().is_some(),
+            Self::Disjunction(_, _) | Self::Recursive(_) => self.to_json().is_some(),
             Self::Bounds(_) => false,
             _ => !matches!(self, Self::Type(_) | Self::Bottom | Self::Conflict(_)),
         }
@@ -188,6 +218,10 @@ impl Value {
     /// Convert to JSON, returning `None` for incomplete values.
     #[must_use]
     pub fn to_json(&self) -> Option<Json> {
+        self.to_json_inner(&mut Vec::new())
+    }
+
+    fn to_json_inner(&self, stack: &mut Vec<*const RecursiveSlot>) -> Option<Json> {
         match self {
             Self::Null => Some(Json::Null),
             Self::Bool(value) => Some(Json::Bool(*value)),
@@ -204,7 +238,7 @@ impl Value {
             Self::List(values) => {
                 let mut out = Vec::with_capacity(values.len());
                 for value in values {
-                    out.push(value.to_json()?);
+                    out.push(value.to_json_inner(stack)?);
                 }
                 Some(Json::Array(out))
             }
@@ -215,7 +249,7 @@ impl Value {
                         continue;
                     }
                     let key = key.strip_prefix(ESCAPED_PREFIX).unwrap_or(key);
-                    out.insert(key.to_owned(), value.to_json()?);
+                    out.insert(key.to_owned(), value.to_json_inner(stack)?);
                 }
                 Some(Json::Object(out))
             }
@@ -226,11 +260,22 @@ impl Value {
             Self::OpenListPrefix(prefix, _) => {
                 let mut out = Vec::with_capacity(prefix.len());
                 for value in prefix {
-                    out.push(value.to_json()?);
+                    out.push(value.to_json_inner(stack)?);
                 }
                 Some(Json::Array(out))
             }
             Self::OpenList(_) => Some(Json::Array(Vec::new())),
+            Self::Recursive(slot) => {
+                let pointer = Rc::as_ptr(slot);
+                if stack.contains(&pointer) {
+                    return None;
+                }
+                let resolved = slot.value.borrow().clone()?;
+                stack.push(pointer);
+                let result = resolved.to_json_inner(stack);
+                stack.pop();
+                result
+            }
             Self::Builtin(_) | Self::Conflict(_) | Self::Type(_) | Self::Bottom => None,
         }
     }
@@ -265,6 +310,7 @@ impl Value {
             }
             Self::Bounds(_) => false,
             Self::OpenList(_) | Self::OpenListPrefix(_, _) => true,
+            Self::Recursive(slot) => slot.value.borrow().as_ref().is_some_and(Value::truthy),
             Self::Builtin(_) | Self::Type(_) | Self::Bottom | Self::Conflict(_) => false,
         }
     }
@@ -328,7 +374,7 @@ impl Value {
                 rendered.push(']');
                 rendered
             }
-            Self::List(_) | Self::Struct(_) | Self::Definition { .. } => {
+            Self::List(_) | Self::Struct(_) | Self::Definition { .. } | Self::Recursive(_) => {
                 self.to_json().map_or_else(
                     || format!("<{}>", self.type_name()),
                     |json| json.to_string(),
@@ -445,6 +491,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         params_context: RefCell::new(None),
         params_prefix: RefCell::new(Vec::new()),
         params_segment: RefCell::new(None),
+        recursive_handles: RefCell::new(BTreeMap::new()),
     };
     if let Json::Object(map) = context {
         let mut values = BTreeMap::new();
@@ -556,6 +603,7 @@ struct Frame<'a> {
     params_context: RefCell<Option<Rc<ParamsContext>>>,
     params_prefix: RefCell<Vec<String>>,
     params_segment: RefCell<Option<String>>,
+    recursive_handles: RefCell<BTreeMap<String, Rc<RecursiveSlot>>>,
 }
 
 impl<'a> Frame<'a> {
@@ -594,6 +642,7 @@ impl<'a> Frame<'a> {
             ),
             params_prefix: RefCell::new(Vec::new()),
             params_segment: RefCell::new(None),
+            recursive_handles: RefCell::new(BTreeMap::new()),
         };
 
         // Pass 1: static fields and lazy let bindings.
@@ -1541,13 +1590,6 @@ impl<'a> Frame<'a> {
         if let Some(value) = self.values.borrow().get(key) {
             return Ok(value.clone());
         }
-        if self.evaluating.borrow().contains(key) {
-            return Err(LangError::eval(
-                span.line,
-                span.col,
-                format!("cyclic reference while evaluating `{name}`"),
-            ));
-        }
         let (exprs, is_definition) = {
             let fields = self.fields.borrow();
             let Some(def) = fields.get(key) else {
@@ -1559,6 +1601,22 @@ impl<'a> Frame<'a> {
             };
             (def.exprs.clone(), def.definition)
         };
+        if self.evaluating.borrow().contains(key) {
+            if is_definition {
+                let slot = self
+                    .recursive_handles
+                    .borrow_mut()
+                    .entry(key.to_owned())
+                    .or_insert_with(|| Rc::new(RecursiveSlot::new()))
+                    .clone();
+                return Ok(Value::Recursive(slot));
+            }
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("cyclic reference while evaluating `{name}`"),
+            ));
+        }
         if name == "params" {
             let items = self.params_items(&exprs);
             if items.is_some() || !self.overrides.borrow().is_empty() {
@@ -1587,13 +1645,12 @@ impl<'a> Frame<'a> {
             }
         }
         if is_definition {
-            if self.evaluating.borrow().contains(key) {
-                return Err(LangError::eval(
-                    span.line,
-                    span.col,
-                    format!("cyclic reference while evaluating `{name}`"),
-                ));
-            }
+            let slot = self
+                .recursive_handles
+                .borrow_mut()
+                .entry(key.to_owned())
+                .or_insert_with(|| Rc::new(RecursiveSlot::new()))
+                .clone();
             self.evaluating.borrow_mut().insert(key.to_owned());
             let mut flattened = false;
             let result = if let Some(items) = self.params_items(&exprs) {
@@ -1651,6 +1708,7 @@ impl<'a> Frame<'a> {
                     Err(err) => return Err(err),
                 }
             }
+            *slot.value.borrow_mut() = Some(result.clone());
             self.values
                 .borrow_mut()
                 .insert(key.to_owned(), result.clone());
@@ -3437,7 +3495,21 @@ fn list_prefix(value: &Value) -> Option<&[Value]> {
 }
 
 fn values_identical(left: &Value, right: &Value) -> bool {
+    values_identical_inner(left, right, 0)
+}
+
+fn values_identical_inner(left: &Value, right: &Value, depth: usize) -> bool {
+    if depth > 128 {
+        return false;
+    }
     match (left, right) {
+        (Value::Recursive(a), Value::Recursive(b)) if Rc::ptr_eq(a, b) => true,
+        (Value::Recursive(slot), other) | (other, Value::Recursive(slot)) => {
+            match slot.value.borrow().clone() {
+                Some(resolved) => values_identical_inner(&resolved, other, depth + 1),
+                None => false,
+            }
+        }
         (
             Value::Struct(a) | Value::Definition { fields: a, .. },
             Value::Struct(b) | Value::Definition { fields: b, .. },
@@ -3447,13 +3519,16 @@ fn values_identical(left: &Value, right: &Value) -> bool {
             visible_a.len() == visible_b.len()
                 && visible_a.iter().all(|(key, value)| {
                     b.get(*key)
-                        .is_some_and(|other| values_identical(value, other))
+                        .is_some_and(|other| values_identical_inner(value, other, depth + 1))
                 })
         }
         (left, right) if list_prefix(left).is_some() && list_prefix(right).is_some() => {
             let a = list_prefix(left).unwrap_or_default();
             let b = list_prefix(right).unwrap_or_default();
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| values_identical(a, b))
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(a, b)| values_identical_inner(a, b, depth + 1))
         }
         (Value::Disjunction(_, _), _) | (_, Value::Disjunction(_, _)) => {
             match (left.to_json(), right.to_json()) {
@@ -4791,8 +4866,32 @@ fn type_error(op: &str, left: &Value, right: &Value, span: Span) -> Result<Value
     ))
 }
 
+thread_local! {
+    static RECURSIVE_UNIFY_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
 fn unify_values(left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
     match (left, right) {
+        (Value::Recursive(a), Value::Recursive(b)) if Rc::ptr_eq(a, b) => {
+            Ok(Value::Recursive(a.clone()))
+        }
+        (Value::Recursive(slot), other) | (other, Value::Recursive(slot)) => {
+            let depth = RECURSIVE_UNIFY_DEPTH.with(Cell::get);
+            if depth > 128 {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    "recursive definition is too deep",
+                ));
+            }
+            let Some(resolved) = slot.value.borrow().clone() else {
+                return Ok(other.clone());
+            };
+            RECURSIVE_UNIFY_DEPTH.with(|cell| cell.set(depth + 1));
+            let result = unify_values(&resolved, other, span);
+            RECURSIVE_UNIFY_DEPTH.with(|cell| cell.set(depth));
+            result
+        }
         (Value::Conflict(message), _) | (_, Value::Conflict(message)) => {
             Err(LangError::conflict(span.line, span.col, message.clone()))
         }

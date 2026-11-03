@@ -4753,3 +4753,55 @@ params: {if true {g: {x: 1, y: params.g.x}}, if true {h: {z: params.g.y}}}
     assert_eq!(json["params"]["g"]["y"], 1);
     assert_eq!(json["params"]["h"]["z"], 1);
 }
+
+#[test]
+fn recursive_definitions_materialize_finite_values() {
+    let source = r#"
+package demo
+#Tree: {value: int, children?: [...#Tree]}
+#Node: {value: int, next?: #Node}
+#MutualA: {name: string, b?: #MutualB}
+#MutualB: {name: string, a?: #MutualA}
+tree: #Tree & {value: 1, children: [{value: 2}, {value: 3, children: [{value: 4}]}]}
+node: #Node & {value: 1, next: {value: 2, next: {value: 3}}}
+mutual: #MutualA & {name: "a", b: {name: "b", a: {name: "c"}}}
+tree2: #Tree & tree
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("recursive definitions");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["tree"]["children"][1]["children"][0]["value"], 4);
+    assert_eq!(json["node"]["next"]["next"]["value"], 3);
+    assert_eq!(json["mutual"]["b"]["a"]["name"], "c");
+    assert_eq!(json["tree2"], json["tree"]);
+}
+
+#[test]
+fn recursive_definitions_apply_nested_constraints() {
+    let valid = r#"
+package demo
+#Tree: {value: int | *0, children?: [...#Tree]}
+tree: #Tree & {children: [{value: 2}]}
+"#;
+    let file = ostinato_lang::parse(valid).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("defaults and recursion");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["tree"]["value"], 0);
+    assert_eq!(json["tree"]["children"][0]["value"], 2);
+
+    let ill_typed = "#Tree: {value: int, children?: [...#Tree]}\ntree: #Tree & {value: 1, children: [{value: \"x\"}]}";
+    let file = ostinato_lang::parse(&format!("package demo\n{ill_typed}\n")).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "nested recursive constraints must be enforced"
+    );
+
+    let infinite = "#Node: {value: int, next: #Node}\nnode: #Node & {value: 1, next: {}}";
+    let file = ostinato_lang::parse(&format!("package demo\n{infinite}\n")).expect("parse");
+    if let Ok(value) = ostinato_lang::eval_file(&file) {
+        assert!(
+            value.to_json().is_none(),
+            "structurally infinite definitions must stay incomplete"
+        );
+    }
+}

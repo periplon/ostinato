@@ -589,7 +589,8 @@ fn dummy_value(value: &Value) -> Json {
         | Value::Null
         | Value::Bottom
         | Value::Builtin(_)
-        | Value::Conflict(_) => Json::Null,
+        | Value::Conflict(_)
+        | Value::Recursive(_) => Json::Null,
     }
 }
 

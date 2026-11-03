@@ -2424,3 +2424,65 @@ workflow: {name: "\(params.x)|\(params.y)|\(params.m)|\(params.k)", steps: {s: {
     );
     assert_eq!(json(&output)["workflow"]["name"], "5|6|7|7");
 }
+
+#[test]
+fn recursive_definitions_materialize_in_both_evaluators() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("recursive.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+#Tree: {value: int, children?: [...#Tree]}
+#Node: {value: int, next?: #Node}
+#MutualA: {name: string, b?: #MutualB}
+#MutualB: {name: string, a?: #MutualA}
+tree: #Tree & {value: 1, children: [{value: 2}, {value: 3, children: [{value: 4}]}]}
+node: #Node & {value: 1, next: {value: 2, next: {value: 3}}}
+mutual: #MutualA & {name: "a", b: {name: "b", a: {name: "c"}}}
+params: {t: tree, n: node, m: mutual}
+workflow: {name: "recursive", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(
+        report["params"]["t"]["children"][1]["children"][0]["value"],
+        4
+    );
+    assert_eq!(report["params"]["n"]["next"]["next"]["value"], 3);
+    assert_eq!(report["params"]["m"]["b"]["a"]["name"], "c");
+
+    let Some(cue) = cue_command() else {
+        return;
+    };
+    let oracle = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--cue",
+        &cue,
+        "--evaluator",
+        "cue",
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        oracle.status.success(),
+        "cue stderr: {}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    assert_eq!(json(&oracle)["params"], report["params"]);
+}

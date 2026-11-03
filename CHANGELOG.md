@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.0
+
+Recursive definition materialization.
+
+- Self-referential and mutually recursive definitions materialize finite
+  concrete values: `#Tree: {children?: [...#Tree]}`, `#Node: {next?: #Node}`,
+  `#A`/`#B` mutual recursion, recursive lists with defaults and open extras.
+- Nested recursive constraints are enforced at every depth (wrong element
+  types fail) while structurally infinite definitions stay incomplete.
+- Equality of materialized recursive values matches CUE.
+- 265 tests (47 CLI E2E, 1 conformance, 207 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.9
 
 Alias scope resolution for `@tag` discovery.

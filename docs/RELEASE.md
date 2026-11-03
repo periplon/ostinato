@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.9.0
+
+- Recursive definition materialization for self/mutually recursive definitions,
+  with nested constraint checking and CUE-matching equality.
+- 265 tests (47 CLI E2E, 1 conformance, 207 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.9
 
 - Alias scope resolution for `@tag` discovery.
