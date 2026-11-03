@@ -443,7 +443,7 @@ impl Lexer {
                 if at_line_start {
                     let mut indent = String::new();
                     while let Some(current) = self.peek() {
-                        if current == ' ' || current == '\t' {
+                        if matches!(current, ' ' | '\t' | '\r') {
                             indent.push(current);
                             self.bump();
                         } else {
@@ -576,7 +576,7 @@ impl Lexer {
                 if at_line_start {
                     let mut indent = String::new();
                     while let Some(current) = self.peek() {
-                        if current == ' ' || current == '\t' {
+                        if matches!(current, ' ' | '\t' | '\r') {
                             indent.push(current);
                             self.bump();
                         } else {

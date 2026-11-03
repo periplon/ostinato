@@ -42,6 +42,7 @@ workflow outside the Rust surface has a supported escape hatch.
 
 | Feature | Why |
 |---|---|
+| Nested multiline literals inside interpolation | A `"""..."""` or `'''...'''` literal used as the expression inside `\(...)` is not parsed; use the oracle |
 | Optional/open metadata on non-definition struct literals | `base: {b?: int}; #D: base` and `{b?: string} & {b: 1}` are out of scope; use a definition literal or the oracle |
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
