@@ -599,6 +599,8 @@ fn json_frame(context: &Json) -> Frame<'static> {
         recursive_handles: RefCell::new(BTreeMap::new()),
         definition_context: RefCell::new(None),
         next_definition: RefCell::new(None),
+        next_injections: RefCell::new(None),
+        skip_cache: Cell::new(false),
     };
     if let Json::Object(map) = context {
         let mut values = BTreeMap::new();
@@ -713,6 +715,8 @@ struct Frame<'a> {
     recursive_handles: RefCell<BTreeMap<String, Rc<RecursiveSlot>>>,
     definition_context: RefCell<Option<String>>,
     next_definition: RefCell<Option<String>>,
+    next_injections: RefCell<Option<BTreeMap<String, Value>>>,
+    skip_cache: Cell<bool>,
 }
 
 impl<'a> Frame<'a> {
@@ -754,6 +758,8 @@ impl<'a> Frame<'a> {
             recursive_handles: RefCell::new(BTreeMap::new()),
             definition_context: RefCell::new(None),
             next_definition: RefCell::new(None),
+            next_injections: RefCell::new(None),
+            skip_cache: Cell::new(false),
         };
 
         // Pass 1: static fields and lazy let bindings.
@@ -1853,9 +1859,11 @@ impl<'a> Frame<'a> {
                 }
             }
             *slot.value.borrow_mut() = Some(result.clone());
-            self.values
-                .borrow_mut()
-                .insert(key.to_owned(), result.clone());
+            if !self.skip_cache.get() {
+                self.values
+                    .borrow_mut()
+                    .insert(key.to_owned(), result.clone());
+            }
             return Ok(result);
         }
         self.evaluating.borrow_mut().insert(key.to_owned());
@@ -1951,6 +1959,72 @@ impl<'a> Frame<'a> {
     ) -> Result<Value, LangError> {
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
         *child.definition_context.borrow_mut() = self.next_definition.borrow().clone();
+        if let Some(injections) = self.next_injections.borrow_mut().take() {
+            for (name, value) in injections {
+                if let Some(key) = child.any_field_key(&name)
+                    && child
+                        .fields
+                        .borrow()
+                        .get(&key)
+                        .is_some_and(|definition| definition.optional && !definition.definition)
+                {
+                    if let Value::List(elements) = &value {
+                        let exprs = child
+                            .fields
+                            .borrow()
+                            .get(&key)
+                            .map(|definition| definition.exprs.clone())
+                            .unwrap_or_default();
+                        let mut resolved = Vec::with_capacity(elements.len());
+                        for element in elements {
+                            if let Some(nested) = concrete_fields(element) {
+                                *child.next_injections.borrow_mut() = Some(nested);
+                            }
+                            let mut declared = Value::Bottom;
+                            for (index, expr) in exprs.iter().enumerate() {
+                                let part = eval_expr(expr, &child)?;
+                                declared = if index == 0 {
+                                    part
+                                } else {
+                                    unify_values(&declared, &part, span)?
+                                };
+                            }
+                            child.next_injections.borrow_mut().take();
+                            let constrained =
+                                unify_values(&declared, &Value::List(vec![element.clone()]), span)?;
+                            let Value::List(mut one) = constrained else {
+                                return Err(LangError::conflict(
+                                    span.line,
+                                    span.col,
+                                    "list constraint did not produce a list",
+                                ));
+                            };
+                            resolved.push(one.remove(0));
+                        }
+                        let unified = Value::List(resolved);
+                        child.values.borrow_mut().insert(key.clone(), unified);
+                        child.materialized.borrow_mut().insert(key.clone());
+                        child
+                            .materialized
+                            .borrow_mut()
+                            .insert(display_field_name(&key).to_owned());
+                        continue;
+                    }
+                    if let Some(nested) = concrete_fields(&value) {
+                        *child.next_injections.borrow_mut() = Some(nested);
+                    }
+                    let declared = child.eval_field_key(&key, span)?;
+                    child.next_injections.borrow_mut().take();
+                    let unified = unify_values(&declared, &value, span)?;
+                    child.values.borrow_mut().insert(key.clone(), unified);
+                    child.materialized.borrow_mut().insert(key.clone());
+                    child
+                        .materialized
+                        .borrow_mut()
+                        .insert(display_field_name(&key).to_owned());
+                }
+            }
+        }
         if let Some(segment) = self.params_segment.borrow().clone() {
             let mut prefix = self.nearest_params_prefix();
             prefix.push(segment);
@@ -2493,6 +2567,107 @@ fn self_definition_select(
     Ok(None)
 }
 
+fn strip_expr_parens(expr: &Expr) -> &Expr {
+    let mut expr = expr;
+    while let Expr::Paren(inner, _) | Expr::Default(inner, _) = expr {
+        expr = inner;
+    }
+    expr
+}
+
+fn concrete_fields(value: &Value) -> Option<BTreeMap<String, Value>> {
+    match value.concretize() {
+        Value::Struct(fields) => Some(fields.clone()),
+        Value::Definition { fields, .. } => Some(fields.clone()),
+        _ => None,
+    }
+}
+
+fn eval_definition_named(
+    frame: &Frame<'_>,
+    name: &str,
+    span: Span,
+) -> Result<Option<Value>, LangError> {
+    let mut cursor = Some(frame);
+    while let Some(current) = cursor {
+        if let Some(key) = current.any_field_key(name) {
+            let is_definition = current
+                .fields
+                .borrow()
+                .get(&key)
+                .is_some_and(|definition| definition.definition);
+            if !is_definition {
+                return Ok(None);
+            }
+            return current.eval_field_key(&key, span).map(Some);
+        }
+        cursor = current.parent;
+    }
+    Ok(None)
+}
+
+fn eval_definition_with_injections(
+    frame: &Frame<'_>,
+    name: &str,
+    injections: BTreeMap<String, Value>,
+    span: Span,
+) -> Result<Option<Value>, LangError> {
+    let mut cursor = Some(frame);
+    while let Some(current) = cursor {
+        if let Some(key) = current.any_field_key(name) {
+            let is_definition = current
+                .fields
+                .borrow()
+                .get(&key)
+                .is_some_and(|definition| definition.definition);
+            if !is_definition {
+                return Ok(None);
+            }
+            current.values.borrow_mut().remove(&key);
+            let previous = current.next_injections.replace(Some(injections));
+            let previous_cache = current.skip_cache.replace(true);
+            let result = current.eval_field_key(&key, span);
+            current.skip_cache.set(previous_cache);
+            current.next_injections.replace(previous);
+            return result.map(Some);
+        }
+        cursor = current.parent;
+    }
+    Ok(None)
+}
+
+fn try_definition_unify(
+    definition: &Expr,
+    other: &Expr,
+    frame: &Frame<'_>,
+    span: Span,
+) -> Result<Option<Value>, LangError> {
+    let Expr::Ident(name, _) = strip_expr_parens(definition) else {
+        return Ok(None);
+    };
+    if !name.starts_with('#') && !name.starts_with("_#") {
+        return Ok(None);
+    }
+    let value = eval_expr(other, frame)?;
+    let Some(injections) = concrete_fields(&value) else {
+        return Ok(None);
+    };
+    match eval_definition_named(frame, name, span) {
+        Ok(Some(defined)) => match unify_values(&defined, &value, span) {
+            Ok(value) => return Ok(Some(value)),
+            Err(err) if err.to_string().contains("cannot reference optional field") => {}
+            Err(err) => return Err(err),
+        },
+        Ok(None) => return Ok(None),
+        Err(err) if err.to_string().contains("cannot reference optional field") => {}
+        Err(err) => return Err(err),
+    }
+    let Some(defined) = eval_definition_with_injections(frame, name, injections, span)? else {
+        return Ok(None);
+    };
+    unify_values(&defined, &value, span).map(Some)
+}
+
 fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<Value, LangError> {
     let missing = || {
         LangError::eval(
@@ -2863,6 +3038,12 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             Ok(Value::OpenListPrefix(values, tail))
         }
         Expr::Unify(left, right, span) => {
+            if let Some(value) = try_definition_unify(left, right, frame, *span)? {
+                return Ok(value);
+            }
+            if let Some(value) = try_definition_unify(right, left, frame, *span)? {
+                return Ok(value);
+            }
             let left = eval_expr(left, frame)?;
             let right = eval_expr(right, frame)?;
             unify_values(&left, &right, *span)
