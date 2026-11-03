@@ -689,33 +689,143 @@ impl Lexer {
     }
 }
 
+enum MultilinePart {
+    Text(String),
+    Interp(String),
+}
+
+/// Split multiline bytes source into literal text and interpolation spans.
+fn split_multiline_parts(source: &str) -> Vec<MultilinePart> {
+    let chars: Vec<char> = source.chars().collect();
+    let mut parts = Vec::new();
+    let mut text = String::new();
+    let mut index = 0usize;
+    while index < chars.len() {
+        if chars[index] == '\\' && chars.get(index + 1) == Some(&'(') {
+            if !text.is_empty() {
+                parts.push(MultilinePart::Text(std::mem::take(&mut text)));
+            }
+            let start = index;
+            index += 2;
+            let mut depth = 1usize;
+            let mut quote: Option<char> = None;
+            while index < chars.len() && depth > 0 {
+                let current = chars[index];
+                if let Some(open) = quote {
+                    if current == '\\' {
+                        index += 1;
+                    } else if current == open {
+                        quote = None;
+                    }
+                } else {
+                    match current {
+                        '"' | '\'' => quote = Some(current),
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                index += 1;
+            }
+            parts.push(MultilinePart::Interp(chars[start..index].iter().collect()));
+            continue;
+        }
+        text.push(chars[index]);
+        index += 1;
+    }
+    if !text.is_empty() || parts.is_empty() {
+        parts.push(MultilinePart::Text(text));
+    }
+    parts
+}
+
 fn dedent_bytes_multiline(
     raw: &str,
     closing_indent: &str,
     line: u32,
     col: u32,
 ) -> Result<String, LangError> {
-    let normalized = raw.replace("\r\n", "\n");
-    if normalized.is_empty() {
-        return Ok(String::new());
-    }
-    let body = normalized.strip_suffix('\n').unwrap_or(&normalized);
-    let mut out = String::new();
-    for (index, current) in body.split('\n').enumerate() {
-        if index > 0 {
-            out.push('\n');
+    let body = raw.strip_suffix('\n').unwrap_or(raw);
+    let parts = split_multiline_parts(body);
+    let whitespace_error = || {
+        LangError::parse(
+            line,
+            col,
+            "non-matching whitespace for multiline bytes literal",
+        )
+    };
+
+    // The closing indentation must be a prefix of the common leading
+    // whitespace of every non-empty literal-text line. Interpolation source is
+    // scanned separately and does not create text lines; a line that begins
+    // with `\(` contributes an empty leading run.
+    let mut view = String::new();
+    for part in &parts {
+        match part {
+            MultilinePart::Text(text) => view.push_str(text),
+            MultilinePart::Interp(_) => view.push('x'),
         }
+    }
+    let mut min_ws: Option<Vec<char>> = None;
+    for current in view.split('\n') {
         if current.is_empty() {
             continue;
         }
-        let Some(stripped) = current.strip_prefix(closing_indent) else {
-            return Err(LangError::parse(
-                line,
-                col,
-                "non-matching whitespace for multiline bytes literal",
-            ));
-        };
-        out.push_str(stripped);
+        let ws: Vec<char> = current
+            .chars()
+            .take_while(|current| matches!(current, ' ' | '\t' | '\r'))
+            .collect();
+        min_ws = Some(match min_ws {
+            None => ws,
+            Some(previous) => {
+                let shared = previous
+                    .iter()
+                    .zip(ws.iter())
+                    .take_while(|(left, right)| left == right)
+                    .count();
+                previous[..shared].to_vec()
+            }
+        });
+    }
+    if let Some(ws) = &min_ws {
+        let closing: Vec<char> = closing_indent.chars().collect();
+        if ws.len() < closing.len() || ws[..closing.len()] != closing[..] {
+            return Err(whitespace_error());
+        }
+    }
+
+    // Unquoting: strip every CR and the closing indentation after newlines.
+    // Interpolation source is copied verbatim.
+    let indent: Vec<char> = closing_indent.chars().collect();
+    let mut out = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        match part {
+            MultilinePart::Interp(source) => out.push_str(source),
+            MultilinePart::Text(text) => {
+                let chars: Vec<char> = text.chars().collect();
+                let mut cursor = 0usize;
+                if index == 0 && chars.starts_with(&indent) {
+                    cursor = indent.len();
+                }
+                while cursor < chars.len() {
+                    let current = chars[cursor];
+                    if current == '\r' {
+                        cursor += 1;
+                        continue;
+                    }
+                    if current == '\n' {
+                        out.push('\n');
+                        cursor += 1;
+                        if chars[cursor..].starts_with(&indent) {
+                            cursor += indent.len();
+                        }
+                        continue;
+                    }
+                    out.push(current);
+                    cursor += 1;
+                }
+            }
+        }
     }
     Ok(out)
 }

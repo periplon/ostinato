@@ -5240,3 +5240,31 @@ nested: 'a\((1+2)*3)b'
         );
     }
 }
+
+#[test]
+fn multiline_bytes_dedent_handles_cr_and_interpolation_lines() {
+    let source = "package demo\na: '''\n  x\\(1 +\n2)y\n  '''\nb: '''\n  a\rb\n  '''\nc: '''\r\n  a\r\n  \r\n  b\r\n  '''\nd: '''\n  a\\rb\n  '''\n";
+    let file = ostinato_lang::parse(source).expect("parse CR and interpolation lines");
+    let value = ostinato_lang::eval_file(&file).expect("eval CR and interpolation lines");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], "eDN5");
+    assert_eq!(json["b"], "YWI=");
+    assert_eq!(json["c"], "YQoKYg==");
+    assert_eq!(json["d"], "YQ1i");
+
+    // A CRLF blank line contributes its CR to the leading whitespace, so a
+    // non-empty closing indentation does not match.
+    let invalid = "package demo\na: '''\r\n  a\r\n\r\n  b\r\n  '''\n";
+    assert!(
+        ostinato_lang::parse(invalid).is_err(),
+        "CRLF blank lines must not be silently normalized before the dedent check"
+    );
+
+    // A line that starts with interpolation at column zero has no literal
+    // leading whitespace, so a non-empty closing indentation must not match.
+    let invalid = "package demo\na: '''\n\\(1)\n  '''\n";
+    assert!(
+        ostinato_lang::parse(invalid).is_err(),
+        "interpolation at column zero must reject a non-empty closing indentation"
+    );
+}
