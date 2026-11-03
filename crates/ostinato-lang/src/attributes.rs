@@ -97,24 +97,68 @@ fn tag_info(
 
 type DefinitionMap = BTreeMap<String, Vec<(Vec<usize>, Expr)>>;
 
-fn select_field_value(expr: &Expr, field: &str, quoted: bool) -> Option<Expr> {
+type ResolvedSelector = (Vec<usize>, Expr, Vec<TagSegment>, Option<crate::ast::Field>);
+
+struct Selected {
+    value: Expr,
+    field: Option<crate::ast::Field>,
+}
+
+fn select_in_expr(expr: &Expr, field: &str, quoted: bool) -> Vec<Selected> {
     match expr {
-        Expr::Struct(items, _) => items.iter().find_map(|item| {
-            let StructItem::Field(candidate) = item else {
-                return None;
-            };
-            let Label::Name(name, _) = &candidate.label else {
-                return None;
-            };
-            (name == field && candidate.quoted == quoted).then(|| candidate.value.clone())
-        }),
-        Expr::Paren(inner, _) | Expr::Default(inner, _) => select_field_value(inner, field, quoted),
-        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            select_field_value(left, field, quoted)
-                .or_else(|| select_field_value(right, field, quoted))
+        Expr::Struct(items, _) => {
+            let mut out = Vec::new();
+            for item in items {
+                let StructItem::Field(candidate) = item else {
+                    continue;
+                };
+                let Label::Name(name, _) = &candidate.label else {
+                    continue;
+                };
+                if name != field || candidate.quoted != quoted {
+                    continue;
+                }
+                let value = match &candidate.value {
+                    Expr::Ident(target, _) => {
+                        local_value(items, target).unwrap_or_else(|| candidate.value.clone())
+                    }
+                    other => other.clone(),
+                };
+                out.push(Selected {
+                    value,
+                    field: Some(candidate.clone()),
+                });
+            }
+            out
         }
-        _ => None,
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => select_in_expr(inner, field, quoted),
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            let mut out = select_in_expr(left, field, quoted);
+            out.extend(select_in_expr(right, field, quoted));
+            out
+        }
+        _ => Vec::new(),
     }
+}
+
+fn local_value(items: &[StructItem], name: &str) -> Option<Expr> {
+    for item in items {
+        match item {
+            StructItem::Field(candidate) => {
+                let Label::Name(label, _) = &candidate.label else {
+                    continue;
+                };
+                if label == name || candidate.alias.as_deref() == Some(name) {
+                    return Some(candidate.value.clone());
+                }
+            }
+            StructItem::Let {
+                name: label, value, ..
+            } if label == name => return Some(value.clone()),
+            _ => {}
+        }
+    }
+    None
 }
 
 struct Collector<'a> {
@@ -149,11 +193,26 @@ impl Collector<'_> {
                     return Ok(());
                 }
                 self.selectors.push(expr.clone());
-                let result = if let Some((path, value, relative)) = self.resolve_selector(expr) {
-                    self.expr(&value, prefix, Some(&path), &relative, &path)
-                } else {
-                    Ok(())
-                };
+                let mut result = Ok(());
+                for (path, value, relative, field) in self.resolve_selector_all(expr) {
+                    if let Some(field) = &field
+                        && let Some(field_name) = label_name(field)
+                        && let Some((tag_name, ty)) = tag_info(field_name, field)?
+                    {
+                        self.tags.entry(tag_name).or_default().push(TagInfo {
+                            field_id: field.id,
+                            field: field_name.to_owned(),
+                            path: prefix.to_vec(),
+                            origin: None,
+                            origin_path: Vec::new(),
+                            ty,
+                        });
+                    }
+                    result = self.expr(&value, prefix, None, &relative, &path);
+                    if result.is_err() {
+                        break;
+                    }
+                }
                 self.selectors.pop();
                 result
             }
@@ -210,32 +269,45 @@ impl Collector<'_> {
         self.definitions.get(target).cloned()
     }
 
-    fn resolve_selector(&self, expr: &Expr) -> Option<(Vec<usize>, Expr, Vec<TagSegment>)> {
+    fn resolve_selector_all(&self, expr: &Expr) -> Vec<ResolvedSelector> {
         match expr {
-            Expr::Ident(name, _) => {
-                let values = self.lookup(name)?;
-                let (path, value) = values.first()?;
-                Some((path.clone(), value.clone(), Vec::new()))
-            }
+            Expr::Ident(name, _) => self
+                .lookup(name)
+                .map(|values| {
+                    values
+                        .into_iter()
+                        .map(|(path, value)| (path, value, Vec::new(), None))
+                        .collect()
+                })
+                .unwrap_or_default(),
             Expr::Select(base, field, quoted, _) => {
-                let (path, value, mut relative) = self.resolve_selector(base)?;
-                let selected = select_field_value(&value, field, *quoted)?;
-                relative.push(TagSegment {
-                    name: field.clone(),
-                    quoted: *quoted,
-                    definition: false,
-                });
-                Some((path, selected, relative))
+                let mut out = Vec::new();
+                for (path, value, relative, _) in self.resolve_selector_all(base) {
+                    for selected in select_in_expr(&value, field, *quoted) {
+                        let mut next = relative.clone();
+                        let definition = selected
+                            .field
+                            .as_ref()
+                            .is_some_and(|field| field.definition);
+                        next.push(TagSegment {
+                            name: field.clone(),
+                            quoted: *quoted,
+                            definition,
+                        });
+                        out.push((path.clone(), selected.value, next, selected.field));
+                    }
+                }
+                out
             }
             Expr::Index(base, index, _) => {
                 let Expr::Str(parts, _) = &**index else {
-                    return None;
+                    return Vec::new();
                 };
                 if parts
                     .iter()
                     .any(|part| matches!(part, crate::ast::StrPart::Interp(_)))
                 {
-                    return None;
+                    return Vec::new();
                 }
                 let field: String = parts
                     .iter()
@@ -244,17 +316,30 @@ impl Collector<'_> {
                         crate::ast::StrPart::Interp(_) => None,
                     })
                     .collect();
-                let (path, value, mut relative) = self.resolve_selector(base)?;
-                let selected = select_field_value(&value, &field, true)?;
-                relative.push(TagSegment {
-                    name: field,
-                    quoted: true,
-                    definition: false,
-                });
-                Some((path, selected, relative))
+                let mut out = Vec::new();
+                for (path, value, mut relative, _) in self.resolve_selector_all(base) {
+                    for selected in select_in_expr(&value, &field, true) {
+                        let definition = selected
+                            .field
+                            .as_ref()
+                            .is_some_and(|field| field.definition);
+                        relative.push(TagSegment {
+                            name: field.clone(),
+                            quoted: true,
+                            definition,
+                        });
+                        out.push((
+                            path.clone(),
+                            selected.value,
+                            relative.clone(),
+                            selected.field,
+                        ));
+                    }
+                }
+                out
             }
-            Expr::Paren(inner, _) | Expr::Default(inner, _) => self.resolve_selector(inner),
-            _ => None,
+            Expr::Paren(inner, _) | Expr::Default(inner, _) => self.resolve_selector_all(inner),
+            _ => Vec::new(),
         }
     }
 
