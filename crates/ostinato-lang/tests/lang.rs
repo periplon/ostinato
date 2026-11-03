@@ -5931,3 +5931,13 @@ mf: #MF
         );
     }
 }
+
+#[test]
+fn self_selection_same_body_comprehension_is_a_documented_limit() {
+    let source = "package demo\n#D: {if true {b: 1, y: #D.b}, a: #D.y}\nx: #D.a\n";
+    let file = ostinato_lang::parse(source).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "self-selection into the same comprehension body remains a documented limit"
+    );
+}

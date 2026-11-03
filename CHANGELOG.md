@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.13.3
+
+Self-selection same-body comprehension limit documented.
+
+- `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot self-select the body-local
+  `b`; using a bare `b` or self-selecting outside the body works. Recorded in
+  SCOPE and covered by a negative regression test.
+- 334 tests (61 CLI E2E, 1 conformance, 230 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.13.2
 
 Self-selection documentation and optional-materialization corrections.
@@ -10,7 +21,7 @@ Self-selection documentation and optional-materialization corrections.
 - README/COMPLIANCE no longer claim self-selection is out of scope.
 - SCOPE records the remaining comprehension-generated-definition and bare
   generated-field-reference limits explicitly.
-- 333 tests (61 CLI E2E, 1 conformance, 229 language, 3 language unit,
+- 334 tests (61 CLI E2E, 1 conformance, 230 language, 3 language unit,
   18 application, 17 domain, 3 store, 1 adapters unit).
 
 
@@ -23,7 +34,7 @@ Self-selection review corrections.
 - Expand-time struct literals no longer inherit the enclosing definition's
   context, so `for k, v in {b: 9, y: #D.b}` resolves `#D.b` against the
   definition (1), not the loop source (9).
-- 333 tests (61 CLI E2E, 1 conformance, 229 language, 3 language unit,
+- 334 tests (61 CLI E2E, 1 conformance, 230 language, 3 language unit,
   18 application, 17 domain, 3 store, 1 adapters unit).
 
 
@@ -36,7 +47,7 @@ Self-selection of a definition's or struct field's own fields.
   quoted labels, defaults, arithmetic and composed definitions.
 - Lexical bindings that shadow the definition still take precedence; optional
   fields remain unreferenceable by self-selection and true cycles still error.
-- 333 tests (61 CLI E2E, 1 conformance, 229 language, 3 language unit,
+- 334 tests (61 CLI E2E, 1 conformance, 230 language, 3 language unit,
   18 application, 17 domain, 3 store, 1 adapters unit).
 - SCOPE narrows to split composed non-definition literals.
 
