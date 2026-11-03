@@ -1432,3 +1432,37 @@ workflow: {name: "\(params.o)-\(params.b)-\(params.h)-\(params.n)", steps: {s: {
         assert!(!output.status.success(), "{name}={value}");
     }
 }
+
+#[test]
+fn tag_number_grammar_and_parenthesized_params() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("tagged-grammar.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: ({a: string @tag(x)}) & ({b: number @tag(y, type=number)})
+workflow: {name: "\(params.a)-\(params.b)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "x=5",
+        "-p",
+        "y=00.5",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["a"], "5");
+    assert_eq!(report["params"]["b"], 0.5);
+}

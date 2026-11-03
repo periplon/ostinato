@@ -88,17 +88,30 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
         let StructItem::Field(field) = item else {
             continue;
         };
-        if label_name(field) == Some("params")
-            && let Expr::Struct(items, _) = &field.value
-        {
+        if label_name(field) == Some("params") {
             saw_params = true;
-            collect_tags(items, &mut tags)?;
+            collect_expr_tags(&field.value, &mut tags)?;
         }
     }
     if !saw_params {
         collect_tags(&file.items, &mut tags)?;
     }
     Ok(tags)
+}
+
+fn collect_expr_tags(
+    expr: &Expr,
+    tags: &mut BTreeMap<String, Vec<TagInfo>>,
+) -> Result<(), LangError> {
+    match expr {
+        Expr::Struct(items, _) => collect_tags(items, tags),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => collect_expr_tags(inner, tags),
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            collect_expr_tags(left, tags)?;
+            collect_expr_tags(right, tags)
+        }
+        _ => Ok(()),
+    }
 }
 
 fn collect_tags(

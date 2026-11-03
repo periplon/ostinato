@@ -384,7 +384,17 @@ impl Parser {
                     return Err(self.error("expected regex string after `=~`"));
                 };
                 self.bump();
-                Pattern::Regex(regex)
+                let parts = parse_str_parts(&regex, self.span())?;
+                let mut text = String::new();
+                for part in parts {
+                    match part {
+                        StrPart::Text(value) => text.push_str(&value),
+                        StrPart::Interp(_) => {
+                            return Err(self.error("pattern regex cannot interpolate"));
+                        }
+                    }
+                }
+                Pattern::Regex(text)
             }
             _ => return Ok(None),
         };
@@ -401,11 +411,19 @@ impl Parser {
             }
             Tok::Str(raw) => {
                 self.bump();
-                if raw.contains("\\(") {
-                    let parts = parse_str_parts(&raw, span)?;
+                let parts = parse_str_parts(&raw, span)?;
+                let has_interp = parts.iter().any(|part| matches!(part, StrPart::Interp(_)));
+                if has_interp {
                     Ok(Label::Dynamic(Box::new(Expr::Str(parts, span)), span))
                 } else {
-                    Ok(Label::Name(raw, span))
+                    let text: String = parts
+                        .into_iter()
+                        .filter_map(|part| match part {
+                            StrPart::Text(value) => Some(value),
+                            StrPart::Interp(_) => None,
+                        })
+                        .collect();
+                    Ok(Label::Name(text, span))
                 }
             }
             Tok::LBracket => {
@@ -979,10 +997,6 @@ fn parse_str_parts(raw: &str, span: Span) -> Result<Vec<StrPart>, LangError> {
                     text.push('"');
                     index += 2;
                 }
-                '\'' => {
-                    text.push('\'');
-                    index += 2;
-                }
                 'u' | 'U' => {
                     let count = if escaped == 'u' { 4 } else { 8 };
                     let start = index + 2;
@@ -997,11 +1011,53 @@ fn parse_str_parts(raw: &str, span: Span) -> Result<Vec<StrPart>, LangError> {
                     let value = u32::from_str_radix(&digits, 16).map_err(|_| {
                         LangError::parse(span.line, span.col, "invalid unicode escape")
                     })?;
-                    let character = char::from_u32(value).ok_or_else(|| {
+                    let mut next = start + count;
+                    let scalar = if (0xD800..=0xDBFF).contains(&value) {
+                        if escaped != 'u'
+                            || chars.get(next) != Some(&'\\')
+                            || chars.get(next + 1) != Some(&'u')
+                        {
+                            return Err(LangError::parse(
+                                span.line,
+                                span.col,
+                                "invalid unicode escape",
+                            ));
+                        }
+                        let low_start = next + 2;
+                        if low_start + 4 > chars.len() {
+                            return Err(LangError::parse(
+                                span.line,
+                                span.col,
+                                "invalid unicode escape",
+                            ));
+                        }
+                        let low_digits: String = chars[low_start..low_start + 4].iter().collect();
+                        let low = u32::from_str_radix(&low_digits, 16).map_err(|_| {
+                            LangError::parse(span.line, span.col, "invalid unicode escape")
+                        })?;
+                        if !(0xDC00..=0xDFFF).contains(&low) {
+                            return Err(LangError::parse(
+                                span.line,
+                                span.col,
+                                "invalid unicode escape",
+                            ));
+                        }
+                        next = low_start + 4;
+                        0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00)
+                    } else if (0xDC00..=0xDFFF).contains(&value) {
+                        return Err(LangError::parse(
+                            span.line,
+                            span.col,
+                            "invalid unicode escape",
+                        ));
+                    } else {
+                        value
+                    };
+                    let character = char::from_u32(scalar).ok_or_else(|| {
                         LangError::parse(span.line, span.col, "invalid unicode escape")
                     })?;
                     text.push(character);
-                    index = start + count;
+                    index = next;
                 }
                 other => {
                     return Err(LangError::parse(
