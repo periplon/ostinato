@@ -4,6 +4,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use ostinato_application::{LoadRequest, LoadedWorkflow, PortError, PortResult, SpecLoader};
+use ostinato_lang::ast::{Expr, Field, Label, Span, StructItem};
 use ostinato_lang::{
     Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode, parse,
     rename_file_locals,
@@ -108,10 +109,12 @@ fn evaluate_path(
     for (key, raw) in overrides {
         if let Some(infos) = tags.get(key) {
             for info in infos {
-                injected.insert(
-                    info.field.clone(),
-                    parse_override_value(raw, Some(info.ty))?,
-                );
+                let value = parse_override_value(raw, Some(info.ty))?;
+                if info.path.len() == 1 {
+                    injected.insert(info.field.clone(), value);
+                } else {
+                    combined.items.push(nested_params_item(&info.path, value)?);
+                }
             }
         } else {
             injected.insert(key.clone(), parse_override_value(raw, None)?);
@@ -531,6 +534,66 @@ fn validate_number_literal(text: &str) -> Option<String> {
     Some(normalized)
 }
 
+fn nested_params_item(
+    path: &[String],
+    value: Value,
+) -> Result<StructItem, ostinato_lang::LangError> {
+    let json = value.to_json().ok_or_else(|| {
+        ostinato_lang::LangError::Workflow("parameter value is not concrete".to_owned())
+    })?;
+    let text = serde_json::to_string(&json).map_err(|err| {
+        ostinato_lang::LangError::Workflow(format!("cannot encode parameter value: {err}"))
+    })?;
+    let span = Span::default();
+    let mut expr = ostinato_lang::parse_expr_fragment(&text)?;
+    for segment in path.iter().rev() {
+        expr = Expr::Struct(
+            vec![StructItem::Field(Field {
+                label: Label::Name(segment.clone(), span),
+                value: expr,
+                optional: false,
+                definition: false,
+                alias: None,
+                quoted: false,
+                attributes: Vec::new(),
+                span,
+            })],
+            span,
+        );
+    }
+    Ok(StructItem::Field(Field {
+        label: Label::Name("params".to_owned(), span),
+        value: expr,
+        optional: false,
+        definition: false,
+        alias: None,
+        quoted: false,
+        attributes: Vec::new(),
+        span,
+    }))
+}
+
+fn params_path_exists(params: &BTreeMap<String, Value>, path: &[String]) -> bool {
+    let Some(first) = path.first() else {
+        return false;
+    };
+    let Some(mut value) = params.get(first) else {
+        return false;
+    };
+    for segment in &path[1..] {
+        value = match value {
+            Value::Struct(map) | Value::Definition { fields: map, .. } => {
+                let Some(next) = map.get(segment) else {
+                    return false;
+                };
+                next
+            }
+            _ => return false,
+        };
+    }
+    true
+}
+
 fn collect_parameter_tags(
     path: &Path,
 ) -> Result<BTreeMap<String, Vec<ostinato_lang::TagInfo>>, ostinato_lang::LangError> {
@@ -576,9 +639,11 @@ fn parameters_json(
     };
     if !overrides.is_empty() {
         for key in overrides.keys() {
-            let known = tags
-                .get(key)
-                .is_some_and(|infos| infos.iter().all(|info| params.contains_key(&info.field)));
+            let known = tags.get(key).is_some_and(|infos| {
+                infos
+                    .iter()
+                    .all(|info| params_path_exists(params, &info.path))
+            });
             if !known && !params.contains_key(key) {
                 return Err(ostinato_lang::LangError::Workflow(format!(
                     "unknown parameter `{key}`; declare it under `params`"

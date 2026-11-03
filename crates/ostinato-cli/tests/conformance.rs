@@ -151,8 +151,12 @@ fn rust_matches_official_cue_on_the_conformance_corpus() {
     entries.sort();
     assert!(!entries.is_empty());
     for path in entries {
-        let is_params = path.file_stem().is_some_and(|stem| stem == "params");
-        let params: &[&str] = if is_params { &["name=Alice"] } else { &[] };
+        let stem = path.file_stem().and_then(|stem| stem.to_str());
+        let params: &[&str] = match stem {
+            Some("params") => &["name=Alice"],
+            Some("params-nested-tag") => &["host=db.example", "port=5432", "name=svc"],
+            _ => &[],
+        };
         compare(&cue, &path, params);
     }
     compare(&cue, &root.join("scope").join("a.cue"), &[]);

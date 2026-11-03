@@ -20,7 +20,10 @@ pub enum TagType {
 /// A `@tag` declaration: external name, parameter field and injection type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagInfo {
+    /// Leaf parameter field name.
     pub field: String,
+    /// Path from the `params` root to the tagged field.
+    pub path: Vec<String>,
     pub ty: TagType,
 }
 
@@ -116,29 +119,30 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
         };
         if label_name(field) == Some("params") {
             saw_params = true;
-            collect_expr_tags(&field.value, &mut tags, &definitions, &mut Vec::new())?;
+            collect_expr_tags(&field.value, &[], &mut tags, &definitions, &mut Vec::new())?;
         }
     }
     if !saw_params {
-        collect_tags(&file.items, &mut tags)?;
+        collect_tags(&file.items, &[], &mut tags, &definitions)?;
     }
     Ok(tags)
 }
 
 fn collect_expr_tags(
     expr: &Expr,
+    prefix: &[String],
     tags: &mut BTreeMap<String, Vec<TagInfo>>,
     definitions: &BTreeMap<String, Vec<Expr>>,
     visiting: &mut Vec<String>,
 ) -> Result<(), LangError> {
     match expr {
-        Expr::Struct(items, _) => collect_tags(items, tags),
+        Expr::Struct(items, _) => collect_tags(items, prefix, tags, definitions),
         Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-            collect_expr_tags(inner, tags, definitions, visiting)
+            collect_expr_tags(inner, prefix, tags, definitions, visiting)
         }
         Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            collect_expr_tags(left, tags, definitions, visiting)?;
-            collect_expr_tags(right, tags, definitions, visiting)
+            collect_expr_tags(left, prefix, tags, definitions, visiting)?;
+            collect_expr_tags(right, prefix, tags, definitions, visiting)
         }
         Expr::Ident(name, _) => {
             let Some(values) = definitions.get(name) else {
@@ -150,7 +154,7 @@ fn collect_expr_tags(
             visiting.push(name.clone());
             let mut result = Ok(());
             for value in values {
-                result = collect_expr_tags(value, tags, definitions, visiting);
+                result = collect_expr_tags(value, prefix, tags, definitions, visiting);
                 if result.is_err() {
                     break;
                 }
@@ -164,7 +168,9 @@ fn collect_expr_tags(
 
 fn collect_tags(
     items: &[StructItem],
+    prefix: &[String],
     tags: &mut BTreeMap<String, Vec<TagInfo>>,
+    definitions: &BTreeMap<String, Vec<Expr>>,
 ) -> Result<(), LangError> {
     for item in items {
         let StructItem::Field(field) = item else {
@@ -173,11 +179,34 @@ fn collect_tags(
         let Some(name) = label_name(field) else {
             continue;
         };
+        let mut path = prefix.to_vec();
+        path.push(name.to_owned());
         if let Some((tag_name, ty)) = tag_info(name, field)? {
             tags.entry(tag_name).or_default().push(TagInfo {
                 field: name.to_owned(),
+                path: path.clone(),
                 ty,
             });
+        }
+        match &field.value {
+            Expr::Struct(items, _) => {
+                collect_tags(items, &path, tags, definitions)?;
+            }
+            Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+                collect_expr_tags(inner, &path, tags, definitions, &mut Vec::new())?;
+            }
+            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+                collect_expr_tags(left, &path, tags, definitions, &mut Vec::new())?;
+                collect_expr_tags(right, &path, tags, definitions, &mut Vec::new())?;
+            }
+            Expr::Ident(definition, _) => {
+                if let Some(values) = definitions.get(definition) {
+                    for value in values {
+                        collect_expr_tags(value, &path, tags, definitions, &mut Vec::new())?;
+                    }
+                }
+            }
+            _ => {}
         }
     }
     Ok(())

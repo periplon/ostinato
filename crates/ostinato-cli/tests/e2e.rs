@@ -1773,3 +1773,124 @@ workflow: {
             .is_none()
     );
 }
+
+#[test]
+fn nested_tags_inject_nested_parameters() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("nested-tags.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: {
+    db: {
+        host: string @tag(host)
+        port: int @tag(port, type=int)
+    }
+    name: string @tag(name)
+}
+workflow: {
+    name: "\(params.db.host):\(params.db.port):\(params.name)"
+    steps: {s: {kind: "noop"}}
+}
+"#,
+    );
+    let arguments = [
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "host=db.example",
+        "-p",
+        "port=5432",
+        "-p",
+        "name=svc",
+    ];
+    let output = ost(&arguments);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["db"]["host"], "db.example");
+    assert_eq!(report["params"]["db"]["port"], 5432);
+    assert_eq!(report["params"]["name"], "svc");
+    assert_eq!(report["workflow"]["name"], "db.example:5432:svc");
+
+    let Some(cue) = cue_command() else {
+        return;
+    };
+    let mut cue_arguments = vec![
+        "--db",
+        db.to_str().expect("db"),
+        "--cue",
+        &cue,
+        "--evaluator",
+        "cue",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "host=db.example",
+        "-p",
+        "port=5432",
+        "-p",
+        "name=svc",
+    ];
+    cue_arguments.shrink_to_fit();
+    let output = ost(&cue_arguments);
+    assert!(
+        output.status.success(),
+        "cue stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn nested_tags_work_through_definitions_and_reject_bad_types() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("nested-tag-definition.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+#P: {db: {host: string @tag(host), port: int @tag(port, type=int)}}
+params: #P
+workflow: {name: "\(params.db.host):\(params.db.port)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "host=x",
+        "-p",
+        "port=0x10",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["db"]["port"], 16);
+
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "host=x",
+        "-p",
+        "port=nope",
+    ]);
+    assert!(!output.status.success());
+}
