@@ -1555,7 +1555,8 @@ impl<'a> Frame<'a> {
                     .fields
                     .borrow()
                     .get(&name)
-                    .is_some_and(|field| field.optional);
+                    .is_some_and(|field| field.optional)
+                    || child.generated_optionals.borrow().contains_key(&name);
                 let materialized = child.materialized.borrow().contains(&name);
                 if !declared_optional || materialized {
                     let value = child.eval_field_key(&name, span)?;
@@ -1894,7 +1895,12 @@ impl<'a> Frame<'a> {
                 .iter()
                 .filter(|(name, definition)| {
                     (include_definitions || !definition.definition)
-                        && !generated.contains_key(display_field_name(name))
+                        && !generated.contains_key(*name)
+                        && (name.starts_with([
+                            HIDDEN_PREFIX,
+                            ESCAPED_PREFIX,
+                            NON_DEFINITION_PREFIX,
+                        ]) || !generated.contains_key(display_field_name(name)))
                 })
                 .map(|(name, _)| name.clone())
                 .collect()
@@ -1932,10 +1938,12 @@ impl<'a> Frame<'a> {
                 .get(name)
                 .is_some_and(|definition| definition.definition);
             if (!include_definitions && definition)
-                || self
-                    .generated_optionals
-                    .borrow()
-                    .contains_key(display_field_name(name))
+                || self.generated_optionals.borrow().contains_key(name)
+                || (!name.starts_with([HIDDEN_PREFIX, ESCAPED_PREFIX, NON_DEFINITION_PREFIX])
+                    && self
+                        .generated_optionals
+                        .borrow()
+                        .contains_key(display_field_name(name)))
             {
                 continue;
             }
