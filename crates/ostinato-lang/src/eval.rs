@@ -14,6 +14,7 @@ use crate::error::LangError;
 struct AliasTarget {
     name: String,
     definition: bool,
+    hidden: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -607,6 +608,7 @@ impl<'a> Frame<'a> {
                                 AliasTarget {
                                     name: name.clone(),
                                     definition: field.definition,
+                                    hidden: !field.quoted && name.starts_with('_'),
                                 },
                             );
                         }
@@ -655,6 +657,7 @@ impl<'a> Frame<'a> {
                                 AliasTarget {
                                     name: key.clone(),
                                     definition: false,
+                                    hidden: false,
                                 },
                             );
                         }
@@ -678,7 +681,7 @@ impl<'a> Frame<'a> {
                                 if let Some(key) = key {
                                     bindings.insert(
                                         key.clone(),
-                                        Value::String(output_field_name(&entry_key)),
+                                        Value::String(display_field_name(&entry_key).to_owned()),
                                     );
                                 }
                                 bindings.insert(value.clone(), entry_value);
@@ -773,30 +776,41 @@ impl<'a> Frame<'a> {
 
     fn bindable_field_key(&self, name: &str) -> Option<String> {
         let fields = self.fields.borrow();
+        if name.starts_with('_') {
+            let hidden = hidden_field(name);
+            return fields
+                .get(&hidden)
+                .is_some_and(|def| def.bindable)
+                .then_some(hidden);
+        }
         if fields.get(name).is_some_and(|def| def.bindable) {
             return Some(name.to_owned());
         }
-        [
-            prefixed_field(name),
-            hidden_field(name),
-            escaped_field(name),
-        ]
-        .into_iter()
-        .find(|prefixed| fields.get(prefixed).is_some_and(|def| def.bindable))
+        [prefixed_field(name), escaped_field(name)]
+            .into_iter()
+            .find(|prefixed| fields.get(prefixed).is_some_and(|def| def.bindable))
     }
 
     fn any_field_key(&self, name: &str) -> Option<String> {
         let fields = self.fields.borrow();
+        if name.starts_with('_') {
+            let hidden = hidden_field(name);
+            return fields.contains_key(&hidden).then_some(hidden);
+        }
         if fields.contains_key(name) {
             return Some(name.to_owned());
         }
-        [
-            prefixed_field(name),
-            hidden_field(name),
-            escaped_field(name),
-        ]
-        .into_iter()
-        .find(|prefixed| fields.contains_key(prefixed))
+        [prefixed_field(name), escaped_field(name)]
+            .into_iter()
+            .find(|prefixed| fields.contains_key(prefixed))
+    }
+
+    fn map_identifier_key<'m>(map: &'m BTreeMap<String, Value>, name: &str) -> Option<&'m String> {
+        if name.starts_with('_') {
+            map.get_key_value(&hidden_field(name)).map(|(key, _)| key)
+        } else {
+            map.get_key_value(name).map(|(key, _)| key)
+        }
     }
 
     fn field_storage_key(&self, name: &str) -> Option<String> {
@@ -963,7 +977,10 @@ impl<'a> Frame<'a> {
             return self.eval_let(name, span);
         }
         if let Some(target) = self.aliases.borrow().get(name).cloned() {
-            let key = if target.definition {
+            let key = if target.hidden {
+                let hidden = hidden_field(&target.name);
+                self.fields.borrow().contains_key(&hidden).then_some(hidden)
+            } else if target.definition {
                 self.stored_field_key(&target.name)
             } else {
                 self.field_storage_key(&target.name)
@@ -1650,7 +1667,10 @@ impl<'a> Frame<'a> {
                 } else if let Some(value) = self.lets.borrow().get(name).cloned() {
                     vec![value]
                 } else if let Some(target) = self.aliases.borrow().get(name).cloned() {
-                    let key = if target.definition {
+                    let key = if target.hidden {
+                        let hidden = hidden_field(&target.name);
+                        self.fields.borrow().contains_key(&hidden).then_some(hidden)
+                    } else if target.definition {
                         self.stored_field_key(&target.name)
                     } else {
                         self.regular_field_key(&target.name)
@@ -1900,7 +1920,7 @@ fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<
             let selected = if quoted {
                 map.get(field).or_else(|| map.get(&escaped_field(field)))
             } else {
-                map.get(field).or_else(|| map.get(&hidden_field(field)))
+                Frame::map_identifier_key(&map, field).and_then(|key| map.get(key))
             };
             selected.cloned().ok_or_else(|| {
                 LangError::eval(
@@ -1994,7 +2014,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     let selected = if *quoted {
                         map.get(field).or_else(|| map.get(&escaped_field(field)))
                     } else {
-                        map.get(field).or_else(|| map.get(&hidden_field(field)))
+                        Frame::map_identifier_key(&map, field).and_then(|key| map.get(key))
                     };
                     selected.cloned().ok_or_else(|| {
                         LangError::eval(
@@ -2018,9 +2038,8 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     } else if field.starts_with('#') {
                         definitions.get(field).cloned()
                     } else {
-                        fields
-                            .get(field)
-                            .or_else(|| fields.get(&hidden_field(field)))
+                        Frame::map_identifier_key(&fields, field)
+                            .and_then(|key| fields.get(key))
                             .cloned()
                     };
                     if let Some(value) = selected {
@@ -2286,7 +2305,12 @@ fn eval_list_comp(
                 Value::Struct(map) | Value::Definition { fields: map, .. } => map
                     .into_iter()
                     .filter(|(key, _)| !is_hidden_key(key))
-                    .map(|(key, value)| (Some(Value::String(output_field_name(&key))), value))
+                    .map(|(key, value)| {
+                        (
+                            Some(Value::String(display_field_name(&key).to_owned())),
+                            value,
+                        )
+                    })
                     .collect(),
                 Value::List(values) | Value::OpenListPrefix(values, _) => values
                     .into_iter()

@@ -4079,3 +4079,41 @@ fn control_prefix_labels_match_patterns() {
     let value = ostinato_lang::eval_file(&file).expect("pattern uses the displayed label");
     assert_eq!(value.to_json().expect("json")["params"]["\u{3}a"], 1);
 }
+
+#[test]
+fn identifier_selectors_prefer_hidden_over_quoted_twins() {
+    let source = r#"
+package demo
+#P: {_h: 1, "_h": 2}
+def: #P._h
+params: {_h: 1, "_h": 2, v: params._h, X=_h: 1, xalias: X}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("identifier selectors");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["def"], 1);
+    assert_eq!(json["params"]["v"], 1);
+    assert_eq!(json["params"]["xalias"], 1);
+
+    let only_quoted = r#"
+package demo
+#P: {"_h": 2, a: 3}
+def: #P._h
+params: {"_h": 2, a: 3, v: params._h}
+"#;
+    let file = ostinato_lang::parse(only_quoted).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "identifier select must not fall back to a quoted _h"
+    );
+}
+
+#[test]
+fn comprehension_labels_use_displayed_names_for_control_prefixes() {
+    let source = "package demo\nsrc: {\"\u{3}a\": 1}\nkeys: [for k, _ in src {k}]\nmapped: {for k, v in src {\"\\(k)\": v}}\n";
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["keys"], serde_json::json!(["\u{3}a"]));
+    assert_eq!(json["mapped"]["\u{3}a"], 1);
+}
