@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.14.2
+
+Defaulted primitive optional-dependent fields.
+
+- Defaulted/disjunctive primitive optionals such as `n: *4 | int` are
+  concretized before the compound-value guard, so dependent required fields
+  resolve like CUE while struct/list/definition optionals stay documented
+  limits.
+- 335 tests (61 CLI E2E, 1 conformance, 231 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.14.1
 
 Optional-dependent scope correction.

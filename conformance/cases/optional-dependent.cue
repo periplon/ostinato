@@ -8,6 +8,7 @@ params: {
 	greeting:   #P & {name: "Alice"}
 	arithmetic: #A & {n: 4}
 	chain:      #C & {a: 1}
+	defaulted:  #A & {n: *4 | int}
 }
 
 workflow: {

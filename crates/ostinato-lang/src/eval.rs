@@ -1970,7 +1970,7 @@ impl<'a> Frame<'a> {
                         .is_some_and(|definition| definition.optional && !definition.definition)
                 {
                     if !matches!(
-                        value,
+                        value.concretize(),
                         Value::String(_)
                             | Value::Int(_)
                             | Value::Float(_)
