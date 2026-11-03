@@ -2832,6 +2832,41 @@ fn rfc3339_nano(datetime: &chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
+fn valid_date(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('-').collect();
+    parts.len() == 3
+        && parts[0].len() == 4
+        && parts[1].len() == 2
+        && parts[2].len() == 2
+        && parts
+            .iter()
+            .all(|part| part.chars().all(|value| value.is_ascii_digit()))
+}
+
+fn valid_clock(text: &str) -> bool {
+    let parts: Vec<&str> = text.split(':').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    let hour_ok =
+        (1..=2).contains(&parts[0].len()) && parts[0].chars().all(|value| value.is_ascii_digit());
+    let minute_ok = parts[1].len() == 2 && parts[1].chars().all(|value| value.is_ascii_digit());
+    let second_ok = parts[2].len() == 2 && parts[2].chars().all(|value| value.is_ascii_digit());
+    hour_ok && minute_ok && second_ok
+}
+
+fn valid_clock_ampm(text: &str) -> bool {
+    let Some(suffix) = text.strip_suffix("AM").or_else(|| text.strip_suffix("PM")) else {
+        return false;
+    };
+    let parts: Vec<&str> = suffix.split(':').collect();
+    parts.len() == 2
+        && (1..=2).contains(&parts[0].len())
+        && parts[0].chars().all(|value| value.is_ascii_digit())
+        && parts[1].len() == 2
+        && parts[1].chars().all(|value| value.is_ascii_digit())
+}
+
 fn split_fraction(text: &str) -> Option<(&str, i64)> {
     let Some(index) = text.find(['.', ',']) else {
         return Some((text, 0));
@@ -2861,22 +2896,35 @@ fn parse_layout(
     let invalid = || LangError::conflict(span.line, span.col, format!("invalid time `{text}`"));
     match layout {
         "2006-01-02" => {
+            if !valid_date(text) {
+                return Err(invalid());
+            }
             let date = NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|_| invalid())?;
             Ok(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).ok_or_else(invalid)?))
         }
         "15:04:05" => {
             let (base, nanos) = split_fraction(text).ok_or_else(invalid)?;
+            if !valid_clock(base) {
+                return Err(invalid());
+            }
             let time = NaiveTime::parse_from_str(base, "%H:%M:%S").map_err(|_| invalid())?;
             let date = NaiveDate::from_ymd_opt(0, 1, 1).ok_or_else(invalid)?;
             Ok(Utc.from_utc_datetime(&date.and_time(time)) + chrono::Duration::nanoseconds(nanos))
         }
         "3:04PM" => {
+            if !valid_clock_ampm(text) {
+                return Err(invalid());
+            }
             let time = NaiveTime::parse_from_str(text, "%I:%M%p").map_err(|_| invalid())?;
             let date = NaiveDate::from_ymd_opt(0, 1, 1).ok_or_else(invalid)?;
             Ok(Utc.from_utc_datetime(&date.and_time(time)))
         }
         "2006-01-02 15:04:05" => {
             let (base, nanos) = split_fraction(text).ok_or_else(invalid)?;
+            let (date, clock) = base.split_once(' ').ok_or_else(invalid)?;
+            if !valid_date(date) || !valid_clock(clock) {
+                return Err(invalid());
+            }
             let naive = chrono::NaiveDateTime::parse_from_str(base, "%Y-%m-%d %H:%M:%S")
                 .map_err(|_| invalid())?;
             Ok(Utc.from_utc_datetime(&naive) + chrono::Duration::nanoseconds(nanos))

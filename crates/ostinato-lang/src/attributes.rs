@@ -82,7 +82,7 @@ fn tag_info(
 /// # Errors
 /// Returns an evaluation error for unknown `@tag` types.
 pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, LangError> {
-    let mut definitions: BTreeMap<String, Expr> = BTreeMap::new();
+    let mut definitions: BTreeMap<String, Vec<Expr>> = BTreeMap::new();
     for item in &file.items {
         let StructItem::Field(field) = item else {
             continue;
@@ -90,7 +90,10 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
         if field.definition
             && let Some(name) = label_name(field)
         {
-            definitions.insert(name.to_owned(), field.value.clone());
+            definitions
+                .entry(name.to_owned())
+                .or_default()
+                .push(field.value.clone());
         }
     }
     let mut tags: BTreeMap<String, Vec<TagInfo>> = BTreeMap::new();
@@ -113,7 +116,7 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
 fn collect_expr_tags(
     expr: &Expr,
     tags: &mut BTreeMap<String, Vec<TagInfo>>,
-    definitions: &BTreeMap<String, Expr>,
+    definitions: &BTreeMap<String, Vec<Expr>>,
     visiting: &mut Vec<String>,
 ) -> Result<(), LangError> {
     match expr {
@@ -126,14 +129,20 @@ fn collect_expr_tags(
             collect_expr_tags(right, tags, definitions, visiting)
         }
         Expr::Ident(name, _) => {
-            let Some(value) = definitions.get(name) else {
+            let Some(values) = definitions.get(name) else {
                 return Ok(());
             };
             if visiting.contains(name) {
                 return Ok(());
             }
             visiting.push(name.clone());
-            let result = collect_expr_tags(value, tags, definitions, visiting);
+            let mut result = Ok(());
+            for value in values {
+                result = collect_expr_tags(value, tags, definitions, visiting);
+                if result.is_err() {
+                    break;
+                }
+            }
             visiting.pop();
             result
         }

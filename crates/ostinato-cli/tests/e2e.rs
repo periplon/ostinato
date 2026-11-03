@@ -1534,3 +1534,76 @@ workflow: {name: "\(params.a)-\(params.b)", steps: {s: {kind: "noop"}}}
     assert_eq!(report["params"]["a"], "5");
     assert_eq!(report["params"]["b"], 0.5);
 }
+
+#[test]
+fn split_and_duplicate_definition_tags_work() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    write(
+        &directory.path().join("a.cue"),
+        r#"
+package demo
+#P: { name: string @tag(other) }
+"#,
+    );
+    let workflow = directory.path().join("b.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+#Q: { size: *1 | int @tag(sz, type=int) }
+params: (#P & #Q)
+workflow: {name: "\(params.name)-\(params.size)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "other=Alice",
+        "-p",
+        "sz=0x10",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["name"], "Alice");
+    assert_eq!(report["params"]["size"], 16);
+
+    let duplicate = directory.path().join("duplicate.cue");
+    write(
+        &duplicate,
+        r#"
+package demo
+#P: { name: *"Bob" | string @tag(other), ... }
+#P: { size: *1 | int @tag(sz, type=int), ... }
+params: #P
+workflow: {name: "\(params.name)-\(params.size)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        duplicate.to_str().expect("workflow"),
+        "-p",
+        "other=Alice",
+        "-p",
+        "sz=16",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["name"], "Alice");
+    assert_eq!(report["params"]["size"], 16);
+}
