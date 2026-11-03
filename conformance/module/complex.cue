@@ -18,7 +18,7 @@ params: {
 let upper = strings.ToUpper(params.prefix)
 
 workflow: {
-	name: "conformance-module"
+	name: "conformance-module-\(lib["#D"])-\(lib.#D)"
 	steps: {
 		for _, suffix in ["one", "two"] {
 			"job-\(suffix)": lib.#Step & {

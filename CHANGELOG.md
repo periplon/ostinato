@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.11
+
+Imported quoted-hash fields.
+
+- `to_struct_value_mode` separates fields and definitions by their storage key
+  instead of collapsing display names, so an imported package keeps both a
+  quoted `"#D"` regular field and the definition `#D`.
+- 149 tests (24 CLI E2E, 1 conformance, 114 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.10
 
 Quoted-label selector/index corrections.

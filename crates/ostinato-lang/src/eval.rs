@@ -1258,7 +1258,8 @@ impl<'a> Frame<'a> {
                 .map(|(name, _)| name.clone())
                 .collect()
         };
-        let mut out = BTreeMap::new();
+        let mut fields_out = BTreeMap::new();
+        let mut definitions_out = BTreeMap::new();
         for name in names {
             let optional = self
                 .fields
@@ -1271,7 +1272,17 @@ impl<'a> Frame<'a> {
                 continue;
             }
             let value = self.eval_field_key(&name, Span::default())?;
-            out.insert(display_field_name(&name).to_owned(), value);
+            let display = display_field_name(&name).to_owned();
+            if self
+                .fields
+                .borrow()
+                .get(&name)
+                .is_some_and(|def| def.definition)
+            {
+                definitions_out.insert(display, value);
+            } else {
+                fields_out.insert(display, value);
+            }
         }
         for (name, value) in self.values.borrow().iter() {
             let definition = self
@@ -1279,41 +1290,33 @@ impl<'a> Frame<'a> {
                 .borrow()
                 .get(name)
                 .is_some_and(|definition| definition.definition);
-            if (include_definitions || !definition)
-                && !self
+            if (!include_definitions && definition)
+                || self
                     .generated_optionals
                     .borrow()
                     .contains_key(display_field_name(name))
             {
-                out.insert(display_field_name(name).to_owned(), value.clone());
+                continue;
+            }
+            let display = display_field_name(name).to_owned();
+            if definition {
+                definitions_out.insert(display, value.clone());
+            } else {
+                fields_out.insert(display, value.clone());
             }
         }
         if include_definitions {
-            let mut fields = BTreeMap::new();
-            let mut definitions = BTreeMap::new();
-            for (name, value) in out {
-                let is_definition = self
-                    .fields
-                    .borrow()
-                    .get(&name)
-                    .is_some_and(|field| field.definition);
-                if is_definition {
-                    definitions.insert(name, value);
-                } else {
-                    fields.insert(name, value);
-                }
-            }
             return Ok(Value::Definition {
-                fields,
+                fields: fields_out,
                 optional: BTreeMap::new(),
-                definitions,
+                definitions: definitions_out,
                 patterns: Vec::new(),
                 closed: false,
                 open: true,
                 admissions: Vec::new(),
             });
         }
-        Ok(Value::Struct(out))
+        Ok(Value::Struct(fields_out))
     }
 }
 
