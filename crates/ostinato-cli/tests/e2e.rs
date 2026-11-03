@@ -2545,6 +2545,16 @@ line2
     value=\(1+2)
       nested
     '''
+	text: """
+line1
+line2
+"""
+	text_interp: """
+  value=\(1+2)
+  """
+	triple: """
+a\"""b
+"""
 }
 workflow: {name: "bytes", steps: {s: {kind: "noop"}}}
 "#,

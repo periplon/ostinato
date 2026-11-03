@@ -457,7 +457,7 @@ impl Lexer {
                         self.bump();
                         self.bump();
                         self.bump();
-                        let content = dedent_bytes_multiline(&raw, &indent, line, col)?;
+                        let content = dedent_multiline_literal(&raw, &indent, line, col, "bytes")?;
                         return decode_bytes_parts(&content, line, col);
                     }
                     raw.push_str(&indent);
@@ -554,30 +554,55 @@ impl Lexer {
         if multiline {
             self.bump();
             self.bump();
+            match self.peek() {
+                Some('\n') => {
+                    self.bump();
+                }
+                Some('\r') if self.peek_n(1) == Some('\n') => {
+                    self.bump();
+                    self.bump();
+                }
+                _ => {
+                    return Err(LangError::parse(
+                        line,
+                        col,
+                        "expected newline after multiline quote `\"\"\"`",
+                    ));
+                }
+            }
             let mut raw = String::new();
+            let mut at_line_start = true;
             loop {
-                match self.peek() {
-                    Some('"') if self.peek_n(1) == Some('"') && self.peek_n(2) == Some('"') => {
-                        self.bump();
-                        self.bump();
-                        self.bump();
-                        return Ok(dedent_multiline(&raw));
-                    }
-                    Some(c) => {
-                        if c == '\\' && self.peek_n(1) == Some('\\') && self.peek_n(2) == Some('"')
-                        {
-                            raw.push('"');
-                            self.bump();
-                            self.bump();
+                if at_line_start {
+                    let mut indent = String::new();
+                    while let Some(current) = self.peek() {
+                        if current == ' ' || current == '\t' {
+                            indent.push(current);
                             self.bump();
                         } else {
-                            raw.push(c);
-                            self.bump();
+                            break;
                         }
                     }
-                    None => {
-                        return Err(LangError::parse(line, col, "unterminated multiline string"));
+                    if self.peek() == Some('"')
+                        && self.peek_n(1) == Some('"')
+                        && self.peek_n(2) == Some('"')
+                    {
+                        self.bump();
+                        self.bump();
+                        self.bump();
+                        return dedent_multiline_literal(&raw, &indent, line, col, "strings");
                     }
+                    raw.push_str(&indent);
+                    at_line_start = false;
+                    continue;
+                }
+                let Some(current) = self.peek() else {
+                    return Err(LangError::parse(line, col, "unterminated multiline string"));
+                };
+                self.bump();
+                raw.push(current);
+                if current == '\n' {
+                    at_line_start = true;
                 }
             }
         }
@@ -650,6 +675,9 @@ impl Lexer {
                 continue;
             }
 
+            if current == '\n' {
+                return Err(LangError::parse(line, col, "unterminated string"));
+            }
             match current {
                 '"' => {
                     self.bump();
@@ -751,11 +779,12 @@ fn split_multiline_parts(source: &str) -> Vec<MultilinePart> {
     parts
 }
 
-fn dedent_bytes_multiline(
+fn dedent_multiline_literal(
     raw: &str,
     closing_indent: &str,
     line: u32,
     col: u32,
+    kind: &str,
 ) -> Result<String, LangError> {
     let body = raw.strip_suffix('\n').unwrap_or(raw);
     let parts = split_multiline_parts(body);
@@ -763,7 +792,7 @@ fn dedent_bytes_multiline(
         LangError::parse(
             line,
             col,
-            "non-matching whitespace for multiline bytes literal",
+            format!("non-matching whitespace for multiline {kind}"),
         )
     };
 
@@ -821,6 +850,14 @@ fn dedent_bytes_multiline(
                 }
                 while cursor < chars.len() {
                     let current = chars[cursor];
+                    if current == '\\' && cursor + 1 < chars.len() {
+                        // Copy escape pairs opaquely so CR stripping cannot
+                        // turn "\\<CR>(" into a synthetic "\\(" interpolation.
+                        out.push('\\');
+                        out.push(chars[cursor + 1]);
+                        cursor += 2;
+                        continue;
+                    }
                     if current == '\r' {
                         cursor += 1;
                         continue;
@@ -1005,30 +1042,4 @@ fn decode_bytes_parts(source: &str, line: u32, col: u32) -> Result<Vec<LexBytePa
         parts.push(LexBytePart::Text(text));
     }
     Ok(parts)
-}
-
-fn dedent_multiline(raw: &str) -> String {
-    let body = raw.strip_prefix('\n').unwrap_or(raw);
-    let mut indent: Option<usize> = None;
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let spaces = line.len() - trimmed.len();
-        indent = Some(indent.map_or(spaces, |current| current.min(spaces)));
-    }
-    let indent = indent.unwrap_or(0);
-    let mut out = String::new();
-    for (offset, line) in body.lines().enumerate() {
-        if offset > 0 {
-            out.push('\n');
-        }
-        if line.len() >= indent {
-            out.push_str(&line[indent..]);
-        } else {
-            out.push_str(line.trim_start());
-        }
-    }
-    out
 }

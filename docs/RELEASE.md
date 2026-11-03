@@ -12,6 +12,14 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.11.3
+
+- CUE-compatible multiline string dedent/CR/interpolation rules, raw-newline
+  rejection in single-line strings, and the lone-backslash + bare-CR literal
+  edge fix.
+- 282 tests (49 CLI E2E, 1 conformance, 219 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.11.2
 
 - Escaped-backslash (`\\(`) multiline bytes are literal text again, restoring

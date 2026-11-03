@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.11.3
+
+Multiline string dedent and remaining raw-literal edge cases.
+
+- Multiline `"""..."""` strings now follow CUE's opening-newline, own-line
+  closing, closing-indent dedent, non-matching-whitespace, CR-stripping and
+  interpolation-continuation rules; `\"""` and escaped quotes are preserved.
+- Single-line strings reject raw newlines like CUE.
+- A lone backslash immediately followed by a bare CR is no longer re-read as
+  an interpolation start in multiline bytes/strings; escape pairs are copied
+  opaquely before CR stripping.
+- 282 tests (49 CLI E2E, 1 conformance, 219 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
+
 ## v0.11.2
 
 Escaped-backslash bytes dedent correction.

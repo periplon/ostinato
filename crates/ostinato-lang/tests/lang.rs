@@ -5285,3 +5285,76 @@ fn multiline_bytes_escaped_backslash_before_paren_is_literal() {
         "unescaped interpolation must not swallow literal continuation lines"
     );
 }
+
+#[test]
+fn multiline_strings_use_cue_dedent_and_cr_rules() {
+    let source = r#"
+package demo
+basic: """
+line1
+line2
+"""
+indented: """
+    line1
+      line2
+    """
+triple: """
+a\"""b
+"""
+interp: """
+  x \(1 +
+2) y
+  """
+blank: """
+line1
+
+line2
+"""
+unicode: """
+日本語
+"""
+"#;
+    let file = ostinato_lang::parse(source).expect("parse multiline strings");
+    let value = ostinato_lang::eval_file(&file).expect("eval multiline strings");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["basic"], "line1\nline2");
+    assert_eq!(json["indented"], "line1\n  line2");
+    assert_eq!(json["triple"], "a\"\"\"b");
+    assert_eq!(json["interp"], "x 3 y");
+    assert_eq!(json["blank"], "line1\n\nline2");
+    assert_eq!(json["unicode"], "日本語");
+
+    let crlf = "package demo\na: \"\"\"\r\n  x\r\n  y\r\n  \"\"\"\n";
+    let file = ostinato_lang::parse(crlf).expect("parse CRLF multiline string");
+    let value = ostinato_lang::eval_file(&file).expect("eval CRLF multiline string");
+    assert_eq!(value.to_json().expect("json")["a"], "x\ny");
+
+    let raw_cr = "package demo\na: \"\"\"\n  a\rb\n  \"\"\"\n";
+    let file = ostinato_lang::parse(raw_cr).expect("parse CR multiline string");
+    let value = ostinato_lang::eval_file(&file).expect("eval CR multiline string");
+    assert_eq!(value.to_json().expect("json")["a"], "ab");
+
+    let escaped_cr = r#"
+package demo
+a: """
+  a\rb
+  """
+"#;
+    let file = ostinato_lang::parse(escaped_cr).expect("parse escaped CR");
+    let value = ostinato_lang::eval_file(&file).expect("eval escaped CR");
+    assert_eq!(value.to_json().expect("json")["a"], "a\rb");
+
+    for source in [
+        "package demo\na: \"\"\"\r\n  a\r\n\r\n  b\r\n  \"\"\"\n",
+        "package demo\na: \"\"\"\n  a\nb\n  \"\"\"\n",
+        "package demo\na: \"\"\"x\n\"\"\"\n",
+        "package demo\na: \"one\ntwo\"\n",
+        "package demo\na: '''\n  a\\\r(1)b\n  '''\n",
+        "package demo\na: \"\"\"\n  a\\\r(1)b\n  \"\"\"\n",
+    ] {
+        assert!(
+            ostinato_lang::parse(source).is_err(),
+            "invalid multiline/raw input must fail: {source:?}"
+        );
+    }
+}
