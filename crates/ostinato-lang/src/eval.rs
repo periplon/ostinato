@@ -3639,7 +3639,7 @@ enum BoundClass {
 
 fn bound_class(bound: &Bound) -> Option<BoundClass> {
     match &bound.operand {
-        Value::Int(_) | Value::Float(_) => Some(BoundClass::Numeric),
+        Value::Int(_) | Value::BigInt(_) | Value::Float(_) => Some(BoundClass::Numeric),
         Value::String(_) => Some(BoundClass::String),
         Value::Null => Some(BoundClass::Null),
         Value::List(_) => Some(BoundClass::List),
@@ -3651,10 +3651,16 @@ fn bound_class(bound: &Bound) -> Option<BoundClass> {
 fn validate_bound_operand(kind: BoundKind, operand: &Value, span: Span) -> Result<(), LangError> {
     let allowed = match kind {
         BoundKind::Ge | BoundKind::Gt | BoundKind::Le | BoundKind::Lt => {
-            matches!(operand, Value::Int(_) | Value::Float(_) | Value::String(_))
+            matches!(
+                operand,
+                Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::String(_)
+            )
         }
         BoundKind::Match | BoundKind::NotMatch => {
-            matches!(operand, Value::Int(_) | Value::Float(_) | Value::String(_))
+            matches!(
+                operand,
+                Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::String(_)
+            )
         }
         BoundKind::Ne => !matches!(operand, Value::Bool(_)),
     };
@@ -3915,6 +3921,7 @@ fn check_bound_interval(
 fn bound_decimal(value: &Value) -> Option<BigDecimal> {
     match value {
         Value::Int(value) => Some(BigDecimal::from(*value)),
+        Value::BigInt(value) => Some(BigDecimal::from(value.clone())),
         Value::Float(value) => Some(value.clone()),
         _ => None,
     }
@@ -3993,7 +4000,10 @@ fn apply_bounds(bounds: &BoundSet, other: &Value, span: Span) -> Result<Value, L
 fn numeric_kind_mismatch(left: &Value, right: &Value) -> bool {
     matches!(
         (left, right),
-        (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_))
+        (Value::Int(_), Value::Float(_))
+            | (Value::Float(_), Value::Int(_))
+            | (Value::BigInt(_), Value::Float(_))
+            | (Value::Float(_), Value::BigInt(_))
     )
 }
 
@@ -4610,14 +4620,24 @@ fn apply_regexp_builtin(
         Builtin::RegexpFindAll => {
             let regex = regex_compile(regex_arg(arguments, 0, span)?, span)?;
             let text = regex_arg(arguments, 1, span)?;
-            let Some(Value::Int(limit)) = arguments.get(2) else {
-                return Err(LangError::conflict(
-                    span.line,
-                    span.col,
-                    "FindAll requires an integer limit",
-                ));
+            let limit = match arguments.get(2) {
+                Some(Value::Int(limit)) => *limit,
+                Some(Value::BigInt(limit)) => {
+                    if limit < &BigInt::from(0) {
+                        -1
+                    } else {
+                        i64::MAX
+                    }
+                }
+                _ => {
+                    return Err(LangError::conflict(
+                        span.line,
+                        span.col,
+                        "FindAll requires an integer limit",
+                    ));
+                }
             };
-            let values: Vec<Value> = if *limit < 0 {
+            let values: Vec<Value> = if limit < 0 {
                 regex
                     .find_iter(text)
                     .map(|found| Value::String(found.as_str().to_owned()))
@@ -4625,7 +4645,7 @@ fn apply_regexp_builtin(
             } else {
                 regex
                     .find_iter(text)
-                    .take(usize::try_from(*limit).unwrap_or(0))
+                    .take(usize::try_from(limit).unwrap_or(0))
                     .map(|found| Value::String(found.as_str().to_owned()))
                     .collect()
             };
@@ -4654,6 +4674,7 @@ fn apply_regexp_builtin(
 fn numeric_f64(value: &Value) -> Option<f64> {
     match value {
         Value::Int(value) => Some(*value as f64),
+        Value::BigInt(value) => value.to_string().parse::<f64>().ok(),
         Value::Float(value) => value.to_string().parse::<f64>().ok(),
         _ => None,
     }
@@ -4699,15 +4720,6 @@ fn math_decimal_number(value: BigDecimal) -> Value {
         Value::Int(int)
     } else {
         Value::Float(value)
-    }
-}
-
-fn integral_i64(value: &Value) -> Option<i64> {
-    match value {
-        Value::Int(value) => Some(*value),
-        Value::BigInt(value) => i64::try_from(value).ok(),
-        Value::Float(value) => value.normalized().to_string().parse().ok(),
-        _ => None,
     }
 }
 
@@ -4787,20 +4799,18 @@ fn apply_math_builtin(
         }
         Builtin::MathPow => {
             if let (Some(base), Some(exponent)) = (arguments.first(), arguments.get(1))
-                && let Some(base) = integral_i64(base)
-                && let Some(exponent) = integral_i64(exponent)
+                && let Some(base) = integer_big(base)
+                && let Some(exponent) = integer_big(exponent)
             {
-                if base == 0 && exponent == 0 {
+                if base == BigInt::from(0) && exponent == BigInt::from(0) {
                     return Err(LangError::conflict(
                         span.line,
                         span.col,
                         "math.Pow: invalid operation",
                     ));
                 }
-                if let Ok(exponent) = u32::try_from(exponent)
-                    && let Some(result) = base.checked_pow(exponent)
-                {
-                    return Ok(Value::Int(result));
+                if let Ok(exponent) = u32::try_from(&exponent) {
+                    return Ok(value_from_bigint(base.pow(exponent)));
                 }
             }
             Ok(math_number(
@@ -5022,14 +5032,32 @@ fn apply_time_builtin(
             Ok(Value::Struct(parts))
         }
         Builtin::TimeFormatDuration => {
-            let Some(Value::Int(nanos)) = arguments.first() else {
-                return Err(LangError::conflict(
-                    span.line,
-                    span.col,
-                    "time.FormatDuration requires an int argument",
-                ));
+            let nanos = match arguments.first() {
+                Some(Value::Int(nanos)) => *nanos,
+                Some(Value::BigInt(nanos)) => {
+                    if let Ok(value) = i64::try_from(nanos) {
+                        value
+                    } else if nanos > &BigInt::from(i64::MAX) && nanos <= &BigInt::from(u64::MAX) {
+                        i64::MAX
+                    } else if nanos < &BigInt::from(i64::MIN) {
+                        i64::MIN
+                    } else {
+                        return Err(LangError::conflict(
+                            span.line,
+                            span.col,
+                            "time.FormatDuration argument overflows int64",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(LangError::conflict(
+                        span.line,
+                        span.col,
+                        "time.FormatDuration requires an int argument",
+                    ));
+                }
             };
-            Ok(Value::String(crate::gotime::format_duration(*nanos)))
+            Ok(Value::String(crate::gotime::format_duration(nanos)))
         }
         _ => unreachable!("time builtin"),
     }
@@ -5221,8 +5249,11 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                 }
                 iterations += 1;
                 let normalized = current.normalized();
-                if let Ok(value) = normalized.to_string().parse::<i64>() {
+                let text = normalized.to_string();
+                if let Ok(value) = text.parse::<i64>() {
                     out.push(Value::Int(value));
+                } else if let Ok(value) = text.parse::<BigInt>() {
+                    out.push(Value::BigInt(value));
                 } else {
                     out.push(Value::Float(current.clone()));
                 }
