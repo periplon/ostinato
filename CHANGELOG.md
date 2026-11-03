@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.7
+
+Static `let` cycle detection.
+
+- `let` dependency cycles are detected statically in every scope, including
+  cycles that no field or optional demands (`workflow: {let Y = X, let X = Y}`,
+  unused definitions).
+- Acyclic chains and lexical shadowing remain valid.
+- 141 tests (23 CLI E2E, 1 conformance, 107 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.6
 
 `let` cycle and shadowing corrections.

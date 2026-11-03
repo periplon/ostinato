@@ -72,6 +72,7 @@ struct AliasInfo {
 struct AliasCtx {
     scopes: Vec<AliasScope>,
     aliases: Vec<AliasInfo>,
+    let_edges: Vec<((usize, String), (usize, String))>,
 }
 
 impl AliasCtx {
@@ -167,22 +168,23 @@ impl AliasCtx {
             match item {
                 StructItem::Field(field) => {
                     if let Label::Dynamic(expr, _) = &field.label {
-                        self.expr(expr, &chain, &local_shadow)?;
+                        self.expr(expr, &chain, &local_shadow, None)?;
                     }
-                    self.expr(&field.value, &chain, &local_shadow)?;
+                    self.expr(&field.value, &chain, &local_shadow, None)?;
                 }
                 StructItem::Let { name, value, .. } => {
                     // A `let` is not in scope in its own value; a same-named
                     // identifier resolves to an enclosing let or alias.
                     let hidden = self.scopes[id].lets.remove(name);
-                    let result = self.expr(value, &chain, &local_shadow);
+                    let from = (id, name.clone());
+                    let result = self.expr(value, &chain, &local_shadow, Some(&from));
                     if hidden {
                         self.scopes[id].lets.insert(name.clone());
                     }
                     result?;
                 }
                 StructItem::Pattern { value, .. } => {
-                    self.expr(value, &chain, &local_shadow)?;
+                    self.expr(value, &chain, &local_shadow, None)?;
                 }
                 StructItem::For {
                     key,
@@ -191,7 +193,7 @@ impl AliasCtx {
                     body,
                     span,
                 } => {
-                    self.expr(source, &chain, &local_shadow)?;
+                    self.expr(source, &chain, &local_shadow, None)?;
                     let mut body_shadow = local_shadow.clone();
                     if let Some(key) = key {
                         body_shadow.insert(key.clone());
@@ -210,7 +212,7 @@ impl AliasCtx {
                         .push((value.clone(), *span));
                 }
                 StructItem::If { cond, body, .. } => {
-                    self.expr(cond, &chain, &local_shadow)?;
+                    self.expr(cond, &chain, &local_shadow, None)?;
                     self.scope(body, Some(id), &chain, &local_shadow)?;
                 }
                 StructItem::Ellipsis(_) => {}
@@ -224,6 +226,7 @@ impl AliasCtx {
         expr: &Expr,
         chain: &[usize],
         shadowed: &HashSet<String>,
+        from: Option<&(usize, String)>,
     ) -> Result<(), LangError> {
         match expr {
             Expr::Ident(name, _) => {
@@ -233,6 +236,12 @@ impl AliasCtx {
                 for scope in chain.iter().rev() {
                     if self.scopes[*scope].lets.contains(name) {
                         self.scopes[*scope].let_used.insert(name.clone());
+                        if let Some(from) = from {
+                            let edge = (from.clone(), (*scope, name.clone()));
+                            if !self.let_edges.contains(&edge) {
+                                self.let_edges.push(edge);
+                            }
+                        }
                         return Ok(());
                     }
                     if let Some(alias) = self.scopes[*scope].aliases.get(name) {
@@ -242,17 +251,17 @@ impl AliasCtx {
                 }
             }
             Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-                self.expr(inner, chain, shadowed)?;
+                self.expr(inner, chain, shadowed, from)?;
             }
-            Expr::Select(base, _, _) => self.expr(base, chain, shadowed)?,
+            Expr::Select(base, _, _) => self.expr(base, chain, shadowed, from)?,
             Expr::Index(base, index, _) => {
-                self.expr(base, chain, shadowed)?;
-                self.expr(index, chain, shadowed)?;
+                self.expr(base, chain, shadowed, from)?;
+                self.expr(index, chain, shadowed, from)?;
             }
             Expr::Call(callee, arguments, _) => {
-                self.expr(callee, chain, shadowed)?;
+                self.expr(callee, chain, shadowed, from)?;
                 for argument in arguments {
-                    self.expr(argument, chain, shadowed)?;
+                    self.expr(argument, chain, shadowed, from)?;
                 }
             }
             Expr::Struct(items, _) => {
@@ -261,20 +270,20 @@ impl AliasCtx {
             }
             Expr::List(items, _) => {
                 for item in items {
-                    self.expr(item, chain, shadowed)?;
+                    self.expr(item, chain, shadowed, from)?;
                 }
             }
             Expr::OpenList(element, _) => {
                 if let Some(element) = element {
-                    self.expr(element, chain, shadowed)?;
+                    self.expr(element, chain, shadowed, from)?;
                 }
             }
             Expr::OpenListPrefix(prefix, tail, _) => {
                 for item in prefix {
-                    self.expr(item, chain, shadowed)?;
+                    self.expr(item, chain, shadowed, from)?;
                 }
                 if let Some(tail) = tail {
-                    self.expr(tail, chain, shadowed)?;
+                    self.expr(tail, chain, shadowed, from)?;
                 }
             }
             Expr::ListComp { clauses, body, .. } => {
@@ -300,7 +309,7 @@ impl AliasCtx {
                             source,
                             span,
                         } => {
-                            self.expr(source, chain, shadowed)?;
+                            self.expr(source, chain, shadowed, from)?;
                             if let Some(key) = key {
                                 body_shadow.insert(key.clone());
                                 self.scopes[comp_id].bindings.insert(key.clone());
@@ -315,25 +324,25 @@ impl AliasCtx {
                                 .push((value.clone(), *span));
                         }
                         CompClause::If { cond, .. } => {
-                            self.expr(cond, &comp_chain, &body_shadow)?;
+                            self.expr(cond, &comp_chain, &body_shadow, from)?;
                         }
                     }
                 }
-                self.expr(body, &comp_chain, &body_shadow)?;
+                self.expr(body, &comp_chain, &body_shadow, from)?;
             }
             Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-                self.expr(left, chain, shadowed)?;
-                self.expr(right, chain, shadowed)?;
+                self.expr(left, chain, shadowed, from)?;
+                self.expr(right, chain, shadowed, from)?;
             }
             Expr::Binary(_, left, right, _) => {
-                self.expr(left, chain, shadowed)?;
-                self.expr(right, chain, shadowed)?;
+                self.expr(left, chain, shadowed, from)?;
+                self.expr(right, chain, shadowed, from)?;
             }
-            Expr::Unary(_, inner, _) => self.expr(inner, chain, shadowed)?,
+            Expr::Unary(_, inner, _) => self.expr(inner, chain, shadowed, from)?,
             Expr::Str(parts, _) => {
                 for part in parts {
                     if let StrPart::Interp(inner) = part {
-                        self.expr(inner, chain, shadowed)?;
+                        self.expr(inner, chain, shadowed, from)?;
                     }
                 }
             }
@@ -352,8 +361,10 @@ pub fn validate_aliases(items: &[StructItem], import_aliases: &[String]) -> Resu
     let mut ctx = AliasCtx {
         scopes: Vec::new(),
         aliases: Vec::new(),
+        let_edges: Vec::new(),
     };
     let root = ctx.scope(items, None, &[], &HashSet::new())?;
+    detect_let_cycles(&ctx)?;
     for alias in import_aliases {
         ctx.scopes[root].bindings.insert(alias.clone());
     }
@@ -444,6 +455,52 @@ pub fn validate_aliases(items: &[StructItem], import_aliases: &[String]) -> Resu
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn detect_let_cycles(ctx: &AliasCtx) -> Result<(), LangError> {
+    use std::collections::HashMap as Map;
+
+    let mut adjacency: Map<(usize, String), Vec<(usize, String)>> = Map::new();
+    for (from, to) in &ctx.let_edges {
+        adjacency.entry(from.clone()).or_default().push(to.clone());
+    }
+    let mut state: Map<(usize, String), u8> = Map::new();
+    fn visit(
+        node: &(usize, String),
+        adjacency: &Map<(usize, String), Vec<(usize, String)>>,
+        state: &mut Map<(usize, String), u8>,
+        ctx: &AliasCtx,
+    ) -> Result<(), LangError> {
+        match state.get(node).copied().unwrap_or(0) {
+            1 => {
+                let span = ctx.scopes[node.0]
+                    .let_spans
+                    .get(&node.1)
+                    .copied()
+                    .unwrap_or(Span::default());
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "cyclic references in let clause or alias",
+                ));
+            }
+            2 => return Ok(()),
+            _ => {}
+        }
+        state.insert(node.clone(), 1);
+        if let Some(neighbors) = adjacency.get(node) {
+            for neighbor in neighbors {
+                visit(neighbor, adjacency, state, ctx)?;
+            }
+        }
+        state.insert(node.clone(), 2);
+        Ok(())
+    }
+    let nodes: Vec<(usize, String)> = adjacency.keys().cloned().collect();
+    for node in nodes {
+        visit(&node, &adjacency, &mut state, ctx)?;
     }
     Ok(())
 }

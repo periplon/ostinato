@@ -2081,7 +2081,7 @@ fn let_cycles_are_rejected() {
         let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
         let error = ostinato_lang::eval_file(&file).expect_err("let cycle");
         assert!(
-            error.to_string().contains("cyclic let binding")
+            error.to_string().contains("cyclic")
                 || error.to_string().contains("undefined reference"),
             "{error}"
         );
@@ -2108,4 +2108,39 @@ d: X
     let file = ostinato_lang::parse(unused).expect("parse");
     let error = ostinato_lang::eval_file(&file).expect_err("inner let is unreferenced");
     assert!(error.to_string().contains("unreferenced"));
+}
+
+#[test]
+fn undemanded_let_cycles_are_rejected_statically() {
+    for source in [
+        "workflow: {let Y = X, let X = Y, name: \"n\", steps: {s: {kind: \"noop\"}}}",
+        "a: {let Y = X, let X = Y}\nd: 1",
+        "a: {let Y = X, let X = Y, c?: X}\nd: 1",
+        "#D: {let Y = X, let X = Y}\nd: 1",
+        "let X = 1\na: {let Y = X, let X = Y}\nd: X",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        let error = ostinato_lang::eval_file(&file).expect_err("static let cycle");
+        assert!(
+            error.to_string().contains("cyclic"),
+            "unexpected error for {source}: {error}"
+        );
+    }
+}
+
+#[test]
+fn acyclic_let_chains_are_accepted() {
+    let source = r#"
+package demo
+let A = 1
+b: {
+    let C = B + 1
+    let B = A + 1
+    c: C
+}
+d: A
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("acyclic chain");
+    assert_eq!(value.to_json().expect("json")["b"]["c"], 3);
 }
