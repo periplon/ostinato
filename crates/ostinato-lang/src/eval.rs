@@ -1184,9 +1184,28 @@ impl<'a> Frame<'a> {
             return Ok(());
         };
         for (key, value) in definitions {
+            let existing = self
+                .generated_definitions
+                .borrow()
+                .get(&key)
+                .cloned()
+                .or_else(|| {
+                    self.fields
+                        .borrow()
+                        .get(&key)
+                        .is_some_and(|definition| definition.definition)
+                        .then(|| self.eval_field_key(&key, Span::default()))
+                        .transpose()
+                        .ok()
+                        .flatten()
+                });
+            let merged = match existing {
+                Some(existing) => unify_values(&existing, &value, Span::default())?,
+                None => value,
+            };
             self.generated_definitions
                 .borrow_mut()
-                .insert(key.clone(), value);
+                .insert(key.clone(), merged);
             self.materialized.borrow_mut().insert(key);
         }
         for (key, value) in values {

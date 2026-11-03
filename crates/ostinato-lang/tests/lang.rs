@@ -6142,4 +6142,16 @@ both: #Both
     assert_eq!(json["both"]["b"], 7);
     assert!(json["both"].get("#I").is_none());
     assert!(json["both"].get("#J").is_none());
+
+    for source in [
+        "#D: {for k, v in {a: 1, b: 2} {#I: v}, x: #D.#I}",
+        "#D: {#I: 1, if true {#I: 2}, x: #D.#I}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\nx: #D.x\n"))
+            .expect("parse duplicate definitions");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "duplicate generated definitions must conflict: {source}"
+        );
+    }
 }

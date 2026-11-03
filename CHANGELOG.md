@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.16.1
+
+Duplicate generated-definition conflicts.
+
+- Multiple definitions with the same name from comprehension iterations, or a
+  generated definition shadowing a declared one, unify/conflict like CUE
+  instead of silently keeping the last value.
+- 338 tests (61 CLI E2E, 1 conformance, 234 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.16.0
 
 Comprehension-generated definitions.
