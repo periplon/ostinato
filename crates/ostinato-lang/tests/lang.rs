@@ -6084,4 +6084,38 @@ range: (list.Range(9223372036854775808, 9223372036854775811, 1)[0]) & int
         ostinato_lang::eval_file(&file).is_err(),
         "BigInt and float must not unify"
     );
+
+    for (source, module) in [
+        (
+            "package demo\nimport \"math\"\nx: math.Pow(2, 100000000)\n",
+            "math",
+        ),
+        (
+            "package demo\nimport \"time\"\nx: time.FormatDuration(18446744073709551616)\n",
+            "time",
+        ),
+        (
+            "package demo\nimport \"time\"\nx: time.FormatDuration(-18446744073709551616)\n",
+            "time",
+        ),
+        (
+            "package demo\nimport \"regexp\"\nx: regexp.FindAll(\"a\", \"aaa\", 18446744073709551616)\n",
+            "regexp",
+        ),
+        (
+            "package demo\nimport \"regexp\"\nx: regexp.FindAll(\"a\", \"aaa\", -18446744073709551616)\n",
+            "regexp",
+        ),
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse");
+        let mut local = BTreeMap::new();
+        local.insert(
+            module.to_owned(),
+            ostinato_lang::builtin_module(module).expect("builtin module"),
+        );
+        assert!(
+            ostinato_lang::eval_file_with_imports(&file, &local, &BTreeMap::new()).is_err(),
+            "out-of-range big builtin argument must fail: {source:?}"
+        );
+    }
 }

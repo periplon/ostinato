@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.15.2
+
+Big-integer builtin overflow bounds.
+
+- `math.Pow` caps exact results at CUE's 100000-digit context instead of
+  attempting unbounded exponentiation.
+- `time.FormatDuration` and `regexp.FindAll` reject integer arguments outside
+  `[-u64::MAX, u64::MAX]`, matching CUE's int64 conversion errors.
+- 337 tests (61 CLI E2E, 1 conformance, 233 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.15.1
 
 Big-integer bounds and builtin argument coverage.
