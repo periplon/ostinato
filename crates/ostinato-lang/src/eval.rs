@@ -4480,10 +4480,7 @@ fn apply_time_builtin(
             let layout = time_arg(arguments, 0, span)?;
             let text = time_arg(arguments, 1, span)?;
             let parsed = time_value(text, span)?;
-            Ok(Value::String(crate::gotime::format(
-                layout,
-                parsed.as_fixed_offset(),
-            )))
+            Ok(Value::String(crate::gotime::format(layout, &parsed)))
         }
         Builtin::TimeToUnix => {
             let text = time_arg(arguments, 0, span)?;

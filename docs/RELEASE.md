@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.10.3
+
+- FormatString preserves local fields and offsets beyond chrono's fixed-offset
+  range (`+24:00`), matching Go.
+- 274 tests (48 CLI E2E, 1 conformance, 212 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
 ## v0.10.2
 
 - Panic-free name matching, Go-compatible fraction formatting/parsing, zone

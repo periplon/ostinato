@@ -4,7 +4,7 @@
 //! the layout engine (layout tokenization, parsing, formatting, RFC3339Nano
 //! values) without depending on a Go runtime.
 
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, Timelike, Utc};
 
 /// A parsed time value with the zone offset it was written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,17 +17,6 @@ impl ParsedTime {
     #[must_use]
     pub(crate) fn utc(&self) -> DateTime<Utc> {
         (self.local - chrono::Duration::seconds(i64::from(self.offset_seconds))).and_utc()
-    }
-
-    #[must_use]
-    pub(crate) fn as_fixed_offset(&self) -> DateTime<FixedOffset> {
-        let offset = FixedOffset::east_opt(self.offset_seconds).unwrap_or_else(|| {
-            FixedOffset::east_opt(0).unwrap_or_else(|| unreachable!("UTC offset"))
-        });
-        offset
-            .from_local_datetime(&self.local)
-            .single()
-            .unwrap_or_else(|| offset.timestamp_opt(0, 0).single().unwrap_or_default())
     }
 }
 
@@ -657,10 +646,11 @@ fn format_zone(offset_seconds: i32, style: ZoneStyle) -> String {
 
 /// Format a time value according to a Go layout.
 #[must_use]
-pub(crate) fn format(layout: &str, value: DateTime<FixedOffset>) -> String {
+pub(crate) fn format(layout: &str, value: &ParsedTime) -> String {
     let items = tokenize(layout);
     let mut out = String::new();
-    let offset_seconds = value.offset().local_minus_utc();
+    let offset_seconds = value.offset_seconds;
+    let value = &value.local;
     for item in items {
         match item {
             Item::Literal(text) => out.push_str(&text),
@@ -832,19 +822,14 @@ mod tests {
 
     #[test]
     fn formats_go_layouts() {
-        let value = parse_rfc3339_nano("2024-03-05T06:07:08Z")
-            .expect("time")
-            .utc();
-        let value = FixedOffset::east_opt(0)
-            .expect("utc")
-            .from_utc_datetime(&value.naive_utc());
-        assert_eq!(format("Monday", value), "Tuesday");
+        let value = parse_rfc3339_nano("2024-03-05T06:07:08Z").expect("time");
+        assert_eq!(format("Monday", &value), "Tuesday");
         assert_eq!(
-            format("Mon Jan _2 15:04:05 2006", value),
+            format("Mon Jan _2 15:04:05 2006", &value),
             "Tue Mar  5 06:07:08 2024"
         );
         assert_eq!(
-            format("2006-01-02T15:04:05.999999999Z07:00", value),
+            format("2006-01-02T15:04:05.999999999Z07:00", &value),
             "2024-03-05T06:07:08Z"
         );
     }
