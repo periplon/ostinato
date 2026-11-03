@@ -146,6 +146,12 @@ pub enum StrPart {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum BytePart {
+    Text(Vec<u8>),
+    Interp(Expr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Null(Span),
     Bool(bool, Span),
@@ -153,6 +159,7 @@ pub enum Expr {
     Float(BigDecimal, Span),
     Str(Vec<StrPart>, Span),
     Bytes(Vec<u8>, Span),
+    BytesInterp(Vec<BytePart>, Span),
     Ident(String, Span),
     Select(Box<Expr>, String, bool, Span),
     Index(Box<Expr>, Box<Expr>, Span),
@@ -184,6 +191,7 @@ impl Expr {
             | Self::Int(_, span)
             | Self::Float(_, span)
             | Self::Bytes(_, span)
+            | Self::BytesInterp(_, span)
             | Self::Str(_, span)
             | Self::Ident(_, span)
             | Self::Select(_, _, _, span)
