@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.16.0
+
+- Comprehension-generated definitions are selectable, self-selectable and
+  hidden from exports like CUE.
+- 338 tests (61 CLI E2E, 1 conformance, 234 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.15.2
 
 - Bound exact `math.Pow` results and reject out-of-range `FormatDuration` /
