@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.7
+
+Params definition selectors and generated quoted labels.
+
+- `params.<path>.#D` selects definitions, never a quoted `"#D"` regular field,
+  and fails when only the quoted field exists.
+- Comprehension-generated quoted `#D` and internal-prefix labels are
+  selectable through quoted selectors.
+- 225 tests (35 CLI E2E, 1 conformance, 179 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.6
 
 Generated params fields and hidden namespaces.

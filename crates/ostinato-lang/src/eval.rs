@@ -797,6 +797,12 @@ impl<'a> Frame<'a> {
             let hidden = hidden_field(name);
             return fields.contains_key(&hidden).then_some(hidden);
         }
+        if name.starts_with('#') {
+            return fields
+                .get(name)
+                .is_some_and(|definition| definition.definition)
+                .then(|| name.to_owned());
+        }
         if fields.contains_key(name) {
             return Some(name.to_owned());
         }
@@ -1115,6 +1121,22 @@ impl<'a> Frame<'a> {
         false
     }
 
+    fn generated_value_key(&self, name: &str, quoted: bool) -> Option<String> {
+        let values = self.values.borrow();
+        if quoted {
+            [escaped_field(name), prefixed_field(name), name.to_owned()]
+                .into_iter()
+                .find(|key| values.contains_key(key))
+        } else if name.starts_with('_') {
+            let key = hidden_field(name);
+            values.contains_key(&key).then_some(key)
+        } else if name.starts_with('#') {
+            None
+        } else {
+            values.contains_key(name).then(|| name.to_owned())
+        }
+    }
+
     fn segment_field_key(&self, name: &str, quoted: bool) -> Option<String> {
         if !quoted {
             return self.any_field_key(name);
@@ -1293,12 +1315,9 @@ impl<'a> Frame<'a> {
                     }
                     return Ok(value);
                 }
-                let generated_key = if !*quoted && segment.starts_with('_') {
-                    hidden_field(segment)
-                } else {
-                    segment.clone()
-                };
-                let generated = child.values.borrow().get(&generated_key).cloned();
+                let generated = child
+                    .generated_value_key(segment, *quoted)
+                    .and_then(|key| child.values.borrow().get(&key).cloned());
                 let Some(mut value) = generated else {
                     return Err(LangError::eval(
                         span.line,
@@ -1940,20 +1959,43 @@ impl<'a> Frame<'a> {
 }
 
 fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<Value, LangError> {
+    let missing = || {
+        LangError::eval(
+            span.line,
+            span.col,
+            format!("field `{field}` not found in struct"),
+        )
+    };
     match value.concretize() {
-        Value::Struct(map) | Value::Definition { fields: map, .. } => {
+        Value::Struct(map) => {
+            if !quoted && field.starts_with('#') {
+                return Err(missing());
+            }
             let selected = if quoted {
                 map.get(field).or_else(|| map.get(&escaped_field(field)))
             } else {
                 Frame::map_identifier_key(map, field).and_then(|key| map.get(key))
             };
-            selected.cloned().ok_or_else(|| {
-                LangError::eval(
-                    span.line,
-                    span.col,
-                    format!("field `{field}` not found in struct"),
-                )
-            })
+            selected.cloned().ok_or_else(missing)
+        }
+        Value::Definition {
+            fields,
+            definitions,
+            ..
+        } => {
+            let selected = if quoted {
+                fields
+                    .get(field)
+                    .or_else(|| fields.get(&escaped_field(field)))
+                    .cloned()
+            } else if field.starts_with('#') {
+                definitions.get(field).cloned()
+            } else {
+                Frame::map_identifier_key(fields, field)
+                    .and_then(|key| fields.get(key))
+                    .cloned()
+            };
+            selected.ok_or_else(missing)
         }
         other => Err(LangError::eval(
             span.line,
