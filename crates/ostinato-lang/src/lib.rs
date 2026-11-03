@@ -22,7 +22,7 @@ pub mod parser;
 pub mod scope;
 pub mod template;
 
-pub use attributes::{TagInfo, TagType, parameter_tags};
+pub use attributes::{TagInfo, TagSegment, TagType, parameter_tags};
 pub use compile::{
     CompiledWorkflow, ParamSpec, compile, compile_json, compile_value, compile_with_params,
 };

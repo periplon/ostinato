@@ -17,13 +17,24 @@ pub enum TagType {
     Number,
 }
 
-/// A `@tag` declaration: external name, parameter field and injection type.
+/// One label in a tag path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagSegment {
+    pub name: String,
+    pub quoted: bool,
+}
+
+/// A `@tag` declaration: external name, parameter path and injection type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagInfo {
     /// Leaf parameter field name.
     pub field: String,
     /// Path from the `params` root to the tagged field.
-    pub path: Vec<String>,
+    pub path: Vec<TagSegment>,
+    /// Declaration that owns the tag (`#P`, a `let`, ...), when applicable.
+    pub origin: Option<String>,
+    /// Path from the origin declaration root to the tagged field.
+    pub origin_path: Vec<TagSegment>,
     pub ty: TagType,
 }
 
@@ -80,7 +91,93 @@ fn tag_info(
     Ok(Some((name, ty)))
 }
 
-/// Map tag names to the top-level parameter fields that declare them.
+struct Collector<'a> {
+    tags: &'a mut BTreeMap<String, Vec<TagInfo>>,
+    definitions: &'a BTreeMap<String, Vec<Expr>>,
+    visiting: &'a mut Vec<String>,
+}
+
+impl Collector<'_> {
+    fn expr(
+        &mut self,
+        expr: &Expr,
+        prefix: &[TagSegment],
+        origin: Option<&str>,
+        origin_prefix: &[TagSegment],
+    ) -> Result<(), LangError> {
+        match expr {
+            Expr::Struct(items, _) => self.items(items, prefix, origin, origin_prefix),
+            Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+                self.expr(inner, prefix, origin, origin_prefix)
+            }
+            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+                self.expr(left, prefix, origin, origin_prefix)?;
+                self.expr(right, prefix, origin, origin_prefix)
+            }
+            Expr::Ident(name, _) => {
+                let Some(values) = self.definitions.get(name) else {
+                    return Ok(());
+                };
+                if self.visiting.contains(name) {
+                    return Ok(());
+                }
+                self.visiting.push(name.clone());
+                let mut result = Ok(());
+                for value in values {
+                    result = self.expr(value, prefix, Some(name), &[]);
+                    if result.is_err() {
+                        break;
+                    }
+                }
+                self.visiting.pop();
+                result
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn items(
+        &mut self,
+        items: &[StructItem],
+        prefix: &[TagSegment],
+        origin: Option<&str>,
+        origin_prefix: &[TagSegment],
+    ) -> Result<(), LangError> {
+        for item in items {
+            let StructItem::Field(field) = item else {
+                continue;
+            };
+            let Some(name) = label_name(field) else {
+                continue;
+            };
+            let segment = TagSegment {
+                name: name.to_owned(),
+                quoted: field.quoted,
+            };
+            let mut path = prefix.to_vec();
+            path.push(segment.clone());
+            let mut owned_origin = origin_prefix.to_vec();
+            owned_origin.push(segment);
+            if let Some((tag_name, ty)) = tag_info(name, field)? {
+                self.tags.entry(tag_name).or_default().push(TagInfo {
+                    field: name.to_owned(),
+                    path: path.clone(),
+                    origin: origin.map(ToOwned::to_owned),
+                    origin_path: if origin.is_some() {
+                        owned_origin.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    ty,
+                });
+            }
+            self.expr(&field.value, &path, origin, &owned_origin)?;
+        }
+        Ok(())
+    }
+}
+
+/// Map tag names to the parameter fields that declare them.
 ///
 /// # Errors
 /// Returns an evaluation error for unknown `@tag` types.
@@ -112,6 +209,12 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
         }
     }
     let mut tags: BTreeMap<String, Vec<TagInfo>> = BTreeMap::new();
+    let mut visiting = Vec::new();
+    let mut collector = Collector {
+        tags: &mut tags,
+        definitions: &definitions,
+        visiting: &mut visiting,
+    };
     let mut saw_params = false;
     for item in &file.items {
         let StructItem::Field(field) = item else {
@@ -119,95 +222,11 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
         };
         if label_name(field) == Some("params") {
             saw_params = true;
-            collect_expr_tags(&field.value, &[], &mut tags, &definitions, &mut Vec::new())?;
+            collector.expr(&field.value, &[], None, &[])?;
         }
     }
     if !saw_params {
-        collect_tags(&file.items, &[], &mut tags, &definitions)?;
+        collector.items(&file.items, &[], None, &[])?;
     }
     Ok(tags)
-}
-
-fn collect_expr_tags(
-    expr: &Expr,
-    prefix: &[String],
-    tags: &mut BTreeMap<String, Vec<TagInfo>>,
-    definitions: &BTreeMap<String, Vec<Expr>>,
-    visiting: &mut Vec<String>,
-) -> Result<(), LangError> {
-    match expr {
-        Expr::Struct(items, _) => collect_tags(items, prefix, tags, definitions),
-        Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-            collect_expr_tags(inner, prefix, tags, definitions, visiting)
-        }
-        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            collect_expr_tags(left, prefix, tags, definitions, visiting)?;
-            collect_expr_tags(right, prefix, tags, definitions, visiting)
-        }
-        Expr::Ident(name, _) => {
-            let Some(values) = definitions.get(name) else {
-                return Ok(());
-            };
-            if visiting.contains(name) {
-                return Ok(());
-            }
-            visiting.push(name.clone());
-            let mut result = Ok(());
-            for value in values {
-                result = collect_expr_tags(value, prefix, tags, definitions, visiting);
-                if result.is_err() {
-                    break;
-                }
-            }
-            visiting.pop();
-            result
-        }
-        _ => Ok(()),
-    }
-}
-
-fn collect_tags(
-    items: &[StructItem],
-    prefix: &[String],
-    tags: &mut BTreeMap<String, Vec<TagInfo>>,
-    definitions: &BTreeMap<String, Vec<Expr>>,
-) -> Result<(), LangError> {
-    for item in items {
-        let StructItem::Field(field) = item else {
-            continue;
-        };
-        let Some(name) = label_name(field) else {
-            continue;
-        };
-        let mut path = prefix.to_vec();
-        path.push(name.to_owned());
-        if let Some((tag_name, ty)) = tag_info(name, field)? {
-            tags.entry(tag_name).or_default().push(TagInfo {
-                field: name.to_owned(),
-                path: path.clone(),
-                ty,
-            });
-        }
-        match &field.value {
-            Expr::Struct(items, _) => {
-                collect_tags(items, &path, tags, definitions)?;
-            }
-            Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-                collect_expr_tags(inner, &path, tags, definitions, &mut Vec::new())?;
-            }
-            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-                collect_expr_tags(left, &path, tags, definitions, &mut Vec::new())?;
-                collect_expr_tags(right, &path, tags, definitions, &mut Vec::new())?;
-            }
-            Expr::Ident(definition, _) => {
-                if let Some(values) = definitions.get(definition) {
-                    for value in values {
-                        collect_expr_tags(value, &path, tags, definitions, &mut Vec::new())?;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
 }

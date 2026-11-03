@@ -1894,3 +1894,124 @@ workflow: {name: "\(params.db.host):\(params.db.port)", steps: {s: {kind: "noop"
     ]);
     assert!(!output.status.success());
 }
+
+#[test]
+fn nested_tags_cover_definitions_hidden_quoted_and_shorthand() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+
+    let definition_dir = directory.path().join("definition");
+    std::fs::create_dir_all(&definition_dir).expect("definition dir");
+    let definition = definition_dir.join("nested-tag-copy.cue");
+    write(
+        &definition,
+        r#"
+package demo
+#P: {host: string | *"d" @tag(host), copy: host}
+params: {nested: #P}
+workflow: {name: "\(params.nested.host)|\(params.nested.copy)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        definition.to_str().expect("definition"),
+        "-p",
+        "host=x",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json(&output)["workflow"]["name"], "x|x");
+
+    let hidden_dir = directory.path().join("hidden");
+    std::fs::create_dir_all(&hidden_dir).expect("hidden dir");
+    let hidden = hidden_dir.join("nested-tag-hidden.cue");
+    write(
+        &hidden,
+        r#"
+package demo
+params: {_db: {host: string @tag(host)}, "_quoted": {host: string @tag(qhost)}}
+workflow: {name: "\(params."_quoted".host)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        hidden.to_str().expect("hidden"),
+        "-p",
+        "host=x",
+        "-p",
+        "qhost=y",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json(&output)["params"]["_quoted"]["host"], "y");
+
+    let shorthand_dir = directory.path().join("shorthand");
+    std::fs::create_dir_all(&shorthand_dir).expect("shorthand dir");
+    let shorthand = shorthand_dir.join("nested-tag-shorthand.cue");
+    write(
+        &shorthand,
+        r#"
+package demo
+params: {db: host: string @tag(host)}
+workflow: {name: "\(params.db.host)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        shorthand.to_str().expect("shorthand"),
+        "-p",
+        "host=x",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json(&output)["params"]["db"]["host"], "x");
+}
+
+#[test]
+fn recursive_definitions_do_not_overflow_tag_collection() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("recursive-tag.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+#Node: {next?: #Node, name: string | *"n" @tag(name)}
+params: {nested: #Node}
+workflow: {name: "\(params.nested.name)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "name=x",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json(&output)["params"]["nested"]["name"], "x");
+}
