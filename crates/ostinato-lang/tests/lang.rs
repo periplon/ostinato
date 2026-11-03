@@ -3365,3 +3365,41 @@ b: time.Parse("3:04PM", "0:04AM")
         assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
     }
 }
+
+#[test]
+fn open_list_prefixes_work_as_lists() {
+    let source = r#"
+package demo
+import "list"
+same: [1, ...int] == [1]
+different: [1, ...int] == [...int]
+count: len([1, 2, ...int])
+second: [10, 20, ...int][1]
+looped: [for v in [1, 2, ...int] {v}]
+concatenated: list.Concat([[1, ...int], [2]])
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "list".to_owned(),
+        ostinato_lang::builtin_module("list").expect("list"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["same"], true);
+    assert_eq!(json["different"], false);
+    assert_eq!(json["count"], 2);
+    assert_eq!(json["second"], 20);
+    assert_eq!(json["looped"], serde_json::json!([1, 2]));
+    assert_eq!(json["concatenated"], serde_json::json!([1, 2]));
+
+    for source in [
+        "a: \"v=\\([1, 2, ...int])\"",
+        "a: \"v=\\([1, 2])\"",
+        "a: \"v=\\({x: 1})\"",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(ostinato_lang::eval_file(&file).is_err(), "{source}");
+    }
+}

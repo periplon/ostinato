@@ -989,14 +989,28 @@ impl<'a> Frame<'a> {
             (def.exprs.clone(), def.definition)
         };
         if name == "params" && !self.overrides.borrow().is_empty() {
-            if let Some(items) = self.params_items(&exprs) {
-                return self.eval_params_struct(&items, span);
+            if self.evaluating.borrow().contains(key) {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("cyclic reference while evaluating `{name}`"),
+                ));
             }
-            return Err(LangError::eval(
-                span.line,
-                span.col,
-                "cannot apply parameter overrides to this `params` shape",
-            ));
+            self.evaluating.borrow_mut().insert(key.to_owned());
+            let result = match self.params_items(&exprs) {
+                Some(items) => self.eval_params_struct(&items, span),
+                None => Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "cannot apply parameter overrides to this `params` shape",
+                )),
+            };
+            self.evaluating.borrow_mut().remove(key);
+            let result = result?;
+            self.values
+                .borrow_mut()
+                .insert(key.to_owned(), result.clone());
+            return Ok(result);
         }
         if is_definition {
             if self.evaluating.borrow().contains(key) {
@@ -1457,11 +1471,20 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                                 "non-concrete value in string interpolation",
                             ));
                         }
-                        match concrete {
+                        match &concrete {
                             Value::Bytes(bytes) => {
                                 out.push_str(&String::from_utf8_lossy(bytes));
                             }
-                            other => out.push_str(&other.display()),
+                            Value::String(_) | Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
+                                out.push_str(&concrete.display());
+                            }
+                            other => {
+                                return Err(LangError::conflict(
+                                    1,
+                                    1,
+                                    format!("cannot interpolate {}", other.type_name()),
+                                ));
+                            }
                         }
                     }
                 }
@@ -1559,7 +1582,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             let base = eval_expr(base, frame)?.concretize().clone();
             let index = eval_expr(index, frame)?.concretize().clone();
             match (base, index) {
-                (Value::List(list), Value::Int(index)) => {
+                (Value::List(list) | Value::OpenListPrefix(list, _), Value::Int(index)) => {
                     let index = usize::try_from(index).map_err(|_| {
                         LangError::eval(span.line, span.col, "list index must be non-negative")
                     })?;
@@ -1687,8 +1710,18 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             }
             let left = eval_expr(left, frame)?.concretize().clone();
             let right = eval_expr(right, frame)?.concretize().clone();
-            require_concrete(&left, *span)?;
-            require_concrete(&right, *span)?;
+            if !matches!(op, BinOp::Eq | BinOp::Ne)
+                || matches!(
+                    (&left, &right),
+                    (Value::Disjunction(_, _), _)
+                        | (_, Value::Disjunction(_, _))
+                        | (Value::Bounds(_), _)
+                        | (_, Value::Bounds(_))
+                )
+            {
+                require_concrete(&left, *span)?;
+                require_concrete(&right, *span)?;
+            }
             binary(op, &left, &right, *span)
         }
         Expr::Unary(op, inner, span) => {
@@ -1740,7 +1773,7 @@ fn eval_list_comp(
                     .into_iter()
                     .map(|(key, value)| (Some(Value::String(key)), value))
                     .collect(),
-                Value::List(values) => values
+                Value::List(values) | Value::OpenListPrefix(values, _) => values
                     .into_iter()
                     .enumerate()
                     .map(|(index, value)| {
@@ -2464,7 +2497,10 @@ fn values_identical(left: &Value, right: &Value) -> bool {
                         .is_some_and(|other| values_identical(value, other))
                 })
         }
-        (Value::List(a), Value::List(b)) => {
+        (Value::List(a), Value::List(b))
+        | (Value::OpenListPrefix(a, _), Value::OpenListPrefix(b, _))
+        | (Value::OpenListPrefix(a, _), Value::List(b))
+        | (Value::List(b), Value::OpenListPrefix(a, _)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| values_identical(a, b))
         }
         (Value::Disjunction(_, _), _) | (_, Value::Disjunction(_, _)) => {
@@ -3235,7 +3271,8 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                     "list.Concat requires exactly one list of lists",
                 ));
             }
-            let Some(Value::List(outer)) = arguments.first() else {
+            let Some(Value::List(outer) | Value::OpenListPrefix(outer, _)) = arguments.first()
+            else {
                 return Err(LangError::conflict(
                     span.line,
                     span.col,
@@ -3244,7 +3281,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
             };
             let mut values = Vec::new();
             for inner in outer {
-                let Value::List(inner) = inner else {
+                let (Value::List(inner) | Value::OpenListPrefix(inner, _)) = inner else {
                     return Err(LangError::conflict(
                         span.line,
                         span.col,
@@ -3264,7 +3301,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                 ));
             }
             match arguments.first() {
-                Some(Value::List(values)) => {
+                Some(Value::List(values) | Value::OpenListPrefix(values, _)) => {
                     Ok(Value::Int(i64::try_from(values.len()).unwrap_or(i64::MAX)))
                 }
                 Some(Value::Struct(values) | Value::Definition { fields: values, .. }) => {
