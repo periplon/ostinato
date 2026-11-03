@@ -93,6 +93,7 @@ impl AliasCtx {
         parent: Option<usize>,
         visible: &[usize],
         shadowed: &HashSet<String>,
+        from: Option<&(usize, String)>,
     ) -> Result<usize, LangError> {
         let id = self.scopes.len();
         self.scopes.push(AliasScope {
@@ -168,9 +169,9 @@ impl AliasCtx {
             match item {
                 StructItem::Field(field) => {
                     if let Label::Dynamic(expr, _) = &field.label {
-                        self.expr(expr, &chain, &local_shadow, None)?;
+                        self.expr(expr, &chain, &local_shadow, from)?;
                     }
-                    self.expr(&field.value, &chain, &local_shadow, None)?;
+                    self.expr(&field.value, &chain, &local_shadow, from)?;
                 }
                 StructItem::Let { name, value, .. } => {
                     // A `let` is not in scope in its own value; a same-named
@@ -184,7 +185,7 @@ impl AliasCtx {
                     result?;
                 }
                 StructItem::Pattern { value, .. } => {
-                    self.expr(value, &chain, &local_shadow, None)?;
+                    self.expr(value, &chain, &local_shadow, from)?;
                 }
                 StructItem::For {
                     key,
@@ -193,13 +194,13 @@ impl AliasCtx {
                     body,
                     span,
                 } => {
-                    self.expr(source, &chain, &local_shadow, None)?;
+                    self.expr(source, &chain, &local_shadow, from)?;
                     let mut body_shadow = local_shadow.clone();
                     if let Some(key) = key {
                         body_shadow.insert(key.clone());
                     }
                     body_shadow.insert(value.clone());
-                    let body_id = self.scope(body, Some(id), &chain, &body_shadow)?;
+                    let body_id = self.scope(body, Some(id), &chain, &body_shadow, from)?;
                     if let Some(key) = key {
                         self.scopes[body_id].bindings.insert(key.clone());
                         self.scopes[body_id]
@@ -212,8 +213,8 @@ impl AliasCtx {
                         .push((value.clone(), *span));
                 }
                 StructItem::If { cond, body, .. } => {
-                    self.expr(cond, &chain, &local_shadow, None)?;
-                    self.scope(body, Some(id), &chain, &local_shadow)?;
+                    self.expr(cond, &chain, &local_shadow, from)?;
+                    self.scope(body, Some(id), &chain, &local_shadow, from)?;
                 }
                 StructItem::Ellipsis(_) => {}
             }
@@ -266,7 +267,7 @@ impl AliasCtx {
             }
             Expr::Struct(items, _) => {
                 let parent = chain.last().copied();
-                self.scope(items, parent, chain, shadowed)?;
+                self.scope(items, parent, chain, shadowed, from)?;
             }
             Expr::List(items, _) => {
                 for item in items {
@@ -363,7 +364,7 @@ pub fn validate_aliases(items: &[StructItem], import_aliases: &[String]) -> Resu
         aliases: Vec::new(),
         let_edges: Vec::new(),
     };
-    let root = ctx.scope(items, None, &[], &HashSet::new())?;
+    let root = ctx.scope(items, None, &[], &HashSet::new(), None)?;
     detect_let_cycles(&ctx)?;
     for alias in import_aliases {
         ctx.scopes[root].bindings.insert(alias.clone());
