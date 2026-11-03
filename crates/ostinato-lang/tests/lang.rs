@@ -4225,3 +4225,26 @@ params: {#D: 1, for k in ["#D"] {"\(k)": 2}, v: params."#D"}
     let value = ostinato_lang::eval_file(&file).expect("generated escaped");
     assert_eq!(value.to_json().expect("json")["params"]["v"], 1);
 }
+
+#[test]
+fn quoted_hash_labels_are_selectable_from_struct_values() {
+    let source = r##"
+package demo
+src: {"#D": 1, for k in ["#E"] {"\(k)": 2}}
+a: src."#D"
+b: src."#E"
+"##;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("quoted hash select");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 1);
+    assert_eq!(json["b"], 2);
+
+    let unquoted = r##"
+package demo
+src: {"#D": 1}
+a: src.#D
+"##;
+    let file = ostinato_lang::parse(unquoted).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
+}
