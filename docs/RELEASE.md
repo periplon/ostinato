@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.5.1
+
+- Bounds retain type constraints, validate operands and treat empty intervals
+  as bottom; numeric equality is value-based; float kind is preserved on export;
+  division by zero is an error.
+- 167 tests (24 CLI E2E, 1 conformance, 132 language, 6 domain, 3 store, 1 unit).
+
 ## v0.5.0
 
 - Numeric/string bounds with the disjunction/default lattice, and exact

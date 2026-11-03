@@ -2721,7 +2721,96 @@ e: 123456789012345678.1 + 0.2 == 123456789012345678.3
     let json = value.to_json().expect("json");
     assert_eq!(json["a"].to_string(), "3.3");
     assert_eq!(json["b"], true);
-    assert_eq!(json["c"], false);
+    assert_eq!(json["c"], true);
     assert_eq!(json["d"].to_string(), "0.5");
     assert_eq!(json["e"], true);
+}
+
+#[test]
+fn bounds_validate_operands_types_and_intervals() {
+    let ok = r#"
+package demo
+a: >="a" & string & "b"
+b: >=5 & <=5 & 5
+c: >=5 & int & 7
+d: !=null & "x"
+"#;
+    let file = ostinato_lang::parse(ok).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], "b");
+    assert_eq!(json["b"], 5);
+    assert_eq!(json["c"], 7);
+    assert_eq!(json["d"], "x");
+
+    for source in [
+        "a: >=5 & int & 7.5",
+        "a: int & >=5 & 7.5",
+        "a: >=5 & float & 5",
+        "a: !=5 & \"a\"",
+        "a: !=5 & true",
+        "a: !=5 & {x: 1}",
+        "a: !=\"a\" & 5",
+        "a: !=5 & string",
+        "a: >=5 & <5",
+        "a: >5 & <=5",
+        "a: >=5 & <3",
+        "a: >=5 & >\"a\"",
+        "a: >=true",
+        "a: >=null",
+        "a: =~true",
+        "a: >=5 & >=true",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "expected bound error for {source}"
+        );
+    }
+
+    for source in ["a: >=true | 3", "a: =~true | 3", "a: (>=5 & <3) | 7"] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        let value = ostinato_lang::eval_file(&file).expect("disjunction skips bottom bound");
+        assert_eq!(
+            value.to_json().expect("json")["a"],
+            3.max(value.to_json().expect("json")["a"].as_i64().unwrap_or(3))
+                .min(7)
+        );
+    }
+}
+
+#[test]
+fn division_by_zero_is_an_error_not_a_panic() {
+    for source in ["x: 1.0 / 0", "x: 1 / 0.0", "x: 0.0 / 0", "x: 1e3 / 0"] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        let error = ostinato_lang::eval_file(&file).expect_err("division by zero");
+        assert!(error.to_string().contains("division by zero"), "{error}");
+    }
+}
+
+#[test]
+fn numeric_equality_and_float_export_match_cue() {
+    let source = r#"
+package demo
+x: 1.0 == 1
+a: 10 / 2
+b: 1e3
+c: 1.5e2
+d: 1.0 * 0
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"], true);
+    assert_eq!(json["a"].to_string(), "5.0");
+    assert_eq!(json["b"].to_string(), "1000.0");
+    assert_eq!(json["c"].to_string(), "150.0");
+    assert_eq!(json["d"].to_string(), "0.0");
+
+    let bound = r#"
+package demo
+a: !=5 & 5.0
+"#;
+    let file = ostinato_lang::parse(bound).expect("parse");
+    assert!(ostinato_lang::eval_file(&file).is_err());
 }

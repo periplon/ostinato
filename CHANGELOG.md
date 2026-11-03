@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.5.1
+
+Bounds and number review corrections.
+
+- Bounds carry a retained type constraint; `>=5 & int & 7.5` and `!=5 & "a"`
+  are rejected, and `>="a" & string` works.
+- Invalid bound operands (`>=true`, `=~null`, ...) are rejected and skipped in
+  disjunctions; empty intervals (`>=5 & <5`, mixed number/string bounds) are
+  bottom, so `(>=5 & <3) | 7` narrows to 7.
+- Numeric equality is value-based (`1.0 == 1` true) while `&` keeps int/float
+  distinct.
+- Float JSON/display preserves float kind (`10/2` → `5.0`); decimal division by
+  zero is an error, not a panic.
+- 167 tests (24 CLI E2E, 1 conformance, 132 language, 6 domain, 3 store, 1 unit).
+
 ## v0.5.0
 
 Numeric bounds and exact decimals.

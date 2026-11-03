@@ -40,6 +40,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
 | Arbitrary-precision integer literals | Decimal values are arbitrary precision; integer literals must fit in `i64` |
 | Decimal division digit count | Division uses `BigDecimal` precision, which can differ from CUE's 34-digit decimal expansion |
+| JSON export of high-precision decimals | Arithmetic is arbitrary precision, but `to_json` rounds non-integral values through f64; string interpolation and comparisons use the exact value |
 | Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |
 | Recursive definition materialization (`#Tree: {children?: [...#Tree]}`) | Definitions are evaluated eagerly; self-referential constraints are not solved. Use `--evaluator cue` for recursive types |
 | Required fields that depend on optional fields (`#P: {name?: string, greeting: "Hello \\(name)"}`) | Definitions are evaluated eagerly; required-field expressions are not deferred until the optional field is materialized. Use a named definition that flattens the materialization (`#Q: #P & {name: "Alice"}`; `params: #Q`) or the oracle |
