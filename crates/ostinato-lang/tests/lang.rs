@@ -4445,3 +4445,61 @@ fn materialized_hidden_fields_do_not_satisfy_quoted_optionals() {
         );
     }
 }
+
+#[test]
+fn quoted_params_lookup_does_not_return_cached_definitions() {
+    for source in [
+        "params: {#D: 1, if #D == 1 {a: 1}, q: params[\"#D\"]}",
+        "params: {#D: 1, for k in [#D] {a: k}, q: params[\"#D\"]}",
+        "params: {#D: 1, k: \"#D\", if #D == 1 {a: 1}, q: params[k]}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "quoted lookup must not return a definition: {source}"
+        );
+    }
+
+    let generated = r##"
+package demo
+params: {#D: 1, for k in ["#D"] {"\(k)": 2}, v: params."#D"}
+"##;
+    let file = ostinato_lang::parse(generated).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated quoted label");
+    assert_eq!(value.to_json().expect("json")["params"]["v"], 2);
+}
+
+#[test]
+fn overrides_keep_generated_optional_constraints() {
+    let source = r#"
+package demo
+params: {a: string @tag(a), for k in ["x"] {a?: "x"}}
+workflow: {name: "\(params.a)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([("a".to_owned(), "x".to_owned())]),
+    )
+    .expect("matching override");
+    assert_eq!(compiled.spec.name, "x");
+
+    let error = ostinato_lang::compile_with_params(
+        source,
+        &BTreeMap::from([("a".to_owned(), "y".to_owned())]),
+    )
+    .expect_err("conflicting override");
+    assert!(error.to_string().contains("conflict"), "{error}");
+
+    let conditional = r#"
+package demo
+params: {a: int @tag(a, type=int), if true {a?: 2}}
+workflow: {name: "n", steps: {s: {kind: "noop"}}}
+"#;
+    assert!(
+        ostinato_lang::compile_with_params(
+            conditional,
+            &BTreeMap::from([("a".to_owned(), "3".to_owned())]),
+        )
+        .is_err()
+    );
+}
