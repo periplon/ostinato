@@ -1954,9 +1954,11 @@ impl<'a> Frame<'a> {
         self.next_definition.replace(previous_next);
         let result = outcome?;
         self.evaluating.borrow_mut().remove(key);
-        self.values
-            .borrow_mut()
-            .insert(key.to_owned(), result.clone());
+        if !self.skip_cache.get() {
+            self.values
+                .borrow_mut()
+                .insert(key.to_owned(), result.clone());
+        }
         Ok(result)
     }
 
@@ -2700,14 +2702,6 @@ fn eval_definition_named(
     let mut cursor = Some(frame);
     while let Some(current) = cursor {
         if let Some(key) = current.any_field_key(name) {
-            let is_definition = current
-                .fields
-                .borrow()
-                .get(&key)
-                .is_some_and(|definition| definition.definition);
-            if !is_definition {
-                return Ok(None);
-            }
             return current.eval_field_key(&key, span).map(Some);
         }
         cursor = current.parent;
@@ -2724,14 +2718,6 @@ fn eval_definition_with_injections(
     let mut cursor = Some(frame);
     while let Some(current) = cursor {
         if let Some(key) = current.any_field_key(name) {
-            let is_definition = current
-                .fields
-                .borrow()
-                .get(&key)
-                .is_some_and(|definition| definition.definition);
-            if !is_definition {
-                return Ok(None);
-            }
             current.values.borrow_mut().remove(&key);
             let previous = current.next_injections.replace(Some(injections));
             let previous_cache = current.skip_cache.replace(true);
@@ -2754,9 +2740,6 @@ fn try_definition_unify(
     let Expr::Ident(name, _) = strip_expr_parens(definition) else {
         return Ok(None);
     };
-    if !name.starts_with('#') && !name.starts_with("_#") {
-        return Ok(None);
-    }
     let value = eval_expr(other, frame)?;
     let Some(injections) = concrete_fields(&value) else {
         return Ok(None);

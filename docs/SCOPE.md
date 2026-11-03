@@ -34,6 +34,7 @@ workflow outside the Rust surface has a supported escape hatch.
   (`#D: {a: #D.b, b: 1}`, `x: {a: x.b, b: 1}`), including nested and composed
   definitions;
 - comprehension-generated definitions (`#D: {if true {#I: 3}, a: #D.#I}`);
+- optional/open metadata on non-definition struct literals (`base: {b?: int}; #D: base`, `{c: 1, ...}`), including nested/pattern/list forms;
 - arbitrary-precision integer literals and exact integer arithmetic
   (add/subtract/multiply, comparison, typing, bounds and JSON export);
 - required fields that depend on optional fields materialized by unification
@@ -54,7 +55,6 @@ workflow outside the Rust surface has a supported escape hatch.
 | Feature | Why |
 |---|---|
 | Nested multiline literals inside interpolation | A `"""..."""` or `'''...'''` literal used as the expression inside `\(...)` is not parsed; use the oracle |
-| Optional/open metadata on non-definition struct literals | `base: {b?: int}; #D: base` and `{b?: string} & {b: 1}` are out of scope; use a definition literal or the oracle |
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
 | `math` transcendental precision | `Pow`/`Exp`/`Log` and other transcendental helpers use native floating-point conversion where CUE uses its 34-digit decimal context; JSON export matches, but string interpolation can show fewer digits |
@@ -62,7 +62,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Integer arithmetic beyond 34 significant digits | CUE rounds arithmetic results to its 34-digit decimal context; Ostinato keeps exact `BigInt` results. Literals, comparisons and <=34-digit arithmetic match |
 | JSON export of high-precision decimals | Arithmetic is arbitrary precision, but `to_json` rounds non-integral values through f64; string interpolation and comparisons use the exact value |
 | Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |
-| Optional-dependent required fields through compound optionals | Optional fields whose value is a struct, list, list-of-list or definition (`cfg?: {...}`, `ps?: [...]`, `e?: #E`), nested optional fields inside a required struct, fixed-length optional lists, and the root `params: #P & {...}` form are not resolved; primitive optional fields are implemented |
+| Optional-dependent required fields through compound optionals | Optional fields whose value is a struct, list, list-of-list or definition (`cfg?: {...}`, `ps?: [...]`, `e?: #E`), nested optional fields inside a required struct, fixed-length optional lists, reusable non-definition bases (`base: {b?: int, c: b}`), and the root `params: #P & {...}` form are not resolved; primitive optional fields are implemented |
 | Self-selection through split composed non-definition literals | `x: {a: x.b} & {b: 1}` is not resolved; definition self-selection, regular struct self-selection and composed definitions are implemented |
 | Dependent fields after a generated declaration merge | `#P: {env: string, greeting: "hello \(env)"}` plus `if true {#P: {env: "prod"}}` does not recompute `greeting`; declared declaration order or the oracle |
 | Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |

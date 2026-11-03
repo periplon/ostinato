@@ -6237,3 +6237,48 @@ x: #P
         "dependent fields after a generated declaration merge remain a documented limit"
     );
 }
+
+#[test]
+fn optional_open_metadata_on_struct_literals_matches_cue() {
+    let source = r#"
+package demo
+base: {b?: int}
+#D: base
+nested_base: {inner: {b?: int, c: 1}}
+open_base: {c: 1, ...}
+opt_pattern: {[string]: int} & {b?: int, c: 1}
+def_empty: #D
+def_set: #D & {b: 1}
+optional_export: {b?: int, c: 1}
+nested: nested_base & {inner: {b: 2}}
+open_lit: open_base & {d: 2}
+open_nested: {inner: {c: 1, ...}} & {inner: {d: 2}}
+opt_list: [{b?: int, c: 1}] & [{b: 2}]
+open_list: [...{b?: int, c: 1}] & [{b: 2}]
+pattern: opt_pattern & {b: 2}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse optional/open metadata");
+    let value = ostinato_lang::eval_file(&file).expect("eval optional/open metadata");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["def_empty"], serde_json::json!({}));
+    assert_eq!(json["def_set"]["b"], 1);
+    assert_eq!(json["optional_export"], serde_json::json!({"c": 1}));
+    assert_eq!(json["nested"]["inner"]["b"], 2);
+    assert_eq!(json["nested"]["inner"]["c"], 1);
+    assert_eq!(json["open_lit"]["d"], 2);
+    assert_eq!(json["open_nested"]["inner"]["d"], 2);
+    assert_eq!(json["opt_list"][0]["b"], 2);
+    assert_eq!(json["open_list"][0]["c"], 1);
+    assert_eq!(json["pattern"]["b"], 2);
+
+    for source in [
+        "package demo\nx: {b?: string} & {b: 1}\n",
+        "package demo\nbase: {b?: int, c: b}\nx: base & {b: 2}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse invalid optional/open metadata");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "invalid optional/open literal must fail: {source:?}"
+        );
+    }
+}
