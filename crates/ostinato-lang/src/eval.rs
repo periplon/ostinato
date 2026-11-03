@@ -308,8 +308,9 @@ impl Value {
             Self::Bool(value) => Some(Json::Bool(*value)),
             Self::Int(value) => Some(Json::Number(Number::from(*value))),
             Self::Float(value) => {
+                let (_, scale) = value.as_bigint_and_exponent();
                 let mut text = value.to_string();
-                if !text.contains(['.', 'e', 'E']) {
+                if scale != 0 && !text.contains(['.', 'e', 'E']) {
                     text.push_str(".0");
                 }
                 text.parse::<Number>().ok().map(Json::Number)
@@ -422,8 +423,9 @@ impl Value {
             Self::Bool(value) => value.to_string(),
             Self::Int(value) => value.to_string(),
             Self::Float(value) => {
+                let (_, scale) = value.as_bigint_and_exponent();
                 let mut text = value.to_string();
-                if !text.contains(['.', 'e', 'E']) {
+                if scale != 0 && !text.contains(['.', 'e', 'E']) {
                     text.push_str(".0");
                 }
                 text
@@ -4274,6 +4276,12 @@ fn math_decimal_number(value: BigDecimal) -> Value {
     }
 }
 
+fn math_float_number(value: f64) -> Value {
+    format!("{value}")
+        .parse::<BigDecimal>()
+        .map_or(Value::Bottom, Value::Float)
+}
+
 fn math_number(value: f64) -> Value {
     if value.is_finite() && value.fract() == 0.0 && value.abs() < 9.0e15 {
         #[allow(clippy::cast_possible_truncation)]
@@ -4319,7 +4327,17 @@ fn apply_math_builtin(
             };
             Ok(math_decimal_number(decimal.with_scale_round(0, rounding)))
         }
-        Builtin::MathSqrt => Ok(math_number(math_arg(arguments, 0, span)?.sqrt())),
+        Builtin::MathSqrt => {
+            let value = math_arg(arguments, 0, span)?.sqrt();
+            if !value.is_finite() {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    "math function result is not a number",
+                ));
+            }
+            Ok(math_float_number(value))
+        }
         Builtin::MathPow => Ok(math_number(
             math_arg(arguments, 0, span)?.powf(math_arg(arguments, 1, span)?),
         )),
@@ -4868,11 +4886,9 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
             if zero {
                 return Err(LangError::conflict(span.line, span.col, "division by zero"));
             }
-            match (left, right) {
-                (Value::Int(a), Value::Int(b)) => {
-                    Ok(Value::Float(BigDecimal::from(*a) / BigDecimal::from(*b)))
-                }
-                _ => numeric(op, left, right, span, |a, b| a / b, |a, b| a / b),
+            match (numeric_value_decimal(left), numeric_value_decimal(right)) {
+                (Some(left), Some(right)) => Ok(Value::Float(float_division(&left, &right))),
+                _ => type_error("divide", left, right, span),
             }
         }
         BinOp::Mod => match (left, right) {
@@ -4948,6 +4964,19 @@ fn repeat_bytes(bytes: &[u8], count: i64, span: Span) -> Result<Value, LangError
     Ok(Value::Bytes(bytes.repeat(count)))
 }
 
+fn float_representation(value: BigDecimal) -> BigDecimal {
+    let (_, scale) = value.as_bigint_and_exponent();
+    if scale <= 0 {
+        value.with_scale(1)
+    } else {
+        value
+    }
+}
+
+fn float_division(left: &BigDecimal, right: &BigDecimal) -> BigDecimal {
+    float_representation(left / right)
+}
+
 fn numeric(
     op: &BinOp,
     left: &Value,
@@ -4958,13 +4987,18 @@ fn numeric(
 ) -> Result<Value, LangError> {
     match (left, right) {
         (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(*a, *b))),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(a.clone(), b.clone()))),
-        (Value::Int(a), Value::Float(b)) => {
-            Ok(Value::Float(float_op(BigDecimal::from(*a), b.clone())))
-        }
-        (Value::Float(a), Value::Int(b)) => {
-            Ok(Value::Float(float_op(a.clone(), BigDecimal::from(*b))))
-        }
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_representation(float_op(
+            a.clone(),
+            b.clone(),
+        )))),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(float_representation(float_op(
+            BigDecimal::from(*a),
+            b.clone(),
+        )))),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(float_representation(float_op(
+            a.clone(),
+            BigDecimal::from(*b),
+        )))),
         _ => type_error(op_name(op), left, right, span),
     }
 }

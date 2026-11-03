@@ -5098,3 +5098,50 @@ d: 'ab' * 2
     let file = ostinato_lang::parse(negative).expect("parse");
     assert!(ostinato_lang::eval_file(&file).is_err());
 }
+
+#[test]
+#[allow(clippy::approx_constant)]
+fn math_integral_results_keep_the_cue_kind() {
+    let source = r#"
+package demo
+import "math"
+sqrt: math.Sqrt(4)
+sqrt_float: math.Sqrt(4) & float
+sqrt_two: math.Sqrt(2)
+pow: math.Pow(2, 3)
+exp: math.Exp(0)
+log: math.Log(1)
+floor: math.Floor(2.7)
+ceil: math.Ceil(2.1)
+round: math.Round(2.5)
+trunc: math.Trunc(2.9)
+abs: math.Abs(-2)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "math".to_owned(),
+        ostinato_lang::builtin_module("math").expect("math"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["sqrt"], 2);
+    assert_eq!(json["sqrt_float"], 2);
+    assert_eq!(json["sqrt_two"], 1.4142135623730951);
+    assert_eq!(json["pow"], 8);
+    assert_eq!(json["exp"], 1);
+    assert_eq!(json["log"], 0);
+    assert_eq!(json["floor"], 2);
+    assert_eq!(json["ceil"], 3);
+    assert_eq!(json["round"], 3);
+    assert_eq!(json["trunc"], 2);
+    assert_eq!(json["abs"], 2);
+
+    let invalid = "package demo\nimport \"math\"\nbad: math.Sqrt(4) & int\n";
+    let file = ostinato_lang::parse(invalid).expect("parse");
+    assert!(
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err(),
+        "Sqrt must stay a float"
+    );
+}
