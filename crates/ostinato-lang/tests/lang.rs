@@ -4344,3 +4344,23 @@ fn struct_string_indexes_respect_sentinel_namespaces() {
     let value = ostinato_lang::eval_file(&file).expect("params sentinel index");
     assert_eq!(value.to_json().expect("json")["params"]["i"], 4);
 }
+
+#[test]
+fn generated_hidden_params_are_not_reachable_through_quoted_selectors() {
+    for source in [
+        "params: {for k in [\"x\"] {_h: 1}, n: params[\"\u{3}_h\"]}",
+        "params: {if true {_h: 1}, n: params.\"\u{3}_h\"}",
+        "params: {g: {if true {_h: 1}}, n: params.g[\"\u{3}_h\"]}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "generated hidden must not leak: {source}"
+        );
+    }
+
+    let mixed = "package demo\nparams: {for k in [\"x\"] {_h: 1, \"\u{3}_h\": 2}, n: params[\"\u{3}_h\"]}\n";
+    let file = ostinato_lang::parse(mixed).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated escaped label");
+    assert_eq!(value.to_json().expect("json")["params"]["n"], 2);
+}

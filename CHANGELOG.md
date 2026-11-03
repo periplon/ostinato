@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.11
+
+Generated hidden params and quoted lookups.
+
+- Quoted params lookups skip hidden storage for comprehension/`if`-generated
+  hidden fields; mixed generated quoted labels still resolve.
+- 231 tests (35 CLI E2E, 1 conformance, 185 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.10
 
 Sentinel string indexes on structs.
