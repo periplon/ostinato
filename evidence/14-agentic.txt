@@ -1,6 +1,6 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.4jSSRWyaix/agent.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/agentic.cue --agent-cmd /Users/joanmarc/dailywork/jmca/ostinato/examples/agent.sh
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.iscZaMdtLP/agent.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/agentic.cue --agent-cmd /Users/joanmarc/dailywork/jmca/ostinato/examples/agent.sh
 
-run=eb96aaea-29df-476c-9f01-78fa14464292 workflow=agentic status=succeeded durationMs=39
+run=056f8cd3-e508-485d-853a-1252a5a300bb workflow=agentic status=succeeded durationMs=33
 STEP                     STATUS     VISITS ATTEMPTS
 assess                   succeeded  1      1       
 improve                  succeeded  1      1       

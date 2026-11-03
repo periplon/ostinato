@@ -4988,3 +4988,61 @@ fn equality_requires_concrete_operands() {
     assert_eq!(json["params"]["cross"], true);
     assert_eq!(json["params"]["diff"], false);
 }
+
+#[test]
+fn go_time_layouts_and_helpers_match_cue() {
+    let source = r#"
+package demo
+import "time"
+a: time.Parse(time.ANSIC, "Tue Mar  5 06:07:08 2024")
+b: time.Parse(time.RFC1123Z, "Tue, 05 Mar 2024 06:07:08 +0200")
+c: time.Parse("Mon 2 Jan 2006", "Tue 5 Mar 2024")
+d: time.Parse("2006-002", "2024-065")
+e: time.Format("2024-03-05", "2006-01-02")
+f: time.FormatString("Mon Jan _2 15:04:05 2006", "2024-03-05T06:07:08Z")
+g: time.ToUnix("2024-03-05T06:07:08Z")
+h: time.ToUnixNano("2024-03-05T06:07:08.000000005Z")
+i: time.Split("2024-03-05T06:07:08.12Z")
+j: time.FormatDuration(3723000500000)
+k: time.Second
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "time".to_owned(),
+        ostinato_lang::builtin_module("time").expect("time"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], "2024-03-05T06:07:08Z");
+    assert_eq!(json["b"], "2024-03-05T04:07:08Z");
+    assert_eq!(json["c"], "2024-03-05T00:00:00Z");
+    assert_eq!(json["d"], "2024-03-05T00:00:00Z");
+    assert_eq!(json["e"], true);
+    assert_eq!(json["f"], "Tue Mar  5 06:07:08 2024");
+    assert_eq!(json["g"], 1_709_618_828i64);
+    assert_eq!(json["h"], 1_709_618_828_000_000_005i64);
+    assert_eq!(json["i"]["nanosecond"], 120_000_000);
+    assert_eq!(json["j"], "1h2m3.0005s");
+    assert_eq!(json["k"], 1_000_000_000i64);
+
+    for source in [
+        r#"a: time.Parse("Mon", "Xyz")"#,
+        r#"a: time.Parse("2006-01", "2024-13")"#,
+        r#"a: time.Parse("2006-01-02", "2024-02-30")"#,
+        r#"a: time.Parse("15:04:05", "24:00:00")"#,
+        r#"a: time.Parse("15:04:05", "23:59:60")"#,
+        r#"a: time.Parse("3:04PM", "13:04PM")"#,
+        r#"a: time.Format("2024-3-5", "2006-01-02")"#,
+        r#"a: time.Time("2024-03-05 06:07:08")"#,
+        r#"a: time.Duration("1h30")"#,
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\nimport \"time\"\n{source}\n"))
+            .expect("parse");
+        assert!(
+            ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err(),
+            "invalid time input must fail: {source}"
+        );
+    }
+}

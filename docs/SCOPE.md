@@ -28,7 +28,9 @@ workflow outside the Rust surface has a supported escape hatch.
 - recursive definition materialization through optional fields and lists
   (`#Tree: {children?: [...#Tree]}`, mutually recursive definitions);
 - string interpolation, including nested quoted expressions;
-- `strings`, `list`, `regexp`, `math` and `time` builtins, bytes literals and global `len`;
+- `strings`, `list`, `regexp`, `math` and `time` builtins (including the full
+  Go layout language, `FormatString`, `Split`, `ToUnix`/`ToUnixNano`,
+  `FormatDuration` and time constants), bytes literals and global `len`;
 - constraint-based parameter overrides for split/definition-backed params and
   dependent params;
 - CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files).
@@ -41,7 +43,6 @@ workflow outside the Rust surface has a supported escape hatch.
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
 | Arbitrary-precision integer literals | Decimal values are arbitrary precision; integer literals must fit in `i64` |
-| `time` layout subset | Supported: `2006-01-02`, `15:04:05`, `3:04PM`, `2006-01-02 15:04:05`, RFC3339, with fractional seconds; other Go layouts are an error |
 | Math functions with integral results | `Sqrt`/`Pow`/`Exp`/`Log` return an `int` when the result is integral (CUE types it as float); `Floor`/`Ceil`/`Round`/`Trunc` are decimal-exact |
 | Multiline bytes literals and bytes interpolation | Single-line `'...'` bytes are supported; `'''...'''` and `\(...)` inside bytes are not |
 | Decimal division digit count | Division uses `BigDecimal` precision, which can differ from CUE's 34-digit decimal expansion |
