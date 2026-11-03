@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.9
+
+Quoted-label semantics.
+
+- Quoted labels are no longer identifier bindings: `let X = 2; a: {"X": 1, "Z": X}`
+  gives `Z: 2`, and dynamic labels behave the same.
+- A quoted `"#D"` is a distinct regular field from the definition `#D`; both
+  coexist and `params: {"#D": 1, #D: 2}` exports `"#D": 1`.
+- Identifier selectors do not reach quoted `#...` fields of a definition.
+- Aliases can still target quoted labels.
+- 144 tests (23 CLI E2E, 1 conformance, 110 language, 6 domain, 3 store, 1 unit).
+
 ## v0.4.8
 
 Let-cycle graph through struct literals.
