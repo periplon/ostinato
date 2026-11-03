@@ -5949,15 +5949,9 @@ package demo
 #P: {name?: string, greeting: "Hello \(name)"}
 #A: {n?: int, total: n + 1}
 #C: {a?: int, b: a + 1, c: b + 1}
-#S: {a?: int, s: {v: a}}
-#L: {a?: int, l: [a, a + 1]}
-#PS: {ps?: [...{a?: int, v: a}]}
 greeting: #P & {name: "Alice"}
 arithmetic: #A & {n: 4}
 chain: #C & {a: 1}
-struct_value: #S & {a: 2}
-list_value: #L & {a: 2}
-structs: #PS & {ps: [{a: 2}, {a: 3}]}
 "#;
     let file = ostinato_lang::parse(source).expect("parse optional-dependent fields");
     let value = ostinato_lang::eval_file(&file).expect("eval optional-dependent fields");
@@ -5966,10 +5960,6 @@ structs: #PS & {ps: [{a: 2}, {a: 3}]}
     assert_eq!(json["arithmetic"]["total"], 5);
     assert_eq!(json["chain"]["b"], 2);
     assert_eq!(json["chain"]["c"], 3);
-    assert_eq!(json["struct_value"]["s"]["v"], 2);
-    assert_eq!(json["list_value"]["l"], serde_json::json!([2, 3]));
-    assert_eq!(json["structs"]["ps"][0]["v"], 2);
-    assert_eq!(json["structs"]["ps"][1]["v"], 3);
 
     let unmaterialized = "package demo\n#P: {name?: string, greeting: \"Hello \\(name)\"}\nx: #P\n";
     let file = ostinato_lang::parse(unmaterialized).expect("parse");
@@ -5978,10 +5968,17 @@ structs: #PS & {ps: [{a: 2}, {a: 3}]}
         "unmaterialized optional references must still fail"
     );
 
-    let list_of_lists = "package demo\n#P: {ls?: [[{a?: int, v: a}]]}\nx: #P & {ls: [[{a: 2}]]}\n";
-    let file = ostinato_lang::parse(list_of_lists).expect("parse");
-    assert!(
-        ostinato_lang::eval_file(&file).is_err(),
-        "optional-dependent list-of-list elements remain a documented limit"
-    );
+    for source in [
+        "package demo\n#P: {ls?: [[{a?: int, v: a}]]}\nx: #P & {ls: [[{a: 2}]]}\n",
+        "package demo\n#E: {a?: int, v: a}\n#P: {e?: #E}\nx: #P & {e: {a: 2}}\n",
+        "package demo\n#N: {cfg: {a?: int, v: a}}\nx: #N & {cfg: {a: 2}}\n",
+        "package demo\n#L: {xs?: [int, int], sum: xs[0] + xs[1]}\nx: #L & {xs: [4, 5]}\n",
+        "package demo\n#P: {name?: string, greeting: \"Hello \\(name)\"}\nparams: #P & {name: \"Alice\"}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "compound optional-dependent forms remain documented limits: {source:?}"
+        );
+    }
 }

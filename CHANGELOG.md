@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.14.1
+
+Optional-dependent scope correction.
+
+- Optional-dependent required fields are supported for primitive optionals
+  (string/int/float/bool/bytes) and chains/arithmetic; the injection path no
+  longer risks panics or wrong nested values for compound optionals.
+- Compound optionals (structs, lists, definitions), nested optionals inside a
+  required struct, fixed-length lists and the root `params: #P & {...}` form
+  are documented SCOPE limits and locked by negative regressions.
+- 335 tests (61 CLI E2E, 1 conformance, 231 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.14.0
 
 Optional-dependent required fields.
