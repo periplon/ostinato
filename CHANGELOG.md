@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.17.0
+
+Optional/open metadata on non-definition struct literals.
+
+- Struct literals used as bases keep optional fields and open `...` metadata
+  through definitions, nested structs, patterns and list elements; optional
+  fields are omitted from exports like CUE.
+- The SCOPE row is removed; the optional-dependent reusable-base edge remains
+  documented under compound optionals.
+- 341 tests (61 CLI E2E, 1 conformance, 237 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.16.4
 
 Generated declaration-merge metadata and nesting.
