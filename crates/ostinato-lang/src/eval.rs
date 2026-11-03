@@ -5032,13 +5032,16 @@ fn float_division(left: &BigDecimal, right: &BigDecimal) -> BigDecimal {
     let quotient = left / right;
     let (_, left_scale) = left.as_bigint_and_exponent();
     let (_, right_scale) = right.as_bigint_and_exponent();
-    let old_exponent = if quotient.to_string() == "0" {
+    let reduced = quotient.normalized();
+    let (coefficient, reduced_scale) = reduced.as_bigint_and_exponent();
+    let coefficient_text = coefficient.to_string();
+    let old_exponent = if coefficient_text == "0" {
         right_scale - left_scale
     } else {
-        -1
+        let digits =
+            i64::try_from(coefficient_text.trim_start_matches('-').len()).unwrap_or(i64::MAX);
+        digits - reduced_scale - 34
     };
-    let reduced = quotient.normalized();
-    let (_, reduced_scale) = reduced.as_bigint_and_exponent();
     if old_exponent < 0 && reduced_scale <= 0 {
         reduced.with_scale(reduced_scale + 1)
     } else {
