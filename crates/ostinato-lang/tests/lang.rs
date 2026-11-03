@@ -4931,6 +4931,25 @@ mixed: [...int] & [1, ...string]
     assert_eq!(json["prefixed_other"], serde_json::json!([1, 2]));
     assert_eq!(json["mixed"], serde_json::json!([1]));
 
+    let nested = r#"
+package demo
+#A: {a: 1}
+#B: {b: 2}
+nested_empty: [...[1]] & [...[1, 2]]
+nested_prefixed: [1, ...[1]] & [1, ...[1, 2]]
+nested_struct: [...{a: [1]}] & [...{a: [1, 2]}]
+nested_prefix: [...[1, 2, ...int]] & [...[1]]
+closed: [...#A] & [...#B]
+"#;
+    let file = ostinato_lang::parse(nested).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("nested incompatible tails collapse");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["nested_empty"], serde_json::json!([]));
+    assert_eq!(json["nested_prefixed"], serde_json::json!([1]));
+    assert_eq!(json["nested_struct"], serde_json::json!([]));
+    assert_eq!(json["nested_prefix"], serde_json::json!([]));
+    assert_eq!(json["closed"], serde_json::json!([]));
+
     let positional = r#"
 package demo
 bad: [1, 2, ...int] & [1, ...string]

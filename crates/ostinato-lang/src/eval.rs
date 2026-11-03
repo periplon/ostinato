@@ -5424,8 +5424,7 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
             let merged_tail = match (tail.as_deref(), element.as_deref()) {
                 (Some(tail), Some(element)) => match unify_values(tail, element, span) {
                     Ok(value) => Some(Box::new(value)),
-                    Err(err) if err.is_conflict() => return Ok(Value::List(out)),
-                    Err(err) => return Err(err),
+                    Err(_) => return Ok(Value::List(out)),
                 },
                 (Some(tail), None) => Some(Box::new(tail.clone())),
                 (None, Some(element)) => Some(Box::new(element.clone())),
@@ -5460,8 +5459,7 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
                 (None, None) => None,
                 (Some(left), Some(right)) => match unify_values(left, right, span) {
                     Ok(value) => Some(Box::new(value)),
-                    Err(err) if err.is_conflict() => return Ok(Value::List(prefix)),
-                    Err(err) => return Err(err),
+                    Err(_) => return Ok(Value::List(prefix)),
                 },
                 (Some(tail), None) | (None, Some(tail)) => Some(tail.clone()),
             };
@@ -5482,8 +5480,7 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
             (None, None) => Ok(Value::OpenList(None)),
             (Some(left), Some(right)) => match unify_values(left, right, span) {
                 Ok(value) => Ok(Value::OpenList(Some(Box::new(value)))),
-                Err(err) if err.is_conflict() => Ok(Value::List(Vec::new())),
-                Err(err) => Err(err),
+                Err(_) => Ok(Value::List(Vec::new())),
             },
             (Some(element), None) | (None, Some(element)) => {
                 Ok(Value::OpenList(Some(element.clone())))
