@@ -17,9 +17,14 @@ params: {
 		"a.b": 3
 		v: params["g"]["a.b"]
 	}
+	host: string | *"h"
+	url: "http://\(params.host)/"
+	if params.url != "" {
+		endpoint: params.url
+	}
 }
 
 workflow: {
-	name: "\(params.db.b)-\(params.db.inner.c)-\(params.g.v)"
+	name: "\(params.db.b)-\(params.db.inner.c)-\(params.g.v)-\(params.endpoint)"
 	steps: {s: {kind: "noop"}}
 }

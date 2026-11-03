@@ -4650,3 +4650,39 @@ workflow: {name: "\(params.g)", steps: {s: {kind: "noop"}}}
     .expect("definition conditional override");
     assert_eq!(compiled.spec.name, "1");
 }
+
+#[test]
+fn params_dependency_chains_resolve_in_comprehensions() {
+    let valid = [
+        "params: {a: 1, b: params.a, if params.b == 1 {c: 2}}",
+        "params: {host: string | *\"h\", url: \"http://\\(params.host)/\", if params.url != \"\" {endpoint: params.url}}",
+        "params: {a: 1, b: params.a, for k in [params.b] {c: k}}",
+        "params: {a: 1, if params.a == 1 {db: {x: 2, for k in [\"x\"] {v: params.db[k]}}}}",
+    ];
+    for source in valid {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        ostinato_lang::eval_file(&file).expect("dependency chain");
+    }
+
+    let cycle = "params: {a: params.b, b: params.a}";
+    let file = ostinato_lang::parse(&format!("package demo\n{cycle}\n")).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "true cycle: {cycle}"
+    );
+}
+
+#[test]
+fn chained_dynamic_groups_resolve_sibling_values() {
+    let source = r#"
+package demo
+params: {
+    a: {b: {c: {x: 7, for k in ["x"] {v: params.a.b.c[k]}}}}
+    w: params.a.b.c.v
+}
+workflow: {name: "\(params.w)", steps: {s: {kind: "noop"}}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("chained dynamic group");
+    assert_eq!(value.to_json().expect("json")["workflow"]["name"], "7");
+}
