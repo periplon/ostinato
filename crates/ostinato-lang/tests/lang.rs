@@ -6042,3 +6042,46 @@ over: 9223372036854775808
         "arbitrary-precision list indexes must be range-checked"
     );
 }
+
+#[test]
+fn big_integer_bounds_and_builtins_match_cue() {
+    let source = r#"
+package demo
+import "math"
+import "regexp"
+import "time"
+import "list"
+bounded: (>=9223372036854775808 & <=9223372036854775810) & 9223372036854775809
+not_equal: (int & !=123456789012345678901234567890) & 5
+sqrt: math.Sqrt(9223372036854775808)
+pow: math.Pow(9223372036854775808, 1)
+found: regexp.FindAll("a", "aaa", 9223372036854775808)
+duration: time.FormatDuration(9223372036854775808)
+range: (list.Range(9223372036854775808, 9223372036854775811, 1)[0]) & int
+"#;
+    let file = ostinato_lang::parse(source).expect("parse big builtins");
+    let mut imports = BTreeMap::new();
+    for name in ["math", "regexp", "time", "list"] {
+        imports.insert(
+            name.to_owned(),
+            ostinato_lang::builtin_module(name).expect("builtin module"),
+        );
+    }
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["bounded"].to_string(), "9223372036854775809");
+    assert_eq!(json["not_equal"].to_string(), "5");
+    assert_eq!(json["sqrt"].to_string(), "3037000499.97605");
+    assert_eq!(json["pow"].to_string(), "9223372036854775808");
+    assert_eq!(json["found"], serde_json::json!(["a", "a", "a"]));
+    assert_eq!(json["duration"], "2562047h47m16.854775807s");
+    assert_eq!(json["range"].to_string(), "9223372036854775808");
+
+    let conflict = "package demo\nx: 9223372036854775808 & 9223372036854775808.0\n";
+    let file = ostinato_lang::parse(conflict).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "BigInt and float must not unify"
+    );
+}

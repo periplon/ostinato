@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.15.1
+
+Big-integer bounds and builtin argument coverage.
+
+- BigInt operands work in `>=`/`>`/`<=`/`<`/`!=` bounds, including big
+  interval typing.
+- BigInt/float unification conflicts like CUE; `math.Sqrt/Pow/Exp/Log`,
+  `regexp.FindAll` limits, `time.FormatDuration` (saturating), and `list.Range`
+  element typing accept big integers.
+- Exact integer `math.Pow` for big integral bases/exponents.
+- 337 tests (61 CLI E2E, 1 conformance, 233 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.15.0
 
 Arbitrary-precision integer literals.
