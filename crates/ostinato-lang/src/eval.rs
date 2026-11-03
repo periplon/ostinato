@@ -1434,7 +1434,12 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                                 "non-concrete value in string interpolation",
                             ));
                         }
-                        out.push_str(&concrete.display());
+                        match concrete {
+                            Value::Bytes(bytes) => {
+                                out.push_str(&String::from_utf8_lossy(bytes));
+                            }
+                            other => out.push_str(&other.display()),
+                        }
                     }
                 }
             }
@@ -2556,9 +2561,41 @@ fn regex_arg(arguments: &[Value], index: usize, span: Span) -> Result<&str, Lang
     }
 }
 
+fn translate_re2_pattern(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut rest = pattern;
+    while let Some(index) = rest.find("\\Q") {
+        out.push_str(&rest[..index]);
+        rest = &rest[index + 2..];
+        if let Some(end) = rest.find("\\E") {
+            out.push_str(&regex::escape(&rest[..end]));
+            rest = &rest[end + 2..];
+        } else {
+            out.push_str(&regex::escape(rest));
+            rest = "";
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn regex_compile(pattern: &str, span: Span) -> Result<regex::Regex, LangError> {
-    regex::Regex::new(pattern)
+    regex::Regex::new(&translate_re2_pattern(pattern))
         .map_err(|err| LangError::conflict(span.line, span.col, format!("invalid regex: {err}")))
+}
+
+fn quote_meta(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        if matches!(
+            character,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            out.push('\\');
+        }
+        out.push(character);
+    }
+    out
 }
 
 fn apply_regexp_builtin(
@@ -2573,11 +2610,10 @@ fn apply_regexp_builtin(
         }
         Builtin::RegexpFind => {
             let regex = regex_compile(regex_arg(arguments, 0, span)?, span)?;
-            Ok(Value::String(
-                regex
-                    .find(regex_arg(arguments, 1, span)?)
-                    .map_or_else(String::new, |found| found.as_str().to_owned()),
-            ))
+            let Some(found) = regex.find(regex_arg(arguments, 1, span)?) else {
+                return Err(LangError::conflict(span.line, span.col, "no match"));
+            };
+            Ok(Value::String(found.as_str().to_owned()))
         }
         Builtin::RegexpFindAll => {
             let regex = regex_compile(regex_arg(arguments, 0, span)?, span)?;
@@ -2601,6 +2637,9 @@ fn apply_regexp_builtin(
                     .map(|found| Value::String(found.as_str().to_owned()))
                     .collect()
             };
+            if values.is_empty() {
+                return Err(LangError::conflict(span.line, span.col, "no match"));
+            }
             Ok(Value::List(values))
         }
         Builtin::RegexpReplaceAll => {
@@ -2611,9 +2650,7 @@ fn apply_regexp_builtin(
                 regex.replace_all(text, replacement).into_owned(),
             ))
         }
-        Builtin::RegexpQuoteMeta => {
-            Ok(Value::String(regex::escape(regex_arg(arguments, 0, span)?)))
-        }
+        Builtin::RegexpQuoteMeta => Ok(Value::String(quote_meta(regex_arg(arguments, 0, span)?))),
         Builtin::RegexpValid => {
             regex_compile(regex_arg(arguments, 0, span)?, span)?;
             Ok(Value::Bool(true))
@@ -2627,6 +2664,27 @@ fn numeric_f64(value: &Value) -> Option<f64> {
         Value::Int(value) => Some(*value as f64),
         Value::Float(value) => value.to_string().parse::<f64>().ok(),
         _ => None,
+    }
+}
+
+fn math_decimal(arguments: &[Value], index: usize, span: Span) -> Result<BigDecimal, LangError> {
+    match arguments.get(index) {
+        Some(Value::Int(value)) => Ok(BigDecimal::from(*value)),
+        Some(Value::Float(value)) => Ok(value.clone()),
+        _ => Err(LangError::conflict(
+            span.line,
+            span.col,
+            "math function requires a number",
+        )),
+    }
+}
+
+fn math_decimal_number(value: BigDecimal) -> Value {
+    let text = value.to_string();
+    if let Ok(int) = text.parse::<i64>() {
+        Value::Int(int)
+    } else {
+        Value::Float(value)
     }
 }
 
@@ -2665,10 +2723,16 @@ fn apply_math_builtin(
                 "math.Abs requires a number",
             )),
         },
-        Builtin::MathFloor => Ok(math_number(math_arg(arguments, 0, span)?.floor())),
-        Builtin::MathCeil => Ok(math_number(math_arg(arguments, 0, span)?.ceil())),
-        Builtin::MathRound => Ok(math_number(math_arg(arguments, 0, span)?.round())),
-        Builtin::MathTrunc => Ok(math_number(math_arg(arguments, 0, span)?.trunc())),
+        Builtin::MathFloor | Builtin::MathCeil | Builtin::MathRound | Builtin::MathTrunc => {
+            let decimal = math_decimal(arguments, 0, span)?;
+            let rounding = match builtin {
+                Builtin::MathFloor => RoundingMode::Floor,
+                Builtin::MathCeil => RoundingMode::Ceiling,
+                Builtin::MathRound => RoundingMode::HalfUp,
+                _ => RoundingMode::Down,
+            };
+            Ok(math_decimal_number(decimal.with_scale_round(0, rounding)))
+        }
         Builtin::MathSqrt => Ok(math_number(math_arg(arguments, 0, span)?.sqrt())),
         Builtin::MathPow => Ok(math_number(
             math_arg(arguments, 0, span)?.powf(math_arg(arguments, 1, span)?),
@@ -2691,38 +2755,104 @@ fn time_arg(arguments: &[Value], index: usize, span: Span) -> Result<&str, LangE
 }
 
 fn parse_duration_nanos(text: &str) -> Option<i64> {
-    let mut total: i64 = 0;
-    let mut rest = text.trim();
+    let text = text.trim();
+    if text == "0" {
+        return Some(0);
+    }
+    let (sign, rest) = match text.strip_prefix('-') {
+        Some(rest) => (-1i64, rest),
+        None => (1i64, text.strip_prefix('+').unwrap_or(text)),
+    };
     if rest.is_empty() {
         return None;
     }
+    let mut total: f64 = 0.0;
+    let mut rest = rest;
     while !rest.is_empty() {
-        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-        let digits_len = digits.len();
-        if digits_len == 0 {
+        let number_len = rest
+            .chars()
+            .take_while(|character| character.is_ascii_digit() || *character == '.')
+            .count();
+        if number_len == 0 {
             return None;
         }
-        let number: i64 = digits.parse().ok()?;
-        rest = &rest[digits_len..];
-        let units = ["ns", "us", "µs", "ms", "s", "m", "h"];
-        let (unit, scale) = units.iter().find_map(|unit| {
-            rest.starts_with(unit).then_some((
-                *unit,
-                match *unit {
-                    "ns" => Some(1i64),
-                    "us" | "µs" => Some(1_000),
-                    "ms" => Some(1_000_000),
-                    "s" => Some(1_000_000_000),
-                    "m" => Some(60_000_000_000),
-                    "h" => Some(3_600_000_000_000),
-                    _ => None,
-                },
-            ))
-        })?;
+        let number: f64 = rest[..number_len].parse().ok()?;
+        rest = &rest[number_len..];
+        let (unit, scale) = [
+            ("ns", 1.0),
+            ("us", 1_000.0),
+            ("µs", 1_000.0),
+            ("ms", 1_000_000.0),
+            ("s", 1_000_000_000.0),
+            ("m", 60_000_000_000.0),
+            ("h", 3_600_000_000_000.0),
+        ]
+        .iter()
+        .find(|(unit, _)| rest.starts_with(unit))
+        .copied()?;
         rest = &rest[unit.len()..];
-        total = total.checked_add(number.checked_mul(scale?)?)?;
+        total += number * scale;
     }
-    Some(total)
+    if !total.is_finite() {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    Some((total * sign as f64) as i64)
+}
+
+fn rfc3339_nano(datetime: &chrono::DateTime<chrono::Utc>) -> String {
+    let text = datetime.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let Some(dot) = text.find('.') else {
+        return text;
+    };
+    let end = text[dot..]
+        .find(['Z', '+', '-'])
+        .map_or(text.len(), |offset| dot + offset);
+    let fraction = &text[dot + 1..end];
+    let trimmed = fraction.trim_end_matches('0');
+    if trimmed.is_empty() {
+        format!("{}{}", &text[..dot], &text[end..])
+    } else {
+        format!("{}.{}{}", &text[..dot], trimmed, &text[end..])
+    }
+}
+
+fn parse_layout(
+    layout: &str,
+    text: &str,
+    span: Span,
+) -> Result<chrono::DateTime<chrono::Utc>, LangError> {
+    use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
+    let invalid = || LangError::conflict(span.line, span.col, format!("invalid time `{text}`"));
+    match layout {
+        "2006-01-02" => {
+            let date = NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|_| invalid())?;
+            Ok(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).ok_or_else(invalid)?))
+        }
+        "15:04:05" => {
+            let time = NaiveTime::parse_from_str(text, "%H:%M:%S").map_err(|_| invalid())?;
+            let date = NaiveDate::from_ymd_opt(0, 1, 1).ok_or_else(invalid)?;
+            Ok(Utc.from_utc_datetime(&date.and_time(time)))
+        }
+        "3:04PM" => {
+            let time = NaiveTime::parse_from_str(text, "%I:%M%p").map_err(|_| invalid())?;
+            let date = NaiveDate::from_ymd_opt(0, 1, 1).ok_or_else(invalid)?;
+            Ok(Utc.from_utc_datetime(&date.and_time(time)))
+        }
+        "2006-01-02 15:04:05" => {
+            let naive = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S")
+                .map_err(|_| invalid())?;
+            Ok(Utc.from_utc_datetime(&naive))
+        }
+        "2006-01-02T15:04:05Z07:00" => DateTime::parse_from_rfc3339(text)
+            .map(|value| value.with_timezone(&Utc))
+            .map_err(|_| invalid()),
+        _ => Err(LangError::conflict(
+            span.line,
+            span.col,
+            format!("unsupported time layout `{layout}`"),
+        )),
+    }
 }
 
 fn apply_time_builtin(
@@ -2730,7 +2860,7 @@ fn apply_time_builtin(
     arguments: &[Value],
     span: Span,
 ) -> Result<Value, LangError> {
-    use chrono::{DateTime, NaiveDate, SecondsFormat, TimeZone, Utc};
+    use chrono::DateTime;
 
     match builtin {
         Builtin::TimeUnix => {
@@ -2743,46 +2873,26 @@ fn apply_time_builtin(
                     "time.Unix requires seconds and nanoseconds",
                 ));
             };
-            let nanos = u32::try_from(*nanos)
-                .map_err(|_| LangError::conflict(span.line, span.col, "invalid nanoseconds"))?;
-            let datetime = DateTime::from_timestamp(*seconds, nanos)
+            let total = i128::from(*seconds) * 1_000_000_000 + i128::from(*nanos);
+            let seconds = i64::try_from(total.div_euclid(1_000_000_000))
+                .map_err(|_| LangError::conflict(span.line, span.col, "invalid timestamp"))?;
+            let nanos = u32::try_from(total.rem_euclid(1_000_000_000))
+                .map_err(|_| LangError::conflict(span.line, span.col, "invalid timestamp"))?;
+            let datetime = DateTime::from_timestamp(seconds, nanos)
                 .ok_or_else(|| LangError::conflict(span.line, span.col, "invalid timestamp"))?;
-            Ok(Value::String(
-                datetime.to_rfc3339_opts(SecondsFormat::AutoSi, true),
-            ))
+            Ok(Value::String(rfc3339_nano(&datetime)))
         }
         Builtin::TimeParse => {
             let layout = time_arg(arguments, 0, span)?;
             let text = time_arg(arguments, 1, span)?;
-            if layout == "2006-01-02" {
-                let date = NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|err| {
-                    LangError::conflict(span.line, span.col, format!("invalid time: {err}"))
-                })?;
-                let datetime = Utc.from_utc_datetime(
-                    &date
-                        .and_hms_opt(0, 0, 0)
-                        .ok_or_else(|| LangError::conflict(span.line, span.col, "invalid time"))?,
-                );
-                return Ok(Value::String(
-                    datetime.to_rfc3339_opts(SecondsFormat::AutoSi, true),
-                ));
-            }
-            let datetime = DateTime::parse_from_rfc3339(text).map_err(|err| {
-                LangError::conflict(span.line, span.col, format!("invalid time: {err}"))
-            })?;
-            Ok(Value::String(
-                datetime
-                    .with_timezone(&Utc)
-                    .to_rfc3339_opts(SecondsFormat::AutoSi, true),
-            ))
+            let datetime = parse_layout(layout, text, span)?;
+            Ok(Value::String(rfc3339_nano(&datetime)))
         }
         Builtin::TimeFormat => {
             let time = time_arg(arguments, 0, span)?;
             let layout = time_arg(arguments, 1, span)?;
-            let recognized = matches!(layout, "2006-01-02" | "2006-01-02T15:04:05Z07:00");
-            let valid = DateTime::parse_from_rfc3339(time).is_ok()
-                || NaiveDate::parse_from_str(time, "%Y-%m-%d").is_ok();
-            Ok(Value::Bool(recognized && valid))
+            parse_layout(layout, time, span)?;
+            Ok(Value::Bool(true))
         }
         Builtin::TimeParseDuration => {
             let text = time_arg(arguments, 0, span)?;
@@ -2792,7 +2902,9 @@ fn apply_time_builtin(
         }
         Builtin::TimeDuration => {
             let text = time_arg(arguments, 0, span)?;
-            Ok(Value::Bool(parse_duration_nanos(text).is_some()))
+            parse_duration_nanos(text)
+                .ok_or_else(|| LangError::conflict(span.line, span.col, "invalid duration"))?;
+            Ok(Value::Bool(true))
         }
         _ => unreachable!("time builtin"),
     }

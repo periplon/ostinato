@@ -209,7 +209,29 @@ impl Parser {
     fn parse_attribute(&mut self) -> Result<Attribute, LangError> {
         let span = self.span();
         self.bump(); // '@'
-        let name = self.expect_ident()?;
+        let name = match self.peek_tok().clone() {
+            Tok::Ident(name) => {
+                self.bump();
+                name
+            }
+            Tok::If => {
+                self.bump();
+                "if".to_owned()
+            }
+            Tok::For => {
+                self.bump();
+                "for".to_owned()
+            }
+            Tok::In => {
+                self.bump();
+                "in".to_owned()
+            }
+            Tok::Let => {
+                self.bump();
+                "let".to_owned()
+            }
+            _ => return Err(self.error("attribute name expected")),
+        };
         let mut args = Vec::new();
         if self.eat(&Tok::LParen) {
             let mut current = String::new();
@@ -255,6 +277,9 @@ impl Parser {
         while matches!(self.peek_tok(), Tok::At) {
             attributes.push(self.parse_attribute()?);
             self.skip_newlines();
+        }
+        if matches!(self.peek_tok(), Tok::RBrace | Tok::Eof) {
+            return Ok(None);
         }
         if matches!(self.peek_tok(), Tok::LBracket) {
             let saved = self.pos;

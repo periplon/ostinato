@@ -16,6 +16,13 @@ pub enum TagType {
     Number,
 }
 
+/// A `@tag` declaration: external name, parameter field and injection type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagInfo {
+    pub field: String,
+    pub ty: TagType,
+}
+
 fn label_name(field: &crate::ast::Field) -> Option<&str> {
     match &field.label {
         Label::Name(name, _) => Some(name),
@@ -23,30 +30,42 @@ fn label_name(field: &crate::ast::Field) -> Option<&str> {
     }
 }
 
-fn tag_type(field: &crate::ast::Field) -> Option<TagType> {
+fn tag_info(field_name: &str, field: &crate::ast::Field) -> Option<(String, TagType)> {
     let attribute = field
         .attributes
         .iter()
         .find(|attribute| attribute.name == "tag")?;
     let mut ty = TagType::String;
+    let mut name = field_name.to_owned();
+    let mut saw_name = false;
     for argument in &attribute.args {
-        if let Some((key, value)) = argument.split_once('=')
-            && key.trim() == "type"
-        {
-            ty = match value.trim() {
-                "int" => TagType::Int,
-                "bool" => TagType::Bool,
-                "number" => TagType::Number,
-                _ => TagType::String,
-            };
+        if let Some((key, value)) = argument.split_once('=') {
+            match key.trim() {
+                "type" => {
+                    ty = match value.trim() {
+                        "int" => TagType::Int,
+                        "bool" => TagType::Bool,
+                        "number" => TagType::Number,
+                        _ => TagType::String,
+                    };
+                }
+                "name" => {
+                    name = value.trim().to_owned();
+                    saw_name = true;
+                }
+                _ => {}
+            }
+        } else if !saw_name {
+            name = argument.trim().to_owned();
+            saw_name = true;
         }
     }
-    Some(ty)
+    Some((name, ty))
 }
 
 /// Map parameter field names to their `@tag` injection type.
 #[must_use]
-pub fn parameter_tags(file: &File) -> BTreeMap<String, TagType> {
+pub fn parameter_tags(file: &File) -> BTreeMap<String, TagInfo> {
     let mut tags = BTreeMap::new();
     let mut saw_params = false;
     for item in &file.items {
@@ -66,7 +85,7 @@ pub fn parameter_tags(file: &File) -> BTreeMap<String, TagType> {
     tags
 }
 
-fn collect_tags(items: &[StructItem], tags: &mut BTreeMap<String, TagType>) {
+fn collect_tags(items: &[StructItem], tags: &mut BTreeMap<String, TagInfo>) {
     for item in items {
         let StructItem::Field(field) = item else {
             continue;
@@ -74,8 +93,14 @@ fn collect_tags(items: &[StructItem], tags: &mut BTreeMap<String, TagType>) {
         let Some(name) = label_name(field) else {
             continue;
         };
-        if let Some(ty) = tag_type(field) {
-            tags.insert(name.to_owned(), ty);
+        if let Some((tag_name, ty)) = tag_info(name, field) {
+            tags.insert(
+                tag_name,
+                TagInfo {
+                    field: name.to_owned(),
+                    ty,
+                },
+            );
         }
         if let Expr::Struct(inner, _) = &field.value {
             collect_tags(inner, tags);

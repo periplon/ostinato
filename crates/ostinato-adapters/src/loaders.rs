@@ -27,7 +27,9 @@ impl SpecLoader for NativeLoader {
         let root = evaluate_path(&absolute, &request.params, &mut cache, &mut stack, false)
             .map_err(|err| PortError::Loader(err.to_string()))?;
         let spec = compile_value(&root).map_err(|err| PortError::Loader(err.to_string()))?;
-        let params = parameters_json(&root, &request.params)
+        let tags =
+            collect_parameter_tags(&absolute).map_err(|err| PortError::Loader(err.to_string()))?;
+        let params = parameters_json(&root, &request.params, &tags)
             .map_err(|err| PortError::Loader(err.to_string()))?;
         Ok(LoadedWorkflow {
             spec,
@@ -104,10 +106,11 @@ fn evaluate_path(
     let tags = ostinato_lang::parameter_tags(&combined);
     let mut injected = BTreeMap::new();
     for (key, raw) in overrides {
-        injected.insert(
-            key.clone(),
-            parse_override_value(raw, tags.get(key).copied()),
-        );
+        if let Some(info) = tags.get(key) {
+            injected.insert(info.field.clone(), parse_override_value(raw, Some(info.ty)));
+        } else {
+            injected.insert(key.clone(), parse_override_value(raw, None));
+        }
     }
     let value = eval_file_with_imports_mode(&combined, &imports, &injected, include_definitions)?;
     cache.insert(key, value.clone());
@@ -324,13 +327,13 @@ fn parse_override_value(raw: &str, tag: Option<ostinato_lang::TagType>) -> Value
     match tag {
         Some(TagType::String) => return Value::String(raw.to_owned()),
         Some(TagType::Int) => {
-            if let Ok(value) = trimmed.parse::<i64>() {
+            if let Some(value) = parse_tag_int(trimmed) {
                 return Value::Int(value);
             }
         }
         Some(TagType::Bool) => match trimmed {
-            "true" => return Value::Bool(true),
-            "false" => return Value::Bool(false),
+            "true" | "TRUE" | "True" | "t" | "T" | "1" => return Value::Bool(true),
+            "false" | "FALSE" | "False" | "f" | "F" | "0" => return Value::Bool(false),
             _ => {}
         },
         Some(TagType::Number) => {
@@ -351,9 +354,34 @@ fn parse_override_value(raw: &str, tag: Option<ostinato_lang::TagType>) -> Value
     Value::String(raw.to_owned())
 }
 
+fn parse_tag_int(text: &str) -> Option<i64> {
+    let text = text.trim().replace('_', "");
+    let text = text.strip_prefix('+').unwrap_or(&text);
+    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        return i64::from_str_radix(hex, 16).ok();
+    }
+    text.parse::<i64>().ok()
+}
+
+fn collect_parameter_tags(
+    path: &Path,
+) -> Result<BTreeMap<String, ostinato_lang::TagInfo>, ostinato_lang::LangError> {
+    let files = collect_package_files(path)?;
+    let mut tags = BTreeMap::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).map_err(|err| {
+            ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
+        })?;
+        let parsed = ostinato_lang::parse(&text)?;
+        tags.extend(ostinato_lang::parameter_tags(&parsed));
+    }
+    Ok(tags)
+}
+
 fn parameters_json(
     root: &Value,
     overrides: &BTreeMap<String, String>,
+    tags: &BTreeMap<String, ostinato_lang::TagInfo>,
 ) -> Result<Json, ostinato_lang::LangError> {
     let Some(params_value) = root_value(root, "params") else {
         if overrides.is_empty() {
@@ -371,7 +399,10 @@ fn parameters_json(
     };
     if !overrides.is_empty() {
         for key in overrides.keys() {
-            if !params.contains_key(key) {
+            let field = tags
+                .get(key)
+                .map_or(key.as_str(), |info| info.field.as_str());
+            if !params.contains_key(field) {
                 return Err(ostinato_lang::LangError::Workflow(format!(
                     "unknown parameter `{key}`; declare it under `params`"
                 )));
