@@ -443,6 +443,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         self_rhs: RefCell::new(None),
         params_scope: Cell::new(false),
         params_context: RefCell::new(None),
+        params_prefix: RefCell::new(Vec::new()),
     };
     if let Json::Object(map) = context {
         let mut values = BTreeMap::new();
@@ -552,6 +553,7 @@ struct Frame<'a> {
     self_rhs: RefCell<Option<String>>,
     params_scope: Cell<bool>,
     params_context: RefCell<Option<Rc<ParamsContext>>>,
+    params_prefix: RefCell<Vec<String>>,
 }
 
 impl<'a> Frame<'a> {
@@ -588,6 +590,7 @@ impl<'a> Frame<'a> {
             params_context: RefCell::new(
                 parent.and_then(|parent| parent.params_context.borrow().clone()),
             ),
+            params_prefix: RefCell::new(Vec::new()),
         };
 
         // Pass 1: static fields and lazy let bindings.
@@ -1153,6 +1156,13 @@ impl<'a> Frame<'a> {
         path: &[(String, bool)],
         span: Span,
     ) -> Option<Result<Value, LangError>> {
+        let prefix = self.params_prefix.borrow().clone();
+        if !prefix.is_empty() {
+            let keys = params_cache_key(path);
+            if keys.len() > prefix.len() && keys[..prefix.len()] == prefix[..] {
+                return self.resolve_local_segment(&path[prefix.len()..], span);
+            }
+        }
         let ((first, quoted), rest) = path.split_first()?;
         let mut frame = Some(self);
         let mut value = None;
@@ -1169,7 +1179,9 @@ impl<'a> Frame<'a> {
             }
             frame = current.parent;
         }
-        let mut value = value?;
+        let Some(mut value) = value else {
+            return self.resolve_local_segment(path, span);
+        };
         for (field, quoted) in rest {
             match select_value(&value, field, *quoted, span) {
                 Ok(next) => value = next,
@@ -1185,10 +1197,22 @@ impl<'a> Frame<'a> {
         span: Span,
     ) -> Option<Result<Value, LangError>> {
         let ((first, quoted), tail) = rest.split_first()?;
-        let key = self.segment_field_key(first, *quoted)?;
-        let mut value = match self.eval_field_key(&key, span) {
-            Ok(value) => value,
-            Err(err) => return Some(Err(err)),
+        let mut value = match self.segment_field_key(first, *quoted) {
+            Some(key) => {
+                if self.evaluating.borrow().contains(&key)
+                    && !self.values.borrow().contains_key(&key)
+                {
+                    return None;
+                }
+                match self.eval_field_key(&key, span) {
+                    Ok(value) => value,
+                    Err(err) => return Some(Err(err)),
+                }
+            }
+            None => {
+                let key = self.generated_value_key(first, *quoted)?;
+                self.values.borrow().get(&key).cloned()?
+            }
         };
         for (field, quoted) in tail {
             match select_value(&value, field, *quoted, span) {
@@ -1232,16 +1256,7 @@ impl<'a> Frame<'a> {
                 "params are not being evaluated",
             ));
         };
-        let cache_key: Vec<String> = path
-            .iter()
-            .map(|(segment, quoted)| {
-                if *quoted {
-                    format!("\u{5}{segment}")
-                } else {
-                    segment.clone()
-                }
-            })
-            .collect();
+        let cache_key = params_cache_key(path);
         if let Some(value) = context.values.borrow().get(&cache_key) {
             return Ok(value.clone());
         }
@@ -1274,12 +1289,12 @@ impl<'a> Frame<'a> {
             for (index, (segment, quoted)) in path.iter().enumerate() {
                 let child = Frame::from_static(&items, Some(root), HashMap::new())?;
                 child.params_scope.set(true);
+                *child.params_prefix.borrow_mut() = cache_key[..index].to_vec();
                 if index == 0 {
                     for (key, value) in &context.overrides {
                         child.values.borrow_mut().insert(key.clone(), value.clone());
                     }
                 }
-                child.expand(&items)?;
                 for (name, value) in &bindings {
                     let shadowed = child.fields.borrow().contains_key(name)
                         || child.lets.borrow().contains_key(name)
@@ -1288,6 +1303,7 @@ impl<'a> Frame<'a> {
                         child.vars.borrow_mut().insert(name.clone(), value.clone());
                     }
                 }
+                child.expand(&items)?;
                 child.reconcile_generated_required_fields()?;
                 let field_key = child.segment_field_key(segment, *quoted);
                 let overridden = index == 0 && context.overrides.contains_key(segment);
@@ -1356,23 +1372,35 @@ impl<'a> Frame<'a> {
                     };
                     if let Some(next_items) = struct_items {
                         for item in &items {
-                            if let StructItem::Field(field) = item
-                                && let crate::ast::Label::Name(name, _) = &field.label
-                                && name != segment
-                                && !field.quoted
-                                && !name.starts_with('_')
-                                && let Some(sibling_key) = child.any_field_key(name)
-                            {
-                                let optional = child
-                                    .fields
-                                    .borrow()
-                                    .get(&sibling_key)
-                                    .is_some_and(|definition| definition.optional);
-                                if !optional
-                                    && let Ok(value) = child.eval_field_key(&sibling_key, span)
-                                {
-                                    bindings.insert(name.clone(), value);
+                            match item {
+                                StructItem::Field(field) => {
+                                    if let crate::ast::Label::Name(name, _) = &field.label
+                                        && name != segment
+                                        && !field.quoted
+                                        && !name.starts_with('_')
+                                        && let Some(sibling_key) = child.any_field_key(name)
+                                    {
+                                        let optional = child
+                                            .fields
+                                            .borrow()
+                                            .get(&sibling_key)
+                                            .is_some_and(|definition| definition.optional);
+                                        if !optional
+                                            && let Ok(value) =
+                                                child.eval_field_key(&sibling_key, span)
+                                        {
+                                            bindings.insert(name.clone(), value);
+                                        }
+                                    }
                                 }
+                                StructItem::Let { name, .. } => {
+                                    if !bindings.contains_key(name)
+                                        && let Ok(value) = child.eval_let(name, span)
+                                    {
+                                        bindings.insert(name.clone(), value);
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                         items = next_items;
@@ -2102,6 +2130,18 @@ fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<
             format!("cannot select `{field}` from {}", other.type_name()),
         )),
     }
+}
+
+fn params_cache_key(path: &[(String, bool)]) -> Vec<String> {
+    path.iter()
+        .map(|(segment, quoted)| {
+            if *quoted {
+                format!("\u{5}{segment}")
+            } else {
+                segment.clone()
+            }
+        })
+        .collect()
 }
 
 fn params_select_path(expr: &Expr) -> Option<Vec<(String, bool)>> {
