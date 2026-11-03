@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.16.4
+
+- Declaration-merge metadata/nesting for generated definitions; dependent-field
+  recomputation documented as a limit.
+- 340 tests (61 CLI E2E, 1 conformance, 236 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.16.3
 
 - Declaration merge for declared+generated same-name definitions.

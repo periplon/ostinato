@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.16.4
+
+Generated declaration-merge metadata and nesting.
+
+- Open/pattern/definition metadata from both declarations is retained when a
+  declared and generated definition merge; nested struct declarations merge
+  recursively.
+- Dependent fields after a post-hoc generated declaration merge are documented
+  as a SCOPE limit.
+- 340 tests (61 CLI E2E, 1 conformance, 236 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.16.3
 
 Declared+generated definition declaration merge.

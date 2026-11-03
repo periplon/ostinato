@@ -1220,7 +1220,7 @@ impl<'a> Frame<'a> {
                 None
             };
             let merged = match (prior, declared) {
-                (Some(prior), _) => unify_values(&prior, &value, Span::default())?,
+                (Some(prior), _) => merge_declaration(&prior, &value, Span::default())?,
                 (None, Some(declared)) => merge_declaration(&declared, &value, Span::default())?,
                 (None, None) => value,
             };
@@ -2778,65 +2778,119 @@ fn try_definition_unify(
 }
 
 fn merge_declaration(left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
+    fn is_struct_like(value: &Value) -> bool {
+        matches!(value, Value::Definition { .. } | Value::Struct(_))
+    }
+    fn merge_map(
+        left: &BTreeMap<String, Value>,
+        right: &BTreeMap<String, Value>,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>, LangError> {
+        let mut out = left.clone();
+        for (key, value) in right {
+            if let Some(existing) = out.get(key).cloned() {
+                out.insert(
+                    key.clone(),
+                    if is_struct_like(&existing) && is_struct_like(value) {
+                        merge_declaration(&existing, value, span)?
+                    } else {
+                        unify_values(&existing, value, span)?
+                    },
+                );
+            } else {
+                out.insert(key.clone(), value.clone());
+            }
+        }
+        Ok(out)
+    }
+
     match (left, right) {
+        (
+            Value::Definition {
+                fields: left_fields,
+                optional: left_optional,
+                definitions: left_definitions,
+                patterns: left_patterns,
+                open: left_open,
+                ..
+            },
+            Value::Definition {
+                fields: right_fields,
+                optional: right_optional,
+                definitions: right_definitions,
+                patterns: right_patterns,
+                open: right_open,
+                ..
+            },
+        ) => {
+            let fields = merge_map(left_fields, right_fields, span)?;
+            let optional = merge_map(left_optional, right_optional, span)?;
+            let definitions = merge_map(left_definitions, right_definitions, span)?;
+            let mut patterns = left_patterns.clone();
+            for pattern in right_patterns {
+                if !patterns.contains(pattern) {
+                    patterns.push(pattern.clone());
+                }
+            }
+            let open = *left_open || *right_open;
+            let closed = !open;
+            let admissions = if closed {
+                vec![Admission {
+                    names: fields.keys().chain(optional.keys()).cloned().collect(),
+                    patterns: patterns
+                        .iter()
+                        .map(|(pattern, _)| pattern.clone())
+                        .collect(),
+                }]
+            } else {
+                Vec::new()
+            };
+            Ok(Value::Definition {
+                fields,
+                optional,
+                definitions,
+                patterns,
+                closed,
+                open,
+                admissions,
+            })
+        }
         (
             Value::Definition {
                 fields: left_fields,
                 optional,
                 definitions,
                 patterns,
-                closed,
                 open,
-                admissions,
-            },
-            Value::Definition {
-                fields: right_fields,
                 ..
-            },
-        )
-        | (
-            Value::Definition {
-                fields: left_fields,
-                optional,
-                definitions,
-                patterns,
-                closed,
-                open,
-                admissions,
             },
             Value::Struct(right_fields),
         ) => {
-            let mut fields = left_fields.clone();
-            for (key, value) in right_fields {
-                if let Some(existing) = fields.get(key).cloned() {
-                    fields.insert(key.clone(), unify_values(&existing, value, span)?);
-                } else {
-                    fields.insert(key.clone(), value.clone());
-                }
-            }
-            let mut admissions = admissions.clone();
-            if admissions.is_empty() {
-                admissions.push(Admission {
-                    names: fields.keys().cloned().collect(),
+            let fields = merge_map(left_fields, right_fields, span)?;
+            let closed = !*open;
+            let admissions = if closed {
+                vec![Admission {
+                    names: fields.keys().chain(optional.keys()).cloned().collect(),
                     patterns: patterns
                         .iter()
                         .map(|(pattern, _)| pattern.clone())
                         .collect(),
-                });
+                }]
             } else {
-                for admission in &mut admissions {
-                    admission.names.extend(fields.keys().cloned());
-                }
-            }
+                Vec::new()
+            };
             Ok(Value::Definition {
                 fields,
                 optional: optional.clone(),
                 definitions: definitions.clone(),
                 patterns: patterns.clone(),
-                closed: *closed,
+                closed,
                 open: *open,
                 admissions,
             })
+        }
+        (Value::Struct(left_fields), Value::Struct(right_fields)) => {
+            Ok(Value::Struct(merge_map(left_fields, right_fields, span)?))
         }
         _ => unify_values(left, right, span),
     }
