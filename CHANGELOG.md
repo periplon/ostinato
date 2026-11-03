@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.11.1
+
+Multiline bytes dedent and CR review corrections.
+
+- Multiline bytes dedent now scans interpolation source separately, so an
+  expression can span lines without being treated as literal text (e.g.
+  `x\(1 +\n2)y`).
+- Every CR in literal text is stripped, matching CUE's `stripCR`; CRLF blank
+  lines contribute their CR to the leading-whitespace check, so a non-empty
+  closing indentation rejects them like CUE.
+- A line that begins with `\(` at column zero contributes an empty leading
+  run and therefore requires an empty closing indentation.
+- 280 tests (49 CLI E2E, 1 conformance, 217 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
+
 ## v0.11.0
 
 Multiline and interpolated bytes literals.

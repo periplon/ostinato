@@ -18,6 +18,13 @@ line2
 	multiline_interp: '''
 a\(1+2)b
 '''
+	multiline_interp_continuation: '''
+  x\(1 +
+2)y
+  '''
+	multiline_escaped_cr: '''
+  a\rb
+  '''
 	multiline_indent: '''
     line1
       line2
