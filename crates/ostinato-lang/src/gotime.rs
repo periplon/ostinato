@@ -254,20 +254,37 @@ fn take_number(input: &str, min: usize, max: usize) -> Option<(u32, &str)> {
     Some((value, &input[taken..]))
 }
 
-fn parse_fraction(input: &str, digits: usize) -> Option<(u32, &str)> {
-    let rest = input.strip_prefix(['.', ','])?;
-    let count = rest.chars().take_while(char::is_ascii_digit).count();
-    if count == 0 || count > digits {
-        return None;
-    }
+fn fraction_nanos(digits: &str, used: usize) -> Option<u32> {
     let mut nanos = 0u32;
-    for character in rest.chars().take(count) {
+    let mut taken = 0;
+    for character in digits.chars().take(used) {
         nanos = nanos * 10 + digit_value(character)?;
+        taken += 1;
     }
-    for _ in count..9 {
+    for _ in taken..9 {
         nanos *= 10;
     }
-    Some((nanos, &rest[count..]))
+    Some(nanos)
+}
+
+fn parse_fraction(input: &str, digits: usize, trim: bool) -> Option<(u32, &str)> {
+    let rest = input.strip_prefix(['.', ','])?;
+    let count = rest.chars().take_while(char::is_ascii_digit).count();
+    if trim {
+        if count == 0 {
+            return None;
+        }
+        let used = count.min(10);
+        let significant = used.min(9);
+        let nanos = fraction_nanos(rest, significant)?;
+        Some((nanos, &rest[used..]))
+    } else {
+        if count != digits {
+            return None;
+        }
+        let nanos = fraction_nanos(rest, digits)?;
+        Some((nanos, &rest[digits..]))
+    }
 }
 
 fn parse_nanoseconds(input: &str) -> Option<(u32, &str)> {
@@ -276,14 +293,9 @@ fn parse_nanoseconds(input: &str) -> Option<(u32, &str)> {
     if count == 0 {
         return None;
     }
-    let used = count.min(9);
-    let mut nanos = 0u32;
-    for character in rest.chars().take(used) {
-        nanos = nanos * 10 + digit_value(character)?;
-    }
-    for _ in used..9 {
-        nanos *= 10;
-    }
+    let used = count.min(10);
+    let significant = used.min(9);
+    let nanos = fraction_nanos(rest, significant)?;
     Some((nanos, &rest[used..]))
 }
 
@@ -459,7 +471,7 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
             }
             Item::Fraction { digits, trim } => {
                 if rest.starts_with(['.', ',']) {
-                    let (value, next) = parse_fraction(rest, *digits)?;
+                    let (value, next) = parse_fraction(rest, *digits, *trim)?;
                     nanos = value;
                     rest = next;
                 } else if !trim {
@@ -487,14 +499,16 @@ pub(crate) fn parse(layout: &str, value: &str) -> Option<ParsedTime> {
                 rest = next;
             }
             Item::ZoneName => {
-                let length = rest
-                    .chars()
-                    .take_while(|value| value.is_alphabetic())
-                    .count();
-                if length < 3 {
-                    return None;
+                // Go consumes the three-letter zone abbreviation; anything
+                // longer is trailing text.
+                let mut consumed = 0usize;
+                for _ in 0..3 {
+                    let character = rest[consumed..].chars().next()?;
+                    if !character.is_alphabetic() {
+                        return None;
+                    }
+                    consumed += character.len_utf8();
                 }
-                let consumed: usize = rest.chars().take(length).map(char::len_utf8).sum();
                 rest = &rest[consumed..];
                 offset_seconds = 0;
             }

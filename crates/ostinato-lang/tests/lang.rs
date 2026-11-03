@@ -5027,8 +5027,23 @@ k: time.Second
     assert_eq!(json["j"], "1h2m3.0005s");
     assert_eq!(json["k"], 1_000_000_000i64);
 
+    let fractions = r#"
+package demo
+import "time"
+a: time.Parse("2006-01-02T15:04:05.000Z07:00", "2024-03-05T06:07:08,123Z")
+b: time.Parse("2006-01-02T15:04:05.999Z07:00", "2024-03-05T06:07:08.1234567891Z")
+"#;
+    let file = ostinato_lang::parse(fractions).expect("parse");
+    let value = ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new())
+        .expect("fraction layouts");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], "2024-03-05T06:07:08.123Z");
+    assert_eq!(json["b"], "2024-03-05T06:07:08.123456789Z");
+
     for source in [
         r#"a: time.Parse("Mon", "Xyz")"#,
+        r#"a: time.Parse("MST", "PSTX")"#,
+        r#"a: time.Parse("2006-01-02T15:04:05.000Z07:00", "2024-03-05T06:07:08.12Z")"#,
         r#"a: time.Parse("2006-01", "2024-13")"#,
         r#"a: time.Parse("2006-01-02", "2024-02-30")"#,
         r#"a: time.Parse("15:04:05", "24:00:00")"#,
