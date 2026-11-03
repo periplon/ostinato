@@ -4117,3 +4117,57 @@ fn comprehension_labels_use_displayed_names_for_control_prefixes() {
     assert_eq!(json["keys"], serde_json::json!(["\u{3}a"]));
     assert_eq!(json["mapped"]["\u{3}a"], 1);
 }
+
+#[test]
+fn generated_params_fields_respect_hidden_quoting_namespaces() {
+    let generated_quoted = r#"
+package demo
+params: {for k in ["_h"] {"\(k)": 2}}
+v: params._h
+"#;
+    let file = ostinato_lang::parse(generated_quoted).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "identifier must not see a generated quoted _h"
+    );
+
+    let generated_hidden = r#"
+package demo
+params: {for k in ["x"] {_h: 1}}
+v: params._h
+"#;
+    let file = ostinato_lang::parse(generated_hidden).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("generated hidden");
+    assert_eq!(value.to_json().expect("json")["v"], 1);
+
+    let mixed = r#"
+package demo
+params: {_h: 1, for k in ["_h"] {"\(k)": 2}}
+a: params._h
+q: params."_h"
+"#;
+    let file = ostinato_lang::parse(mixed).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("mixed namespaces");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], 1);
+    assert_eq!(json["q"], 2);
+
+    let conflict = r#"
+package demo
+params: {_h: 1, for k in ["x"] {_h: 2}}
+v: params._h
+"#;
+    let file = ostinato_lang::parse(conflict).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "generated hidden fields must unify with declared hidden fields"
+    );
+}
+
+#[test]
+fn aliases_to_control_prefix_quoted_labels_resolve() {
+    let source = "package demo\ns: {A=\"\u{3}a\": 1, v: A}\n";
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("alias to control label");
+    assert_eq!(value.to_json().expect("json")["s"]["v"], 1);
+}

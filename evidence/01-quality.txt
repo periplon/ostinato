@@ -2,94 +2,85 @@
 exit=0
 
 ### cargo clippy --all-targets --all-features -- -D warnings
-    Checking ostinato-domain v0.7.5 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-domain)
-    Checking ostinato-lang v0.7.5 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-lang)
-error: this expression creates a reference which is immediately dereferenced by the compiler
-    --> crates/ostinato-lang/src/eval.rs:1923:43
-     |
-1923 |                 Frame::map_identifier_key(&map, field).and_then(|key| map.get(key))
-     |                                           ^^^^ help: change this to: `map`
-     |
-     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
-     = note: `-D clippy::needless-borrow` implied by `-D warnings`
-     = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`
-
-error: could not compile `ostinato-lang` (lib test) due to 1 previous error
-warning: build failed, waiting for other jobs to finish...
-error: could not compile `ostinato-lang` (lib) due to 1 previous error
-exit=101
+    Checking ostinato-domain v0.7.6 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-domain)
+    Checking ostinato-lang v0.7.6 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-lang)
+    Checking ostinato-application v0.7.6 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-application)
+    Checking ostinato-adapters v0.7.6 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-adapters)
+    Checking ostinato v0.7.6 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.28s
+exit=0
 
 ### cargo test --all
-   Compiling ostinato-domain v0.7.5 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-domain)
-   Compiling ostinato-lang v0.7.5 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-lang)
-   Compiling ostinato-application v0.7.5 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-application)
-   Compiling ostinato-adapters v0.7.5 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-adapters)
-   Compiling ostinato v0.7.5 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-cli)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.20s
-     Running unittests src/main.rs (target/debug/deps/ostinato-59b8ad8fc4ce84d1)
+   Compiling ostinato-domain v0.7.6 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-domain)
+   Compiling ostinato-lang v0.7.6 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-lang)
+   Compiling ostinato-application v0.7.6 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-application)
+   Compiling ostinato-adapters v0.7.6 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-adapters)
+   Compiling ostinato v0.7.6 (/Users/joanmarc/dailywork/jmca/ostinato/crates/ostinato-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.58s
+     Running unittests src/main.rs (target/debug/deps/ostinato-c148b67e5d928248)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/conformance.rs (target/debug/deps/conformance-adc4943a94297092)
+     Running tests/conformance.rs (target/debug/deps/conformance-9119516a1d5afaaf)
 
 running 1 test
 test rust_matches_official_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.72s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s
 
-     Running tests/e2e.rs (target/debug/deps/e2e-9515fc97a4f8e461)
+     Running tests/e2e.rs (target/debug/deps/e2e-100d29933e9ce5e2)
 
 running 35 tests
-test non_struct_params_are_rejected ... ok
-test let_and_alias_backed_params_tags_work ... ok
-test duplicate_and_nested_tags_follow_cue ... ok
 test package_underscore_files_are_file_local ... ok
+test non_struct_params_are_rejected ... ok
+test duplicate_and_nested_tags_follow_cue ... ok
+test let_and_alias_backed_params_tags_work ... ok
 test bare_open_list_needs_and_params_compile ... ok
+test hidden_metadata_is_allowed_throughout_the_workflow_schema ... ok
 test quoted_labels_do_not_leak_evaluator_state_to_stderr ... ok
-test package_less_cue_file_is_loaded_by_filename ... ok
+test native_evaluator_supports_the_offline_subset ... ok
 test params_siblings_resolve_and_true_cycles_fail_cleanly ... ok
 test background_grandchild_does_not_extend_a_successful_step ... ok
-test hidden_metadata_is_allowed_throughout_the_workflow_schema ... ok
-test native_evaluator_supports_the_offline_subset ... ok
+test package_less_cue_file_is_loaded_by_filename ... ok
 test split_and_duplicate_definition_tags_work ... ok
 test tag_attributes_drive_parameter_injection_types ... ok
-test audit_verification_detects_tampering ... ok
-test audit_detects_tail_truncation_via_persisted_head ... ok
 test split_package_and_sibling_conflicts_follow_cue_semantics ... ok
-test definition_backed_tags_work_in_both_evaluators ... ok
+test audit_verification_detects_tampering ... ok
 test recomputed_state_hash_is_still_rejected_by_the_chain_anchor ... ok
-test cleared_integrity_hashes_are_not_silently_repaired ... ok
+test audit_detects_tail_truncation_via_persisted_head ... ok
+test definition_backed_tags_work_in_both_evaluators ... ok
 test tag_names_and_value_grammar_follow_cue ... ok
 test read_only_commands_do_not_require_cue ... ok
 test tag_number_grammar_and_parenthesized_params ... ok
 test unknown_fields_are_rejected ... ok
+test cleared_integrity_hashes_are_not_silently_repaired ... ok
 test bad_template_is_a_durable_failure ... ok
-test tag_literal_grammar_and_strict_types ... ok
 test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
-test official_cue_runs_and_audit_verifies ... ok
 test state_tampering_is_detected_and_resume_refuses_it ... ok
+test tag_literal_grammar_and_strict_types ... ok
+test official_cue_runs_and_audit_verifies ... ok
 test truncation_blocks_resume_and_appends ... ok
 test retries_are_attempted_and_logged_as_trials ... ok
 test resume_skips_completed_steps_and_finishes ... ok
 test cycles_stop_when_until_becomes_true ... ok
 test recursive_improvement_creates_child_runs ... ok
 test exec_timeout_kills_the_process_group ... ok
-run=fb3a70bf-45ee-4340-97aa-bb4c82c76535 workflow=cancel status=cancelled durationMs=4024
+run=261627c0-55b2-449c-8131-078fe6b960f9 workflow=cancel status=cancelled durationMs=4031
 STEP                     STATUS     VISITS ATTEMPTS
 test cancel_stops_a_running_run_and_blocks_resume ... ok
 
 test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.12s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_adapters-0cf335fbd967947f)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_adapters-a92afe2e58919cbf)
 
 running 1 test
 test loaders::tests::parses_release_pre_release_and_build_metadata ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/store.rs (target/debug/deps/store-f2b0cdfdb90c4307)
+     Running tests/store.rs (target/debug/deps/store-661af0a775510d4d)
 
 running 3 tests
 test database_and_wal_files_are_private ... ok
@@ -98,19 +89,19 @@ test reopened_store_does_not_repair_blank_integrity_hashes ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_application-ddc9ff263936f942)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_application-724738aaeff17f04)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_domain-143b9d5a3a59dd06)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_domain-35c5d072381a889f)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/domain.rs (target/debug/deps/domain-783f4405abba1344)
+     Running tests/domain.rs (target/debug/deps/domain-6227acc180c6d492)
 
 running 6 tests
 test new_event_helper_is_ergonomic ... ok
@@ -122,100 +113,102 @@ test audit_chain_detects_tampering ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (target/debug/deps/ostinato_lang-a183c0c22859a2e0)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_lang-96ca4723328aac85)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/lang.rs (target/debug/deps/lang-17b4871a68178a03)
+     Running tests/lang.rs (target/debug/deps/lang-9c11f295c91267d8)
 
-running 175 tests
-test aliases_and_lets_conflict_with_import_names ... ok
-test aliases_used_only_in_optional_definition_or_pattern_are_referenced ... ok
-test attributes_parse_in_every_cue_position ... ok
-test acyclic_let_chains_are_accepted ... ok
-test alias_scope_conflicts_and_duplicates_are_rejected ... ok
-test bytes_literals_use_go_escape_rules ... ok
-test aliases_can_bind_definitions_and_dynamic_labels ... ok
-test arithmetic_uses_a_disjunction_default ... ok
+running 177 tests
 test aliases_conflict_with_comprehension_bindings ... ok
-test aliases_bind_field_values ... ok
+test alias_scope_conflicts_and_duplicates_are_rejected ... ok
+test aliases_can_bind_definitions_and_dynamic_labels ... ok
 test aliases_work_in_definitions_and_nested_structs ... ok
-test bound_disjunctions_and_defaults_are_lattice_aware ... ok
+test aliases_and_lets_conflict_with_import_names ... ok
+test aliases_bind_field_values ... ok
+test aliases_to_control_prefix_quoted_labels_resolve ... ok
+test aliases_used_only_in_optional_definition_or_pattern_are_referenced ... ok
 test bare_open_lists_behave_as_empty_lists ... ok
+test attributes_parse_in_every_cue_position ... ok
+test arithmetic_uses_a_disjunction_default ... ok
+test acyclic_let_chains_are_accepted ... ok
 test aliases_to_quoted_hash_labels_resolve_the_regular_field ... ok
+test bytes_literals_use_go_escape_rules ... ok
+test bound_disjunctions_and_defaults_are_lattice_aware ... ok
+test alias_shadowing_keeps_dead_bodies_dead ... ok
 test bounds_validate_operands_types_and_intervals ... ok
+test closed_definitions_reject_extra_fields_and_open_definitions_allow_them ... ok
 test closed_definitions_apply_to_nested_dynamic_and_let_params ... ok
 test closed_definitions_are_checked_inside_referenced_bodies ... ok
-test closed_definitions_reject_extra_fields_and_open_definitions_allow_them ... ok
-test alias_shadowing_keeps_dead_bodies_dead ... ok
-test closedness_through_let_mediated_definition_bodies ... ok
 test closed_definitions_stay_closed_through_params ... ok
-test comprehension_bodies_keep_quoted_hash_fields_next_to_definitions ... ok
+test closedness_through_let_mediated_definition_bodies ... ok
+test composed_definitions_keep_referenced_closedness ... ok
 test comprehension_labels_use_displayed_names_for_control_prefixes ... ok
-test decimal_arithmetic_is_exact ... ok
-test defaulted_disjunctions_work_in_select_index_and_for ... ok
+test comprehension_bodies_keep_quoted_hash_fields_next_to_definitions ... ok
+test bounds_narrow_concrete_values_and_types ... ok
 test comprehension_clause_sequences_are_supported ... ok
 test bounds_reject_out_of_range_values ... ok
-test composed_definitions_keep_referenced_closedness ... ok
-test dead_comprehension_bodies_do_not_create_required_cycles ... ok
-test control_prefix_labels_match_patterns ... ok
-test bounds_narrow_concrete_values_and_types ... ok
 test compiles_workflow_and_resolves_parameters ... ok
-test definition_optional_conflicts_error_only_when_materialized ... ok
+test defaulted_disjunctions_work_in_select_index_and_for ... ok
 test closed_definition_intersections_check_every_operand ... ok
-test definitions_can_be_used_in_conditions_and_selectors ... ok
+test decimal_arithmetic_is_exact ... ok
+test control_prefix_labels_match_patterns ... ok
+test definition_optional_conflicts_error_only_when_materialized ... ok
 test definition_disjunctions_keep_alternatives ... ok
 test definition_optional_constraint_applies_to_required_fields_in_both_orders ... ok
+test definitions_can_be_used_in_conditions_and_selectors ... ok
+test dead_comprehension_bodies_do_not_create_required_cycles ... ok
 test derived_definitions_keep_referenced_closedness ... ok
-test definitions_behave_like_structs_in_comprehensions_and_equality ... ok
-test definitions_preserve_optional_constraints_while_open ... ok
 test dependent_parameter_overrides_are_order_independent ... ok
-test disjunction_defaults_narrow_and_export ... ok
-test duplicate_disjunction_defaults_collapse ... ok
-test disjunction_drops_conflicting_alternatives_but_not_bad_references ... ok
+test definitions_preserve_optional_constraints_while_open ... ok
+test definitions_behave_like_structs_in_comprehensions_and_equality ... ok
 test definitions_do_not_admit_regular_fields_of_the_same_label ... ok
+test disjunction_defaults_narrow_and_export ... ok
+test disjunction_drops_conflicting_alternatives_but_not_bad_references ... ok
 test division_by_zero_is_an_error_not_a_panic ... ok
+test duplicate_disjunction_defaults_collapse ... ok
 test disjunction_intersection_and_narrowing_match_cue ... ok
 test evaluates_conditions ... ok
 test disjunction_dedupe_preserves_definition_metadata ... ok
-test forward_let_references_are_lazy ... ok
-test escaped_slash_case_mapping_and_decimal_ranges ... ok
 test dynamic_intermediate_and_repeated_segments_resolve ... ok
-test generated_optional_conflicts_when_required_field_comes_later ... ok
+test escaped_slash_case_mapping_and_decimal_ranges ... ok
+test forward_let_references_are_lazy ... ok
 test generated_only_optional_fields_are_not_materialized ... ok
+test generated_optional_conflicts_when_required_field_comes_later ... ok
 test generated_optional_conflicts_with_required_dynamic_label ... ok
-test evaluates_structs_defaults_unification_and_interpolation ... ok
-test generated_optional_constraint_conflicts_with_a_required_field ... ok
 test generated_optional_constraint_applies_to_a_required_field ... ok
+test generated_optional_constraint_conflicts_with_a_required_field ... ok
+test evaluates_structs_defaults_unification_and_interpolation ... ok
 test escaped_patterns_and_quoted_labels_decode_correctly ... ok
 test generated_quoted_optionals_target_the_regular_field ... ok
 test generated_quoted_optionals_do_not_touch_materialized_definitions ... ok
-test identifier_select_does_not_reach_quoted_hash_fields ... ok
+test generated_params_fields_respect_hidden_quoting_namespaces ... ok
 test hidden_fields_are_distinct_from_quoted_underscore_fields ... ok
 test generated_optional_unifies_with_required_dynamic_label ... ok
+test identifier_select_does_not_reach_quoted_hash_fields ... ok
 test hidden_fields_are_evaluated_selected_and_conflict_checked ... ok
-test imported_packages_keep_quoted_hash_fields_next_to_definitions ... ok
 test hidden_fields_are_invisible_to_value_operations ... ok
+test imported_packages_keep_quoted_hash_fields_next_to_definitions ... ok
 test inner_alias_shadows_an_enclosing_let ... ok
-test identifier_selectors_prefer_hidden_over_quoted_twins ... ok
-test inner_lets_can_shadow_outer_lets_and_aliases ... ok
 test interpolation_rejects_incomplete_disjunctions ... ok
+test identifier_selectors_prefer_hidden_over_quoted_twins ... ok
 test int_and_float_do_not_unify ... ok
+test inner_lets_can_shadow_outer_lets_and_aliases ... ok
 test invalid_aliases_are_rejected ... ok
+test integer_bound_intervals_respect_discreteness ... ok
 test invalid_regex_fails_even_when_optional_value_conflicts ... ok
 test invalid_regex_on_optional_fields_is_eager ... ok
+test let_conflicts_and_unreferenced_lets_are_rejected ... ok
 test let_cycles_are_rejected ... ok
 test invalid_until_is_rejected_at_validation_time ... ok
-test let_conflicts_and_unreferenced_lets_are_rejected ... ok
-test integer_bound_intervals_respect_discreteness ... ok
 test let_shadowing_does_not_require_an_outer_reference ... ok
+test list_comprehension_struct_bodies_still_support_patterns ... ok
 test let_cycles_through_required_definitions_are_rejected ... ok
 test list_comprehension_bodies_can_start_with_brackets ... ok
-test list_comprehension_struct_bodies_still_support_patterns ... ok
-test list_comprehensions_support_struct_bodies ... ok
 test missing_field_separators_are_rejected ... ok
+test list_comprehensions_support_struct_bodies ... ok
 test list_comprehensions_are_supported ... ok
 test math_rounding_is_decimal_exact ... ok
 test native_defaults_work_in_multibranch_disjunctions ... ok
@@ -223,91 +216,91 @@ test multi_expression_definitions_close_after_composition ... ok
 test named_definition_flattens_optional_field_materialization ... ok
 test native_overrides_apply_before_top_level_comprehensions ... ok
 test multiple_matching_patterns_merge_before_closing ... ok
-test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
 test native_parameter_overrides_are_injected_before_interpolation ... ok
+test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
 test nested_definitions_are_closed_unless_opened ... ok
 test nested_definitions_are_selectable ... ok
 test nested_disjunction_defaults_respect_direct_precedence ... ok
-test live_struct_sources_and_constant_conditions_keep_cycles ... ok
-test nested_definitions_are_not_exported_as_fields ... ok
 test nested_params_groups_see_lexical_siblings_through_paths ... ok
-test numeric_equality_and_float_export_match_cue ... ok
+test nested_definitions_are_not_exported_as_fields ... ok
+test live_struct_sources_and_constant_conditions_keep_cycles ... ok
 test nested_patterns_constrain_nested_fields ... ok
+test numeric_equality_and_float_export_match_cue ... ok
 test open_list_element_types_are_enforced ... ok
 test numeric_equality_is_scalar_only ... ok
-test nested_struct_unification_is_closed_after_composition ... ok
-test open_list_prefix_values_export_their_prefix ... ok
-test non_struct_definition_values_close_nested_structs ... ok
 test open_list_prefix_unifies_with_a_concrete_list ... ok
-test optional_definition_fields_are_not_materialized ... ok
+test open_list_prefix_values_export_their_prefix ... ok
+test nested_struct_unification_is_closed_after_composition ... ok
+test non_struct_definition_values_close_nested_structs ... ok
 test optional_fields_are_pattern_constrained_when_materialized ... ok
-test nested_comprehension_bodies_shadow_in_static_liveness ... ok
-test open_list_prefixes_work_as_lists ... ok
+test optional_definition_fields_are_not_materialized ... ok
 test optional_fields_cannot_be_referenced_by_bare_name ... ok
-test optional_fields_cannot_be_selected_from_a_definition ... ok
+test open_list_prefixes_work_as_lists ... ok
 test optional_intermediate_params_fields_are_rejected ... ok
+test optional_fields_cannot_be_selected_from_a_definition ... ok
 test optional_nested_definitions_are_not_selectable ... ok
-test optional_pattern_conflicts_are_deferred_until_materialized ... ok
+test nested_comprehension_bodies_shadow_in_static_liveness ... ok
 test optional_value_conflicts_are_still_deferred ... ok
+test optional_pattern_conflicts_are_deferred_until_materialized ... ok
 test optional_values_get_patterns_before_closing ... ok
-test parameter_overrides_narrow_a_default_free_disjunction ... ok
 test parameter_overrides_respect_fixed_values_and_types ... ok
-test parameter_overrides_are_constraints_and_dependent_fields_see_them ... ok
+test parameter_overrides_narrow_a_default_free_disjunction ... ok
 test params_optional_and_shadowing_rules_hold ... ok
 test parameters_can_be_backed_by_a_definition_or_split_struct ... ok
-test parenthesized_definition_literal_keeps_optional_constraints ... ok
+test parameter_overrides_are_constraints_and_dependent_fields_see_them ... ok
 test params_cache_distinguishes_dotted_labels_from_paths ... ok
 test params_dynamic_fields_hidden_definitions_and_quoted_selectors ... ok
-test params_siblings_numeric_literals_and_bytes_concat ... ok
 test params_resolution_handles_nested_groups_lets_and_fields ... ok
+test parenthesized_definition_literal_keeps_optional_constraints ... ok
 test params_paths_resolve_against_the_params_root ... ok
-test parenthesized_dynamic_labels_and_if_clause_sequences_work ... ok
+test params_siblings_numeric_literals_and_bytes_concat ... ok
 test pattern_values_can_be_disjunctions ... ok
+test parenthesized_dynamic_labels_and_if_clause_sequences_work ... ok
 test patterns_apply_to_declared_fields ... ok
 test parenthesized_params_keep_overrides ... ok
-test quoted_hash_labels_are_regular_fields ... ok
-test quoted_hash_labels_are_distinct_from_definitions ... ok
-test quoted_and_index_selectors_do_not_reach_hidden_fields ... ok
-test promoted_optional_fields_are_closed_by_other_patterns ... ok
-test quoted_labels_do_not_conflict_with_aliases ... ok
 test pattern_value_structs_are_closed_for_external_fields ... ok
+test promoted_optional_fields_are_closed_by_other_patterns ... ok
+test quoted_hash_labels_are_regular_fields ... ok
+test quoted_and_index_selectors_do_not_reach_hidden_fields ... ok
+test quoted_labels_do_not_conflict_with_aliases ... ok
+test quoted_hash_labels_are_distinct_from_definitions ... ok
 test quoted_labels_are_not_identifier_bindings ... ok
 test quoted_parameter_names_use_identifier_values ... ok
 test recursive_nested_definitions_do_not_overflow ... ok
 test re2_quantifier_grammar_matches_cue ... ok
+test patterns_allow_and_constrain_extra_fields ... ok
 test regexp_quote_find_and_re2_classes_match_cue ... ok
 test renders_templates ... ok
-test patterns_allow_and_constrain_extra_fields ... ok
 test rejects_missing_required_parameter ... ok
 test retry_int_shorthand_respects_the_cap ... ok
 test scalar_unification_is_symmetric_and_strict ... ok
-test string_escapes_are_decoded_and_invalid_ones_rejected ... ok
 test step_level_unknown_fields_are_rejected ... ok
 test root_params_patterns_constrain_fields ... ok
+test string_escapes_are_decoded_and_invalid_ones_rejected ... ok
 test string_index_addresses_regular_fields_only ... ok
-test time_fractional_layouts_and_duration_edges ... ok
 test time_garbage_and_duration_fraction_edges ... ok
-test struct_literal_shadowing_keeps_dead_bodies_dead ... ok
+test time_fractional_layouts_and_duration_edges ... ok
 test regexp_uses_ascii_classes_and_repeat_limits ... ok
-test time_helpers_handle_fractions_signs_and_nanos ... ok
+test struct_literal_shadowing_keeps_dead_bodies_dead ... ok
 test regexp_math_and_time_builtins_match_cue ... ok
 test top_in_disjunctions_is_preserved ... ok
 test underscore_alias_is_rejected ... ok
-test time_layouts_enforce_go_field_widths ... ok
+test time_helpers_handle_fractions_signs_and_nanos ... ok
 test unicode_surrogates_and_string_escape_edges ... ok
 test time_rfc3339_and_leap_seconds_are_strict ... ok
+test time_layouts_enforce_go_field_widths ... ok
 test unicode_string_builtins_match_go_semantics ... ok
 test unreferenced_alias_inside_definition_is_rejected ... ok
-test unresolved_and_ambiguous_disjunctions_are_not_concrete ... ok
 test unknown_workflow_fields_are_rejected ... ok
+test unresolved_and_ambiguous_disjunctions_are_not_concrete ... ok
 test unification_sources_are_live_when_either_side_is_live ... ok
+test undemanded_let_cycles_are_rejected_statically ... ok
 test versioned_imports_use_the_unversioned_alias ... ok
 test unresolved_disjunctions_are_rejected_in_boolean_contexts ... ok
-test undemanded_let_cycles_are_rejected_statically ... ok
 test until_accepts_nested_json_provider_and_hyphenated_steps ... ok
 test regex_class_complements_and_repeat_scanner_are_re2_compatible ... ok
 
-test result: ok. 175 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 177 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
    Doc-tests ostinato_adapters
 

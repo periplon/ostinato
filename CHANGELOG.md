@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.7.6
+
+Generated params fields and hidden namespaces.
+
+- Comprehension-generated regular `_name` fields stay in the quoted namespace
+  (identifier selection does not reach them), while generated hidden `_name`
+  fields are selectable and unify with declared hidden fields.
+- Params path lookup is namespace-aware for generated fields.
+- Aliases to quoted labels beginning with internal prefixes resolve.
+- 223 tests (35 CLI E2E, 1 conformance, 177 language, 6 domain, 3 store, 1 unit).
+
 ## v0.7.5
 
 Identifier/quoting namespace split.

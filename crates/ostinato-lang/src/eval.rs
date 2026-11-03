@@ -820,6 +820,8 @@ impl<'a> Frame<'a> {
                 Some(prefixed_field(name))
             } else if fields.contains_key(&hidden_field(name)) {
                 Some(hidden_field(name))
+            } else if fields.contains_key(&escaped_field(name)) {
+                Some(escaped_field(name))
             } else {
                 None
             }
@@ -871,8 +873,24 @@ impl<'a> Frame<'a> {
         Ok(())
     }
 
+    fn display_storage_key(&self, key: &str) -> Option<String> {
+        if is_hidden_key(key) {
+            return self
+                .fields
+                .borrow()
+                .contains_key(key)
+                .then(|| key.to_owned());
+        }
+        self.regular_field_key(key).or_else(|| {
+            self.fields
+                .borrow()
+                .contains_key(key)
+                .then(|| prefixed_field(key))
+        })
+    }
+
     fn merge_generated_constraint(&self, name: String, value: Value) -> Result<(), LangError> {
-        let key = self.field_storage_key(&name);
+        let key = self.display_storage_key(&name);
         let declared = key
             .as_ref()
             .and_then(|key| self.fields.borrow().get(key).map(|field| field.optional));
@@ -916,11 +934,13 @@ impl<'a> Frame<'a> {
                 Some(constraint) => unify_values(&value, &constraint, Span::default())?,
                 None => value,
             };
-            let storage_key = self.field_storage_key(&key).unwrap_or_else(|| key.clone());
+            let storage_key = self
+                .display_storage_key(&key)
+                .unwrap_or_else(|| key.clone());
             let existing = self.values.borrow().get(&storage_key).cloned();
             let existing = match existing {
                 Some(existing) => Some(existing),
-                None if self.regular_field_key(&key).is_some() => {
+                None if self.fields.borrow().contains_key(&storage_key) => {
                     Some(self.eval_field_key(&storage_key, Span::default())?)
                 }
                 None => None,
@@ -1273,7 +1293,12 @@ impl<'a> Frame<'a> {
                     }
                     return Ok(value);
                 }
-                let generated = child.values.borrow().get(segment).cloned();
+                let generated_key = if !*quoted && segment.starts_with('_') {
+                    hidden_field(segment)
+                } else {
+                    segment.clone()
+                };
+                let generated = child.values.borrow().get(&generated_key).cloned();
                 let Some(mut value) = generated else {
                     return Err(LangError::eval(
                         span.line,
@@ -1673,7 +1698,7 @@ impl<'a> Frame<'a> {
                     } else if target.definition {
                         self.stored_field_key(&target.name)
                     } else {
-                        self.regular_field_key(&target.name)
+                        self.field_storage_key(&target.name)
                     }?;
                     self.fields
                         .borrow()
