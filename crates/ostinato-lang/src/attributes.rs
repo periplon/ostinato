@@ -82,6 +82,17 @@ fn tag_info(
 /// # Errors
 /// Returns an evaluation error for unknown `@tag` types.
 pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, LangError> {
+    let mut definitions: BTreeMap<String, Expr> = BTreeMap::new();
+    for item in &file.items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        if field.definition
+            && let Some(name) = label_name(field)
+        {
+            definitions.insert(name.to_owned(), field.value.clone());
+        }
+    }
     let mut tags: BTreeMap<String, Vec<TagInfo>> = BTreeMap::new();
     let mut saw_params = false;
     for item in &file.items {
@@ -90,7 +101,7 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
         };
         if label_name(field) == Some("params") {
             saw_params = true;
-            collect_expr_tags(&field.value, &mut tags)?;
+            collect_expr_tags(&field.value, &mut tags, &definitions, &mut Vec::new())?;
         }
     }
     if !saw_params {
@@ -102,13 +113,29 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
 fn collect_expr_tags(
     expr: &Expr,
     tags: &mut BTreeMap<String, Vec<TagInfo>>,
+    definitions: &BTreeMap<String, Expr>,
+    visiting: &mut Vec<String>,
 ) -> Result<(), LangError> {
     match expr {
         Expr::Struct(items, _) => collect_tags(items, tags),
-        Expr::Paren(inner, _) | Expr::Default(inner, _) => collect_expr_tags(inner, tags),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+            collect_expr_tags(inner, tags, definitions, visiting)
+        }
         Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            collect_expr_tags(left, tags)?;
-            collect_expr_tags(right, tags)
+            collect_expr_tags(left, tags, definitions, visiting)?;
+            collect_expr_tags(right, tags, definitions, visiting)
+        }
+        Expr::Ident(name, _) => {
+            let Some(value) = definitions.get(name) else {
+                return Ok(());
+            };
+            if visiting.contains(name) {
+                return Ok(());
+            }
+            visiting.push(name.clone());
+            let result = collect_expr_tags(value, tags, definitions, visiting);
+            visiting.pop();
+            result
         }
         _ => Ok(()),
     }

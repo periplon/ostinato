@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.6.4
+
+- Tag injection accepts trailing-dot numbers, leading underscores and
+  definition-backed params, and works on the official-CUE evaluator path.
+- 186 tests (30 CLI E2E, 1 conformance, 145 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.3
 
 - Escaped pattern/label decoding, time fraction validation, surrogate pairs,

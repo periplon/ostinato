@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.6.4
+
+Tag injection final corrections.
+
+- `@tag` number grammar accepts trailing dots (`5.`), leading underscores
+  (`_1.5`), and rejects misplaced underscores (`1_e1`) while whitespace is
+  trimmed only for booleans.
+- Tags are collected through definition-backed `params` (`params: #P`),
+  including renamed tags and CUE literals (`0x10`).
+- The official-CUE loader no longer re-checks override names after
+  `cue export -t`, so renamed tags work with `--evaluator cue`.
+- 186 tests (30 CLI E2E, 1 conformance, 145 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.3
 
 Attribute/builtin third review corrections.
