@@ -1,12 +1,12 @@
 ### /Users/joanmarc/dailywork/jmca/ostinato/scripts/conformance.sh
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
-     Running tests/conformance.rs (target/debug/deps/conformance-388afb667ae8d4f1)
+     Running tests/conformance.rs (target/debug/deps/conformance-3e951ebac35d258c)
 
 running 1 test
 test rust_matches_official_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.59s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.51s
 
 
 exit=0

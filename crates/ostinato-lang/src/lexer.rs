@@ -701,6 +701,18 @@ fn split_multiline_parts(source: &str) -> Vec<MultilinePart> {
     let mut text = String::new();
     let mut index = 0usize;
     while index < chars.len() {
+        if chars[index] == '\\' && chars.get(index + 1) != Some(&'(') {
+            // An escape pair is literal text. Its second character must not be
+            // re-examined as a possible `\(` interpolation start: `\\(` is a
+            // literal backslash followed by a literal parenthesis.
+            text.push('\\');
+            index += 1;
+            if let Some(escaped) = chars.get(index) {
+                text.push(*escaped);
+                index += 1;
+            }
+            continue;
+        }
         if chars[index] == '\\' && chars.get(index + 1) == Some(&'(') {
             if !text.is_empty() {
                 parts.push(MultilinePart::Text(std::mem::take(&mut text)));

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.11.2
+
+Escaped-backslash bytes dedent correction.
+
+- Multiline part splitting consumes escape pairs, so `\\(` is a literal
+  backslash followed by a literal parenthesis rather than an interpolation
+  start; indentation and CR stripping apply to the whole literal line again.
+- 281 tests (49 CLI E2E, 1 conformance, 218 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
+
 ## v0.11.1
 
 Multiline bytes dedent and CR review corrections.
