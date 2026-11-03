@@ -148,6 +148,12 @@ pub enum Builtin {
     TimeFormat,
     TimeParseDuration,
     TimeDuration,
+    TimeTime,
+    TimeFormatString,
+    TimeToUnix,
+    TimeToUnixNano,
+    TimeSplit,
+    TimeFormatDuration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3745,6 +3751,12 @@ pub fn builtin_module(path: &str) -> Option<Value> {
             ("Format", Builtin::TimeFormat),
             ("ParseDuration", Builtin::TimeParseDuration),
             ("Duration", Builtin::TimeDuration),
+            ("Time", Builtin::TimeTime),
+            ("FormatString", Builtin::TimeFormatString),
+            ("ToUnix", Builtin::TimeToUnix),
+            ("ToUnixNano", Builtin::TimeToUnixNano),
+            ("Split", Builtin::TimeSplit),
+            ("FormatDuration", Builtin::TimeFormatDuration),
         ],
         _ => return None,
     };
@@ -3752,6 +3764,54 @@ pub fn builtin_module(path: &str) -> Option<Value> {
         .iter()
         .map(|(name, builtin)| ((*name).to_owned(), Value::Builtin(*builtin)))
         .collect();
+    if path == "time" {
+        for (name, literal) in [
+            ("ANSIC", "Mon Jan _2 15:04:05 2006"),
+            ("UnixDate", "Mon Jan _2 15:04:05 MST 2006"),
+            ("RubyDate", "Mon Jan 02 15:04:05 -0700 2006"),
+            ("RFC822", "02 Jan 06 15:04 MST"),
+            ("RFC822Z", "02 Jan 06 15:04 -0700"),
+            ("RFC850", "Monday, 02-Jan-06 15:04:05 MST"),
+            ("RFC1123", "Mon, 02 Jan 2006 15:04:05 MST"),
+            ("RFC1123Z", "Mon, 02 Jan 2006 15:04:05 -0700"),
+            ("RFC3339", "2006-01-02T15:04:05Z07:00"),
+            ("RFC3339Nano", "2006-01-02T15:04:05.999999999Z07:00"),
+            ("RFC3339Date", "2006-01-02"),
+            ("Kitchen", "3:04PM"),
+            ("Kitchen24", "15:04"),
+        ] {
+            values.insert(name.to_owned(), Value::String(literal.to_owned()));
+        }
+        for (name, literal) in [
+            ("Nanosecond", 1i64),
+            ("Microsecond", 1_000),
+            ("Millisecond", 1_000_000),
+            ("Second", 1_000_000_000),
+            ("Minute", 60_000_000_000),
+            ("Hour", 3_600_000_000_000),
+            ("January", 1),
+            ("February", 2),
+            ("March", 3),
+            ("April", 4),
+            ("May", 5),
+            ("June", 6),
+            ("July", 7),
+            ("August", 8),
+            ("September", 9),
+            ("October", 10),
+            ("November", 11),
+            ("December", 12),
+            ("Sunday", 0),
+            ("Monday", 1),
+            ("Tuesday", 2),
+            ("Wednesday", 3),
+            ("Thursday", 4),
+            ("Friday", 5),
+            ("Saturday", 6),
+        ] {
+            values.insert(name.to_owned(), Value::Int(literal));
+        }
+    }
     if path == "math" {
         for (name, literal) in [
             (
@@ -4342,126 +4402,7 @@ fn parse_duration_nanos(text: &str) -> Option<i64> {
 }
 
 fn rfc3339_nano(datetime: &chrono::DateTime<chrono::Utc>) -> String {
-    let text = datetime.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-    let Some(dot) = text.find('.') else {
-        return text;
-    };
-    let end = text[dot..]
-        .find(['Z', '+', '-'])
-        .map_or(text.len(), |offset| dot + offset);
-    let fraction = &text[dot + 1..end];
-    let trimmed = fraction.trim_end_matches('0');
-    if trimmed.is_empty() {
-        format!("{}{}", &text[..dot], &text[end..])
-    } else {
-        format!("{}.{}{}", &text[..dot], trimmed, &text[end..])
-    }
-}
-
-fn valid_date(text: &str) -> bool {
-    let parts: Vec<&str> = text.split('-').collect();
-    parts.len() == 3
-        && parts[0].len() == 4
-        && parts[1].len() == 2
-        && parts[2].len() == 2
-        && parts
-            .iter()
-            .all(|part| part.chars().all(|value| value.is_ascii_digit()))
-}
-
-fn valid_clock(text: &str) -> bool {
-    let parts: Vec<&str> = text.split(':').collect();
-    if parts.len() != 3 {
-        return false;
-    }
-    let hour_ok =
-        (1..=2).contains(&parts[0].len()) && parts[0].chars().all(|value| value.is_ascii_digit());
-    let minute_ok = parts[1].len() == 2 && parts[1].chars().all(|value| value.is_ascii_digit());
-    let second_ok = parts[2].len() == 2
-        && parts[2].chars().all(|value| value.is_ascii_digit())
-        && parts[2].parse::<u8>().is_ok_and(|second| second < 60);
-    hour_ok && minute_ok && second_ok
-}
-
-fn parse_ampm(text: &str) -> Option<(u32, u32)> {
-    let (body, suffix) = match text.strip_suffix("AM") {
-        Some(body) => (body, false),
-        None => (text.strip_suffix("PM")?, true),
-    };
-    let (hour, minute) = body.split_once(':')?;
-    if !(1..=2).contains(&hour.len()) || minute.len() != 2 {
-        return None;
-    }
-    let hour: u32 = hour.parse().ok()?;
-    let minute: u32 = minute.parse().ok()?;
-    if hour > 12 || minute > 59 {
-        return None;
-    }
-    let hour = (hour % 12) + if suffix { 12 } else { 0 };
-    Some((hour, minute))
-}
-
-fn valid_rfc3339_shape(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    if bytes.len() < 20
-        || bytes.get(4) != Some(&b'-')
-        || bytes.get(7) != Some(&b'-')
-        || bytes.get(10) != Some(&b'T')
-        || bytes.get(13) != Some(&b':')
-        || bytes.get(16) != Some(&b':')
-    {
-        return false;
-    }
-    let digits = |range: std::ops::Range<usize>| {
-        bytes
-            .get(range)
-            .is_some_and(|slice| slice.iter().all(u8::is_ascii_digit))
-    };
-    if !digits(0..4) || !digits(5..7) || !digits(8..10) || !digits(11..13) || !digits(14..16) {
-        return false;
-    }
-    if !digits(17..19)
-        || text[17..19]
-            .parse::<u8>()
-            .map_or(true, |second| second >= 60)
-    {
-        return false;
-    }
-    if text.ends_with('Z') {
-        return true;
-    }
-    let rest = text.get(19..).unwrap_or("");
-    let rest = match rest.strip_prefix(['.', ',']) {
-        Some(fraction) => {
-            let digits = fraction.bytes().take_while(u8::is_ascii_digit).count();
-            if digits == 0 {
-                return false;
-            }
-            &fraction[digits..]
-        }
-        None => rest,
-    };
-    rest.starts_with('+') || rest.starts_with('-')
-}
-
-fn split_fraction(text: &str) -> Option<(&str, i64)> {
-    let Some(index) = text.find(['.', ',']) else {
-        return Some((text, 0));
-    };
-    let base = &text[..index];
-    let fraction = &text[index + 1..];
-    if fraction.is_empty() || !fraction.chars().all(|value| value.is_ascii_digit()) {
-        return None;
-    }
-    let mut nanos = 0i64;
-    let mut scale = 100_000_000i64;
-    for digit in fraction.chars().take(9) {
-        if let Some(value) = digit.to_digit(10) {
-            nanos += i64::from(value) * scale;
-        }
-        scale /= 10;
-    }
-    Some((base, nanos))
+    crate::gotime::to_rfc3339_nano(datetime)
 }
 
 fn parse_layout(
@@ -4469,56 +4410,14 @@ fn parse_layout(
     text: &str,
     span: Span,
 ) -> Result<chrono::DateTime<chrono::Utc>, LangError> {
-    use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
-    let invalid = || LangError::conflict(span.line, span.col, format!("invalid time `{text}`"));
-    match layout {
-        "2006-01-02" => {
-            if !valid_date(text) {
-                return Err(invalid());
-            }
-            let date = NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|_| invalid())?;
-            Ok(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).ok_or_else(invalid)?))
-        }
-        "15:04:05" => {
-            let (base, nanos) = split_fraction(text).ok_or_else(invalid)?;
-            if !valid_clock(base) {
-                return Err(invalid());
-            }
-            let time = NaiveTime::parse_from_str(base, "%H:%M:%S").map_err(|_| invalid())?;
-            let date = NaiveDate::from_ymd_opt(0, 1, 1).ok_or_else(invalid)?;
-            Ok(Utc.from_utc_datetime(&date.and_time(time)) + chrono::Duration::nanoseconds(nanos))
-        }
-        "3:04PM" => {
-            let (hour, minute) = parse_ampm(text).ok_or_else(invalid)?;
-            let time = NaiveTime::from_hms_opt(hour, minute, 0).ok_or_else(invalid)?;
-            let date = NaiveDate::from_ymd_opt(0, 1, 1).ok_or_else(invalid)?;
-            Ok(Utc.from_utc_datetime(&date.and_time(time)))
-        }
-        "2006-01-02 15:04:05" => {
-            let (base, nanos) = split_fraction(text).ok_or_else(invalid)?;
-            let (date, clock) = base.split_once(' ').ok_or_else(invalid)?;
-            if !valid_date(date) || !valid_clock(clock) {
-                return Err(invalid());
-            }
-            let naive = chrono::NaiveDateTime::parse_from_str(base, "%Y-%m-%d %H:%M:%S")
-                .map_err(|_| invalid())?;
-            Ok(Utc.from_utc_datetime(&naive) + chrono::Duration::nanoseconds(nanos))
-        }
-        "2006-01-02T15:04:05Z07:00" => {
-            let normalized = text.replacen(',', ".", 1);
-            if !valid_rfc3339_shape(&normalized) {
-                return Err(invalid());
-            }
-            DateTime::parse_from_rfc3339(&normalized)
-                .map(|value| value.with_timezone(&Utc))
-                .map_err(|_| invalid())
-        }
-        _ => Err(LangError::conflict(
-            span.line,
-            span.col,
-            format!("unsupported time layout `{layout}`"),
-        )),
-    }
+    crate::gotime::parse(layout, text)
+        .map(|value| value.utc())
+        .ok_or_else(|| LangError::conflict(span.line, span.col, format!("invalid time `{text}`")))
+}
+
+fn time_value(text: &str, span: Span) -> Result<crate::gotime::ParsedTime, LangError> {
+    crate::gotime::parse_rfc3339_nano(text)
+        .ok_or_else(|| LangError::conflict(span.line, span.col, format!("invalid time `{text}`")))
 }
 
 fn apply_time_builtin(
@@ -4572,6 +4471,61 @@ fn apply_time_builtin(
                 .ok_or_else(|| LangError::conflict(span.line, span.col, "invalid duration"))?;
             Ok(Value::Bool(true))
         }
+        Builtin::TimeTime => {
+            let text = time_arg(arguments, 0, span)?;
+            time_value(text, span)?;
+            Ok(Value::Bool(true))
+        }
+        Builtin::TimeFormatString => {
+            let layout = time_arg(arguments, 0, span)?;
+            let text = time_arg(arguments, 1, span)?;
+            let parsed = time_value(text, span)?;
+            Ok(Value::String(crate::gotime::format(
+                layout,
+                parsed.as_fixed_offset(),
+            )))
+        }
+        Builtin::TimeToUnix => {
+            let text = time_arg(arguments, 0, span)?;
+            let datetime = time_value(text, span)?.utc();
+            Ok(Value::Int(datetime.timestamp()))
+        }
+        Builtin::TimeToUnixNano => {
+            let text = time_arg(arguments, 0, span)?;
+            let datetime = time_value(text, span)?.utc();
+            let nanos = i128::from(datetime.timestamp()) * 1_000_000_000
+                + i128::from(datetime.timestamp_subsec_nanos());
+            i64::try_from(nanos)
+                .map(Value::Int)
+                .map_err(|_| LangError::conflict(span.line, span.col, "invalid timestamp"))
+        }
+        Builtin::TimeSplit => {
+            use chrono::{Datelike, Timelike};
+            let text = time_arg(arguments, 0, span)?;
+            let local = time_value(text, span)?.local;
+            let mut parts = BTreeMap::new();
+            parts.insert("year".to_owned(), Value::Int(i64::from(local.year())));
+            parts.insert("month".to_owned(), Value::Int(i64::from(local.month())));
+            parts.insert("day".to_owned(), Value::Int(i64::from(local.day())));
+            parts.insert("hour".to_owned(), Value::Int(i64::from(local.hour())));
+            parts.insert("minute".to_owned(), Value::Int(i64::from(local.minute())));
+            parts.insert("second".to_owned(), Value::Int(i64::from(local.second())));
+            parts.insert(
+                "nanosecond".to_owned(),
+                Value::Int(i64::from(local.nanosecond())),
+            );
+            Ok(Value::Struct(parts))
+        }
+        Builtin::TimeFormatDuration => {
+            let Some(Value::Int(nanos)) = arguments.first() else {
+                return Err(LangError::conflict(
+                    span.line,
+                    span.col,
+                    "time.FormatDuration requires an int argument",
+                ));
+            };
+            Ok(Value::String(crate::gotime::format_duration(*nanos)))
+        }
         _ => unreachable!("time builtin"),
     }
 }
@@ -4604,7 +4558,13 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
         | Builtin::TimeParse
         | Builtin::TimeFormat
         | Builtin::TimeParseDuration
-        | Builtin::TimeDuration => apply_time_builtin(*builtin, arguments, span),
+        | Builtin::TimeDuration
+        | Builtin::TimeTime
+        | Builtin::TimeFormatString
+        | Builtin::TimeToUnix
+        | Builtin::TimeToUnixNano
+        | Builtin::TimeSplit
+        | Builtin::TimeFormatDuration => apply_time_builtin(*builtin, arguments, span),
         Builtin::StringsToUpper | Builtin::StringsToLower | Builtin::StringsTrimSpace => {
             if arguments.len() != 1 {
                 return Err(LangError::conflict(

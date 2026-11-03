@@ -20,7 +20,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 |---|---|---|
 | Package selection and same-package sibling files | ✅ | File, directory, and `package _` / no-package fallbacks |
 | Split packages and sibling conflicts | ✅ | Same-directory package files are unified |
-| Imports: `strings`, `list`, `regexp`, `math`, `time` | ✅ | String/list helpers; regexp, math and time subsets; global `len`; bytes literals |
+| Imports: `strings`, `list`, `regexp`, `math`, `time` | ✅ | String/list helpers; regexp, math and full Go time layouts with `Parse`/`Format`/`FormatString`/`Split`/`ToUnix`/`FormatDuration` and constants; global `len`; bytes literals |
 | Local module imports (`cue.mod/module.cue`) | ✅ | Module path prefix resolution, `@v` suffixes, comments, cycle detection |
 | Relative imports (`./pkg`) | ✅ | |
 | `let` declarations | ✅ | File-scoped, lazy (forward references work) |

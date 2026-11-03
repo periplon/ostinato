@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.10.0
+
+Full Go time layouts and `time` helpers.
+
+- `time.Parse`/`time.Format` implement the full Go layout language: years,
+  months (numeric/short/long), weekdays, day-of-year, 12/24-hour clocks,
+  fractional seconds, zone names and numeric offsets (including second
+  precision), with Go's defaults and range checks.
+- Added `time.FormatString`, `time.Split`, `time.ToUnix`, `time.ToUnixNano`,
+  `time.FormatDuration`, the `Time`/`Duration` validators, and layout/month/
+  weekday/duration constants.
+- 274 tests (48 CLI E2E, 1 conformance, 212 language, 6 domain, 3 store, 1 unit).
+
 ## v0.9.4
 
 Open-list bottom-tail correction.
