@@ -4686,3 +4686,38 @@ workflow: {name: "\(params.w)", steps: {s: {kind: "noop"}}}
     let value = ostinato_lang::eval_file(&file).expect("chained dynamic group");
     assert_eq!(value.to_json().expect("json")["workflow"]["name"], "7");
 }
+
+#[test]
+fn absolute_params_paths_do_not_shadow_into_nested_groups() {
+    let source = "params: {z: params.b.c, b: {z: 2, c: params.z}}";
+    let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "true cycle must error"
+    );
+}
+
+#[test]
+fn dynamic_index_then_selector_resolves_params_paths() {
+    let source = r#"
+package demo
+params: {k: "g", g: {x: 1, y: params[k].x}}
+workflow: {name: "\(params.g.y)", steps: {s: {kind: "noop"}}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("dynamic index selector");
+    assert_eq!(value.to_json().expect("json")["workflow"]["name"], "1");
+}
+
+#[test]
+fn params_items_can_depend_on_later_generated_siblings() {
+    let cases = [
+        "params: {if params.a == 1 {b: 2}, if true {a: 1}}",
+        "params: {if params.a == 1 {b: 2}, for k in [1] {a: k}}",
+        "params: {for k in [params.a] {b: k}, for j in [1] {a: j}}",
+    ];
+    for source in cases {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        ostinato_lang::eval_file(&file).expect("deferred generated sibling");
+    }
+}

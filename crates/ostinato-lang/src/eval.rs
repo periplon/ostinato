@@ -637,97 +637,124 @@ impl<'a> Frame<'a> {
     }
 
     fn expand(&self, items: &[StructItem]) -> Result<(), LangError> {
-        // Pass 2: dynamic labels, comprehensions and conditionals.
+        let mut deferred: Vec<(&StructItem, LangError)> = Vec::new();
         for item in items {
-            match item {
-                StructItem::Field(field) => {
-                    if let crate::ast::Label::Dynamic(expr, span) = &field.label {
-                        let key = eval_expr(expr, self)?;
-                        let Value::String(key) = key else {
-                            return Err(LangError::eval(
-                                span.line,
-                                span.col,
-                                "dynamic field label must evaluate to a string",
-                            ));
-                        };
-                        self.insert_field(
-                            key.clone(),
-                            field.value.clone(),
-                            field.optional,
-                            false,
-                            false,
-                            false,
-                        );
-                        if let Some(alias) = &field.alias {
-                            self.aliases.borrow_mut().insert(
-                                alias.clone(),
-                                AliasTarget {
-                                    name: key.clone(),
-                                    definition: false,
-                                    hidden: false,
-                                },
-                            );
-                        }
-                    }
-                }
-                StructItem::For {
-                    key,
-                    value,
-                    source,
-                    body,
-                    span,
-                } => {
-                    let source_value = eval_expr(source, self)?.concretize().clone();
-                    match source_value {
-                        Value::Struct(map) | Value::Definition { fields: map, .. } => {
-                            for (entry_key, entry_value) in map {
-                                if is_hidden_key(&entry_key) {
-                                    continue;
-                                }
-                                let mut bindings = HashMap::new();
-                                if let Some(key) = key {
-                                    bindings.insert(
-                                        key.clone(),
-                                        Value::String(display_field_name(&entry_key).to_owned()),
-                                    );
-                                }
-                                bindings.insert(value.clone(), entry_value);
-                                self.expand_body(body, bindings)?;
-                            }
-                        }
-                        Value::List(list) => {
-                            for (index, entry_value) in list.into_iter().enumerate() {
-                                let mut bindings = HashMap::new();
-                                if let Some(key) = key {
-                                    bindings.insert(
-                                        key.clone(),
-                                        Value::Int(i64::try_from(index).unwrap_or(i64::MAX)),
-                                    );
-                                }
-                                bindings.insert(value.clone(), entry_value);
-                                self.expand_body(body, bindings)?;
-                            }
-                        }
-                        other => {
-                            return Err(LangError::eval(
-                                span.line,
-                                span.col,
-                                format!(
-                                    "`for ... in` requires a struct or list, found {}",
-                                    other.type_name()
-                                ),
-                            ));
-                        }
-                    }
-                }
-                StructItem::If { cond, body, span } => {
-                    let condition = require_bool(&eval_expr(cond, self)?, *span)?;
-                    if condition {
-                        self.expand_body(body, HashMap::new())?;
-                    }
-                }
-                StructItem::Pattern { .. } | StructItem::Let { .. } | StructItem::Ellipsis(_) => {}
+            match self.expand_item(item) {
+                Ok(()) => {}
+                Err(err) if params_cycle_error(&err) => deferred.push((item, err)),
+                Err(err) => return Err(err),
             }
+        }
+        while !deferred.is_empty() {
+            let mut next: Vec<(&StructItem, LangError)> = Vec::new();
+            let mut progress = false;
+            for (item, _) in deferred {
+                match self.expand_item(item) {
+                    Ok(()) => progress = true,
+                    Err(err) if params_cycle_error(&err) => next.push((item, err)),
+                    Err(err) => return Err(err),
+                }
+            }
+            if !progress {
+                if let Some((_, err)) = next.first() {
+                    return Err(err.clone());
+                }
+                return Ok(());
+            }
+            deferred = next;
+        }
+        Ok(())
+    }
+
+    fn expand_item(&self, item: &StructItem) -> Result<(), LangError> {
+        match item {
+            StructItem::Field(field) => {
+                if let crate::ast::Label::Dynamic(expr, span) = &field.label {
+                    let key = eval_expr(expr, self)?;
+                    let Value::String(key) = key else {
+                        return Err(LangError::eval(
+                            span.line,
+                            span.col,
+                            "dynamic field label must evaluate to a string",
+                        ));
+                    };
+                    self.insert_field(
+                        key.clone(),
+                        field.value.clone(),
+                        field.optional,
+                        false,
+                        false,
+                        false,
+                    );
+                    if let Some(alias) = &field.alias {
+                        self.aliases.borrow_mut().insert(
+                            alias.clone(),
+                            AliasTarget {
+                                name: key.clone(),
+                                definition: false,
+                                hidden: false,
+                            },
+                        );
+                    }
+                }
+            }
+            StructItem::For {
+                key,
+                value,
+                source,
+                body,
+                span,
+            } => {
+                let source_value = eval_expr(source, self)?.concretize().clone();
+                match source_value {
+                    Value::Struct(map) | Value::Definition { fields: map, .. } => {
+                        for (entry_key, entry_value) in map {
+                            if is_hidden_key(&entry_key) {
+                                continue;
+                            }
+                            let mut bindings = HashMap::new();
+                            if let Some(key) = key {
+                                bindings.insert(
+                                    key.clone(),
+                                    Value::String(display_field_name(&entry_key).to_owned()),
+                                );
+                            }
+                            bindings.insert(value.clone(), entry_value);
+                            self.expand_body(body, bindings)?;
+                        }
+                    }
+                    Value::List(list) => {
+                        for (index, entry_value) in list.into_iter().enumerate() {
+                            let mut bindings = HashMap::new();
+                            if let Some(key) = key {
+                                bindings.insert(
+                                    key.clone(),
+                                    Value::Int(i64::try_from(index).unwrap_or(i64::MAX)),
+                                );
+                            }
+                            bindings.insert(value.clone(), entry_value);
+                            self.expand_body(body, bindings)?;
+                        }
+                    }
+                    other => {
+                        return Err(LangError::eval(
+                            span.line,
+                            span.col,
+                            format!(
+                                "`for ... in` requires a struct or list, found {}",
+                                other.type_name()
+                            ),
+                        ));
+                    }
+                }
+            }
+            StructItem::If { cond, body, span } => {
+                let condition = require_bool(&eval_expr(cond, self)?, *span)?;
+                if condition {
+                    self.expand_body(body, HashMap::new())?;
+                }
+            }
+            StructItem::Pattern { .. } | StructItem::Let { .. } | StructItem::Ellipsis(_) => {}
         }
         Ok(())
     }
@@ -1195,15 +1222,20 @@ impl<'a> Frame<'a> {
             cursor = current.parent;
         }
         if !prefix.is_empty() {
-            let keys = params_cache_key(path);
-            if keys.len() > prefix.len() && keys[..prefix.len()] == prefix[..] {
-                let suffix = &path[prefix.len()..];
-                if let Some(result) = prefix_frame.resolve_local_segment(suffix, span) {
-                    return Some(result);
-                }
-                if suffix.len() > 1 {
-                    return self.resolve_local_segment(&suffix[1..], span);
-                }
+            let matches_prefix = path.len() > prefix.len()
+                && path[..prefix.len()]
+                    .iter()
+                    .map(|(segment, _)| segment.as_str())
+                    .eq(prefix.iter().map(String::as_str));
+            if !matches_prefix {
+                return None;
+            }
+            let suffix = &path[prefix.len()..];
+            if let Some(result) = prefix_frame.resolve_local_segment(suffix, span) {
+                return Some(result);
+            }
+            if suffix.len() > 1 {
+                return self.resolve_local_segment(&suffix[1..], span);
             }
         }
         let ((first, quoted), rest) = path.split_first()?;
@@ -1219,6 +1251,17 @@ impl<'a> Frame<'a> {
                     Err(err) => return Some(Err(err)),
                 }
                 break;
+            }
+            if let Some(key) = current.generated_value_key(first, *quoted)
+                && let Some(mut found) = current.values.borrow().get(&key).cloned()
+            {
+                for (field, quoted) in rest {
+                    match select_value(&found, field, *quoted, span) {
+                        Ok(next) => found = next,
+                        Err(err) => return Some(Err(err)),
+                    }
+                }
+                return Some(Ok(found));
             }
             frame = current.parent;
         }
@@ -2246,26 +2289,33 @@ fn params_cache_key(path: &[(String, bool)]) -> Vec<String> {
         .collect()
 }
 
-fn params_select_path(expr: &Expr) -> Option<Vec<(String, bool)>> {
+fn params_select_path(expr: &Expr, frame: &Frame<'_>) -> Option<Vec<(String, bool)>> {
     match expr {
         Expr::Ident(name, _) if name == "params" => Some(Vec::new()),
         Expr::Select(base, field, quoted, _) => {
-            let mut path = params_select_path(base)?;
+            let mut path = params_select_path(base, frame)?;
             path.push((field.clone(), *quoted));
             Some(path)
         }
         Expr::Index(base, index, _) => {
-            let mut path = params_select_path(base)?;
-            let Expr::Str(parts, _) = &**index else {
-                return None;
-            };
-            let mut key = String::new();
-            for part in parts {
-                match part {
-                    StrPart::Text(text) => key.push_str(text),
-                    StrPart::Interp(_) => return None,
+            let mut path = params_select_path(base, frame)?;
+            let key = match &**index {
+                Expr::Str(parts, _)
+                    if parts.iter().all(|part| matches!(part, StrPart::Text(_))) =>
+                {
+                    let mut text = String::new();
+                    for part in parts {
+                        if let StrPart::Text(value) = part {
+                            text.push_str(value);
+                        }
+                    }
+                    text
                 }
-            }
+                other => match eval_expr(other, frame).ok()?.concretize() {
+                    Value::String(key) => key.clone(),
+                    _ => return None,
+                },
+            };
             path.push((key, true));
             Some(path)
         }
@@ -2317,7 +2367,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         }
         Expr::Ident(name, span) => frame.lookup(name, *span),
         Expr::Select(base, field, quoted, span) => {
-            if let Some(path) = params_select_path(expr)
+            if let Some(path) = params_select_path(expr, frame)
                 && !path.is_empty()
                 && frame.params_context.borrow().is_some()
                 && !frame.params_shadowed()
@@ -2421,7 +2471,7 @@ fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         Expr::Index(base, index, span) => {
             if frame.params_context.borrow().is_some()
                 && !frame.params_shadowed()
-                && let Some(mut path) = params_select_path(base)
+                && let Some(mut path) = params_select_path(base, frame)
                 && let Value::String(key) = eval_expr(index, frame)?.concretize()
             {
                 path.push((key.clone(), true));
@@ -4729,6 +4779,12 @@ fn op_name(op: &BinOp) -> &'static str {
         BinOp::And => "&&",
         BinOp::Or => "||",
     }
+}
+
+fn params_cycle_error(error: &LangError) -> bool {
+    let text = error.to_string();
+    text.contains("cyclic reference while evaluating `params.")
+        || text.contains("circular reference while evaluating `params.")
 }
 
 fn overflow(span: Span) -> LangError {
