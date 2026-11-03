@@ -5344,6 +5344,23 @@ a: """
     let value = ostinato_lang::eval_file(&file).expect("eval escaped CR");
     assert_eq!(value.to_json().expect("json")["a"], "a\rb");
 
+    // CUE allows a bare CR in the line-start whitespace, including on the
+    // closing delimiter line.
+    let cr_prefix = "package demo\na: \"\"\"\n\raaa\n\rbbb\n\r\"\"\"\n";
+    let file = ostinato_lang::parse(cr_prefix).expect("parse CR-prefixed string lines");
+    let value = ostinato_lang::eval_file(&file).expect("eval CR-prefixed string lines");
+    assert_eq!(value.to_json().expect("json")["a"], "aaa\nbbb");
+
+    let cr_prefix_blank = "package demo\na: \"\"\"\n\r\na\n\r\n\"\"\"\n";
+    let file = ostinato_lang::parse(cr_prefix_blank).expect("parse CR-prefixed blank lines");
+    let value = ostinato_lang::eval_file(&file).expect("eval CR-prefixed blank lines");
+    assert_eq!(value.to_json().expect("json")["a"], "\na\n");
+
+    let cr_prefix_bytes = "package demo\na: '''\n\raaa\n\rbbb\n\r'''\n";
+    let file = ostinato_lang::parse(cr_prefix_bytes).expect("parse CR-prefixed bytes lines");
+    let value = ostinato_lang::eval_file(&file).expect("eval CR-prefixed bytes lines");
+    assert_eq!(value.to_json().expect("json")["a"], "YWFhCmJiYg==");
+
     for source in [
         "package demo\na: \"\"\"\r\n  a\r\n\r\n  b\r\n  \"\"\"\n",
         "package demo\na: \"\"\"\n  a\nb\n  \"\"\"\n",

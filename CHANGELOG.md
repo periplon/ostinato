@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.11.4
+
+Bare-CR multiline whitespace conformance.
+
+- Multiline strings and bytes accept a bare CR in line-start whitespace,
+  including the closing-delimiter line, matching CUE's scanner vectors.
+- Document the nested-multiline-literal-inside-interpolation limit explicitly
+  in `docs/SCOPE.md`.
+- 282 tests (49 CLI E2E, 1 conformance, 219 language, 3 language unit,
+  6 domain, 3 store, 1 adapters unit).
+
+
 ## v0.11.3
 
 Multiline string dedent and remaining raw-literal edge cases.
