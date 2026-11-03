@@ -59,7 +59,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Decimal division digit count | Division uses `BigDecimal` precision, which can differ from CUE's 34-digit decimal expansion |
 | JSON export of high-precision decimals | Arithmetic is arbitrary precision, but `to_json` rounds non-integral values through f64; string interpolation and comparisons use the exact value |
 | Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |
-| Optional-dependent required fields inside list-of-list element constraints | `#P: {ls?: [[{a?: int, v: a}]]}` is not resolved; direct, nested-struct and single-list element cases are implemented |
+| Optional-dependent required fields through compound optionals | Optional fields whose value is a struct, list, list-of-list or definition (`cfg?: {...}`, `ps?: [...]`, `e?: #E`), nested optional fields inside a required struct, fixed-length optional lists, and the root `params: #P & {...}` form are not resolved; primitive optional fields are implemented |
 | Self-selection through split composed non-definition literals | `x: {a: x.b} & {b: 1}` is not resolved; definition self-selection, regular struct self-selection and composed definitions are implemented |
 | Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |
 | Comprehension-generated definitions | `#D: {if true {#I: 3}, ...}` drops the generated `#I`; explicit definitions and comprehension-generated regular fields are supported |

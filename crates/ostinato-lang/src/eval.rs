@@ -1959,7 +1959,8 @@ impl<'a> Frame<'a> {
     ) -> Result<Value, LangError> {
         let child = Frame::from_static(items, Some(self), HashMap::new())?;
         *child.definition_context.borrow_mut() = self.next_definition.borrow().clone();
-        if let Some(injections) = self.next_injections.borrow_mut().take() {
+        let pending_injections = self.next_injections.borrow_mut().take();
+        if let Some(injections) = pending_injections {
             for (name, value) in injections {
                 if let Some(key) = child.any_field_key(&name)
                     && child
@@ -1968,6 +1969,20 @@ impl<'a> Frame<'a> {
                         .get(&key)
                         .is_some_and(|definition| definition.optional && !definition.definition)
                 {
+                    if !matches!(
+                        value,
+                        Value::String(_)
+                            | Value::Int(_)
+                            | Value::Float(_)
+                            | Value::Bool(_)
+                            | Value::Bytes(_)
+                            | Value::Null
+                    ) {
+                        // Compound optionals (structs/lists/definitions) need
+                        // recursive injection; keep them as a documented limit
+                        // rather than risking wrong nested values.
+                        continue;
+                    }
                     if let Value::List(elements) = &value {
                         let exprs = child
                             .fields
@@ -2013,7 +2028,7 @@ impl<'a> Frame<'a> {
                     if let Some(nested) = concrete_fields(&value) {
                         *child.next_injections.borrow_mut() = Some(nested);
                     }
-                    let declared = child.eval_field_key(&key, span)?;
+                    let declared = close_nested(&child.eval_field_key(&key, span)?);
                     child.next_injections.borrow_mut().take();
                     let unified = unify_values(&declared, &value, span)?;
                     child.values.borrow_mut().insert(key.clone(), unified);
@@ -2355,7 +2370,8 @@ impl<'a> Frame<'a> {
                         self.lookup(name, span)?
                     }
                 } else {
-                    self.lookup(name, span)?
+                    let injections = concrete_fields(result).unwrap_or_default();
+                    lookup_with_injections(self, name, injections, span)?
                 };
                 if matches!(value, Value::Definition { closed: true, .. }) {
                     *result = unify_values(result, &value, span)?;
@@ -2580,6 +2596,24 @@ fn concrete_fields(value: &Value) -> Option<BTreeMap<String, Value>> {
         Value::Struct(fields) => Some(fields.clone()),
         Value::Definition { fields, .. } => Some(fields.clone()),
         _ => None,
+    }
+}
+
+fn lookup_with_injections(
+    frame: &Frame<'_>,
+    name: &str,
+    injections: BTreeMap<String, Value>,
+    span: Span,
+) -> Result<Value, LangError> {
+    match frame.lookup(name, span) {
+        Ok(value) => Ok(value),
+        Err(err) if err.to_string().contains("cannot reference optional field") => {
+            match eval_definition_with_injections(frame, name, injections, span)? {
+                Some(value) => Ok(value),
+                None => Err(err),
+            }
+        }
+        Err(err) => Err(err),
     }
 }
 
