@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.8.3
+
+Nested tag structural merges and definition aliases.
+
+- Inline struct conjuncts are structurally merged before evaluation, so tag
+  injection updates dependent siblings and nested definitions keep their fields.
+- Definition markers are preserved for definitions nested directly in `params`.
+- Field aliases to definitions (`A=#P`) resolve tag origins to the definition,
+  so alias-backed params see the override in dependents.
+- 257 tests (41 CLI E2E, 1 conformance, 205 language, 6 domain, 3 store, 1 unit).
+
 ## v0.8.2
 
 Nested definition tag origins.

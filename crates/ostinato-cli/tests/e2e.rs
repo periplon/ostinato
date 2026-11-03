@@ -2049,3 +2049,49 @@ workflow: {name: "\(params.n.inner.host)|\(params.n.inner.copy)", steps: {s: {ki
     assert_eq!(report["params"]["n"]["inner"]["copy"], "x");
     assert!(report["params"]["n"].get("#Inner").is_none());
 }
+
+#[test]
+fn nested_tag_origins_cover_groups_aliases_and_inline_definitions() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("nested-tag-origins.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+A=#P: {host: string | *"d" @tag(host), copy: host}
+#Outer: {grp: {#Inner: {host: string | *"d" @tag(ihost), copy: host}}, inner: grp.#Inner}
+params: {
+    a: A
+    n: #Outer
+    #Local: {host: string | *"d" @tag(lhost)}
+    local: #Local
+}
+workflow: {
+    name: "\(params.a.host)|\(params.a.copy)|\(params.n.inner.host)|\(params.n.inner.copy)|\(params.local.host)"
+    steps: {s: {kind: "noop"}}
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "host=x",
+        "-p",
+        "ihost=y",
+        "-p",
+        "lhost=z",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["workflow"]["name"], "x|x|y|y|z");
+    assert!(report["params"]["n"]["grp"].get("#Inner").is_none());
+}
