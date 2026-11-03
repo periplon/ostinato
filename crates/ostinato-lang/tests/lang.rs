@@ -4503,3 +4503,55 @@ workflow: {name: "n", steps: {s: {kind: "noop"}}}
         .is_err()
     );
 }
+
+#[test]
+fn params_comprehensions_can_read_siblings_without_false_cycles() {
+    let cases = [
+        "params: {a: 1, b: 2, for k in [params.a] {c: k}}",
+        "params: {a: 1, if params.a == 1 {c: 2}}",
+        "params: {env: string | *\"dev\", if params.env == \"prod\" {replicas: int | *3}}",
+        "params: {db: {host: string | *\"h\"}, if params.db.host == \"h\" {port: 1}}",
+    ];
+    for source in cases {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        ostinato_lang::eval_file(&file).expect("params sibling inside comprehension");
+    }
+
+    for source in [
+        "params: {a: params.a}",
+        "params: {a: params.b, b: params.a}",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\n{source}\n")).expect("parse");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "true cycle: {source}"
+        );
+    }
+}
+
+#[test]
+fn overrides_are_visible_to_params_comprehensions() {
+    let conditional = r#"
+package demo
+params: {a: int @tag(a, type=int), b: int, if a == 2 {b: 5}}
+workflow: {name: "\(params.b)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        conditional,
+        &BTreeMap::from([("a".to_owned(), "2".to_owned())]),
+    )
+    .expect("conditional override");
+    assert_eq!(compiled.spec.name, "5");
+
+    let looped = r#"
+package demo
+params: {a: int @tag(a, type=int), b: int, for k in [a] {b?: k}}
+workflow: {name: "\(params.b)", steps: {s: {kind: "noop"}}}
+"#;
+    let compiled = ostinato_lang::compile_with_params(
+        looped,
+        &BTreeMap::from([("a".to_owned(), "2".to_owned())]),
+    )
+    .expect("loop override");
+    assert_eq!(compiled.spec.name, "2");
+}
