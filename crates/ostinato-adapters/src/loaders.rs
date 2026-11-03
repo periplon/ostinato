@@ -530,17 +530,24 @@ fn collect_parameter_tags(
     path: &Path,
 ) -> Result<BTreeMap<String, Vec<ostinato_lang::TagInfo>>, ostinato_lang::LangError> {
     let files = collect_package_files(path)?;
-    let mut tags: BTreeMap<String, Vec<ostinato_lang::TagInfo>> = BTreeMap::new();
-    for file in files {
-        let text = std::fs::read_to_string(&file).map_err(|err| {
+    let mut combined = ostinato_lang::ast::File {
+        package: None,
+        imports: Vec::new(),
+        items: Vec::new(),
+    };
+    for (index, file) in files.iter().enumerate() {
+        let text = std::fs::read_to_string(file).map_err(|err| {
             ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
         })?;
-        let parsed = ostinato_lang::parse(&text)?;
-        for (name, mut infos) in ostinato_lang::parameter_tags(&parsed)? {
-            tags.entry(name).or_default().append(&mut infos);
+        let mut parsed = ostinato_lang::parse(&text)?;
+        ostinato_lang::rename_file_locals(&mut parsed, index)?;
+        if combined.package.is_none() {
+            combined.package = parsed.package.clone();
         }
+        combined.imports.extend(parsed.imports);
+        combined.items.extend(parsed.items);
     }
-    Ok(tags)
+    ostinato_lang::parameter_tags(&combined)
 }
 
 fn parameters_json(

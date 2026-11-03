@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.6.5
+
+Tag discovery and time validation corrections.
+
+- Package tags are collected from the combined package AST, so split-file and
+  parenthesized/unified definition-backed `params` keep `@tag` metadata;
+  duplicate definitions contribute all their tags.
+- `time.Parse`/`Format` enforce Go field widths (4-digit year, 2-digit
+  month/day/minute/second, uppercase AM/PM) in addition to fractions.
+- 188 tests (31 CLI E2E, 1 conformance, 146 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.4
 
 Tag injection final corrections.

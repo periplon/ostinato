@@ -3286,3 +3286,36 @@ c: time.Parse("2006-01-02T15:04:05Z07:00", "2020-01-02T12:30:00,25Z")
         assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
     }
 }
+
+#[test]
+fn time_layouts_enforce_go_field_widths() {
+    let source = r#"
+package demo
+import "time"
+a: time.Parse("2006-01-02", "2020-01-02")
+b: time.Parse("15:04:05", "12:30:05")
+c: time.Parse("3:04PM", "3:04PM")
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "time".to_owned(),
+        ostinato_lang::builtin_module("time").expect("time"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    assert_eq!(value.to_json().expect("json")["a"], "2020-01-02T00:00:00Z");
+
+    for source in [
+        "a: time.Parse(\"2006-01-02\", \"2020-1-2\")",
+        "a: time.Parse(\"2006-01-02\", \"202-01-02\")",
+        "a: time.Parse(\"15:04:05\", \"12:3:04\")",
+        "a: time.Parse(\"15:04:05\", \"12:30:5\")",
+        "a: time.Parse(\"3:04PM\", \"3:04pm\")",
+        "a: time.Format(\"2020-1-2\", \"2006-01-02\")",
+    ] {
+        let file = ostinato_lang::parse(&format!("package demo\nimport \"time\"\n{source}\n"))
+            .expect("parse");
+        assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
+    }
+}

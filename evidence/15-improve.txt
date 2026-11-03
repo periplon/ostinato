@@ -1,6 +1,6 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.nxae888RoU/agent.sqlite improve eb73634d-c1c7-4a24-814e-bddd9a5add6e --rounds 2 --agent-cmd /Users/joanmarc/dailywork/jmca/ostinato/examples/agent.sh
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.GrhAV3obEN/agent.sqlite improve 1f21d83c-189d-4177-8c41-ffb31b839bf2 --rounds 2 --agent-cmd /Users/joanmarc/dailywork/jmca/ostinato/examples/agent.sh
 
-improvement #2 run=eb73634d-c1c7-4a24-814e-bddd9a5add6e diagnosis=The plan is sound; keep the scope small and reversible.
+improvement #2 run=1f21d83c-189d-4177-8c41-ffb31b839bf2 diagnosis=The plan is sound; keep the scope small and reversible.
 {
   "changes": [
     "no structural change"
@@ -13,8 +13,8 @@ improvement #2 run=eb73634d-c1c7-4a24-814e-bddd9a5add6e diagnosis=The plan is so
   },
   "score": 0.93
 }
-child run 6cb27485-d2d6-4952-9234-bd5f7158b7ca status=succeeded parent=eb73634d-c1c7-4a24-814e-bddd9a5add6e
-improvement #4 run=6cb27485-d2d6-4952-9234-bd5f7158b7ca diagnosis=The plan is sound; keep the scope small and reversible.
+child run 7be3f575-61e6-42cf-9c9e-02979fc75ede status=succeeded parent=1f21d83c-189d-4177-8c41-ffb31b839bf2
+improvement #4 run=7be3f575-61e6-42cf-9c9e-02979fc75ede diagnosis=The plan is sound; keep the scope small and reversible.
 {
   "changes": [
     "no structural change"
@@ -27,6 +27,6 @@ improvement #4 run=6cb27485-d2d6-4952-9234-bd5f7158b7ca diagnosis=The plan is so
   },
   "score": 0.93
 }
-child run 417ede93-fd41-49f0-909b-95780dec8573 status=succeeded parent=6cb27485-d2d6-4952-9234-bd5f7158b7ca
+child run f98c9c9b-e6a8-45ef-844c-6d0fc2ab6087 status=succeeded parent=7be3f575-61e6-42cf-9c9e-02979fc75ede
 
 exit=0
