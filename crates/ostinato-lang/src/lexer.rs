@@ -429,7 +429,23 @@ impl Lexer {
                     }
                     'u' => {
                         let value = self.read_hex_digits(4, line, col)?;
-                        append_code_point(&mut out, value, line, col)?;
+                        if (0xD800..=0xDBFF).contains(&value) {
+                            if self.peek() != Some('\\') || self.peek_n(1) != Some('u') {
+                                return Err(LangError::parse(line, col, "invalid unicode escape"));
+                            }
+                            self.bump();
+                            self.bump();
+                            let low = self.read_hex_digits(4, line, col)?;
+                            if !(0xDC00..=0xDFFF).contains(&low) {
+                                return Err(LangError::parse(line, col, "invalid unicode escape"));
+                            }
+                            let scalar = 0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00);
+                            append_code_point(&mut out, scalar, line, col)?;
+                        } else if (0xDC00..=0xDFFF).contains(&value) {
+                            return Err(LangError::parse(line, col, "invalid unicode escape"));
+                        } else {
+                            append_code_point(&mut out, value, line, col)?;
+                        }
                     }
                     'U' => {
                         let value = self.read_hex_digits(8, line, col)?;

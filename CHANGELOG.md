@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.6.3
+
+Attribute/builtin third review corrections.
+
+- Escaped-backslash regex patterns and quoted labels decode via the string
+  parser (`[=~"\\d+"]`, `"a\\b"`, `"caf\u00e9"`).
+- `time.Parse`/`Format` reject trailing garbage after fractional seconds and
+  accept comma fractions in RFC3339; durations accept `.5s` and `1.s`.
+- String escapes reject `\'` and decode surrogate pairs; bytes do the same.
+- `@tag` number grammar accepts `00.5`, `0x_1`, `5.`, `5.e2`, `1e_1`; bool
+  injection trims whitespace; tags are found through parenthesized and split
+  `params`.
+- 185 tests (29 CLI E2E, 1 conformance, 145 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.2
 
 Builtin and attribute second review corrections.

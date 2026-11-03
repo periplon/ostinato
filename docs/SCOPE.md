@@ -42,7 +42,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Nested `@tag` injection | Only top-level `params` fields can be injected with `-p`; nested tags are metadata |
 | `time` layout subset | Supported: `2006-01-02`, `15:04:05`, `3:04PM`, `2006-01-02 15:04:05`, RFC3339, with fractional seconds; other Go layouts are an error |
 | Math functions with integral results | `Sqrt`/`Pow`/`Exp`/`Log` return an `int` when the result is integral (CUE types it as float); `Floor`/`Ceil`/`Round`/`Trunc` are decimal-exact |
-| Multiline bytes literals | Single-line `'...'` bytes are supported; `'''...'''` is not |
+| Multiline bytes literals and bytes interpolation | Single-line `'...'` bytes are supported; `'''...'''` and `\(...)` inside bytes are not |
 | Decimal division digit count | Division uses `BigDecimal` precision, which can differ from CUE's 34-digit decimal expansion |
 | JSON export of high-precision decimals | Arithmetic is arbitrary precision, but `to_json` rounds non-integral values through f64; string interpolation and comparisons use the exact value |
 | Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |

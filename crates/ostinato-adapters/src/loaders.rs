@@ -333,27 +333,28 @@ fn parse_override_value(
     use ostinato_lang::TagType;
     let invalid =
         || ostinato_lang::LangError::Workflow(format!("invalid value `{raw}` for @tag injection"));
+    let trimmed = raw.trim();
     match tag {
         Some(TagType::String) => return Ok(Value::String(raw.to_owned())),
         Some(TagType::Int) => {
-            return parse_tag_int(raw).map(Value::Int).ok_or_else(invalid);
+            return parse_tag_int(trimmed).map(Value::Int).ok_or_else(invalid);
         }
         Some(TagType::Number) => {
-            return parse_tag_number(raw).ok_or_else(invalid);
+            return parse_tag_number(trimmed).ok_or_else(invalid);
         }
-        Some(TagType::Bool) => match raw {
+        Some(TagType::Bool) => match trimmed {
             "true" | "TRUE" | "True" | "t" | "T" | "1" => return Ok(Value::Bool(true)),
             "false" | "FALSE" | "False" | "f" | "F" | "0" => return Ok(Value::Bool(false)),
             _ => return Err(invalid()),
         },
         None => {}
     }
-    let looks_like_json = raw.starts_with('{')
-        || raw.starts_with('[')
-        || raw.starts_with('"')
-        || matches!(raw, "true" | "false" | "null")
-        || raw.parse::<f64>().is_ok();
-    if looks_like_json && let Ok(value) = serde_json::from_str::<Json>(raw) {
+    let looks_like_json = trimmed.starts_with('{')
+        || trimmed.starts_with('[')
+        || trimmed.starts_with('"')
+        || matches!(trimmed, "true" | "false" | "null")
+        || trimmed.parse::<f64>().is_ok();
+    if looks_like_json && let Ok(value) = serde_json::from_str::<Json>(trimmed) {
         return Ok(ostinato_lang::value_from_json(&value));
     }
     Ok(Value::String(raw.to_owned()))
@@ -377,6 +378,7 @@ fn parse_tag_int(text: &str) -> Option<i64> {
             }
             (rest, 10)
         };
+    let digits = digits.strip_prefix('_').unwrap_or(digits);
     let digits = validate_underscores(digits)?;
     let value = i128::from_str_radix(&digits, radix).ok()?;
     let value = if negative { -value } else { value };
@@ -416,9 +418,13 @@ fn parse_tag_number(text: &str) -> Option<Value> {
 }
 
 fn validate_number_literal(text: &str) -> Option<String> {
-    let mut out = String::with_capacity(text.len());
-    let chars: Vec<char> = text.chars().collect();
+    if text.is_empty() || text.starts_with('_') || text.ends_with('_') || text.contains("__") {
+        return None;
+    }
+    let cleaned: String = text.chars().filter(|character| *character != '_').collect();
+    let chars: Vec<char> = cleaned.chars().collect();
     let mut index = 0usize;
+    let mut out = String::with_capacity(cleaned.len() + 2);
     if matches!(chars.first(), Some('+' | '-')) {
         if chars[0] == '-' {
             out.push('-');
@@ -428,57 +434,83 @@ fn validate_number_literal(text: &str) -> Option<String> {
     if index >= chars.len() {
         return None;
     }
-    let mut seen_digit = false;
-    if chars[index] == '.' {
-        out.push('0');
-        seen_digit = true;
-    }
-    if chars[index] == '0' && chars.get(index + 1).is_some_and(char::is_ascii_digit) {
-        return None;
+    let mut digits = 0usize;
+    let mut dot = false;
+    let mut leading_zero = false;
+    if chars[index] == '0' {
+        leading_zero = true;
     }
     while index < chars.len() {
         let character = chars[index];
         match character {
             '0'..='9' => {
                 out.push(character);
-                seen_digit = true;
+                digits += 1;
                 index += 1;
             }
             '.' => {
-                if !seen_digit || out.contains('.') {
+                if dot {
                     return None;
                 }
+                dot = true;
                 out.push('.');
                 index += 1;
             }
-            'e' | 'E' => {
-                if !seen_digit || out.contains(['e', 'E']) {
-                    return None;
-                }
-                out.push('e');
-                index += 1;
-                if matches!(chars.get(index), Some('+' | '-')) {
-                    out.push(chars[index]);
-                    index += 1;
-                }
-                if !chars.get(index).is_some_and(char::is_ascii_digit) {
-                    return None;
-                }
-            }
-            '_' => {
-                let previous = index.checked_sub(1).and_then(|i| chars.get(i));
-                let next = chars.get(index + 1);
-                if !previous.is_some_and(char::is_ascii_digit)
-                    || !next.is_some_and(char::is_ascii_digit)
-                {
-                    return None;
-                }
-                index += 1;
-            }
+            'e' | 'E' => break,
             _ => return None,
         }
     }
-    if seen_digit { Some(out) } else { None }
+    if digits == 0 {
+        return None;
+    }
+    let exponent = index < chars.len();
+    if exponent {
+        if chars[index] != 'e' && chars[index] != 'E' {
+            return None;
+        }
+        out.push('e');
+        index += 1;
+        if matches!(chars.get(index), Some('+' | '-')) {
+            out.push(chars[index]);
+            index += 1;
+        }
+        let start = index;
+        while index < chars.len() && chars[index].is_ascii_digit() {
+            out.push(chars[index]);
+            index += 1;
+        }
+        if index == start || index != chars.len() {
+            return None;
+        }
+    }
+    if leading_zero && !dot && !exponent && out.trim_start_matches('-').len() > 1 {
+        return None;
+    }
+    if out.starts_with('.') || out.starts_with("-.") {
+        out.insert(if out.starts_with('-') { 1 } else { 0 }, '0');
+    }
+    if out.contains(".e") {
+        out = out.replace(".e", ".0e");
+    }
+    let sign_len = usize::from(out.starts_with('-'));
+    let rest = &out[sign_len..];
+    let normalized = if rest.len() > 1
+        && rest.starts_with('0')
+        && rest.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
+    {
+        let trimmed = rest.trim_start_matches('0');
+        let trimmed = if trimmed.starts_with('.') {
+            format!("0{trimmed}")
+        } else if trimmed.is_empty() {
+            "0".to_owned()
+        } else {
+            trimmed.to_owned()
+        };
+        format!("{}{}", &out[..sign_len], trimmed)
+    } else {
+        out
+    };
+    Some(normalized)
 }
 
 fn collect_parameter_tags(
