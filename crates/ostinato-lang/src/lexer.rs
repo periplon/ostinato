@@ -606,9 +606,11 @@ impl Lexer {
                         'n' => raw.push('\n'),
                         't' => raw.push('\t'),
                         'r' => raw.push('\r'),
-                        '0' => raw.push('\0'),
                         '"' => raw.push('"'),
-                        '\\' => raw.push('\\'),
+                        '\\' => {
+                            raw.push('\\');
+                            raw.push('\\');
+                        }
                         '(' => {
                             raw.push('\\');
                             raw.push('(');

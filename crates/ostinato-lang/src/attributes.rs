@@ -5,7 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{Attribute, Expr, File, Label, StructItem};
+use crate::ast::{Expr, File, Label, StructItem};
+use crate::error::LangError;
 
 /// Injection type declared by `@tag(...,type=...)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,11 +31,17 @@ fn label_name(field: &crate::ast::Field) -> Option<&str> {
     }
 }
 
-fn tag_info(field_name: &str, field: &crate::ast::Field) -> Option<(String, TagType)> {
-    let attribute = field
+fn tag_info(
+    field_name: &str,
+    field: &crate::ast::Field,
+) -> Result<Option<(String, TagType)>, LangError> {
+    let Some(attribute) = field
         .attributes
         .iter()
-        .find(|attribute| attribute.name == "tag")?;
+        .find(|attribute| attribute.name == "tag")
+    else {
+        return Ok(None);
+    };
     let mut ty = TagType::String;
     let mut name = field_name.to_owned();
     let mut saw_name = false;
@@ -43,10 +50,17 @@ fn tag_info(field_name: &str, field: &crate::ast::Field) -> Option<(String, TagT
             match key.trim() {
                 "type" => {
                     ty = match value.trim() {
+                        "string" => TagType::String,
                         "int" => TagType::Int,
                         "bool" => TagType::Bool,
                         "number" => TagType::Number,
-                        _ => TagType::String,
+                        other => {
+                            return Err(LangError::eval(
+                                attribute.span.line,
+                                attribute.span.col,
+                                format!("unknown @tag type `{other}`"),
+                            ));
+                        }
                     };
                 }
                 "name" => {
@@ -60,13 +74,15 @@ fn tag_info(field_name: &str, field: &crate::ast::Field) -> Option<(String, TagT
             saw_name = true;
         }
     }
-    Some((name, ty))
+    Ok(Some((name, ty)))
 }
 
-/// Map parameter field names to their `@tag` injection type.
-#[must_use]
-pub fn parameter_tags(file: &File) -> BTreeMap<String, TagInfo> {
-    let mut tags = BTreeMap::new();
+/// Map tag names to the top-level parameter fields that declare them.
+///
+/// # Errors
+/// Returns an evaluation error for unknown `@tag` types.
+pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, LangError> {
+    let mut tags: BTreeMap<String, Vec<TagInfo>> = BTreeMap::new();
     let mut saw_params = false;
     for item in &file.items {
         let StructItem::Field(field) = item else {
@@ -76,16 +92,19 @@ pub fn parameter_tags(file: &File) -> BTreeMap<String, TagInfo> {
             && let Expr::Struct(items, _) = &field.value
         {
             saw_params = true;
-            collect_tags(items, &mut tags);
+            collect_tags(items, &mut tags)?;
         }
     }
     if !saw_params {
-        collect_tags(&file.items, &mut tags);
+        collect_tags(&file.items, &mut tags)?;
     }
-    tags
+    Ok(tags)
 }
 
-fn collect_tags(items: &[StructItem], tags: &mut BTreeMap<String, TagInfo>) {
+fn collect_tags(
+    items: &[StructItem],
+    tags: &mut BTreeMap<String, Vec<TagInfo>>,
+) -> Result<(), LangError> {
     for item in items {
         let StructItem::Field(field) = item else {
             continue;
@@ -93,26 +112,12 @@ fn collect_tags(items: &[StructItem], tags: &mut BTreeMap<String, TagInfo>) {
         let Some(name) = label_name(field) else {
             continue;
         };
-        if let Some((tag_name, ty)) = tag_info(name, field) {
-            tags.insert(
-                tag_name,
-                TagInfo {
-                    field: name.to_owned(),
-                    ty,
-                },
-            );
-        }
-        if let Expr::Struct(inner, _) = &field.value {
-            collect_tags(inner, tags);
+        if let Some((tag_name, ty)) = tag_info(name, field)? {
+            tags.entry(tag_name).or_default().push(TagInfo {
+                field: name.to_owned(),
+                ty,
+            });
         }
     }
-}
-
-/// Whether an attribute is one of the known metadata attributes.
-#[must_use]
-pub fn is_known_attribute(attribute: &Attribute) -> bool {
-    matches!(
-        attribute.name.as_str(),
-        "tag" | "if" | "deprecated" | "extern" | "hidden" | "go" | "jsonschema"
-    )
+    Ok(())
 }

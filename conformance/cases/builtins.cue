@@ -24,12 +24,14 @@ params: {
 	tu: time.Unix(1580000000, 0)
 	tp: time.Parse("2006-01-02", "2020-01-02")
 	tpd: time.ParseDuration("1h30m")
+	tfrac: time.Parse("15:04:05", "12:30:00.5")
+	tdur: time.ParseDuration("-1h30m")
 
 	bytes1: 'abc'
 	bytesLen: len(bytes1)
 }
 
 workflow: {
-	name: "\(params.rf)-\(params.rr)-\(params.rq)-\(params.ma)-\(params.mf)-\(params.ms)-\(params.tu)-\(params.tp)-\(params.bytesLen)"
+	name: "\(params.tfrac)-\(params.tdur)-\(params.rf)-\(params.rr)-\(params.rq)-\(params.ma)-\(params.mf)-\(params.ms)-\(params.tu)-\(params.tp)-\(params.bytesLen)"
 	steps: {s: {kind: "noop"}}
 }

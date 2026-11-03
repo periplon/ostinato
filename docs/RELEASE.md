@@ -12,6 +12,12 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.6.2
+
+- Fractional time layouts, checked durations, duplicate/nested `@tag`, CUE
+  literal grammar for tagged values, and string escape decoding.
+- 181 tests (28 CLI E2E, 1 conformance, 142 language, 6 domain, 3 store, 1 unit).
+
 ## v0.6.1
 
 - Attribute parsing fixes, Go-compatible bytes escapes, `@tag` names/grammar,

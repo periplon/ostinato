@@ -1330,3 +1330,105 @@ workflow: {
     assert_eq!(report["params"]["flag"], true);
     assert_eq!(report["workflow"]["name"], "5-16-true");
 }
+
+#[test]
+fn duplicate_and_nested_tags_follow_cue() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("tagged-duplicates.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: {
+    a: string @tag(x)
+    b: int @tag(x, type=int)
+    inner: {
+        a: int | *0 @tag(nestedOnly, type=int)
+    }
+}
+workflow: {
+    name: "\(params.a)-\(params.b)-\(params.inner.a)"
+    steps: {s: {kind: "noop"}}
+}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "x=5",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["a"], "5");
+    assert_eq!(report["params"]["b"], 5);
+}
+
+#[test]
+fn tag_literal_grammar_and_strict_types() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("tagged-literals.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+params: {
+    o: int @tag(o, type=int)
+    b: int @tag(b, type=int)
+    h: int @tag(h, type=int)
+    n: number @tag(n, type=number)
+}
+workflow: {name: "\(params.o)-\(params.b)-\(params.h)-\(params.n)", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "-p",
+        "o=0o10",
+        "-p",
+        "b=0b101",
+        "-p",
+        "h=-0x10",
+        "-p",
+        "n=.5",
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["params"]["o"], 8);
+    assert_eq!(report["params"]["b"], 5);
+    assert_eq!(report["params"]["h"], -16);
+    assert_eq!(report["params"]["n"], 0.5);
+
+    for (name, value) in [("o", "010"), ("b", "1__0")] {
+        let output = ost(&[
+            "--db",
+            db.to_str().expect("db"),
+            "validate",
+            workflow.to_str().expect("workflow"),
+            "-p",
+            &format!("{name}={value}"),
+            "-p",
+            "h=1",
+            "-p",
+            "n=1",
+        ]);
+        assert!(!output.status.success(), "{name}={value}");
+    }
+}

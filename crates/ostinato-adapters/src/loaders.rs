@@ -103,13 +103,18 @@ fn evaluate_path(
         imports.insert(import.alias.clone(), value);
     }
 
-    let tags = ostinato_lang::parameter_tags(&combined);
+    let tags = ostinato_lang::parameter_tags(&combined)?;
     let mut injected = BTreeMap::new();
     for (key, raw) in overrides {
-        if let Some(info) = tags.get(key) {
-            injected.insert(info.field.clone(), parse_override_value(raw, Some(info.ty)));
+        if let Some(infos) = tags.get(key) {
+            for info in infos {
+                injected.insert(
+                    info.field.clone(),
+                    parse_override_value(raw, Some(info.ty))?,
+                );
+            }
         } else {
-            injected.insert(key.clone(), parse_override_value(raw, None));
+            injected.insert(key.clone(), parse_override_value(raw, None)?);
         }
     }
     let value = eval_file_with_imports_mode(&combined, &imports, &injected, include_definitions)?;
@@ -321,59 +326,174 @@ fn find_module(start: &Path) -> Option<(PathBuf, String)> {
     None
 }
 
-fn parse_override_value(raw: &str, tag: Option<ostinato_lang::TagType>) -> Value {
+fn parse_override_value(
+    raw: &str,
+    tag: Option<ostinato_lang::TagType>,
+) -> Result<Value, ostinato_lang::LangError> {
     use ostinato_lang::TagType;
-    let trimmed = raw.trim();
+    let invalid =
+        || ostinato_lang::LangError::Workflow(format!("invalid value `{raw}` for @tag injection"));
     match tag {
-        Some(TagType::String) => return Value::String(raw.to_owned()),
+        Some(TagType::String) => return Ok(Value::String(raw.to_owned())),
         Some(TagType::Int) => {
-            if let Some(value) = parse_tag_int(trimmed) {
-                return Value::Int(value);
-            }
+            return parse_tag_int(raw).map(Value::Int).ok_or_else(invalid);
         }
-        Some(TagType::Bool) => match trimmed {
-            "true" | "TRUE" | "True" | "t" | "T" | "1" => return Value::Bool(true),
-            "false" | "FALSE" | "False" | "f" | "F" | "0" => return Value::Bool(false),
-            _ => {}
-        },
         Some(TagType::Number) => {
-            if let Ok(value) = serde_json::from_str::<Json>(trimmed) {
-                return ostinato_lang::value_from_json(&value);
-            }
+            return parse_tag_number(raw).ok_or_else(invalid);
         }
+        Some(TagType::Bool) => match raw {
+            "true" | "TRUE" | "True" | "t" | "T" | "1" => return Ok(Value::Bool(true)),
+            "false" | "FALSE" | "False" | "f" | "F" | "0" => return Ok(Value::Bool(false)),
+            _ => return Err(invalid()),
+        },
         None => {}
     }
-    let looks_like_json = trimmed.starts_with('{')
-        || trimmed.starts_with('[')
-        || trimmed.starts_with('"')
-        || matches!(trimmed, "true" | "false" | "null")
-        || trimmed.parse::<f64>().is_ok();
-    if looks_like_json && let Ok(value) = serde_json::from_str::<Json>(trimmed) {
-        return ostinato_lang::value_from_json(&value);
+    let looks_like_json = raw.starts_with('{')
+        || raw.starts_with('[')
+        || raw.starts_with('"')
+        || matches!(raw, "true" | "false" | "null")
+        || raw.parse::<f64>().is_ok();
+    if looks_like_json && let Ok(value) = serde_json::from_str::<Json>(raw) {
+        return Ok(ostinato_lang::value_from_json(&value));
     }
-    Value::String(raw.to_owned())
+    Ok(Value::String(raw.to_owned()))
 }
 
 fn parse_tag_int(text: &str) -> Option<i64> {
-    let text = text.trim().replace('_', "");
-    let text = text.strip_prefix('+').unwrap_or(&text);
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        return i64::from_str_radix(hex, 16).ok();
+    let (negative, rest) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let (digits, radix) =
+        if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+            (hex, 16)
+        } else if let Some(octal) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+            (octal, 8)
+        } else if let Some(binary) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+            (binary, 2)
+        } else {
+            if rest.len() > 1 && rest.starts_with('0') {
+                return None;
+            }
+            (rest, 10)
+        };
+    let digits = validate_underscores(digits)?;
+    let value = i128::from_str_radix(&digits, radix).ok()?;
+    let value = if negative { -value } else { value };
+    i64::try_from(value).ok()
+}
+
+fn validate_underscores(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut last_underscore = false;
+    for character in text.chars() {
+        if character == '_' {
+            if out.is_empty() || last_underscore {
+                return None;
+            }
+            last_underscore = true;
+        } else if character.is_ascii_alphanumeric() {
+            out.push(character);
+            last_underscore = false;
+        } else {
+            return None;
+        }
     }
-    text.parse::<i64>().ok()
+    if out.is_empty() || last_underscore {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn parse_tag_number(text: &str) -> Option<Value> {
+    if let Some(int) = parse_tag_int(text) {
+        return Some(Value::Int(int));
+    }
+    let normalized = validate_number_literal(text)?;
+    let json = serde_json::from_str::<Json>(&normalized).ok()?;
+    Some(ostinato_lang::value_from_json(&json))
+}
+
+fn validate_number_literal(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0usize;
+    if matches!(chars.first(), Some('+' | '-')) {
+        if chars[0] == '-' {
+            out.push('-');
+        }
+        index = 1;
+    }
+    if index >= chars.len() {
+        return None;
+    }
+    let mut seen_digit = false;
+    if chars[index] == '.' {
+        out.push('0');
+        seen_digit = true;
+    }
+    if chars[index] == '0' && chars.get(index + 1).is_some_and(char::is_ascii_digit) {
+        return None;
+    }
+    while index < chars.len() {
+        let character = chars[index];
+        match character {
+            '0'..='9' => {
+                out.push(character);
+                seen_digit = true;
+                index += 1;
+            }
+            '.' => {
+                if !seen_digit || out.contains('.') {
+                    return None;
+                }
+                out.push('.');
+                index += 1;
+            }
+            'e' | 'E' => {
+                if !seen_digit || out.contains(['e', 'E']) {
+                    return None;
+                }
+                out.push('e');
+                index += 1;
+                if matches!(chars.get(index), Some('+' | '-')) {
+                    out.push(chars[index]);
+                    index += 1;
+                }
+                if !chars.get(index).is_some_and(char::is_ascii_digit) {
+                    return None;
+                }
+            }
+            '_' => {
+                let previous = index.checked_sub(1).and_then(|i| chars.get(i));
+                let next = chars.get(index + 1);
+                if !previous.is_some_and(char::is_ascii_digit)
+                    || !next.is_some_and(char::is_ascii_digit)
+                {
+                    return None;
+                }
+                index += 1;
+            }
+            _ => return None,
+        }
+    }
+    if seen_digit { Some(out) } else { None }
 }
 
 fn collect_parameter_tags(
     path: &Path,
-) -> Result<BTreeMap<String, ostinato_lang::TagInfo>, ostinato_lang::LangError> {
+) -> Result<BTreeMap<String, Vec<ostinato_lang::TagInfo>>, ostinato_lang::LangError> {
     let files = collect_package_files(path)?;
-    let mut tags = BTreeMap::new();
+    let mut tags: BTreeMap<String, Vec<ostinato_lang::TagInfo>> = BTreeMap::new();
     for file in files {
         let text = std::fs::read_to_string(&file).map_err(|err| {
             ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
         })?;
         let parsed = ostinato_lang::parse(&text)?;
-        tags.extend(ostinato_lang::parameter_tags(&parsed));
+        for (name, mut infos) in ostinato_lang::parameter_tags(&parsed)? {
+            tags.entry(name).or_default().append(&mut infos);
+        }
     }
     Ok(tags)
 }
@@ -381,7 +501,7 @@ fn collect_parameter_tags(
 fn parameters_json(
     root: &Value,
     overrides: &BTreeMap<String, String>,
-    tags: &BTreeMap<String, ostinato_lang::TagInfo>,
+    tags: &BTreeMap<String, Vec<ostinato_lang::TagInfo>>,
 ) -> Result<Json, ostinato_lang::LangError> {
     let Some(params_value) = root_value(root, "params") else {
         if overrides.is_empty() {
@@ -399,10 +519,10 @@ fn parameters_json(
     };
     if !overrides.is_empty() {
         for key in overrides.keys() {
-            let field = tags
+            let known = tags
                 .get(key)
-                .map_or(key.as_str(), |info| info.field.as_str());
-            if !params.contains_key(field) {
+                .is_some_and(|infos| infos.iter().all(|info| params.contains_key(&info.field)));
+            if !known && !params.contains_key(key) {
                 return Err(ostinato_lang::LangError::Workflow(format!(
                     "unknown parameter `{key}`; declare it under `params`"
                 )));

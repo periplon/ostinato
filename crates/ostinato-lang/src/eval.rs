@@ -2755,49 +2755,59 @@ fn time_arg(arguments: &[Value], index: usize, span: Span) -> Result<&str, LangE
 }
 
 fn parse_duration_nanos(text: &str) -> Option<i64> {
-    let text = text.trim();
-    if text == "0" {
+    if text == "0" || text == "+0" || text == "-0" {
         return Some(0);
     }
     let (sign, rest) = match text.strip_prefix('-') {
-        Some(rest) => (-1i64, rest),
-        None => (1i64, text.strip_prefix('+').unwrap_or(text)),
+        Some(rest) => (-1i128, rest),
+        None => (1i128, text.strip_prefix('+').unwrap_or(text)),
     };
     if rest.is_empty() {
         return None;
     }
-    let mut total: f64 = 0.0;
+    let mut total: i128 = 0;
     let mut rest = rest;
     while !rest.is_empty() {
-        let number_len = rest
-            .chars()
-            .take_while(|character| character.is_ascii_digit() || *character == '.')
-            .count();
-        if number_len == 0 {
+        let integer_len = rest.chars().take_while(char::is_ascii_digit).count();
+        if integer_len == 0 {
             return None;
         }
-        let number: f64 = rest[..number_len].parse().ok()?;
-        rest = &rest[number_len..];
+        let integer: i128 = rest[..integer_len].parse().ok()?;
+        rest = &rest[integer_len..];
+        let mut fraction: i128 = 0;
+        let mut fraction_digits = 0u32;
+        if let Some(after) = rest.strip_prefix('.') {
+            let digit_len = after.chars().take_while(char::is_ascii_digit).count();
+            if digit_len == 0 {
+                return None;
+            }
+            fraction = after[..digit_len].parse().ok()?;
+            fraction_digits = u32::try_from(digit_len).ok()?;
+            rest = &after[digit_len..];
+        }
         let (unit, scale) = [
-            ("ns", 1.0),
-            ("us", 1_000.0),
-            ("µs", 1_000.0),
-            ("ms", 1_000_000.0),
-            ("s", 1_000_000_000.0),
-            ("m", 60_000_000_000.0),
-            ("h", 3_600_000_000_000.0),
+            ("ns", 1i128),
+            ("us", 1_000),
+            ("µs", 1_000),
+            ("μs", 1_000),
+            ("ms", 1_000_000),
+            ("s", 1_000_000_000),
+            ("m", 60_000_000_000),
+            ("h", 3_600_000_000_000),
         ]
         .iter()
         .find(|(unit, _)| rest.starts_with(unit))
         .copied()?;
         rest = &rest[unit.len()..];
-        total += number * scale;
+        let mut value = integer.checked_mul(scale)?;
+        if fraction_digits > 0 {
+            let divisor = 10i128.checked_pow(fraction_digits)?;
+            value = value.checked_add(fraction.checked_mul(scale)?.checked_div(divisor)?)?;
+        }
+        total = total.checked_add(value)?;
     }
-    if !total.is_finite() {
-        return None;
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    Some((total * sign as f64) as i64)
+    total = total.checked_mul(sign)?;
+    i64::try_from(total).ok()
 }
 
 fn rfc3339_nano(datetime: &chrono::DateTime<chrono::Utc>) -> String {
@@ -2817,6 +2827,24 @@ fn rfc3339_nano(datetime: &chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
+fn split_fraction(text: &str) -> (&str, i64) {
+    let Some(index) = text.find(['.', ',']) else {
+        return (text, 0);
+    };
+    let base = &text[..index];
+    let fraction = &text[index + 1..];
+    let digits: String = fraction.chars().take_while(char::is_ascii_digit).collect();
+    let mut nanos = 0i64;
+    let mut scale = 100_000_000i64;
+    for digit in digits.chars().take(9) {
+        if let Some(value) = digit.to_digit(10) {
+            nanos += i64::from(value) * scale;
+        }
+        scale /= 10;
+    }
+    (base, nanos)
+}
+
 fn parse_layout(
     layout: &str,
     text: &str,
@@ -2830,9 +2858,10 @@ fn parse_layout(
             Ok(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).ok_or_else(invalid)?))
         }
         "15:04:05" => {
-            let time = NaiveTime::parse_from_str(text, "%H:%M:%S").map_err(|_| invalid())?;
+            let (base, nanos) = split_fraction(text);
+            let time = NaiveTime::parse_from_str(base, "%H:%M:%S").map_err(|_| invalid())?;
             let date = NaiveDate::from_ymd_opt(0, 1, 1).ok_or_else(invalid)?;
-            Ok(Utc.from_utc_datetime(&date.and_time(time)))
+            Ok(Utc.from_utc_datetime(&date.and_time(time)) + chrono::Duration::nanoseconds(nanos))
         }
         "3:04PM" => {
             let time = NaiveTime::parse_from_str(text, "%I:%M%p").map_err(|_| invalid())?;
@@ -2840,9 +2869,10 @@ fn parse_layout(
             Ok(Utc.from_utc_datetime(&date.and_time(time)))
         }
         "2006-01-02 15:04:05" => {
-            let naive = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S")
+            let (base, nanos) = split_fraction(text);
+            let naive = chrono::NaiveDateTime::parse_from_str(base, "%Y-%m-%d %H:%M:%S")
                 .map_err(|_| invalid())?;
-            Ok(Utc.from_utc_datetime(&naive))
+            Ok(Utc.from_utc_datetime(&naive) + chrono::Duration::nanoseconds(nanos))
         }
         "2006-01-02T15:04:05Z07:00" => DateTime::parse_from_rfc3339(text)
             .map(|value| value.with_timezone(&Utc))
