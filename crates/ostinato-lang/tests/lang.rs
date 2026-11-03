@@ -6163,6 +6163,9 @@ package demo
 #I: 1
 #D: {if true {#I: 2}, a: #I}
 #M: {#I: int, if true {#I: 3}, a: #I}
+#J: {v: int}
+if true {#J: {v: 1, w: 2}}
+merged: #J
 d: #D
 m: #M
 outer: #I
