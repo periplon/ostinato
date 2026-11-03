@@ -12,6 +12,7 @@
 //! intentionally not advertised as fully compliant.
 
 pub mod ast;
+pub mod attributes;
 pub mod compile;
 pub mod condition;
 pub mod error;
@@ -21,6 +22,7 @@ pub mod parser;
 pub mod scope;
 pub mod template;
 
+pub use attributes::{TagType, parameter_tags};
 pub use compile::{
     CompiledWorkflow, ParamSpec, compile, compile_json, compile_value, compile_with_params,
 };

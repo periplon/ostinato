@@ -101,9 +101,13 @@ fn evaluate_path(
         imports.insert(import.alias.clone(), value);
     }
 
+    let tags = ostinato_lang::parameter_tags(&combined);
     let mut injected = BTreeMap::new();
     for (key, raw) in overrides {
-        injected.insert(key.clone(), parse_override_value(raw));
+        injected.insert(
+            key.clone(),
+            parse_override_value(raw, tags.get(key).copied()),
+        );
     }
     let value = eval_file_with_imports_mode(&combined, &imports, &injected, include_definitions)?;
     cache.insert(key, value.clone());
@@ -314,8 +318,28 @@ fn find_module(start: &Path) -> Option<(PathBuf, String)> {
     None
 }
 
-fn parse_override_value(raw: &str) -> Value {
+fn parse_override_value(raw: &str, tag: Option<ostinato_lang::TagType>) -> Value {
+    use ostinato_lang::TagType;
     let trimmed = raw.trim();
+    match tag {
+        Some(TagType::String) => return Value::String(raw.to_owned()),
+        Some(TagType::Int) => {
+            if let Ok(value) = trimmed.parse::<i64>() {
+                return Value::Int(value);
+            }
+        }
+        Some(TagType::Bool) => match trimmed {
+            "true" => return Value::Bool(true),
+            "false" => return Value::Bool(false),
+            _ => {}
+        },
+        Some(TagType::Number) => {
+            if let Ok(value) = serde_json::from_str::<Json>(trimmed) {
+                return ostinato_lang::value_from_json(&value);
+            }
+        }
+        None => {}
+    }
     let looks_like_json = trimmed.starts_with('{')
         || trimmed.starts_with('[')
         || trimmed.starts_with('"')

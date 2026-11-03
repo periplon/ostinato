@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinOp, BoundOp, CompClause, Expr, Field, File, ImportDecl, Label, Pattern, Span, StrPart,
-    StructItem, UnOp,
+    Attribute, BinOp, BoundOp, CompClause, Expr, Field, File, ImportDecl, Label, Pattern, Span,
+    StrPart, StructItem, UnOp,
 };
 use crate::error::LangError;
 use crate::lexer::{Tok, Token, lex};
@@ -206,38 +206,55 @@ impl Parser {
         Ok(items)
     }
 
-    fn skip_attribute(&mut self) -> Result<(), LangError> {
+    fn parse_attribute(&mut self) -> Result<Attribute, LangError> {
+        let span = self.span();
         self.bump(); // '@'
-        if matches!(self.peek_tok(), Tok::Eof | Tok::Newline) {
-            return Err(self.error("attribute name expected"));
-        }
-        self.bump();
+        let name = self.expect_ident()?;
+        let mut args = Vec::new();
         if self.eat(&Tok::LParen) {
+            let mut current = String::new();
             let mut depth = 1usize;
-            while depth > 0 {
-                match self.peek_tok() {
+            loop {
+                match self.peek_tok().clone() {
                     Tok::LParen => {
                         depth += 1;
+                        current.push('(');
                         self.bump();
                     }
                     Tok::RParen => {
                         depth -= 1;
                         self.bump();
+                        if depth == 0 {
+                            if !current.trim().is_empty() {
+                                args.push(current.trim().to_owned());
+                            }
+                            break;
+                        }
+                        current.push(')');
+                    }
+                    Tok::Comma if depth == 1 => {
+                        if !current.trim().is_empty() {
+                            args.push(current.trim().to_owned());
+                        }
+                        current.clear();
+                        self.bump();
                     }
                     Tok::Eof => return Err(self.error("unterminated attribute")),
-                    _ => {
+                    ref other => {
+                        current.push_str(&token_text(other));
                         self.bump();
                     }
                 }
             }
         }
-        Ok(())
+        Ok(Attribute { name, args, span })
     }
 
     fn parse_struct_item(&mut self) -> Result<Option<StructItem>, LangError> {
-        if matches!(self.peek_tok(), Tok::At) {
-            self.skip_attribute()?;
-            return Ok(None);
+        let mut attributes = Vec::new();
+        while matches!(self.peek_tok(), Tok::At) {
+            attributes.push(self.parse_attribute()?);
+            self.skip_newlines();
         }
         if matches!(self.peek_tok(), Tok::LBracket) {
             let saved = self.pos;
@@ -312,6 +329,9 @@ impl Parser {
                 let optional = self.eat(&Tok::Question);
                 self.expect(&Tok::Colon, "`:`")?;
                 let value = self.parse_field_value()?;
+                while matches!(self.peek_tok(), Tok::At) {
+                    attributes.push(self.parse_attribute()?);
+                }
                 Ok(Some(StructItem::Field(Field {
                     label,
                     value,
@@ -319,6 +339,7 @@ impl Parser {
                     definition,
                     alias,
                     quoted,
+                    attributes,
                     span,
                 })))
             }
@@ -520,6 +541,7 @@ impl Parser {
                     definition,
                     alias,
                     quoted,
+                    attributes: Vec::new(),
                     span,
                 })],
                 span,
@@ -735,6 +757,10 @@ impl Parser {
                 self.bump();
                 Ok(Expr::Str(parse_str_parts(&raw, span)?, span))
             }
+            Tok::Bytes(raw) => {
+                self.bump();
+                Ok(Expr::Bytes(raw, span))
+            }
             Tok::Ident(name) => {
                 self.bump();
                 Ok(Expr::Ident(name, span))
@@ -814,6 +840,21 @@ impl Parser {
             }
             other => Err(self.error(format!("unexpected token in expression: {other:?}"))),
         }
+    }
+}
+
+fn token_text(token: &Tok) -> String {
+    match token {
+        Tok::Ident(name) => name.clone(),
+        Tok::Int(value) => value.to_string(),
+        Tok::Float(value) => value.to_string(),
+        Tok::Str(value) => value.clone(),
+        Tok::Equals => "=".to_owned(),
+        Tok::Comma => ",".to_owned(),
+        Tok::Dot => ".".to_owned(),
+        Tok::Colon => ":".to_owned(),
+        Tok::Minus => "-".to_owned(),
+        other => format!("{other:?}"),
     }
 }
 

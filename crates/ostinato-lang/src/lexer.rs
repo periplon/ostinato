@@ -12,6 +12,7 @@ pub enum Tok {
     Int(i64),
     Float(BigDecimal),
     Str(String),
+    Bytes(Vec<u8>),
     Package,
     Import,
     For,
@@ -178,6 +179,14 @@ impl Lexer {
                     let raw = self.read_string(line, col)?;
                     out.push(Token {
                         tok: Tok::Str(raw),
+                        line,
+                        col,
+                    });
+                }
+                '\'' => {
+                    let raw = self.read_bytes(line, col)?;
+                    out.push(Token {
+                        tok: Tok::Bytes(raw),
                         line,
                         col,
                     });
@@ -375,6 +384,56 @@ impl Lexer {
             .parse()
             .map_err(|_| LangError::parse(line, col, format!("invalid integer `{text}`")))?;
         Ok(Tok::Int(value))
+    }
+
+    fn read_bytes(&mut self, line: u32, col: u32) -> Result<Vec<u8>, LangError> {
+        self.bump(); // opening quote
+        let mut out = Vec::new();
+        loop {
+            let Some(current) = self.peek() else {
+                return Err(LangError::parse(line, col, "unterminated bytes literal"));
+            };
+            if current == '\'' {
+                self.bump();
+                return Ok(out);
+            }
+            if current == '\\' {
+                self.bump();
+                let Some(escaped) = self.peek() else {
+                    return Err(LangError::parse(line, col, "unterminated escape sequence"));
+                };
+                self.bump();
+                match escaped {
+                    'n' => out.push(b'\n'),
+                    't' => out.push(b'\t'),
+                    'r' => out.push(b'\r'),
+                    '\\' => out.push(b'\\'),
+                    '\'' => out.push(b'\''),
+                    '0' => out.push(0),
+                    'x' => {
+                        let mut hex = String::new();
+                        for _ in 0..2 {
+                            if let Some(c) = self.peek() {
+                                hex.push(c);
+                                self.bump();
+                            }
+                        }
+                        let value = u8::from_str_radix(&hex, 16).map_err(|_| {
+                            LangError::parse(line, col, "invalid hexadecimal escape")
+                        })?;
+                        out.push(value);
+                    }
+                    other => {
+                        out.extend(other.to_string().as_bytes());
+                    }
+                }
+                continue;
+            }
+            let mut buffer = [0u8; 4];
+            let text = current.encode_utf8(&mut buffer);
+            out.extend_from_slice(text.as_bytes());
+            self.bump();
+        }
     }
 
     fn read_string(&mut self, line: u32, col: u32) -> Result<String, LangError> {

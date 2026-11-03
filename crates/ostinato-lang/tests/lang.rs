@@ -570,7 +570,12 @@ package demo
 x: #D & {b: 1}
 "#;
     let file = ostinato_lang::parse(bad).expect("parse");
-    assert!(ostinato_lang::eval_file(&file).is_err());
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "regexp".to_owned(),
+        ostinato_lang::builtin_module("regexp").expect("builtin module"),
+    );
+    assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
 }
 
 #[test]
@@ -1069,7 +1074,12 @@ package demo
 a: missing | 3
 "#;
     let file = ostinato_lang::parse(bad).expect("parse");
-    assert!(ostinato_lang::eval_file(&file).is_err());
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "regexp".to_owned(),
+        ostinato_lang::builtin_module("regexp").expect("builtin module"),
+    );
+    assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
 }
 
 #[test]
@@ -1275,7 +1285,12 @@ package demo
 x: #D & {a: "nope"}
 "#;
     let file = ostinato_lang::parse(bad).expect("parse");
-    assert!(ostinato_lang::eval_file(&file).is_err());
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "regexp".to_owned(),
+        ostinato_lang::builtin_module("regexp").expect("builtin module"),
+    );
+    assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
 
     let regex = r#"
 package demo
@@ -1343,7 +1358,12 @@ package demo
 x: #D & {inner: {a: "nope"}}
 "#;
     let file = ostinato_lang::parse(bad).expect("parse");
-    assert!(ostinato_lang::eval_file(&file).is_err());
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "regexp".to_owned(),
+        ostinato_lang::builtin_module("regexp").expect("builtin module"),
+    );
+    assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
 }
 
 #[test]
@@ -1363,7 +1383,12 @@ package demo
 x: #D & {a: "nope"}
 "#;
     let file = ostinato_lang::parse(bad).expect("parse");
-    assert!(ostinato_lang::eval_file(&file).is_err());
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "regexp".to_owned(),
+        ostinato_lang::builtin_module("regexp").expect("builtin module"),
+    );
+    assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
 }
 
 #[test]
@@ -2895,4 +2920,92 @@ a: (int & >5 & <6) | 7
     let file = ostinato_lang::parse(narrowed).expect("parse");
     let value = ostinato_lang::eval_file(&file).expect("eval");
     assert_eq!(value.to_json().expect("json")["a"], 7);
+}
+
+#[test]
+fn regexp_math_and_time_builtins_match_cue() {
+    let source = r#"
+package demo
+import "regexp"
+import "math"
+import "time"
+
+rm: regexp.Match("^a", "abc")
+rf: regexp.Find("b+", "abbc")
+rfa: regexp.FindAll("b+", "abbcbb", -1)
+rr: regexp.ReplaceAll("b+", "abbc", "X")
+rq: regexp.QuoteMeta("a.b")
+rv: regexp.Valid("^a")
+
+ma: math.Abs(-2.5)
+mf: math.Floor(1.9)
+mc: math.Ceil(1.1)
+mr: math.Round(1.5)
+mt: math.Trunc(-1.9)
+ms: math.Sqrt(4)
+mp: math.Pow(2, 10)
+mpi: math.Pi
+
+tu: time.Unix(0, 0)
+tu2: time.Unix(1580000000, 0)
+tp: time.Parse("2006-01-02", "2020-01-02")
+tpd: time.ParseDuration("1h30m")
+td: time.Duration("1h")
+tf: time.Format(time.Unix(0, 0), "2006-01-02T15:04:05Z07:00")
+
+bytes1: 'abc'
+bytes2: '\x00\xff'
+bytesLen: len(bytes1)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    for module in ["regexp", "math", "time"] {
+        imports.insert(
+            module.to_owned(),
+            ostinato_lang::builtin_module(module).expect("builtin module"),
+        );
+    }
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["rm"], true);
+    assert_eq!(json["rf"], "bb");
+    assert_eq!(json["rfa"], serde_json::json!(["bb", "bb"]));
+    assert_eq!(json["rr"], "aXc");
+    assert_eq!(json["rq"], "a\\.b");
+    assert_eq!(json["rv"], true);
+    assert_eq!(json["ma"], 2.5);
+    assert_eq!(json["mf"], 1);
+    assert_eq!(json["mc"], 2);
+    assert_eq!(json["mr"], 2);
+    assert_eq!(json["mt"], -1);
+    assert_eq!(json["ms"], 2);
+    assert_eq!(json["mp"], 1024);
+    assert!(
+        json["mpi"]
+            .as_f64()
+            .is_some_and(|value| (value - std::f64::consts::PI).abs() < 1e-12)
+    );
+    assert_eq!(json["tu"], "1970-01-01T00:00:00Z");
+    assert_eq!(json["tu2"], "2020-01-26T00:53:20Z");
+    assert_eq!(json["tp"], "2020-01-02T00:00:00Z");
+    assert_eq!(json["tpd"], 5_400_000_000_000i64);
+    assert_eq!(json["td"], true);
+    assert_eq!(json["tf"], true);
+    assert_eq!(json["bytes1"], "YWJj");
+    assert_eq!(json["bytes2"], "AP8=");
+    assert_eq!(json["bytesLen"], 3);
+
+    let bad = r#"
+package demo
+import "regexp"
+a: regexp.Valid("[")
+"#;
+    let file = ostinato_lang::parse(bad).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "regexp".to_owned(),
+        ostinato_lang::builtin_module("regexp").expect("builtin module"),
+    );
+    assert!(ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).is_err());
 }

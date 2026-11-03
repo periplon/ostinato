@@ -556,13 +556,17 @@ fn dummy_value(value: &Value) -> Json {
         ),
         Value::Type(TypeKind::String) => Json::String(String::new()),
         Value::Type(TypeKind::Bool) => Json::Bool(false),
+        Value::Type(TypeKind::Bytes) => Json::Null,
         Value::Disjunction(alternatives, defaults) => {
             let index = defaults.first().copied().unwrap_or(0);
             alternatives.get(index).map_or(Json::Null, dummy_value)
         }
-        Value::Bounds(_) | Value::Null | Value::Bottom | Value::Builtin(_) | Value::Conflict(_) => {
-            Json::Null
-        }
+        Value::Bytes(_)
+        | Value::Bounds(_)
+        | Value::Null
+        | Value::Bottom
+        | Value::Builtin(_)
+        | Value::Conflict(_) => Json::Null,
     }
 }
 
@@ -662,5 +666,6 @@ fn type_kind_name(kind: TypeKind) -> &'static str {
         TypeKind::Float => "float",
         TypeKind::Number => "number",
         TypeKind::Bool => "bool",
+        TypeKind::Bytes => "bytes",
     }
 }

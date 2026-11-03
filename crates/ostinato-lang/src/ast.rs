@@ -56,6 +56,13 @@ impl Label {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attribute {
+    pub name: String,
+    pub args: Vec<String>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
     pub label: Label,
@@ -64,6 +71,7 @@ pub struct Field {
     pub definition: bool,
     pub alias: Option<String>,
     pub quoted: bool,
+    pub attributes: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -142,6 +150,7 @@ pub enum Expr {
     Int(i64, Span),
     Float(BigDecimal, Span),
     Str(Vec<StrPart>, Span),
+    Bytes(Vec<u8>, Span),
     Ident(String, Span),
     Select(Box<Expr>, String, Span),
     Index(Box<Expr>, Box<Expr>, Span),
@@ -172,6 +181,7 @@ impl Expr {
             | Self::Bool(_, span)
             | Self::Int(_, span)
             | Self::Float(_, span)
+            | Self::Bytes(_, span)
             | Self::Str(_, span)
             | Self::Ident(_, span)
             | Self::Select(_, _, span)
