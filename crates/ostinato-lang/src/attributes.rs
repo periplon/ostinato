@@ -878,11 +878,19 @@ fn validate_tag_items(items: &[StructItem], zone: TagZone) -> Result<(), LangErr
                 };
                 validate_tag_expr(&field.value, value_zone)?;
             }
-            StructItem::Pattern { value, .. } => {
+            StructItem::Pattern {
+                value, attributes, ..
+            } => {
+                let message = match zone {
+                    TagZone::InList => "@tag is not allowed within lists",
+                    TagZone::Forbidden(message) => message,
+                    TagZone::Allowed => "@tag is not allowed within field constraint",
+                };
+                if let Some(attribute) = attributes.iter().find(|a| a.name == "tag") {
+                    return Err(tag_error(attribute, message));
+                }
                 let value_zone = match zone {
-                    TagZone::Allowed => {
-                        TagZone::Forbidden("@tag is not allowed within field constraint")
-                    }
+                    TagZone::Allowed => TagZone::Forbidden(message),
                     other => other,
                 };
                 validate_tag_expr(value, value_zone)?;

@@ -6597,6 +6597,8 @@ def_value: #D & {a: "d"}
 nested: {a: string | *"n" @tag(nested_field)}
 list_holder: [{a: string | *"l"}] @tag(list_holder)
 dynamic_ok: {k: "a", "\(k)": {x: string | *"d"}}
+pattern_newline_attr: {[string]: string | *"ok"
+@tag(standalone)}
 "#;
     let file = ostinato_lang::parse(allowed).expect("parse allowed tags");
     let value = ostinato_lang::eval_file(&file).expect("eval allowed tags");
@@ -6606,6 +6608,7 @@ dynamic_ok: {k: "a", "\(k)": {x: string | *"d"}}
     assert_eq!(json["def_value"]["a"], "d");
     assert_eq!(json["unicode_escape"]["é"], "u");
     assert_eq!(json["dynamic_ok"]["a"]["x"], "d");
+    assert_eq!(json["pattern_newline_attr"], serde_json::json!({}));
 
     // Rejected: multi-rune bytes labels and any tag lexically inside a list.
     for source in [
@@ -6622,6 +6625,9 @@ dynamic_ok: {k: "a", "\(k)": {x: string | *"d"}}
         "package demo\nparams: {let L = {for i in [1] {\"k\": string | *\"v\" @tag(k)}}, x: L}\n",
         "package demo\nparams: {for k, v in {k: {a: string | *\"v\" @tag(src)}} {b: string | *\"z\"}}\n",
         "package demo\nparams: {[string]: {p: string | *\"v\" @tag(p)}}\n",
+        "package demo\nparams: {x: {[string]: string | *\"v\" @tag(p)}}\n",
+        "package demo\nparams: {x: {[string]: {a: 1} @tag(p)}}\n",
+        "package demo\nparams: {x: {for i in [1] {[string]: string | *\"v\" @tag(p)}}}\n",
         "package demo\nparams: {[string]: {#D: {p: string | *\"v\" @tag(p)}}}\n",
         "package demo\nparams: {k: \"a\", \"\\(k)\": string | *\"v\" @tag(t)}\n",
         "package demo\nparams: {k: \"a\", \"\\(k)\": {x: string | *\"v\" @tag(t)}}\n",

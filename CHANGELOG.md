@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.20.4
+
+Pattern-value `@tag` rejection.
+
+- Same-line `@tag` attributes on pattern values are parsed and retained, so
+  `{[string]: string | *"ok" @tag(p)}` is rejected within field constraints
+  (or lists/comprehensions) like CUE; a newline-separated standalone `@tag`
+  remains accepted.
+- Added language and CLI regressions for pattern-value attributes.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.20.3
 
 `@tag` placement parity corrections.
