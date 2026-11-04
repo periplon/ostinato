@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.38.1
+
+Alias plain reads and task-input ordering.
+
+- Task-input output reads are now tracked separately from plain reads in
+  command source order. A declaration-first task-input read keeps the alias
+  target non-concrete exactly like CUE, so
+  `r: prep; t: cli.Print & {text: "\\(prep.stdout)"}; q: "\\(prep.stdout)"`
+  rejects with no side effects, while task-input reads at or before the alias
+  still inject and run once (read-first task reads execute twice, as in CUE).
+- Plain alias reads no longer mask a declaration-first task-input read when
+  they appear earlier in the command, and aliasing a definition target no
+  longer executes it before rejecting.
+- Added e2e coverage for the mixed plain/task-input ordering shapes.
+
+- 444 tests (107 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.38.0
 
 Alias-target plain-field output reads.
