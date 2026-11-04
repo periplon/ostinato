@@ -1,4 +1,4 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.qa0uuWpsTT/agents.sqlite validate examples/agents.cue
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.97xNrYfWJ5/agents.sqlite validate examples/agents.cue
 
 OK agents (2 steps, maxParallel=2, evaluator=rust (CUE workflow semantics))
 

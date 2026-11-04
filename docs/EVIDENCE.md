@@ -926,7 +926,7 @@ exit=0
 ````text
 ### ostinato run examples/agents.cue
 
-run=a0e22ae9-fe88-47ca-8c43-7b02615e1761 workflow=agents status=succeeded durationMs=169
+run=9e6ffaad-ed2b-4373-a017-73f583d9c433 workflow=agents status=succeeded durationMs=169
 STEP                     STATUS     VISITS ATTEMPTS
 report                   succeeded  1      1
 review                   succeeded  1      1
@@ -937,8 +937,8 @@ exit=0
 ````text
 ### ostinato agents <run>
 
-STEP                 ROUND ATTEMPT PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
-review               0     0       command    example-model 0      158      2         bcf09e898ada397b951d710f41c8149d4f7c3d64ff1dbcc882bff9343f46e11f
+ID     STEP                 ROUND ATTEMPT STATUS    PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
+1      review               0     0       ok        command    example-model 0      262      2         fbc10c313c7126e25cb6956875dc5085b811018cbc25dd24c66a5fdb230d5072
 
 exit=0
 ````
@@ -946,8 +946,8 @@ exit=0
 ````text
 ### ostinato agents <run> --verify
 
-STEP                 ROUND ATTEMPT PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
-review               0     0       command    example-model 0      158      2         bcf09e898ada397b951d710f41c8149d4f7c3d64ff1dbcc882bff9343f46e11f
+ID     STEP                 ROUND ATTEMPT STATUS    PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
+1      review               0     0       ok        command    example-model 0      262      2         fbc10c313c7126e25cb6956875dc5085b811018cbc25dd24c66a5fdb230d5072
 OK trace=1 step=review attempt=0
 
 exit=0
@@ -984,7 +984,7 @@ exit=0
     }
   ],
   "extracted": [],
-  "run": "a0e22ae9-fe88-47ca-8c43-7b02615e1761"
+  "run": "9e6ffaad-ed2b-4373-a017-73f583d9c433"
 }
 
 exit=0
@@ -1005,7 +1005,7 @@ exit=0
 ````text
 ### ostinato audit verify <run>
 
-OK run=a0e22ae9-fe88-47ca-8c43-7b02615e1761 events=8 head=ffed3d0c94775fee49f28090c09309a2a94194fe3e5ea37716081d41688d1750
+OK run=9e6ffaad-ed2b-4373-a017-73f583d9c433 events=8 head=ffed3d0c94775fee49f28090c09309a2a94194fe3e5ea37716081d41688d1750
 
 exit=0
 ````

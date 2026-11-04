@@ -135,8 +135,8 @@ denylist, not a wildcard over `GIT_*`/`DYLD_*`/`OSTINATO_*`.
 
 ## Traces
 
-Every attempt (including failed, timed-out and retried attempts) writes one
-`AgentTrace` row and, in the same SQLite transaction, an `agent.traced` event
+Every executed attempt (including failed, timed-out and retried attempts)
+writes one `AgentTrace` row and, in the same SQLite transaction, an `agent.traced` event
 in the run's audit chain. The trace records:
 
 - run, step, round, attempt, definition, provider, model;
@@ -201,10 +201,11 @@ database remains the durability boundary.
   content is truncated and flagged; `size` is the original size and
   `storedSize` is the number of stored bytes. Hashes cover the stored bytes.
 - Symlinks and hard-linked files are skipped with a warning.
-- Absolute paths, `..`, `.git/` and `.ostinato/` are rejected at load time.
+- Absolute paths, `..`, `.git/`, `.ostinato/` and `_isolation/` are rejected at
+  load time (`_isolation/changes.patch` is engine-generated and extractable).
 - In `worktree` mode, changed, created and deleted files are captured
   automatically, plus `_isolation/changes.patch` (untracked files included,
-  generated with a private index and `--no-ext-diff --no-textconv`).
+  generated without staging and with `--no-ext-diff --no-textconv`).
 - Commands and relative artifact globs resolve against the workflow
   directory, in both isolation modes. `./agent.sh` in `examples/workflow.cue`
   therefore means `examples/agent.sh`.
