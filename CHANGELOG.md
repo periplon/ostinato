@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.36.3
+
+Hidden and optional reads in package alias ordering.
+
+- Reads inside hidden, optional and definition fields are counted again for
+  package alias ordering, so a visible alias followed by `_x: prep.stdout`
+  (or `x?:`, `#x:`) keeps a single execution like CUE.
+- Hidden/optional/definition fields still do not count as alias
+  declarations, preserving read-first injection.
+- Added e2e cases for hidden, optional and definition reads after an alias,
+  plus a conformance case.
+
+- 442 tests (105 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.36.2
 
 Package alias dependencies and read-order corrections.

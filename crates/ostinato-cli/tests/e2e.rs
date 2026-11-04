@@ -7141,6 +7141,51 @@ command: pkgreadselectorshadow: {
             None,
         ),
         (
+            "pkgaliasreadhidden",
+            r#"
+package foo
+import (
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
+command: pkgaliasreadhidden: {
+	r: prep
+	_x: prep.stdout
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgaliasreadoptional",
+            r#"
+package foo
+import (
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
+command: pkgaliasreadoptional: {
+	r: prep
+	x?: prep.stdout
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgaliasreaddef",
+            r#"
+package foo
+import (
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
+command: pkgaliasreaddef: {
+	r: prep
+	#x: prep.stdout
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
             "pkgunknownafter",
             r#"
 package foo
