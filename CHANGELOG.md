@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.38.4
+
+Deterministic composed-`$after` list test.
+
+- The composed list case now orders its two prerequisites (`other` depends on
+  `prep`) so the artifact is deterministic; CUE schedules independent
+  prerequisites in nondeterministic order, which made the test flaky.
+
+- 444 tests (107 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.38.3
 
 Unified alias targets and composed `$after` operands.
