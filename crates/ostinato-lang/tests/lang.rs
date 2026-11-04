@@ -6432,3 +6432,61 @@ composed_decl: #Composed & {l: [{b: 5}]}
     );
     assert_eq!(json["x"]["children"][0]["total"], 2);
 }
+
+#[test]
+fn nested_multiline_literals_inside_interpolation_match_cue() {
+    let source = r#"
+package demo
+a: "x\("""
+hi
+""")y"
+b: "x\('''
+hi
+''')y"
+c: """
+x\("""
+hi
+""")y
+"""
+d: """
+x\('''
+hi
+''')y
+"""
+e: '''
+x\("""
+hi
+""")y
+'''
+f: '''
+x\('''
+hi
+''')y
+'''
+g: '''
+x\('''
+  v=\(1+2)
+  ''')y
+'''
+"#;
+    let file = ostinato_lang::parse(source).expect("parse nested multiline interpolation");
+    let value = ostinato_lang::eval_file(&file).expect("eval nested multiline interpolation");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], "xhiy");
+    assert_eq!(json["b"], "xhiy");
+    assert_eq!(json["c"], "xhiy");
+    assert_eq!(json["d"], "xhiy");
+    assert_eq!(json["e"], "eGhpeQ==");
+    assert_eq!(json["f"], "eGhpeQ==");
+    assert_eq!(json["g"], "eHY9M3k=");
+
+    for source in [
+        "package demo\na: \"x\\(\"\"\"\nhi\n\"\"\"\n\"\n",
+        "package demo\na: '''\nx\\('''\nhi\n'''\n'''\n",
+    ] {
+        assert!(
+            ostinato_lang::parse(source).is_err(),
+            "unterminated or malformed nested literal must fail: {source:?}"
+        );
+    }
+}

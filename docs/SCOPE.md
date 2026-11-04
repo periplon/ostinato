@@ -27,7 +27,8 @@ workflow outside the Rust surface has a supported escape hatch.
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - recursive definition materialization through optional fields and lists
   (`#Tree: {children?: [...#Tree]}`, mutually recursive definitions);
-- string and bytes interpolation, including nested quoted expressions;
+- string and bytes interpolation, including nested quoted expressions and
+  nested """..."""/'''...''' literals inside interpolation;
 - multiline strings (`"""..."""`) with CUE opening/closing rules, dedent, CR
   stripping and interpolation continuations;
 - self-selection of a definition's or struct field's own fields
@@ -55,7 +56,6 @@ workflow outside the Rust surface has a supported escape hatch.
 
 | Feature | Why |
 |---|---|
-| Nested multiline literals inside interpolation | A `"""..."""` or `'''...'''` literal used as the expression inside `\(...)` is not parsed; use the oracle |
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
 | `math` transcendental precision | `Pow`/`Exp`/`Log` and other transcendental helpers use native floating-point conversion where CUE uses its 34-digit decimal context; JSON export matches, but string interpolation can show fewer digits |
