@@ -12,12 +12,40 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
-## v0.23.0
+## v0.24.0
 
 - Named CUE agent definitions (`agents` + `agent.use`), external CLI providers
   (`claude`, `codex`, `opencode`, `command`), durable agent traces/artifacts
   with `agents --verify`, and optional git-worktree isolation.
 - Test counts are recorded in `CHANGELOG.md` and `docs/EVIDENCE.md`.
+
+## v0.23.2
+
+- Referenced-command scheduling/injection, transitive helper/let output
+  dependencies and parenthesised selector parity.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.23.1
+
+- Scoped incomplete interpolation, inferred output dependencies, selected-command
+  injection and derived-expression limit.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.23.0
+
+- Interpolation over captured tool outputs via allow-incomplete evaluation
+  and re-evaluation; cli.Print/file/cmd/success consumers.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.22.4
+
+- Definition-valued tool `env`, fixed evidence binary/version guard and
+  expanded tool E2E side-effect coverage.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
 
 ## v0.22.3
 

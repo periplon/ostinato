@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.23.0
+## v0.24.0
 
 Named agent definitions, external agent CLIs, traces and isolation.
 
@@ -29,6 +29,57 @@ Named agent definitions, external agent CLIs, traces and isolation.
   patch/diff (sees agent commits), non-symlink-following bounded glob walk,
   bounded patch reads, hardlink-safe extraction, arg prompt injection refusal,
   partial output from escaped descendants, cross-checks for deleted trace rows.
+
+## v0.23.2
+
+Tool-command reference, helper and parenthesis parity.
+
+- Referenced commands (`command: c: base`, including `base & {...}` and chained
+  references) resolve for task scheduling, `$after` and output injection.
+- Output references through command-local helper fields and `let` bindings
+  infer producer dependencies transitively, so consumers no longer read
+  defaulted capture values or fail to make progress.
+- Parenthesised/defaulted selectors such as `\((run).stdout)` are recognised
+  by both interpolation scoping and dependency inference.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.23.1
+
+Interpolation scoping and inferred output dependencies.
+
+- Allow-incomplete evaluation is scoped to interpolations that actually reference scheduled task `stdout`/`success`; other incomplete interpolations still error before any task runs.
+- Output references infer task dependencies, so consumers never run before a producer with defaulted capture fields (`stdout: *"x" | string`, `success: *false | bool`).
+- Output injection is scoped to the selected `command.<name>` subtree, fixing same-named tasks in other commands.
+- Documented derived-expression limit; added e2e coverage for all cases.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.23.0
+
+Interpolation over captured tool outputs.
+
+- Tool-command evaluation has an allow-incomplete mode, so strings and bytes
+  that interpolate pending task outputs evaluate to incomplete placeholders
+  and re-evaluate after injection instead of aborting the package.
+- `cli.Print text`, file `contents`, `cmd` elements and `success` can now use
+  `\(run.stdout)`/`\(run.success)` with or without `$after`, matching cue cmd.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.22.4
+
+Tool env definitions and reproducible evidence.
+
+- `env` accepts definition-valued maps (`env: #E`), including defaulted and pending-output definitions, matching cue.
+- `scripts/evidence.sh` uses the actual `CARGO_TARGET_DIR` binary and guards that its version matches the workspace, so evidence cannot be generated from a stale build.
+- Expanded tool E2E coverage for pending env lists, cmd disjunctions, env definitions, and all-invalid disjunction side effects (sibling file absence asserted).
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 
 ## v0.22.3
 

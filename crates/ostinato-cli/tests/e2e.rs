@@ -3791,6 +3791,225 @@ command: stdinpending: {
 "#,
             false,
         ),
+        (
+            "envlistpending",
+            r#"
+package foo
+import "tool/exec"
+command: envlistpending: {
+	a: exec.Run & {cmd: ["sh", "-c", "printf '%s' \"$FOO\""], env: [z.stdout]}
+	z: exec.Run & {cmd: ["sh", "-c", "printf 'FOO=bar'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "cmddisj",
+            r#"
+package foo
+import "tool/exec"
+command: cmddisj: {
+	a: exec.Run & {$after: z, cmd: [z.stdout | "echo"]}
+	z: exec.Run & {cmd: ["sh", "-c", "printf echo"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "envdef",
+            r#"
+package foo
+import "tool/exec"
+#E: {FOO: "bar"}
+command: envdef: {run: exec.Run & {cmd: ["sh", "-c", "printf '%s' \"$FOO\""], env: #E}}
+"#,
+            false,
+        ),
+        (
+            "interp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: interp: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc\n'"], stdout: string}
+	p: cli.Print & {text: "got: \(run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "success",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: success: {
+	run: exec.Run & {cmd: ["false"], mustSucceed: false, success: bool}
+	p: cli.Print & {text: "success=\(run.success)"}
+}
+"#,
+            false,
+        ),
+        (
+            "cmdinterp",
+            r#"
+package foo
+import "tool/exec"
+command: cmdinterp: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'X'"], stdout: string}
+	use: exec.Run & {cmd: ["sh", "-c", "printf 'v=\(run.stdout)'"]}
+}
+"#,
+            false,
+        ),
+        (
+            "interpfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: interpfirst: {
+	p: cli.Print & {text: "got: \(run.stdout)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "defaultstdout",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: defaultstdout: {
+	p: cli.Print & {text: "ok=\(run.stdout)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: *"x" | string}
+}
+"#,
+            false,
+        ),
+        (
+            "defaultsuccess",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: defaultsuccess: {
+	p: cli.Print & {text: "ok=\(run.success)"}
+	run: exec.Run & {cmd: ["true"], success: *false | bool}
+}
+"#,
+            false,
+        ),
+        (
+            "b",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: a: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'AAA'"], stdout: string}
+	p: cli.Print & {text: "\(run.stdout)"}
+}
+command: b: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'BBB'"], stdout: string}
+	p: cli.Print & {text: "\(run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "ref",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+command: ref: base
+"#,
+            false,
+        ),
+        (
+            "refunify",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+command: refunify: base & {extra: 1}
+"#,
+            false,
+        ),
+        (
+            "helper",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helper: {
+	msg: "v=\(run.stdout)"
+	p: cli.Print & {text: msg}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "helperlet",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helperlet: {
+	let msg = "v=\(run.stdout)"
+	p: cli.Print & {text: msg}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "paren",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: paren: {
+	p: cli.Print & {text: "v=\((run).stdout)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -3968,6 +4187,7 @@ package foo
 import "tool/exec"
 command: mustfalse: {run: exec.Run & {cmd: ["sh", "-c", "echo RAN"], mustSucceed: *false | bool}}
 "#,
+            false,
         ),
         (
             "stdinconflict",
@@ -3976,6 +4196,7 @@ package foo
 import "tool/exec"
 command: stdinconflict: {run: exec.Run & {cmd: ["cat"], stdin: *"y" | null}}
 "#,
+            false,
         ),
         (
             "stdoutconflict",
@@ -3984,6 +4205,7 @@ package foo
 import "tool/exec"
 command: stdoutconflict: {run: exec.Run & {cmd: ["sh", "-c", "echo O"], stdout: *"x" | null}}
 "#,
+            false,
         ),
         (
             "baddir",
@@ -3998,6 +4220,7 @@ command: baddir: {
 	run: exec.Run & {$after: print, cmd: ["echo", "R"], dir: 5}
 }
 "#,
+            false,
         ),
         (
             "baddir-d",
@@ -4014,9 +4237,147 @@ command: baddir-d: {
 	run: exec.Run & {$after: [print, write], cmd: ["sh", "-c", "echo RAN"], dir: 5 | 6}
 }
 "#,
+            true,
+        ),
+        (
+            "badenv",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"tool/file"
+)
+command: badenv: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["sh", "-c", "echo RAN"], env: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badenvvalue",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badenvvalue: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["sh", "-c", "echo RAN"], env: {FOO: 5 | 6}}
+}
+"#,
+            true,
+        ),
+        (
+            "badenvlist",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badenvlist: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["sh", "-c", "echo RAN"], env: [5 | 6]}
+}
+"#,
+            true,
+        ),
+        (
+            "badstdin",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badstdin: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["cat"], stdin: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badmust",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badmust: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["true"], mustSucceed: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badcmd",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badcmd: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badcmdlist",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badcmdlist: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: [5 | 6]}
+}
+"#,
+            true,
+        ),
+        (
+            "badprint",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/file"
+)
+command: badprint: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	p: cli.Print & {$after: write, text: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "nontaskinterp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/file"
+)
+command: nontaskinterp: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	x: string
+	p: cli.Print & {$after: write, text: "v=\(x)" & "v=abc"}
+}
+"#,
+            false,
         ),
     ];
-    for (name, source) in fixtures {
+    for (name, source, file_task) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
         write(&directory.path().join("fixture_tool.cue"), source);
         let expected = Command::new(&cue)
@@ -4027,6 +4388,12 @@ command: baddir-d: {
         let actual = ost(&["cmd", name, directory.path().to_str().expect("path")]);
         assert_eq!(actual.status.code(), expected.status.code(), "{name}");
         assert_eq!(actual.stdout, expected.stdout, "{name}");
+        if file_task {
+            assert!(
+                !directory.path().join("side.txt").exists(),
+                "{name}: sibling file task ran"
+            );
+        }
     }
 }
 
@@ -4138,6 +4505,36 @@ import "tool/file"
 command: missing: {write: file.Append & {filename: "sub/out.txt", contents: "x"}}
 "#,
             None,
+        ),
+        (
+            "interpfile",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: interpfile: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc\n'"], stdout: string}
+	w: file.Create & {filename: "out.txt", contents: "pre-\(run.stdout)post"}
+}
+"#,
+            Some("out.txt"),
+        ),
+        (
+            "defaultcapfile",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: defaultcapfile: {
+	w: file.Create & {filename: "out.txt", contents: "pre-\(run.stdout)post"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: *"x" | string}
+}
+"#,
+            Some("out.txt"),
         ),
     ];
     for (name, source, artifact) in cases {

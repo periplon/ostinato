@@ -51,8 +51,9 @@ workflow outside the Rust surface has a supported escape hatch.
 - CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files) for workflow loading;
 - CUE tool commands via `ostinato cmd <name> <path>`: `*_tool.cue` `command:`
   tasks using `tool/exec.Run` (cmd/env/dir/stdin/capture/mustSucceed),
-  `tool/cli.Print`, `tool/file.Append`/`Create`, `stdout` output injection for
-  literal task structs, `$after` ordering and `@tag` injection;
+  `tool/cli.Print`, `tool/file.Append`/`Create`, `stdout`/`success` output
+  injection and interpolation for literal task structs, `$after` ordering and
+  `@tag` injection;
 - workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, branch
   conditions, default branches, dead-path elimination and `stepStatus` routing
   (v1 rejects gateways combined with cycles and implicit joins);
@@ -80,9 +81,9 @@ workflow outside the Rust surface has a supported escape hatch.
 | Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |
 | Bare references to comprehension-generated fields | `x: {if true {b: 1}, a: b}` is accepted although CUE requires `x.b`; use an explicit field or selector |
 | Unused imports | CUE rejects unused imports; Ostinato accepts them (the package still evaluates) |
-| Interpolation over task outputs | `text: "value: \\(run.stdout)\"` is not supported; use a direct reference (`text: run.stdout`). String interpolation of `success` is likewise unobservable |
 | Output injection into base/definition-composed tasks | `run: exec.Run & #B` / `run: exec.Run & base` do not receive injected `stdout`/`success`; write the task struct literally |
 | Relative tool-task paths | `dir` and file-task `filename` resolve against the package directory, not the invocation cwd as `cue cmd` does |
+| Derived expressions over pending task outputs | `len(run.stdout)`, string/number operations or comparisons on a pending output are not evaluated as incomplete; use a direct field reference/interpolation (`\(run.stdout)`) |
 | Package-scoped `$after` / task nodes outside `command.<name>` | `$after` dependencies are resolved within the command subtree; top-level task nodes referenced only from a command are not scheduled. Use the oracle |
 | Tool packages beyond `tool/exec.Run`/`tool/cli.Print`/`tool/file.Append`/`Create` | `ostinato cmd` runs `*_tool.cue` tasks with those packages, `stdout`/`success` injection, `$after` and `@tag`; `tool/os`/`tool/http`/other task packages, `stderr` output injection, tasks consuming non-stdout outputs, `$usage`/`$short`/`$long`, multi-instance inputs and `@cmd` attributes remain unimplemented |
 | `let` cycles mediated by fields (`let X = f, f: X`) | Direct and indirect `let` cycles are rejected; a cycle routed through a field is reported as an error rather than solved as an incomplete value. Use the oracle for that shape |
