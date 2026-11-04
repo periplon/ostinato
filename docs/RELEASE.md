@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.21.5
+
+- Compatible non-null stdin/stderr defaults and `*true | false`
+  mustSucceed; path-binary spawn diagnostics; `*_tool.cue` docs.
+- 354 tests (69 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.21.4
 
 - Reject conflicting whole-field defaults without running commands; classify

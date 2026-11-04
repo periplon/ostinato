@@ -982,7 +982,7 @@ fn json_type_name(value: &Json) -> &'static str {
     }
 }
 
-/// Run a CUE tool command declared in `_tool.cue` files.
+/// Run a CUE tool command declared in `*_tool.cue` files.
 ///
 /// Implements the `command: <name>: { <task>: tool/exec.Run & {...} }` surface,
 /// including `@tag` injection, `$after` ordering, `cmd` string/argv, `env`,
@@ -1320,6 +1320,7 @@ enum ToolTaskOutcome {
 fn capture_flag(
     task: &BTreeMap<String, Value>,
     key: &str,
+    capture_non_null_default: bool,
 ) -> Result<bool, ostinato_lang::LangError> {
     match task.get(key) {
         None | Some(Value::Null) => Ok(false),
@@ -1328,16 +1329,16 @@ fn capture_flag(
         | Some(Value::Type(_))
         | Some(Value::Bottom) => Ok(true),
         Some(Value::Disjunction(alternatives, defaults)) => {
-            let default = defaults
-                .first()
-                .and_then(|index| alternatives.get(*index))
+            let default = (defaults.len() == 1)
+                .then(|| defaults[0])
+                .and_then(|index| alternatives.get(index))
                 .cloned();
-            if matches!(default, Some(Value::Null)) {
-                Ok(false)
-            } else {
-                Err(ostinato_lang::LangError::Workflow(format!(
+            match default {
+                Some(Value::Null) => Ok(false),
+                Some(Value::String(_) | Value::Bytes(_)) if capture_non_null_default => Ok(true),
+                _ => Err(ostinato_lang::LangError::Workflow(format!(
                     "invalid {key}: non-concrete value"
-                )))
+                ))),
             }
         }
         Some(other) => Err(ostinato_lang::LangError::Workflow(format!(
@@ -1347,16 +1348,40 @@ fn capture_flag(
     }
 }
 
+fn is_executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 fn resolve_executable(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     if name.contains('/') {
-        return path.is_file().then(|| path.to_path_buf());
+        return is_executable_file(path).then(|| path.to_path_buf());
     }
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
             .map(|directory| directory.join(name))
-            .find(|candidate| candidate.is_file())
+            .find(|candidate| is_executable_file(candidate))
     })
+}
+
+fn spawn_detail(err: &std::io::Error, executable: &str) -> String {
+    if executable.contains('/') && err.kind() == std::io::ErrorKind::NotFound {
+        format!("fork/exec {executable}: no such file or directory")
+    } else if executable.contains('/') && err.kind() == std::io::ErrorKind::PermissionDenied {
+        format!("fork/exec {executable}: permission denied")
+    } else {
+        err.to_string()
+    }
 }
 
 fn exec_failure(status: &std::process::ExitStatus) -> String {
@@ -1511,12 +1536,17 @@ fn execute_tool_task(
         Some(Value::String(text)) => Some(text.clone().into_bytes()),
         Some(Value::Bytes(bytes)) => Some(bytes.clone()),
         Some(Value::Disjunction(alternatives, defaults)) => {
-            let default = defaults
-                .first()
-                .and_then(|index| alternatives.get(*index))
+            let default = (defaults.len() == 1)
+                .then(|| defaults[0])
+                .and_then(|index| alternatives.get(index))
                 .cloned();
+            let has_null = alternatives
+                .iter()
+                .any(|value| matches!(value, Value::Null));
             match default {
                 Some(Value::Null) => None,
+                Some(Value::String(text)) if !has_null => Some(text.into_bytes()),
+                Some(Value::Bytes(bytes)) if !has_null => Some(bytes),
                 _ => {
                     return Err(ostinato_lang::LangError::Workflow(
                         "invalid input: non-concrete value".to_owned(),
@@ -1533,8 +1563,8 @@ fn execute_tool_task(
         }
     };
 
-    let capture_stdout = capture_flag(task, "stdout")?;
-    let capture_stderr = capture_flag(task, "stderr")?;
+    let capture_stdout = capture_flag(task, "stdout", false)?;
+    let capture_stderr = capture_flag(task, "stderr", true)?;
     process.stdin(if stdin.is_some() {
         Stdio::piped()
     } else {
@@ -1555,18 +1585,11 @@ fn execute_tool_task(
         Some(Value::Bool(value)) => *value,
         Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
         Some(Value::Disjunction(alternatives, defaults)) => {
-            let default = defaults
-                .first()
-                .and_then(|index| alternatives.get(*index))
-                .cloned();
+            let default = (defaults.len() == 1)
+                .then(|| defaults[0])
+                .and_then(|index| alternatives.get(index));
             match default {
-                Some(Value::Bool(true))
-                    if alternatives
-                        .iter()
-                        .all(|value| matches!(value, Value::Bool(true) | Value::Type(_))) =>
-                {
-                    true
-                }
+                Some(Value::Bool(true)) => true,
                 _ => {
                     return Err(ostinato_lang::LangError::Workflow(
                         "invalid mustSucceed value: non-concrete value".to_owned(),
@@ -1608,10 +1631,10 @@ fn execute_tool_task(
                             .unwrap_or_else(|| argv[0].clone())
                     )
                 } else {
-                    err.to_string()
+                    spawn_detail(&err, &argv[0])
                 }
             } else {
-                err.to_string()
+                spawn_detail(&err, &argv[0])
             };
             eprintln!("task failed: command [{printable}] failed: {detail}");
             return Ok(ToolTaskOutcome::Failed);

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.21.5
+
+Tool-command compatible-default and spawn-message fixes.
+
+- Non-null defaulted `stdin` (`*"y" | string`, `*"y" | "n"`) and `stderr` capture defaults run like cue; `mustSucceed: *true | false` is accepted while conflicting `*false | bool` is still rejected without executing.
+- Spawn diagnostics cover path binaries (`/no/such`, `./prog`) with `fork/exec ...` messages and skip non-executable PATH candidates.
+- Docs consistently use `*_tool.cue`.
+- 354 tests (69 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.21.4
 
 Tool-command default-conflict and spawn diagnostics.
@@ -58,7 +69,7 @@ Tool-command review corrections.
 
 ## v0.21.0
 
-CUE tool commands (`_tool.cue`).
+CUE tool commands (`*_tool.cue`).
 
 - New `ostinato cmd <name> <path>` runs `command: <name>:` tasks declared in
   `*_tool.cue` files with `tool/exec.Run`.

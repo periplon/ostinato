@@ -3710,6 +3710,33 @@ command: mustdefault: {run: exec.Run & {cmd: ["true"], mustSucceed: *true | bool
 "#,
             false,
         ),
+        (
+            "stdindefault",
+            r#"
+package foo
+import "tool/exec"
+command: stdindefault: {run: exec.Run & {cmd: ["cat"], stdin: *"y" | string}}
+"#,
+            false,
+        ),
+        (
+            "musttruefalse",
+            r#"
+package foo
+import "tool/exec"
+command: musttruefalse: {run: exec.Run & {cmd: ["true"], mustSucceed: *true | false}}
+"#,
+            false,
+        ),
+        (
+            "stderrdefault",
+            r#"
+package foo
+import "tool/exec"
+command: stderrdefault: {run: exec.Run & {cmd: ["sh", "-c", "echo hi"], stderr: *"x" | "y"}}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -3896,6 +3923,14 @@ import "tool/exec"
 command: stdinconflict: {run: exec.Run & {cmd: ["cat"], stdin: *"y" | null}}
 "#,
         ),
+        (
+            "stdoutconflict",
+            r#"
+package foo
+import "tool/exec"
+command: stdoutconflict: {run: exec.Run & {cmd: ["sh", "-c", "echo O"], stdout: *"x" | null}}
+"#,
+        ),
     ];
     for (name, source) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -3925,7 +3960,6 @@ package foo
 import "tool/exec"
 command: missdir: {run: exec.Run & {cmd: ["echo", "X"], dir: "nope"}}
 "#,
-            None,
         ),
         (
             "missboth",
@@ -3934,7 +3968,6 @@ package foo
 import "tool/exec"
 command: missboth: {run: exec.Run & {cmd: ["no-such-bin-xyz"], dir: "nope"}}
 "#,
-            None,
         ),
         (
             "dirfile",
@@ -3943,13 +3976,31 @@ package foo
 import "tool/exec"
 command: dirfile: {run: exec.Run & {cmd: ["echo", "X"], dir: "file.txt"}}
 "#,
-            Some(("file.txt", "x")),
+        ),
+        (
+            "absbin",
+            r#"
+package foo
+import "tool/exec"
+command: absbin: {run: exec.Run & {cmd: ["/no/such/bin-xyz"]}}
+"#,
+        ),
+        (
+            "relbin",
+            r#"
+package foo
+import "tool/exec"
+command: relbin: {run: exec.Run & {cmd: ["./prog"], dir: "sub"}}
+"#,
         ),
     ];
-    for (name, source, file) in cases {
+    for (name, source) in cases {
         let directory = tempfile::tempdir().expect("tempdir");
-        if let Some((file_name, contents)) = file {
-            std::fs::write(directory.path().join(file_name), contents).expect("file");
+        if name == "dirfile" {
+            std::fs::write(directory.path().join("file.txt"), "x").expect("file");
+        }
+        if name == "relbin" {
+            std::fs::create_dir_all(directory.path().join("sub")).expect("dir");
         }
         write(&directory.path().join("fixture_tool.cue"), source);
         let expected = Command::new(&cue)
