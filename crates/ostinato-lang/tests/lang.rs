@@ -6311,3 +6311,43 @@ struct_comp: {for base in [{a: 2}] {v: base & {b: 3}}}
     assert_eq!(json["struct_comp"]["v"]["a"], 2);
     assert_eq!(json["struct_comp"]["v"]["b"], 3);
 }
+
+#[test]
+fn narrowed_defaults_recompute_dependent_fields() {
+    let source = r#"
+package demo
+#A: {n: *4 | 6, total: n + 1}
+#B: {n: int | *1, y: n + 1}
+#C: {n: *1 | int, l: [n, n + 1]}
+#D: {a: *1 | int, b: *2 | int, sum: a + b}
+#E: {s: *"a" | string, y: "x\(s)"}
+#F: {n?: int | *1, y: n + 1}
+simple: #A & {n: 6}
+disjunction: #A & {n: >4}
+typed: #B & {n: 3}
+list: #C & {n: 3}
+two: #D & {a: 5, b: 7}
+optional: #F & {n: 4}
+string_value: #E & {s: "b"}
+direct: {x: int | *1, y: x + 1} & {x: 3}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse default narrowing");
+    let value = ostinato_lang::eval_file(&file).expect("eval default narrowing");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["simple"]["n"], 6);
+    assert_eq!(json["simple"]["total"], 7);
+    assert_eq!(json["disjunction"]["total"], 7);
+    assert_eq!(json["typed"]["y"], 4);
+    assert_eq!(json["list"]["l"], serde_json::json!([3, 4]));
+    assert_eq!(json["two"]["sum"], 12);
+    assert_eq!(json["optional"]["y"], 5);
+    assert_eq!(json["string_value"]["y"], "xb");
+    assert_eq!(json["direct"]["y"], 4);
+
+    let definition_chain = "package demo\n#A: {n: *1 | int, y: n + 1}\n#B: #A & {n: 4}\nx: #B\n";
+    let file = ostinato_lang::parse(definition_chain).expect("parse definition chain");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "narrowing through a definition-valued definition remains a documented limit"
+    );
+}

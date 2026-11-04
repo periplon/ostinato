@@ -34,6 +34,7 @@ workflow outside the Rust surface has a supported escape hatch.
   (`#D: {a: #D.b, b: 1}`, `x: {a: x.b, b: 1}`), including nested and composed
   definitions;
 - comprehension-generated definitions (`#D: {if true {#I: 3}, a: #D.#I}`);
+- default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`);
 - optional/open metadata on non-definition struct literals (`base: {b?: int}; #D: base`, `{c: 1, ...}`), including nested/pattern/list forms;
 - arbitrary-precision integer literals and exact integer arithmetic
   (add/subtract/multiply, comparison, typing, bounds and JSON export);
@@ -61,7 +62,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Decimal division digit count | Division uses `BigDecimal` precision, which can differ from CUE's 34-digit decimal expansion |
 | Integer arithmetic beyond 34 significant digits | CUE rounds arithmetic results to its 34-digit decimal context; Ostinato keeps exact `BigInt` results. Literals, comparisons and <=34-digit arithmetic match |
 | JSON export of high-precision decimals | Arithmetic is arbitrary precision, but `to_json` rounds non-integral values through f64; string interpolation and comparisons use the exact value |
-| Narrowing a defaulted constraint with `&` | Defaults are selected eagerly; e.g. `{a: int | *1} & {a: 3}` is out of scope. Literal defaults still work when unconstrained |
+| Narrowing a defaulted constraint through a definition-valued definition | `#B: #A & {n: 4}` conflicts; narrowing inline/unified values and #A & {n: 4} directly recompute dependent fields |
 | Optional-dependent required fields through compound optionals | Optional fields whose value is a struct, list, list-of-list or definition (`cfg?: {...}`, `ps?: [...]`, `e?: #E`), nested optional fields inside a required struct, fixed-length optional lists, reusable non-definition bases (`base: {b?: int, c: b}`), and the root `params: #P & {...}` form are not resolved; primitive optional fields are implemented |
 | Self-selection through split composed non-definition literals | `x: {a: x.b} & {b: 1}` is not resolved; definition self-selection, regular struct self-selection and composed definitions are implemented |
 | Dependent fields after a generated declaration merge | `#P: {env: string, greeting: "hello \(env)"}` plus `if true {#P: {env: "prod"}}` does not recompute `greeting`; declared declaration order or the oracle |
