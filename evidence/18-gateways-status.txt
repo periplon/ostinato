@@ -1,8 +1,8 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nestedorder/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.oocPt3nrc9/gateway.sqlite status 35dc8255-76aa-455b-abcb-3970489bf260
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nestedorder/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.cTBZNHToaG/gateway.sqlite status 000b97fa-28ba-4e31-97ae-82be61d276f7
 
-run=35dc8255-76aa-455b-abcb-3970489bf260 workflow=release-decision status=succeeded resumeIndex=6
+run=000b97fa-28ba-4e31-97ae-82be61d276f7 workflow=release-decision status=succeeded resumeIndex=6
 source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after/examples/gateway.cue
-created=2026-11-04T20:25:48.857Z updated=2026-11-04T20:25:48.875Z
+created=2026-11-04T20:45:39.533Z updated=2026-11-04T20:45:39.551Z
 STEP                     STATUS     VISITS ATTEMPTS
 deployFast               succeeded  1      1       
 deploySlow               skipped    0      0       
