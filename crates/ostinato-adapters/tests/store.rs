@@ -81,6 +81,7 @@ fn sqlite_store_roundtrip_is_atomic_and_hash_chained() {
         output: Some(json!({"stdout": "hi", "score": 1.0})),
         error: None,
         updated_at: "2026-01-01T00:00:01Z".to_owned(),
+        round: 0,
     };
     let events = store
         .complete(Completion {
@@ -212,6 +213,193 @@ fn reopened_store_does_not_repair_blank_integrity_hashes() {
     let run = store.load_run("no-repair").expect("load").expect("present");
     assert!(run.state_hash.is_empty());
     assert!(run.audit_head.is_empty());
+}
+
+#[test]
+fn sqlite_store_roundtrips_step_rounds() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store = SqliteStore::open(&directory.path().join("db.sqlite")).expect("open");
+    let run = run_record("run-round");
+    store.create_run(&run).expect("create");
+    store
+        .append_event(
+            "run-round",
+            NewEvent::new("run.started", None, json!({"workflow": "store"})),
+            "2026-01-01T00:00:00Z",
+        )
+        .expect("started");
+    let step = StepRecord {
+        run_id: "run-round".to_owned(),
+        name: "a".to_owned(),
+        status: StepStatus::Succeeded,
+        visits: 2,
+        attempts: 1,
+        output: Some(json!({"round": 1})),
+        error: None,
+        updated_at: "2026-01-01T00:00:02Z".to_owned(),
+        round: 1,
+    };
+    store
+        .complete(Completion {
+            run_id: "run-round".to_owned(),
+            resume_index: 2,
+            status: RunStatus::Running,
+            error: None,
+            updated_at: "2026-01-01T00:00:02Z".to_owned(),
+            steps: vec![step],
+            events: vec![NewEvent::new(
+                "step.succeeded",
+                Some("a".to_owned()),
+                json!({"round": 1}),
+            )],
+        })
+        .expect("complete");
+    let steps = store.steps("run-round").expect("steps");
+    assert_eq!(steps[0].round, 1);
+    let loaded = store.load_run("run-round").expect("load").expect("present");
+    assert_eq!(
+        loaded.state_hash,
+        audit::state_digest(
+            &loaded.spec,
+            &loaded.params,
+            &loaded.source_file,
+            loaded.resume_index,
+            &steps,
+        )
+    );
+    audit::verify_chain(&store.events("run-round").expect("events")).expect("audit");
+}
+
+#[test]
+fn opening_a_v0_database_migrates_steps_round_and_backfills_integrity() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("v1.sqlite");
+    let run = run_record("v1-run");
+    {
+        let connection = rusqlite::Connection::open(&path).expect("open v1");
+        connection
+            .execute_batch(
+                "CREATE TABLE runs (
+                    id TEXT PRIMARY KEY, workflow_name TEXT NOT NULL, source_file TEXT NOT NULL,
+                    spec_json TEXT NOT NULL, params_json TEXT NOT NULL, status TEXT NOT NULL,
+                    resume_index INTEGER NOT NULL, parent_run_id TEXT, error TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    audit_head TEXT NOT NULL DEFAULT '', state_hash TEXT NOT NULL DEFAULT ''
+                );
+                 CREATE TABLE steps (
+                    run_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
+                    visits INTEGER NOT NULL, attempts INTEGER NOT NULL, output_json TEXT,
+                    error TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (run_id, name)
+                );
+                 PRAGMA user_version = 0;",
+            )
+            .expect("v1 schema");
+        connection
+            .execute(
+                "INSERT INTO runs
+                 (id, workflow_name, source_file, spec_json, params_json, status, resume_index,
+                  parent_run_id, error, created_at, updated_at, audit_head, state_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9, '', '')",
+                rusqlite::params![
+                    run.id,
+                    run.workflow_name,
+                    run.source_file,
+                    serde_json::to_string(&run.spec).expect("spec"),
+                    serde_json::to_string(&run.params).expect("params"),
+                    run.status.as_str(),
+                    run.resume_index,
+                    run.created_at,
+                    run.updated_at,
+                ],
+            )
+            .expect("insert v1 run");
+    }
+    let store = SqliteStore::open(&path).expect("migrate");
+    let loaded = store.load_run("v1-run").expect("load").expect("present");
+    assert!(!loaded.state_hash.is_empty());
+    let connection = rusqlite::Connection::open(&path).expect("open migrated");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("version");
+    assert_eq!(version, 2);
+    let has_round: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('steps') WHERE name = 'round'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("round column");
+    assert_eq!(has_round, 1);
+}
+
+#[test]
+fn resume_run_is_atomic_and_refuses_terminal_runs() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store = SqliteStore::open(&directory.path().join("db.sqlite")).expect("open");
+    let run = run_record("run-resume");
+    store.create_run(&run).expect("create");
+    store
+        .append_event(
+            "run-resume",
+            NewEvent::new("run.started", None, json!({"workflow": "store"})),
+            "2026-01-01T00:00:00Z",
+        )
+        .expect("started");
+    store
+        .complete(Completion {
+            run_id: "run-resume".to_owned(),
+            resume_index: 1,
+            status: RunStatus::Succeeded,
+            error: None,
+            updated_at: "2026-01-01T00:00:01Z".to_owned(),
+            steps: Vec::new(),
+            events: vec![NewEvent::new(
+                "run.succeeded",
+                None,
+                json!({"resumeIndex": 1}),
+            )],
+        })
+        .expect("complete");
+    let refused = store.resume_run(
+        "run-resume",
+        0,
+        "2026-01-01T00:00:02Z",
+        NewEvent::new("run.resumed", None, json!({"resumeIndex": 0})),
+    );
+    assert!(matches!(
+        refused,
+        Err(ostinato_application::PortError::Cancelled(_))
+    ));
+    let loaded = store
+        .load_run("run-resume")
+        .expect("load")
+        .expect("present");
+    assert_eq!(loaded.status, RunStatus::Succeeded);
+}
+
+#[test]
+fn create_run_with_event_writes_the_start_anchor_atomically() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store = SqliteStore::open(&directory.path().join("db.sqlite")).expect("open");
+    let run = run_record("run-start");
+    let event = store
+        .create_run_with_event(
+            &run,
+            NewEvent::new(
+                "run.started",
+                None,
+                json!({"workflow": "store", "stateHash": run.state_hash}),
+            ),
+            "2026-01-01T00:00:00Z",
+        )
+        .expect("create with event");
+    let loaded = store.load_run("run-start").expect("load").expect("present");
+    assert_eq!(loaded.audit_head, event.hash);
+    let events = store.events("run-start").expect("events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "run.started");
+    audit::verify_chain(&events).expect("chain");
+    audit::verify_state_anchor(&events, &loaded.state_hash).expect("anchor");
 }
 
 fn sample_trace(

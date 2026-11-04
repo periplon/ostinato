@@ -8,7 +8,7 @@ use ostinato_domain::{
 };
 use serde_json::{Map, Value as Json};
 
-use crate::condition::{step_references, validate_condition};
+use crate::condition::{reference_roots, step_references, validate_condition};
 use crate::error::LangError;
 use crate::eval::{TypeKind, Value, eval_file, is_hidden_key, value_from_json};
 use crate::parser::parse;
@@ -312,7 +312,7 @@ fn extract_step(
         }
     };
 
-    let gateway = extract_gateway(map.get("gateway"), &format!("{path}.gateway"))?;
+    let gateway = extract_gateway(map.get("gateway"), &format!("{path}.gateway"), &needs)?;
     if kind == StepKind::Gateway {
         if gateway.is_none() {
             return Err(LangError::Workflow(format!(
@@ -458,12 +458,28 @@ fn extract_step(
     })
 }
 
-fn extract_gateway(value: Option<&Value>, path: &str) -> Result<Option<GatewaySpec>, LangError> {
+fn extract_gateway(
+    value: Option<&Value>,
+    path: &str,
+    needs: &[String],
+) -> Result<Option<GatewaySpec>, LangError> {
     let Some(value) = value else {
         return Ok(None);
     };
     let map = expect_struct(value, path)?;
-    reject_unknown(map, path, &["split", "join", "branches", "default"])?;
+    reject_unknown(
+        map,
+        path,
+        &[
+            "split",
+            "join",
+            "branches",
+            "default",
+            "n",
+            "expression",
+            "labels",
+        ],
+    )?;
 
     let split = match opt_string(map, "split", &format!("{path}.split"))? {
         None => None,
@@ -471,6 +487,11 @@ fn extract_gateway(value: Option<&Value>, path: &str) -> Result<Option<GatewaySp
             "and" => SplitMode::And,
             "or" => SplitMode::Or,
             "xor" => SplitMode::Xor,
+            "n_of" | "expression" => {
+                return Err(LangError::Workflow(format!(
+                    "{path}.split: `{mode}` is a join mode, not a split mode"
+                )));
+            }
             other => {
                 return Err(LangError::Workflow(format!(
                     "{path}.split: unknown split mode `{other}` (expected and, or or xor)"
@@ -484,9 +505,11 @@ fn extract_gateway(value: Option<&Value>, path: &str) -> Result<Option<GatewaySp
             "and" => JoinMode::And,
             "or" => JoinMode::Or,
             "xor" => JoinMode::Xor,
+            "n_of" => JoinMode::NOf,
+            "expression" => JoinMode::Expression,
             other => {
                 return Err(LangError::Workflow(format!(
-                    "{path}.join: unknown join mode `{other}` (expected and, or or xor)"
+                    "{path}.join: unknown join mode `{other}` (expected and, or, xor, n_of or expression)"
                 )));
             }
         }),
@@ -508,6 +531,27 @@ fn extract_gateway(value: Option<&Value>, path: &str) -> Result<Option<GatewaySp
     let branches_declared = map.contains_key("branches");
     let default_declared = map.contains_key("default");
     let default = opt_string(map, "default", &format!("{path}.default"))?;
+    let n = match opt_int(map, "n", &format!("{path}.n"))? {
+        None => None,
+        Some(value) => Some(
+            u32::try_from(value)
+                .map_err(|_| LangError::Workflow(format!("{path}.n must be a positive integer")))?,
+        ),
+    };
+    let expression = opt_string(map, "expression", &format!("{path}.expression"))?;
+    let mut labels = BTreeMap::new();
+    if let Some(labels_value) = map.get("labels") {
+        let label_map = expect_struct(labels_value, &format!("{path}.labels"))?;
+        for (label, value) in label_map {
+            if is_hidden_key(label) {
+                continue;
+            }
+            labels.insert(
+                label.clone(),
+                as_string(value, &format!("{path}.labels.{label}"))?,
+            );
+        }
+    }
     let mut branches = BTreeMap::new();
     if let Some(branches_value) = map.get("branches") {
         let branch_map = expect_struct(branches_value, &format!("{path}.branches"))?;
@@ -543,6 +587,11 @@ fn extract_gateway(value: Option<&Value>, path: &str) -> Result<Option<GatewaySp
     }
 
     if let Some(split_mode) = split {
+        if n.is_some() || expression.is_some() || !labels.is_empty() {
+            return Err(LangError::Workflow(format!(
+                "{path}: `n`, `expression` and `labels` are only allowed on join gateways"
+            )));
+        }
         if branches.is_empty() {
             return Err(LangError::Workflow(format!(
                 "{path}.branches must contain at least one branch for a split gateway"
@@ -596,10 +645,86 @@ fn extract_gateway(value: Option<&Value>, path: &str) -> Result<Option<GatewaySp
         }
     }
 
-    if join.is_some() && (branches_declared || default_declared) {
-        return Err(LangError::Workflow(format!(
-            "{path}: a join gateway must not declare `branches` or `default`"
-        )));
+    if let Some(join_mode) = join {
+        if branches_declared || default_declared {
+            return Err(LangError::Workflow(format!(
+                "{path}: a join gateway must not declare `branches` or `default`"
+            )));
+        }
+        match join_mode {
+            JoinMode::NOf => {
+                let Some(required) = n else {
+                    return Err(LangError::Workflow(format!(
+                        "{path}.n is required when join = \"n_of\""
+                    )));
+                };
+                if expression.is_some() || !labels.is_empty() {
+                    return Err(LangError::Workflow(format!(
+                        "{path}: `expression` and `labels` are only allowed when join = \"expression\""
+                    )));
+                }
+                let mut distinct = BTreeSet::new();
+                for need in needs {
+                    if !distinct.insert(need.as_str()) {
+                        return Err(LangError::Workflow(format!(
+                            "{path}.needs contains duplicate `{need}`; `n_of` requires distinct inputs"
+                        )));
+                    }
+                }
+                if required as usize > distinct.len() || required == 0 {
+                    return Err(LangError::Workflow(format!(
+                        "{path}.n must be between 1 and {}",
+                        distinct.len()
+                    )));
+                }
+            }
+            JoinMode::Expression => {
+                if expression
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    return Err(LangError::Workflow(format!(
+                        "{path}.expression is required when join = \"expression\""
+                    )));
+                }
+                if n.is_some() {
+                    return Err(LangError::Workflow(format!(
+                        "{path}.n is only allowed when join = \"n_of\""
+                    )));
+                }
+                let needs_set: BTreeSet<&str> = needs.iter().map(String::as_str).collect();
+                let mut targets = BTreeSet::new();
+                for (label, target) in &labels {
+                    if !valid_label(label) {
+                        return Err(LangError::Workflow(format!(
+                            "{path}.labels.{label} must match [A-Za-z_][A-Za-z0-9_]* and must not be a condition keyword"
+                        )));
+                    }
+                    if !needs_set.contains(target.as_str()) {
+                        return Err(LangError::Workflow(format!(
+                            "{path}.labels.{label} targets `{target}`, which is not in `needs`"
+                        )));
+                    }
+                    if !targets.insert(target.as_str()) {
+                        return Err(LangError::Workflow(format!(
+                            "{path}.labels maps multiple labels to `{target}`; labels must be a bijection"
+                        )));
+                    }
+                }
+                if !labels.is_empty() && labels.len() != needs_set.len() {
+                    return Err(LangError::Workflow(format!(
+                        "{path}.labels must cover every distinct `needs` entry exactly once"
+                    )));
+                }
+            }
+            JoinMode::And | JoinMode::Or | JoinMode::Xor => {
+                if n.is_some() || expression.is_some() || !labels.is_empty() {
+                    return Err(LangError::Workflow(format!(
+                        "{path}: `n` is only allowed for `n_of`; `expression`/`labels` only for `expression`"
+                    )));
+                }
+            }
+        }
     }
 
     Ok(Some(GatewaySpec {
@@ -607,7 +732,21 @@ fn extract_gateway(value: Option<&Value>, path: &str) -> Result<Option<GatewaySp
         join,
         branches,
         default,
+        n,
+        expression,
+        labels,
     }))
+}
+
+fn valid_label(label: &str) -> bool {
+    if matches!(label, "and" | "or" | "not" | "true" | "false" | "null") {
+        return false;
+    }
+    let mut chars = label.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn extract_retry(value: Option<&Value>, path: &str) -> Result<RetryPolicy, LangError> {
@@ -1473,9 +1612,11 @@ fn ancestors(incoming: &BTreeMap<String, BTreeSet<String>>, name: &str) -> BTree
 fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangError> {
     let mut steps = Map::new();
     let mut step_status = Map::new();
+    let mut step_round = Map::new();
     for name in spec.steps.keys() {
         steps.insert(name.clone(), serde_json::json!({}));
         step_status.insert(name.clone(), Json::String("succeeded".to_owned()));
+        step_round.insert(name.clone(), Json::from(0));
     }
     let context = serde_json::json!({
         "run_id": "validate",
@@ -1484,6 +1625,7 @@ fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangErr
         "params": params,
         "steps": steps,
         "stepStatus": step_status,
+        "stepRound": step_round,
     });
     for (name, step) in &spec.steps {
         if let Some(until) = step.cycle.as_ref().and_then(|cycle| cycle.until.as_ref()) {
@@ -1502,6 +1644,40 @@ fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangErr
                         ))
                     })?;
                 }
+            }
+            if let Some(expression) = &gateway.expression {
+                for root in reference_roots(expression) {
+                    if !matches!(
+                        root.as_str(),
+                        "edges" | "activeCount" | "deadCount" | "totalCount" | "true" | "false"
+                    ) {
+                        return Err(LangError::Workflow(format!(
+                            "workflow.steps.{name}.gateway.expression may only reference edges, activeCount, deadCount and totalCount; found `{root}`"
+                        )));
+                    }
+                }
+                let mut edges = Map::new();
+                if gateway.labels.is_empty() {
+                    for need in &step.needs {
+                        edges.insert(need.clone(), Json::String("active".to_owned()));
+                    }
+                } else {
+                    for label in gateway.labels.keys() {
+                        edges.insert(label.clone(), Json::String("active".to_owned()));
+                    }
+                }
+                let mut edge_context = context.clone();
+                if let Some(map) = edge_context.as_object_mut() {
+                    map.insert("edges".to_owned(), Json::Object(edges));
+                    map.insert("activeCount".to_owned(), Json::from(0));
+                    map.insert("deadCount".to_owned(), Json::from(0));
+                    map.insert("totalCount".to_owned(), Json::from(step.needs.len()));
+                }
+                validate_condition(expression, &edge_context).map_err(|err| {
+                    LangError::Workflow(format!(
+                        "workflow.steps.{name}.gateway.expression is invalid: {err}"
+                    ))
+                })?;
             }
         }
     }

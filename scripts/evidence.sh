@@ -115,6 +115,15 @@ section 18-gateways-trials "$BIN" --db "$WORK/gateway.sqlite" trials "$GATEWAY_R
 section 18-gateways-metrics "$BIN" --db "$WORK/gateway.sqlite" metrics --run "$GATEWAY_RUN" --format prometheus
 section 18-gateways-audit "$BIN" --db "$WORK/gateway.sqlite" audit verify "$GATEWAY_RUN"
 
+# Gateway phase 2: quorum, expression join, cycle rounds and analysis.
+section 18b-gateway-nof-run "$BIN" --db "$WORK/gateway-nof.sqlite" --cue "$CUE_BIN" run examples/gateway_nof.cue
+NOF_RUN=$("$BIN" --db "$WORK/gateway-nof.sqlite" --json runs | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
+section 18b-gateway-nof-status "$BIN" --db "$WORK/gateway-nof.sqlite" status "$NOF_RUN"
+section 18b-gateway-nof-metrics "$BIN" --db "$WORK/gateway-nof.sqlite" metrics --run "$NOF_RUN" --format prometheus
+section 18b-gateway-nof-audit "$BIN" --db "$WORK/gateway-nof.sqlite" audit verify "$NOF_RUN"
+section 18c-gateway-expression "$BIN" --db "$WORK/gateway-expression.sqlite" --cue "$CUE_BIN" run examples/gateway_expression.cue
+section 18d-gateway-cycle "$BIN" --db "$WORK/gateway-cycle.sqlite" --cue "$CUE_BIN" run examples/gateway_cycle.cue
+section 18d-gateway-cycle-audit "$BIN" --db "$WORK/gateway-cycle.sqlite" audit verify "$("$BIN" --db "$WORK/gateway-cycle.sqlite" --json runs | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')"
 # Named agents: definitions, provider invocation, traces, artifacts, worktree
 # isolation, verification and doctor provider discovery.
 chmod +x examples/agents/fake-agent.sh

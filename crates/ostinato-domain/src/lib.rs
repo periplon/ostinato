@@ -6,6 +6,7 @@
 //! tamper-evident audit chain.
 
 pub mod agent;
+pub mod analysis;
 pub mod audit;
 pub mod error;
 pub mod plan;
@@ -17,9 +18,13 @@ pub use agent::{
     AgentDefinition, AgentProvider, AgentTrace, AgentTraceRecord, ArtifactMeta, CapturedArtifact,
     IsolationMode, IsolationSpec, PromptDelivery, StoredArtifact, TraceVerification, sha256_hex,
 };
-pub use audit::{AuditEvent, NewEvent, lifecycle_status, state_digest};
+pub use analysis::{BranchReport, Finding, Severity, analyze};
+pub use audit::{AuditEvent, NewEvent, lifecycle_status, state_digest, verify_state_anchor};
 pub use error::DomainError;
-pub use plan::{EdgeOrigin, Plan, PlanEdge, PlanNode, build_plan};
+pub use plan::{
+    ActivationScope, CarryEdge, CycleInfo, EdgeOrigin, EdgeScope, Plan, PlanEdge, PlanNode,
+    build_plan,
+};
 pub use run::{RunRecord, RunReport, RunStatus, StepRecord, StepStatus};
 pub use trial::{Improvement, NewImprovement, NewTrial, Trial, TrialStatus};
 pub use workflow::{

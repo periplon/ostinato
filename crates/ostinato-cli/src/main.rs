@@ -12,7 +12,7 @@ use ostinato_adapters::{
 use ostinato_application::{
     Engine, EngineDeps, EngineOptions, ImproveRequest, LoadRequest, SpecLoader, Store, params_patch,
 };
-use ostinato_domain::{RunStatus, audit, build_plan};
+use ostinato_domain::{JoinMode, RunStatus, analyze, audit, build_plan};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -72,6 +72,9 @@ enum Command {
         file: PathBuf,
         #[arg(short = 'p', long = "param")]
         params: Vec<String>,
+        /// Treat static-analysis warnings as errors.
+        #[arg(long)]
+        strict: bool,
     },
     /// Print the execution plan as DOT or JSON.
     Graph {
@@ -242,12 +245,19 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             init_project(&directory, json)?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Validate { file, params } => {
+        Command::Validate {
+            file,
+            params,
+            strict,
+        } => {
             let (loader, _) = build_loader(&cli)?;
             let loaded = loader.load(&LoadRequest {
                 source: file,
                 params: parse_params(&params)?,
             })?;
+            let plan = build_plan(&loaded.spec)?;
+            let report = analyze(&loaded.spec, &plan);
+            let strict_failure = strict && report.has_warnings();
             if json {
                 println!(
                     "{}",
@@ -255,18 +265,38 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                         "workflow": loaded.spec,
                         "params": loaded.params,
                         "evaluator": loaded.evaluator,
+                        "findings": report.findings,
+                        "findingsTruncated": report.truncated,
+                        "findingsSchemaVersion": 1,
                     }))?
                 );
             } else {
                 println!(
-                    "OK {} ({} steps, maxParallel={}, evaluator={})",
+                    "{} {} ({} steps, maxParallel={}, evaluator={})",
+                    if strict_failure { "FAIL" } else { "OK" },
                     loaded.spec.name,
                     loaded.spec.steps.len(),
                     loaded.spec.max_parallel,
                     loaded.evaluator
                 );
+                for finding in &report.findings {
+                    println!(
+                        "{} {} {}: {}",
+                        finding.severity.as_str(),
+                        finding.code,
+                        finding.path,
+                        finding.message
+                    );
+                }
+                if report.truncated {
+                    println!("note findings truncated at the display limit");
+                }
             }
-            Ok(ExitCode::SUCCESS)
+            if strict_failure {
+                Ok(ExitCode::from(2))
+            } else {
+                Ok(ExitCode::SUCCESS)
+            }
         }
         Command::Graph {
             file,
@@ -444,24 +474,11 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                         );
                         return Ok(ExitCode::FAILURE);
                     }
-                    let anchored = events
-                        .iter()
-                        .rev()
-                        .find(|event| event.kind == "state.committed")
-                        .and_then(|event| event.data.get("stateHash"))
-                        .and_then(|value| value.as_str())
-                        .or_else(|| {
-                            events
-                                .iter()
-                                .find(|event| event.kind == "run.started")
-                                .and_then(|event| event.data.get("stateHash"))
-                                .and_then(|value| value.as_str())
-                        });
-                    if let Some(anchored) = anchored
-                        && anchored != record.state_hash
+                    if let Err(err) =
+                        ostinato_domain::verify_state_anchor(&events, &record.state_hash)
                     {
                         eprintln!(
-                            "AUDIT FAILED run={run}: execution state is not anchored in the audit chain"
+                            "AUDIT FAILED run={run}: execution state is not anchored in the audit chain: {err}"
                         );
                         return Ok(ExitCode::FAILURE);
                     }
@@ -884,6 +901,8 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                             "stepsFailed": metrics.steps_failed,
                             "stepsSkipped": metrics.steps_skipped,
                             "gatewaysEvaluated": metrics.gateways_evaluated,
+                            "gatewayFailures": metrics.gateway_failures,
+                            "gatewayQuorumShort": metrics.gateway_quorum_short,
                             "attemptsTotal": metrics.attempts_total,
                             "retriesTotal": metrics.retries_total,
                             "avgAttemptMs": metrics.avg_attempt_ms,
@@ -899,6 +918,8 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     println!("steps_failed      {}", metrics.steps_failed);
                     println!("steps_skipped     {}", metrics.steps_skipped);
                     println!("gateways_evaluated {}", metrics.gateways_evaluated);
+                    println!("gateway_failures  {}", metrics.gateway_failures);
+                    println!("gateway_quorum_short {}", metrics.gateway_quorum_short);
                     println!("attempts_total    {}", metrics.attempts_total);
                     println!("retries_total     {}", metrics.retries_total);
                     println!("avg_attempt_ms    {:.2}", metrics.avg_attempt_ms);
@@ -916,6 +937,14 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     println!(
                         "ostinato_gateways_evaluated_total {}",
                         metrics.gateways_evaluated
+                    );
+                    println!(
+                        "ostinato_gateway_failures_total {}",
+                        metrics.gateway_failures
+                    );
+                    println!(
+                        "ostinato_gateway_quorum_short_total {}",
+                        metrics.gateway_quorum_short
                     );
                     println!("ostinato_attempts_total {}", metrics.attempts_total);
                     println!("ostinato_retries_total {}", metrics.retries_total);
@@ -936,6 +965,8 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                             "stepsFailed": metrics.steps_failed,
                             "stepsSkipped": metrics.steps_skipped,
                             "gatewaysEvaluated": metrics.gateways_evaluated,
+                            "gatewayFailures": metrics.gateway_failures,
+                            "gatewayQuorumShort": metrics.gateway_quorum_short,
                             "attemptsTotal": metrics.attempts_total,
                             "retriesTotal": metrics.retries_total,
                             "avgAttemptMs": metrics.avg_attempt_ms,
@@ -1099,18 +1130,36 @@ fn print_report(report: &ostinato_domain::RunReport, json: bool) -> Result<()> {
     if let Some(error) = &report.error {
         println!("error: {error}");
     }
-    println!(
-        "{:<24} {:<10} {:<6} {:<8}",
-        "STEP", "STATUS", "VISITS", "ATTEMPTS"
-    );
-    for step in &report.steps {
+    let has_rounds = report.steps.iter().any(|step| step.round > 0);
+    if has_rounds {
+        println!(
+            "{:<24} {:<10} {:<6} {:<8} {:<6}",
+            "STEP", "STATUS", "VISITS", "ATTEMPTS", "ROUND"
+        );
+        for step in &report.steps {
+            println!(
+                "{:<24} {:<10} {:<6} {:<8} {:<6}",
+                step.name,
+                step.status.as_str(),
+                step.visits,
+                step.attempts,
+                step.round
+            );
+        }
+    } else {
         println!(
             "{:<24} {:<10} {:<6} {:<8}",
-            step.name,
-            step.status.as_str(),
-            step.visits,
-            step.attempts
+            "STEP", "STATUS", "VISITS", "ATTEMPTS"
         );
+        for step in &report.steps {
+            println!(
+                "{:<24} {:<10} {:<6} {:<8}",
+                step.name,
+                step.status.as_str(),
+                step.visits,
+                step.attempts
+            );
+        }
     }
     Ok(())
 }
@@ -1145,18 +1194,36 @@ fn print_status(
     if let Some(error) = &run.error {
         println!("error={error}");
     }
-    println!(
-        "{:<24} {:<10} {:<6} {:<8}",
-        "STEP", "STATUS", "VISITS", "ATTEMPTS"
-    );
-    for step in steps {
+    let has_rounds = steps.iter().any(|step| step.round > 0);
+    if has_rounds {
+        println!(
+            "{:<24} {:<10} {:<6} {:<8} {:<6}",
+            "STEP", "STATUS", "VISITS", "ATTEMPTS", "ROUND"
+        );
+        for step in steps {
+            println!(
+                "{:<24} {:<10} {:<6} {:<8} {:<6}",
+                step.name,
+                step.status.as_str(),
+                step.visits,
+                step.attempts,
+                step.round
+            );
+        }
+    } else {
         println!(
             "{:<24} {:<10} {:<6} {:<8}",
-            step.name,
-            step.status.as_str(),
-            step.visits,
-            step.attempts
+            "STEP", "STATUS", "VISITS", "ATTEMPTS"
         );
+        for step in steps {
+            println!(
+                "{:<24} {:<10} {:<6} {:<8}",
+                step.name,
+                step.status.as_str(),
+                step.visits,
+                step.attempts
+            );
+        }
     }
     Ok(())
 }
@@ -1169,7 +1236,15 @@ fn print_dot(spec: &ostinato_domain::WorkflowSpec) {
             gateway
                 .split
                 .map(|mode| format!("split: {}", mode.as_str()))
-                .or_else(|| gateway.join.map(|mode| format!("join: {}", mode.as_str())))
+                .or_else(|| {
+                    gateway.join.map(|mode| match mode {
+                        JoinMode::NOf => {
+                            format!("join: n_of (n={})", gateway.n.unwrap_or(0))
+                        }
+                        JoinMode::Expression => "join: expression".to_owned(),
+                        _ => format!("join: {}", mode.as_str()),
+                    })
+                })
         });
         let label = match &mode {
             Some(mode) => format!("{}\\n({})", dot_escape(name), dot_escape(mode)),

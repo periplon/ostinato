@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use ostinato_domain::{
-    AuditEvent, BranchSpec, CycleSpec, DomainError, EdgeOrigin, GatewaySpec, JoinMode, NewEvent,
-    PlanEdge, RetryPolicy, SplitMode, StepKind, StepSpec, WorkflowSpec, audit, build_plan,
+    ActivationScope, AuditEvent, BranchSpec, CycleSpec, DomainError, EdgeOrigin, EdgeScope,
+    GatewaySpec, JoinMode, NewEvent, PlanEdge, RetryPolicy, SplitMode, StepKind, StepSpec,
+    WorkflowSpec, audit, build_plan,
 };
 use serde_json::json;
 
@@ -163,6 +164,7 @@ fn split_gateway(
         join: None,
         branches: BTreeMap::new(),
         default: default.map(ToOwned::to_owned),
+        ..GatewaySpec::default()
     };
     for (name, condition) in branches {
         gateway.branches.insert(
@@ -181,6 +183,7 @@ fn join_gateway(mode: JoinMode) -> GatewaySpec {
         join: Some(mode),
         branches: BTreeMap::new(),
         default: None,
+        ..GatewaySpec::default()
     }
 }
 
@@ -234,6 +237,7 @@ fn gateway_plan_orders_branches_and_joins() {
         fast.incoming,
         vec![PlanEdge {
             from: "route".to_owned(),
+            scope: EdgeScope::SameRound,
             origin: EdgeOrigin::Branch {
                 gateway: "route".to_owned(),
                 branch: "deployFast".to_owned(),
@@ -263,13 +267,14 @@ fn legacy_plan_shape_is_unchanged_without_gateways() {
         plan.nodes[1].incoming,
         vec![PlanEdge {
             from: "a".to_owned(),
+            scope: EdgeScope::SameRound,
             origin: EdgeOrigin::Dependency,
         }]
     );
 }
 
 #[test]
-fn gateway_and_cycle_combination_is_rejected() {
+fn gateway_outside_a_legacy_cycle_is_allowed() {
     let mut steps = BTreeMap::new();
     let mut a = step("a");
     a.needs = vec!["b".to_owned()];
@@ -286,13 +291,13 @@ fn gateway_and_cycle_combination_is_rejected() {
         gateway_step("gate", split_gateway(SplitMode::And, &[("c", None)], None)),
     );
     steps.insert("c".to_owned(), step("c"));
-    let error = build_plan(&WorkflowSpec {
+    let plan = build_plan(&WorkflowSpec {
         name: "both".to_owned(),
         max_parallel: 1,
         steps,
     })
-    .expect_err("must reject");
-    assert!(matches!(error, DomainError::GatewayCycleUnsupported { .. }));
+    .expect("gateway outside a legacy cycle is allowed");
+    assert!(!plan.has_gateway_cycles);
 }
 
 #[test]
@@ -402,6 +407,134 @@ fn legacy_state_digest_is_stable_across_the_gateway_change() {
     assert_eq!(
         audit::state_digest(&spec, &json!({"x": 1}), "legacy.cue", 2, &[]),
         expected
+    );
+}
+
+#[test]
+fn n_of_and_expression_joins_are_materialised() {
+    let mut steps = BTreeMap::new();
+    steps.insert("a".to_owned(), step("a"));
+    steps.insert("b".to_owned(), step("b"));
+    let mut quorum = gateway_step("quorum", join_gateway(JoinMode::NOf));
+    quorum.needs = vec!["a".to_owned(), "b".to_owned()];
+    if let Some(gateway) = &mut quorum.gateway {
+        gateway.n = Some(2);
+    }
+    steps.insert("quorum".to_owned(), quorum);
+    let mut expression = gateway_step("expression", join_gateway(JoinMode::Expression));
+    expression.needs = vec!["a".to_owned(), "b".to_owned()];
+    if let Some(gateway) = &mut expression.gateway {
+        gateway.expression = Some("edges.a".to_owned());
+    }
+    steps.insert("expression".to_owned(), expression);
+    let plan = build_plan(&WorkflowSpec {
+        name: "joins".to_owned(),
+        max_parallel: 2,
+        steps,
+    })
+    .expect("plan");
+    assert!(plan.nodes.iter().any(|node| node.step == "quorum"));
+    assert!(plan.nodes.iter().any(|node| node.step == "expression"));
+}
+
+#[test]
+fn gateway_cycle_plan_marks_round_scope_and_carry_edges() {
+    let mut steps = BTreeMap::new();
+    let mut loop_step = step("loop");
+    loop_step.needs = vec!["tail".to_owned()];
+    loop_step.cycle = Some(CycleSpec {
+        max_rounds: 2,
+        until: None,
+    });
+    steps.insert("loop".to_owned(), loop_step);
+    let mut split = gateway_step(
+        "split",
+        split_gateway(
+            SplitMode::Xor,
+            &[("work", Some("true")), ("idle", None)],
+            Some("idle"),
+        ),
+    );
+    split.needs = vec!["loop".to_owned()];
+    steps.insert("split".to_owned(), split);
+    steps.insert("work".to_owned(), step("work"));
+    steps.insert("idle".to_owned(), step("idle"));
+    let mut merge = gateway_step("merge", join_gateway(JoinMode::Or));
+    merge.needs = vec!["work".to_owned(), "idle".to_owned()];
+    steps.insert("merge".to_owned(), merge);
+    let mut tail = step("tail");
+    tail.needs = vec!["merge".to_owned()];
+    steps.insert("tail".to_owned(), tail);
+
+    let plan = build_plan(&WorkflowSpec {
+        name: "cycle".to_owned(),
+        max_parallel: 1,
+        steps,
+    })
+    .expect("plan");
+    assert!(plan.has_gateway_cycles);
+    assert_eq!(plan.cycle_info.len(), 1);
+    assert_eq!(plan.cycle_info[0].entries, vec!["loop".to_owned()]);
+    assert_eq!(plan.cycle_info[0].carry.len(), 1);
+    assert_eq!(plan.cycle_info[0].carry[0].from, "tail");
+    assert_eq!(plan.cycle_info[0].carry[0].to, "loop");
+    assert!(
+        plan.nodes
+            .iter()
+            .filter(|node| node.step == "split")
+            .all(|node| node.activation == ActivationScope::RoundCycle)
+    );
+}
+
+#[test]
+fn externally_entered_gateway_cycle_keeps_the_external_edge_round_agnostic() {
+    let mut steps = BTreeMap::new();
+    steps.insert("x".to_owned(), step("x"));
+    let mut loop_step = step("loop");
+    loop_step.needs = vec!["x".to_owned(), "tail".to_owned()];
+    steps.insert("loop".to_owned(), loop_step);
+    let mut split = gateway_step(
+        "split",
+        split_gateway(SplitMode::And, &[("work", None)], None),
+    );
+    split.needs = vec!["loop".to_owned()];
+    steps.insert("split".to_owned(), split);
+    steps.insert("work".to_owned(), step("work"));
+    let mut merge = gateway_step("merge", join_gateway(JoinMode::And));
+    merge.needs = vec!["work".to_owned()];
+    steps.insert("merge".to_owned(), merge);
+    let mut tail = step("tail");
+    tail.needs = vec!["merge".to_owned()];
+    tail.cycle = Some(CycleSpec {
+        max_rounds: 3,
+        until: None,
+    });
+    steps.insert("tail".to_owned(), tail);
+
+    let plan = build_plan(&WorkflowSpec {
+        name: "external-cycle".to_owned(),
+        max_parallel: 1,
+        steps,
+    })
+    .expect("plan");
+    assert_eq!(plan.cycle_info.len(), 1);
+    assert_eq!(plan.cycle_info[0].carry[0].from, "tail");
+    assert_eq!(plan.cycle_info[0].carry[0].to, "loop");
+    assert!(
+        plan.cycle_info[0]
+            .external_incoming
+            .iter()
+            .any(|edge| edge.from == "x")
+    );
+    assert!(
+        plan.nodes
+            .iter()
+            .filter(|node| node.step == "loop")
+            .all(|node| {
+                node.incoming
+                    .iter()
+                    .any(|edge| edge.from == "x" && edge.scope == EdgeScope::SameRound)
+            })
     );
 }
 

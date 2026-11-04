@@ -40,7 +40,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | CUE aliases (`X=field: value`) | ✅ | Field aliases, struct-scoped and file-scoped; value aliases are not separate syntax |
 | Quoted labels (`"x": v`) | ✅ | Exported but not identifier-bindable; a quoted `"#D"` stays distinct from the definition `#D` |
 | Full disjunction lattice over patterns | ⚠️ | Alternatives, defaults, bounds, `&` narrowing and intersection work; richer pattern intersections are out of scope |
-| Workflow gateways (`kind: "gateway"`) | ✅ | Ordinary CUE data; XOR/OR/AND split and join routing, conditions and default branches compile identically through both evaluators (see `conformance/cases/gateway.cue`) |
+| Workflow gateways (`kind: "gateway"`) | ✅ | Ordinary CUE data; XOR/OR/AND split and join routing, `n_of` quorum joins, `expression` joins, conditions, default branches and gateway cycles compile identically through both evaluators (see `conformance/cases/gateway*.cue`) |
 | Tool commands (`*_tool.cue`) | ⚠️ | `ostinato cmd` runs single/grouped/referenced `command:` tasks with `tool/exec.Run`, `tool/cli.Print` and `tool/file.Append`/`Create`, including `stdout`/`success` injection and interpolation for literal task structs, referenced commands and helper fields/lets, plus `$after`/`@tag`; other tool packages and stderr output injection remain out of scope |
 
 Unsupported features fail explicitly or are documented here. Use `--evaluator cue` for a workflow that needs them.

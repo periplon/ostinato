@@ -1,0 +1,11 @@
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/gateway-nof.sqlite --cue cue run examples/gateway_nof.cue
+
+run=91620149-a454-4d03-a9f6-5d388b5b5cc1 workflow=quorum status=succeeded durationMs=2
+STEP                     STATUS     VISITS ATTEMPTS
+alice                    succeeded  1      1
+approve                  succeeded  1      0
+bob                      succeeded  1      1
+carol                    succeeded  1      1
+release                  succeeded  1      1
+
+exit=0

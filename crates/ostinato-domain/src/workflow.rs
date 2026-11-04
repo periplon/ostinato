@@ -67,6 +67,10 @@ pub enum JoinMode {
     Or,
     /// Activate when exactly one incoming branch is active.
     Xor,
+    /// Activate when at least `GatewaySpec::n` incoming branches are active.
+    NOf,
+    /// Activate when the configured boolean edge expression is true.
+    Expression,
 }
 
 impl JoinMode {
@@ -76,6 +80,8 @@ impl JoinMode {
             Self::And => "and",
             Self::Or => "or",
             Self::Xor => "xor",
+            Self::NOf => "n_of",
+            Self::Expression => "expression",
         }
     }
 }
@@ -101,6 +107,15 @@ pub struct GatewaySpec {
     /// Fallback branch for XOR/OR splits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+    /// Quorum size for `join: "n_of"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+    /// Boolean edge expression for `join: "expression"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    /// Optional edge labels for `join: "expression"`, keyed by label.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
 }
 
 impl GatewaySpec {

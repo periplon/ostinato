@@ -151,15 +151,16 @@ Architecture review of `docs/GATEWAYS.md` raised and closed these points:
 | Gateway decisions could diverge from the audit chain | Decisions are ordinary `steps` rows and `state_digest` covers output; `audit verify` fails after mutation |
 | Dead-path skips could be re-executed on resume | Skipped rows are committed in the group `Completion` and rehydrated before activation |
 | OR joins could race or fire early | Joins are barrier nodes in the static plan; activation runs once per group |
-| Cycle back-edge removal could silently delete branch edges | Compiler and domain reject gateways combined with cycles (`GatewayCycleUnsupported`) |
+| Cycle back-edge removal could silently delete branch edges | Removed back-edges become explicit `Carry` edges; gateway cycles are round-scoped and mixed carry/same-round joins are rejected |
 | Implicit convergence could change legacy multi-`needs` semantics | Legacy workflows are untouched; gateway workflows reject non-gateway nodes with more than one incoming edge |
 | Branch conditions could read downstream or missing outputs | `step_references` + ancestor scope validation reject them at compile time; `stepStatus` routes on failure/skip |
 | Skipped rows counted as failures | Metrics distinguish `Skipped`; `steps_failed` excludes them |
-| Gateways inside cycles bypass activation | `PlanNode.in_cycle` preserves legacy cycle execution; a gateway workflow with a cycle is rejected before planning |
+| Gateways inside cycles bypass activation | Gateway cycles use `ActivationScope::RoundCycle`, `EdgeScope::Carry`, round-keyed records and `cycle.exited`; legacy cycles keep the old path |
 
-Residual v1 limits are deliberate: no `n_of`/quorum, `event_based` or
-`complex` gateways; no gateways inside cycles; joins are barriers (not
-early-firing). See `docs/GATEWAYS.md` §14.
+Residual limits are deliberate: `event_based` gateways and edge-level `when`
+are out of scope; joins are barriers (not early-firing); condition-coverage
+lints are deferred. See `docs/GATEWAYS.md` §14 and
+`docs/GATEWAYS-REMAINING-PLAN.md`.
 
 ## Agent definitions review (v0.23.0)
 

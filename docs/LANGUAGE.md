@@ -195,7 +195,25 @@ route: {
 merge: {
 	kind:  "gateway"
 	needs: ["deployFast", "deploySlow"]
-	gateway: {join: "or"}               // "and" | "or" | "xor"
+	gateway: {join: "or"}               // "and" | "or" | "xor" | "n_of" | "expression"
+}
+
+// Quorum join: at least two of three inputs must be active.
+quorum: {
+	kind:  "gateway"
+	needs: ["alice", "bob", "carol"]
+	gateway: {join: "n_of", n: 2}
+}
+
+// Complex join over named edge states.
+expression: {
+	kind:  "gateway"
+	needs: ["fast", "slow"]
+	gateway: {
+		join:       "expression"
+		labels:     {fast: "fast", slow: "slow"}
+		expression: "edges.fast && !edges.slow"
+	}
 }
 ```
 
@@ -204,7 +222,7 @@ Rules:
 - `branches` is keyed by **target step name**. The compiler adds the implicit
   `route -> target` edge; branch targets must have an empty `needs`.
 - A split gateway selects branches by evaluating each condition against
-  `params`, `run_id`, `workflow`, `round`, `steps` and `stepStatus`.
+  `params`, `run_id`, `workflow`, `round`, `steps`, `stepStatus` and `stepRound`.
 - `and` activates every branch and forbids conditions and `default`.
 - `or` activates every branch whose condition is true; `true` is
   unconditional. If none is true the `default` branch is used.
@@ -212,17 +230,28 @@ Rules:
   More than one true condition is a run failure (`ambiguous`).
 - A join requires `needs` and forbids `branches`/`default`. `and` requires all
   inputs active; `or` requires at least one; `xor` requires exactly one.
+- `n_of` requires `n` with `1 <= n <= distinct needs`. Zero active inputs is a
+  dead path; `1..n-1` active inputs fail the run (`quorum not met`); `n` or
+  more succeeds. `n` is rejected on every other mode.
+- `expression` requires `expression` and forbids `n`. It evaluates a pure
+  boolean expression over `edges.<label>`, `activeCount`, `deadCount` and
+  `totalCount`. Optional `labels` maps labels to `needs` and must be a
+  bijection. `edges.<step>` is accepted when `labels` is omitted. A false
+  expression is a dead path; an evaluation error fails the run.
 - Once a workflow uses gateways, convergence must be an explicit join gateway:
   a non-gateway step may have at most one incoming edge
-  (`ImplicitJoinWithGateways`).
-- Gateways and cycles cannot be combined in v1
-  (`GatewayCycleUnsupported`).
+  (`ImplicitJoinWithGateways`). A split gateway targeted by multiple splits is
+  reported as `GatewaySharedBranchTarget` by `validate`.
+- Gateways may participate in cycles. Each round has a fresh activation scope;
+  a removed back-edge becomes a carry edge into the next round. A back-edge
+  target with no same-round incoming edge is a cycle entry. Mixed carry and
+  same-round inputs on a join are rejected.
 - Branch conditions may only reference `params`, `run_id`, `workflow`,
-  `round`, `stepStatus` and outputs of transitive predecessor steps.
+  `round`, `stepStatus`, `stepRound` and outputs of transitive predecessor steps.
 - `retry`, `cycle`, `exec`, `agent`, `improve`, `timeoutMs` and
   `continueOnError` are rejected on a gateway.
 
-`stepStatus.<step>` is derived from every committed step row, including
+`stepStatus.<step>` and `stepRound.<step>` are derived from every committed step row, including
 `skipped` and `failed` (with `continueOnError`) rows. `steps.<step>` contains
 successful outputs only, so use `stepStatus.deploySlow == "skipped"` instead of
 reading a skipped step's output. Dead branches are recorded with
@@ -237,7 +266,7 @@ static plan and exact `resume_index`.
 
 ## Cycles
 
-A directed cycle is allowed only when at least one member declares `cycle`. Validation rejects unguarded cycles **and rejects a `cycle` policy on a step that is not part of a graph cycle**.
+A directed cycle is allowed only when at least one member declares `cycle`. Validation rejects unguarded cycles **and rejects a `cycle` policy on a step that is not part of a graph cycle**. A cycle may contain gateways; split decisions are scoped to the round, and the removed back-edge carries a token into the next round. A cycle with no carry token exits at the round boundary and records `cycle.exited`.
 
 ```cue
 review: {

@@ -229,6 +229,8 @@ pub struct MetricsSummary {
     pub steps_failed: u64,
     pub steps_skipped: u64,
     pub gateways_evaluated: u64,
+    pub gateway_failures: u64,
+    pub gateway_quorum_short: u64,
     pub attempts_total: u64,
     pub retries_total: u64,
     pub avg_attempt_ms: f64,
@@ -238,6 +240,13 @@ pub struct MetricsSummary {
 /// transactional and must preserve the audit hash chain.
 pub trait Store: Send + Sync {
     fn create_run(&self, run: &RunRecord) -> PortResult<()>;
+    /// Insert a run and its first audit event in one transaction.
+    fn create_run_with_event(
+        &self,
+        run: &RunRecord,
+        event: NewEvent,
+        ts: &str,
+    ) -> PortResult<AuditEvent>;
     fn load_run(&self, run_id: &str) -> PortResult<Option<RunRecord>>;
     fn snapshot(&self, run_id: &str) -> PortResult<Option<RunSnapshot>>;
     fn list_runs(&self, limit: usize) -> PortResult<Vec<RunRecord>>;
@@ -250,6 +259,14 @@ pub trait Store: Send + Sync {
         updated_at: &str,
     ) -> PortResult<()>;
     fn steps(&self, run_id: &str) -> PortResult<Vec<StepRecord>>;
+    /// Atomically mark a run running and append its `run.resumed` event.
+    fn resume_run(
+        &self,
+        run_id: &str,
+        resume_index: i64,
+        updated_at: &str,
+        event: NewEvent,
+    ) -> PortResult<AuditEvent>;
     fn complete(&self, completion: Completion) -> PortResult<Vec<AuditEvent>>;
     fn advance(
         &self,

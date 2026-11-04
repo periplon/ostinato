@@ -123,6 +123,37 @@ pub fn verify_chain(events: &[AuditEvent]) -> Result<(), DomainError> {
     Ok(())
 }
 
+/// Verify that a state digest is anchored by the audit chain.
+///
+/// The chain must start with `run.started`; the last `state.committed` event
+/// (or the initial `run.started` anchor) must carry exactly `state_hash`.
+///
+/// # Errors
+/// Returns [`DomainError::MissingStateAnchor`] or
+/// [`DomainError::StateAnchorMismatch`] when the chain cannot prove the digest.
+pub fn verify_state_anchor(events: &[AuditEvent], state_hash: &str) -> Result<(), DomainError> {
+    if events.first().map(|event| event.kind.as_str()) != Some("run.started") {
+        return Err(DomainError::MissingStateAnchor(
+            "chain does not start with run.started".to_owned(),
+        ));
+    }
+    let anchor = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == "state.committed")
+        .or_else(|| events.iter().find(|event| event.kind == "run.started"))
+        .ok_or_else(|| DomainError::MissingStateAnchor("no run.started event".to_owned()))?;
+    let anchored = anchor
+        .data
+        .get("stateHash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DomainError::MissingStateAnchor("anchor has no stateHash".to_owned()))?;
+    if anchored != state_hash {
+        return Err(DomainError::StateAnchorMismatch(anchor.run_id.clone()));
+    }
+    Ok(())
+}
+
 /// Digest of the execution-relevant state of a run.
 ///
 /// The audit chain protects event history; this digest protects the mutable
@@ -155,6 +186,10 @@ pub fn state_digest(
         hasher.update(step.visits.to_be_bytes());
         hasher.update(b"\x1f");
         hasher.update(step.attempts.to_be_bytes());
+        if step.round != 0 {
+            hasher.update(b"\x1fround\x1f");
+            hasher.update(step.round.to_be_bytes());
+        }
         hasher.update(b"\x1f");
         hasher.update(step.error.as_deref().unwrap_or("").as_bytes());
         hasher.update(b"\x1f");
