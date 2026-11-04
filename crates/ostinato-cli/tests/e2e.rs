@@ -6686,6 +6686,182 @@ command: c: {
 }
 
 #[test]
+fn tool_command_module_task_exports_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"package lib
+
+import (
+	e "tool/exec"
+	"tool/cli"
+)
+
+run:  e.Run & {cmd: ["sh", "-c", "printf abc"], stdout: string}
+ok:   e.Run & {cmd: ["false"], success: bool, mustSucceed: false}
+tasks: {
+	r1: e.Run & {cmd: ["sh", "-c", "printf A"], stdout: string}
+	r2: e.Run & {cmd: ["sh", "-c", "printf B"], stdout: string}
+}
+group: {
+	run: e.Run & {cmd: ["sh", "-c", "printf G"], stdout: string}
+	p:   cli.Print & {text: "G=\(run.stdout)"}
+}
+val: {stdout: "concrete"}
+"#;
+    let cases = [
+        (
+            "moduledirect",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: moduledirect: {
+	a: producer: lib.run
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+        ),
+        (
+            "moduledeep",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: moduledeep: {
+	a: producer: lib.tasks.r1
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+        ),
+        (
+            "modulegroup",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: modulegroup: {
+	a: producer: lib.group.run
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+        ),
+        (
+            "modulesuccess",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: modulesuccess: {
+	a: producer: lib.ok
+	q: cli.Print & {text: "ok=\(a.producer.success)"}
+}
+"#,
+        ),
+        (
+            "modulecollision",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: modulecollision: {
+	p: {producer: lib.val}
+	q: cli.Print & {text: "S=\(p.producer.stdout)"}
+	a: producer: lib.run
+}
+"#,
+        ),
+        (
+            "moduleconcreteuse",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: moduleconcreteuse: {
+	a: producer: lib.run
+	x: other: lib.val
+	q: cli.Print & {text: "R=\(a.producer.stdout)-S=\(x.other.stdout)"}
+}
+"#,
+        ),
+    ];
+    for (name, source) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+            std::fs::create_dir_all(directory.join("lib")).expect("lib");
+            write(&directory.join("cue.mod/module.cue"), module);
+            write(&directory.join("lib/lib.cue"), library);
+            write(&directory.join("x_tool.cue"), source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert_eq!(actual.stderr, expected.stderr, "{name}");
+    }
+
+    // CUE leaves both tasks non-concrete when one module supplies two tasks.
+    let source = r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: moduletwo: {
+	a: producer: lib.tasks.r1
+	b: producer2: lib.tasks.r2
+	q: cli.Print & {text: "R=\(a.producer.stdout)-\(b.producer2.stdout)"}
+}
+"#;
+    let cue_dir = tempfile::tempdir().expect("tempdir");
+    let rust_dir = tempfile::tempdir().expect("tempdir");
+    for directory in [cue_dir.path(), rust_dir.path()] {
+        std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+        std::fs::create_dir_all(directory.join("lib")).expect("lib");
+        write(&directory.join("cue.mod/module.cue"), module);
+        write(&directory.join("lib/lib.cue"), library);
+        write(&directory.join("x_tool.cue"), source);
+    }
+    let expected = Command::new(&cue)
+        .args(["cmd", "moduletwo"])
+        .current_dir(cue_dir.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&["cmd", "moduletwo", rust_dir.path().to_str().expect("path")]);
+    assert!(
+        !expected.status.success(),
+        "cue must reject two module tasks"
+    );
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+}
+
+#[test]
 fn tool_command_selector_commands_match_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");
