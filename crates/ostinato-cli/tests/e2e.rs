@@ -7003,6 +7003,87 @@ command: defaliasdefchain: {
             true,
         ),
         (
+            "deftwocontainers",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#A: {run: lib.run}
+#B: {run: lib.run}
+command: deftwocontainers: {
+	q: cli.Print & {text: "R=\(#B.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defshadowrun",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#B: {run: lib.run}
+other: {run: 1}
+command: defshadowrun: {
+	q: cli.Print & {text: "R=\(#B.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defcontaineralias",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#b: {run: lib.run}
+#a: #b
+command: defcontaineralias: {
+	q: cli.Print & {text: "R=\(#a.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defcontainerdeclread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defcontainerdeclread: {
+	a: p1: #G.run
+	q: cli.Print & {text: "R=\(#G.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defcontaineraliasdecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#b: {run: lib.run}
+#a: #b
+command: defcontaineraliasdecl: {
+	x: p1: #a.run
+	q: cli.Print & {text: "R=\(x.p1.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
             "readrootmodule",
             r#"
 package foo

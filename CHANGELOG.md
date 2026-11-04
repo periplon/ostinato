@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.33.0
+
+Path-keyed definition output reads.
+
+- External task discovery, scheduling and injection carry full
+  definition-rooted selector paths, so duplicate leaf names across
+  containers and non-task fields resolve exactly like CUE.
+- Container task declarations plus reads of the same member are suppressed
+  (`a: p1: #G.run` + `\(#G.run.stdout)`), while read-only and alias reads
+  keep injecting.
+- Added e2e and conformance cases for collisions, shadows and container
+  declaration/read pairs.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.32.1
 
 Alias target requirements.
