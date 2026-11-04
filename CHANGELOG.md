@@ -26,6 +26,330 @@ Gateway phase 2: quorum, complex joins, cycles and analysis.
   `gateway_quorum_short`; `status` shows a `ROUND` column for gateway cycles.
 - `docs/GATEWAYS.md` is updated from the original plan to implemented status;
   `docs/GATEWAYS-REMAINING-PLAN.md` records the phase-2 design and review.
+## v0.23.2
+
+Tool-command reference, helper and parenthesis parity.
+
+- Referenced commands (`command: c: base`, including `base & {...}` and chained
+  references) resolve for task scheduling, `$after` and output injection.
+- Output references through command-local helper fields and `let` bindings
+  infer producer dependencies transitively, so consumers no longer read
+  defaulted capture values or fail to make progress.
+- Parenthesised/defaulted selectors such as `\((run).stdout)` are recognised
+  by both interpolation scoping and dependency inference.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.23.1
+
+Interpolation scoping and inferred output dependencies.
+
+- Allow-incomplete evaluation is scoped to interpolations that actually reference scheduled task `stdout`/`success`; other incomplete interpolations still error before any task runs.
+- Output references infer task dependencies, so consumers never run before a producer with defaulted capture fields (`stdout: *"x" | string`, `success: *false | bool`).
+- Output injection is scoped to the selected `command.<name>` subtree, fixing same-named tasks in other commands.
+- Documented derived-expression limit; added e2e coverage for all cases.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.23.0
+
+Interpolation over captured tool outputs.
+
+- Tool-command evaluation has an allow-incomplete mode, so strings and bytes
+  that interpolate pending task outputs evaluate to incomplete placeholders
+  and re-evaluate after injection instead of aborting the package.
+- `cli.Print text`, file `contents`, `cmd` elements and `success` can now use
+  `\(run.stdout)`/`\(run.success)` with or without `$after`, matching cue cmd.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.22.4
+
+Tool env definitions and reproducible evidence.
+
+- `env` accepts definition-valued maps (`env: #E`), including defaulted and pending-output definitions, matching cue.
+- `scripts/evidence.sh` uses the actual `CARGO_TARGET_DIR` binary and guards that its version matches the workspace, so evidence cannot be generated from a stale build.
+- Expanded tool E2E coverage for pending env lists, cmd disjunctions, env definitions, and all-invalid disjunction side effects (sibling file absence asserted).
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.22.3
+
+Pending-output and disjunction tool inputs.
+
+- Pending task outputs in `env` (map/list) and defaulted `stdin` remain not-ready and run after injection; `cmd` disjunction elements resolve after injection.
+- Input validation classifies disjunction alternatives, rejecting all-invalid whole-field disjunctions before any sibling task runs while keeping defaulted/disjunction-compatible values.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.22.2
+
+Complete tool-task pre-validation.
+
+- Concrete invalid `exec.Run` inputs (`cmd` type/empty, `dir`, `env`, `stdin`, `stdout`/`stderr` capture types, `mustSucceed`) are rejected before any task runs, so sibling prints/files never execute.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.22.1
+
+Tool-task input validation and documented limits.
+
+- `tool/cli.Print` concretizes defaulted `text` values.
+- Concrete-but-invalid tool inputs (empty filename, wrong text/contents types) are rejected before any task runs, preventing side effects.
+- Not-ready tasks report a specific reason; failed producers no longer add a generic error line.
+- Documented limits: interpolation over task outputs, output injection into base/definition-composed tasks, and package-relative task paths.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.22.0
+
+Tool command outputs, `cli.Print` and file tasks.
+
+- `tool/cli.Print` prints text plus newline; `tool/file.Append` and
+  `tool/file.Create` write package-relative paths with CUE error messages.
+- Captured `stdout` and `success` are injected by re-evaluating the package,
+  so dependent tasks (with or without `$after`) can consume them; `stderr`
+  capture suppresses streaming but is not injected, matching cue.
+- `*_tool.cue` tasks support mixed exec/print/file graphs and inferred
+  ordering from output references.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.21.5
+
+Tool-command compatible-default and spawn-message fixes.
+
+- Non-null defaulted `stdin` (`*"y" | string`, `*"y" | "n"`) and `stderr` capture defaults run like cue; `mustSucceed: *true | false` is accepted while conflicting `*false | bool` is still rejected without executing.
+- Spawn diagnostics cover path binaries (`/no/such`, `./prog`) with `fork/exec ...` messages and skip non-executable PATH candidates.
+- Docs consistently use `*_tool.cue`.
+- 354 tests (69 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.21.4
+
+Tool-command default-conflict and spawn diagnostics.
+
+- Conflicting whole-field defaults (`mustSucceed: *false | bool`, `stdin: *"y" | null`, concrete stdout conflicts) are rejected without executing the command, like `cue cmd`.
+- Spawn errors distinguish missing binaries, missing relative dirs (raw path in the message), and non-directory `dir` values.
+- Tool files are documented as `*_tool.cue` (a literal `_tool.cue` is excluded by underscore rules in both tools).
+- Package-scoped `$after` scheduling outside the command subtree is documented as a limit.
+- 354 tests (69 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.21.3
+
+Tool-command cwd, defaults and hierarchy parity.
+
+- Tasks run in the package directory; relative `dir` values resolve against it
+  and absolute paths are honored.
+- Whole-field defaults concretize for `env`, `stdout`/`stderr` and
+  `mustSucceed` (in addition to argv/env values/dir/stdin).
+- Single-task commands (`command: c: exec.Run & {...}`), task groups and
+  commands referencing a task struct (`command: c: base`) run like `cue cmd`.
+- Spawn errors report chdir failures only for missing relative/absolute dirs;
+  otherwise `exec: ... not found` like cue.
+- 352 tests (67 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.21.2
+
+Tool-command parity corrections (second pass).
+
+- Command/task structs containing `#definitions` are accepted.
+- Defaulted values are concretized for `cmd` elements, `env`, `dir` and
+  `stdin`; `dir: ""` runs in the current directory.
+- Non-empty `env` lists replace the environment (empty inherits), matching
+  `cue cmd`; `mustSucceed: false` tolerates spawn/chdir failures.
+- 351 tests (66 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.21.1
+
+Tool-command review corrections.
+
+- `$after` is extracted through unification, merged `command:` declarations are
+  all visible, helper fields are not treated as tasks, and failures skip
+  `$after` dependents while independent tasks continue.
+- `tool/exec.Run` matches CUE more closely: string `cmd` splits without a shell,
+  `stdout`/`stderr: null` stream, `mustSucceed: false` accepts failure,
+  captured output uses a writer thread (large stdin no longer deadlocks) and
+  bytes `stdin` is supported.
+- Unknown `-p` tags error like `cue cmd`; command errors exit 1.
+- 351 tests (66 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.21.0
+
+CUE tool commands (`*_tool.cue`).
+
+- New `ostinato cmd <name> <path>` runs `command: <name>:` tasks declared in
+  `*_tool.cue` files with `tool/exec.Run`.
+- Workflow loading still excludes `*_tool.cue` files.
+- Other tool packages, tasks consuming other task outputs, `$usage`/`$short`/
+  `$long`, multi-instance inputs and `@cmd` attributes remain documented
+  limits.
+- 349 tests (64 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.20.6
+
+Attribute attachment and list-comprehension parity.
+
+- List-comprehension bodies may start with a standalone attribute and/or a
+  leading pattern.
+- Own-line attributes before a field or pattern are declaration metadata, not
+  field tags (so they do not trip placement rules and do not register `@tag`);
+  same-line attribute prefixes (`@tag(x) a: ...`) are parse errors like CUE.
+- Added language and CLI regressions.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.20.5
+
+Standalone pattern attributes.
+
+- Only same-line attributes after a pattern value attach to the pattern; a
+  standalone `@tag` on the line before (or between) patterns belongs to the
+  enclosing declaration and remains accepted, matching CUE line sensitivity.
+- Added leading/between-pattern regressions.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.20.4
+
+Pattern-value `@tag` rejection.
+
+- Same-line `@tag` attributes on pattern values are parsed and retained, so
+  `{[string]: string | *"ok" @tag(p)}` is rejected within field constraints
+  (or lists/comprehensions) like CUE; a newline-separated standalone `@tag`
+  remains accepted.
+- Added language and CLI regressions for pattern-value attributes.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.20.3
+
+`@tag` placement parity corrections.
+
+- Byte-label eligibility uses CUE's rune-literal unit count from the source
+  (`'\xc3\xa9'` = 2 units) instead of decoded characters, and multiline bytes
+  labels never carry `@tag`.
+- `@tag` is rejected in struct comprehensions (`for`/`if`, including `let`
+  values and comprehension sources) and inside pattern or dynamic-label
+  constraints, matching CUE's forbidden zones.
+- Added allowed-placement conformance coverage and extended language/CLI
+  regressions.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.20.2
+
+`@tag` placement parity.
+
+- `@tag` is rejected on fields that live inside lists (including open lists,
+  list comprehensions, nested structs and definitions in list elements) and on
+  multi-rune bytes-literal labels, matching CUE. Identifier/quoted/
+  single-rune bytes labels, definitions, nested structs and a tag on the field
+  holding a list remain allowed.
+- Validation runs in both the loader tag scan and the Rust evaluator entry
+  points; conformance/language/CLI regressions added.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.20.1
+
+Bytes-label comprehension parsing and identity documentation.
+
+- List/struct comprehension bodies starting with a bytes label parse correctly
+  (including `if`, optional, definition and multiline bodies); list-comp
+  bodies may start on the line after `{`.
+- Non-UTF-8 bytes-label identity (lossy U+FFFD decoding) is documented as a
+  SCOPE limit and pinned by tests; escaped labels and comprehension labels are
+  covered in the conformance corpus.
+- 345 tests (61 CLI E2E, 1 conformance, 241 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.20.0
+
+Bytes-literal field labels.
+
+- Field labels written as single-line, multiline or escaped bytes literals
+  decode to string labels and share identity with quoted string labels,
+  including dot/index selection, definitions and optionals; non-UTF-8 label identity is decoded lossily and documented in SCOPE.
+- Interpolated bytes labels are rejected like CUE.
+- 345 tests (61 CLI E2E, 1 conformance, 241 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.19.1
+
+Nested-interpolation scanner parity.
+
+- Single-line string interpolation and the parser's string-part splitter reuse
+  the recursive scanner, so nested bytes/strings containing `"`, `)` or `(` no
+  longer truncate the interpolation.
+- 344 tests (61 CLI E2E, 1 conformance, 240 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.19.0
+
+Nested multiline literals inside interpolation.
+
+- Interpolation source may contain """...""" and '''...''' literals in
+  string and bytes interpolations, including interpolation nested inside the
+  nested literal and multiline outer literals whose nested closing delimiter
+  starts a line.
+- The lexer scans nested literals recursively for boundaries, so the outer
+  delimiter is no longer mistaken for an interpolation close.
+- 344 tests (61 CLI E2E, 1 conformance, 240 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.18.4
+
+Narrowing declaration-closedness and list-arity corrections.
+
+- Multi/composed field declarations now combine with `unify_values` before the
+  single final close/unify, so closed declarations still reject undeclared
+  fields (`#X: {o: {b: int | *1}, o: #D}` with `#D: {d: 6}` rejects `b`/`c`)
+  while open declarations and narrowed dependents recompute.
+- Fixed-length and open-prefix list declarations restore CUE arity checks, so
+  short/long concrete lists conflict instead of being silently accepted.
+- 343 tests (61 CLI E2E, 1 conformance, 239 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
+## v0.18.3
+
+Multi-declaration and composed narrowing corrections.
+
+- Multiple declarations of a narrowed field merge declarations before applying
+  the narrowed value, instead of evaluating each part against a closed literal.
+- Composed (`&`) field declarations and list/open-list declarations merge
+  element-wise, so nested defaults recompute.
+- 343 tests (61 CLI E2E, 1 conformance, 239 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 
 ## v0.18.2
 

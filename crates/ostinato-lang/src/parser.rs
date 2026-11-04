@@ -279,9 +279,17 @@ impl Parser {
     }
 
     fn parse_struct_item_impl(&mut self) -> Result<Option<StructItem>, LangError> {
-        let mut attributes = Vec::new();
+        let mut _declaration_attributes = Vec::new();
         while matches!(self.peek_tok(), Tok::At) {
-            attributes.push(self.parse_attribute()?);
+            let attribute = self.parse_attribute()?;
+            let separated = matches!(
+                self.peek_tok(),
+                Tok::Newline | Tok::Comma | Tok::RBrace | Tok::Eof
+            );
+            if !separated && self.peek().line == attribute.span.line {
+                return Err(self.error("missing ',' in struct literal"));
+            }
+            _declaration_attributes.push(attribute);
             self.skip_newlines();
         }
         if matches!(self.peek_tok(), Tok::RBrace | Tok::Eof) {
@@ -292,9 +300,14 @@ impl Parser {
             if let Some(pattern) = self.try_parse_pattern()? {
                 self.expect(&Tok::Colon, "`:`")?;
                 let value = self.parse_field_value()?;
+                let mut trailing = Vec::new();
+                while matches!(self.peek_tok(), Tok::At) {
+                    trailing.push(self.parse_attribute()?);
+                }
                 return Ok(Some(StructItem::Pattern {
                     pattern,
                     value,
+                    attributes: trailing,
                     span: self.span(),
                 }));
             }
@@ -351,7 +364,9 @@ impl Parser {
                 } else {
                     None
                 };
-                let quoted = matches!(self.peek_tok(), Tok::Str(_));
+                let quoted = matches!(self.peek_tok(), Tok::Str(_) | Tok::Bytes(..));
+                let bytes_label_runes = self.bytes_label_runes();
+                let bytes_label_multiline = self.bytes_label_multiline();
                 let definition = matches!(
                     self.peek_tok(),
                     Tok::Ident(name) if name.starts_with('#')
@@ -360,6 +375,7 @@ impl Parser {
                 let optional = self.eat(&Tok::Question);
                 self.expect(&Tok::Colon, "`:`")?;
                 let value = self.parse_field_value()?;
+                let mut attributes = Vec::new();
                 while matches!(self.peek_tok(), Tok::At) {
                     attributes.push(self.parse_attribute()?);
                 }
@@ -371,6 +387,8 @@ impl Parser {
                     definition,
                     alias,
                     quoted,
+                    bytes_label_runes,
+                    bytes_label_multiline,
                     attributes,
                     span,
                 })))
@@ -409,6 +427,17 @@ impl Parser {
         Ok(Some(pattern))
     }
 
+    fn bytes_label_runes(&self) -> Option<usize> {
+        let Tok::Bytes(_, units, _) = self.peek_tok() else {
+            return None;
+        };
+        *units
+    }
+
+    fn bytes_label_multiline(&self) -> bool {
+        matches!(self.peek_tok(), Tok::Bytes(_, _, true))
+    }
+
     fn parse_label(&mut self) -> Result<Label, LangError> {
         let span = self.span();
         match self.peek_tok().clone() {
@@ -432,6 +461,22 @@ impl Parser {
                         .collect();
                     Ok(Label::Name(text, span))
                 }
+            }
+            Tok::Bytes(raw, _, _) => {
+                self.bump();
+                let mut bytes = Vec::new();
+                for part in raw {
+                    match part {
+                        LexBytePart::Text(value) => bytes.extend_from_slice(&value),
+                        LexBytePart::Interp(_) => {
+                            return Err(self.error("bytes label cannot interpolate"));
+                        }
+                    }
+                }
+                Ok(Label::Name(
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                    span,
+                ))
             }
             Tok::LBracket => {
                 self.bump();
@@ -514,9 +559,9 @@ impl Parser {
 
     fn starts_struct_item(&self) -> bool {
         match self.peek_tok() {
-            Tok::Let | Tok::For | Tok::If | Tok::Ellipsis => true,
+            Tok::Let | Tok::For | Tok::If | Tok::Ellipsis | Tok::At => true,
             Tok::LBracket => self.bracket_closes_a_label(),
-            Tok::Ident(_) | Tok::Str(_) => matches!(
+            Tok::Ident(_) | Tok::Str(_) | Tok::Bytes(..) => matches!(
                 self.tokens.get(self.pos + 1).map(|token| &token.tok),
                 Some(Tok::Colon | Tok::Equals | Tok::Question)
             ),
@@ -567,14 +612,18 @@ impl Parser {
             None
         };
         let nested = alias.is_some()
-            || (matches!(self.peek_tok(), Tok::Ident(_) | Tok::Str(_))
-                && matches!(
-                    self.tokens.get(self.pos + 1).map(|token| &token.tok),
-                    Some(Tok::Colon)
-                ));
+            || (matches!(
+                self.peek_tok(),
+                Tok::Ident(_) | Tok::Str(_) | Tok::Bytes(..)
+            ) && matches!(
+                self.tokens.get(self.pos + 1).map(|token| &token.tok),
+                Some(Tok::Colon)
+            ));
         if nested {
             let span = self.span();
-            let quoted = matches!(self.peek_tok(), Tok::Str(_));
+            let quoted = matches!(self.peek_tok(), Tok::Str(_) | Tok::Bytes(..));
+            let bytes_label_runes = self.bytes_label_runes();
+            let bytes_label_multiline = self.bytes_label_multiline();
             let definition = matches!(
                 self.peek_tok(),
                 Tok::Ident(name) if name.starts_with('#')
@@ -596,6 +645,8 @@ impl Parser {
                     definition,
                     alias,
                     quoted,
+                    bytes_label_runes,
+                    bytes_label_multiline,
                     attributes,
                     span,
                 })],
@@ -842,7 +893,7 @@ impl Parser {
                 self.bump();
                 Ok(Expr::Str(parse_str_parts(&raw, span)?, span))
             }
-            Tok::Bytes(raw) => {
+            Tok::Bytes(raw, _, _) => {
                 self.bump();
                 let mut parts = Vec::new();
                 for part in raw {
@@ -875,6 +926,7 @@ impl Parser {
                     let clauses = self.parse_comprehension_clauses()?;
                     self.skip_newlines();
                     self.expect(&Tok::LBrace, "`{`")?;
+                    self.skip_newlines();
                     let body = if self.starts_struct_item() {
                         Expr::Struct(self.parse_struct_body()?, span)
                     } else {
@@ -968,42 +1020,13 @@ fn parse_str_parts(raw: &str, span: Span) -> Result<Vec<StrPart>, LangError> {
                 parts.push(StrPart::Text(std::mem::take(&mut text)));
             }
             let start = index + 2;
-            let mut depth = 1usize;
-            let mut end = start;
-            let mut in_string = false;
-            let mut escaped = false;
-            while end < chars.len() {
-                let current = chars[end];
-                if in_string {
-                    if escaped {
-                        escaped = false;
-                    } else if current == '\\' {
-                        escaped = true;
-                    } else if current == '"' {
-                        in_string = false;
-                    }
-                } else {
-                    match current {
-                        '"' => in_string = true,
-                        '(' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                end += 1;
-            }
-            if depth != 0 {
+            let Some(end) = crate::lexer::interpolation_end(&chars, start) else {
                 return Err(LangError::parse(
                     span.line,
                     span.col,
                     "unterminated interpolation",
                 ));
-            }
+            };
             let inner: String = chars[start..end].iter().collect();
             let expr = parse_expr_fragment(&inner)?;
             parts.push(StrPart::Interp(expr));

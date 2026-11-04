@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use ostinato_application::{LoadRequest, LoadedWorkflow, PortError, PortResult, SpecLoader};
-use ostinato_lang::ast::{Expr, Span, StructItem};
+use ostinato_lang::ast::{Expr, Label, Span, StructItem};
 use ostinato_lang::{
-    Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode, parse,
+    Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode,
+    eval_file_with_imports_mode_allow_incomplete, eval_file_with_imports_mode_allow_outputs, parse,
     rename_file_locals,
 };
 use serde_json::{Value as Json, json};
@@ -67,7 +69,7 @@ fn evaluate_path(
     }
     stack.push(key.clone());
 
-    let files = collect_package_files(&canonical_path)?;
+    let files = collect_package_files(&canonical_path, false)?;
     let source_dir = if canonical_path.is_dir() {
         canonical_path.clone()
     } else {
@@ -133,7 +135,10 @@ fn evaluate_path(
     Ok(value)
 }
 
-fn collect_package_files(path: &Path) -> Result<Vec<PathBuf>, ostinato_lang::LangError> {
+fn collect_package_files(
+    path: &Path,
+    include_tools: bool,
+) -> Result<Vec<PathBuf>, ostinato_lang::LangError> {
     if path.is_dir() {
         let mut by_package: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         let mut anonymous = Vec::new();
@@ -157,7 +162,7 @@ fn collect_package_files(path: &Path) -> Result<Vec<PathBuf>, ostinato_lang::Lan
                 || name.starts_with('.')
                 || name.starts_with('_')
                 || name.ends_with("_test.cue")
-                || name.ends_with("_tool.cue")
+                || (!include_tools && name.ends_with("_tool.cue"))
             {
                 continue;
             }
@@ -235,7 +240,7 @@ fn collect_package_files(path: &Path) -> Result<Vec<PathBuf>, ostinato_lang::Lan
             || name.starts_with('.')
             || name.starts_with('_')
             || name.ends_with("_test.cue")
-            || name.ends_with("_tool.cue")
+            || (!include_tools && name.ends_with("_tool.cue"))
         {
             continue;
         }
@@ -660,7 +665,7 @@ fn inject_field_expr(expr: &mut Expr, id: usize, value: &Expr) -> bool {
 fn collect_parameter_tags(
     path: &Path,
 ) -> Result<BTreeMap<String, Vec<ostinato_lang::TagInfo>>, ostinato_lang::LangError> {
-    let files = collect_package_files(path)?;
+    let files = collect_package_files(path, false)?;
     let mut combined = ostinato_lang::ast::File {
         package: None,
         imports: Vec::new(),
@@ -976,6 +981,1644 @@ fn json_type_name(value: &Json) -> &'static str {
         Json::Array(_) => "list",
         Json::Object(_) => "struct",
     }
+}
+
+/// Run a CUE tool command declared in `*_tool.cue` files.
+///
+/// Implements the `command: <name>: { <task>: tool/exec.Run & {...} }` surface,
+/// including `@tag` injection, `$after` ordering, `cmd` string/argv, `env`,
+/// `dir`, `stdin`, `stdout`/`stderr` capture fields and `mustSucceed`. Tasks
+/// that consume other task outputs and other `tool/...` packages are documented
+/// limits (see `docs/SCOPE.md`).
+///
+/// # Errors
+/// Returns a language or workflow error for unreadable packages, unknown
+/// commands, malformed tasks or unsupported task kinds.
+pub fn run_tool_command(
+    path: &Path,
+    command_name: &str,
+    overrides: &BTreeMap<String, String>,
+) -> Result<i32, ostinato_lang::LangError> {
+    let canonical_path = canonical(path);
+    let files = collect_package_files(&canonical_path, true)?;
+    let source_dir = if canonical_path.is_dir() {
+        canonical_path.clone()
+    } else {
+        canonical_path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    };
+    let mut combined = ostinato_lang::ast::File {
+        package: None,
+        imports: Vec::new(),
+        items: Vec::new(),
+    };
+    for (index, file) in files.iter().enumerate() {
+        let text = std::fs::read_to_string(file).map_err(|err| {
+            ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
+        })?;
+        let mut parsed = parse(&text)?;
+        rename_file_locals(&mut parsed, index)?;
+        if combined.package.is_none() {
+            combined.package = parsed.package.clone();
+        }
+        combined.imports.extend(parsed.imports);
+        combined.items.extend(parsed.items);
+    }
+
+    let mut imports = BTreeMap::new();
+    for import in &combined.imports {
+        if let Some(module) = tool_module(&import.path) {
+            imports.insert(import.alias.clone(), module);
+            continue;
+        }
+        if let Some(module) = builtin_module(&import.path) {
+            imports.insert(import.alias.clone(), module);
+            continue;
+        }
+        let imported_path = resolve_import(&source_dir, &import.path)?;
+        let mut cache = BTreeMap::new();
+        let mut stack = Vec::new();
+        let value = evaluate_path(
+            &imported_path,
+            &BTreeMap::new(),
+            &mut cache,
+            &mut stack,
+            true,
+        )?;
+        imports.insert(import.alias.clone(), value);
+    }
+
+    ostinato_lang::assign_field_ids(&mut combined);
+    let tags = ostinato_lang::parameter_tags(&combined)?;
+    let injected = BTreeMap::new();
+    for (key, raw) in overrides {
+        let Some(infos) = tags.get(key) else {
+            eprintln!("no tag for \"{key}\"");
+            return Ok(1);
+        };
+        for info in infos {
+            let value = parse_override_value(raw, Some(info.ty))?;
+            let expr = override_expr(value)?;
+            if !inject_field(&mut combined.items, info.field_id, &expr) {
+                return Err(ostinato_lang::LangError::Workflow(format!(
+                    "cannot inject @tag `{key}`: declaration not found"
+                )));
+            }
+        }
+    }
+
+    let task_items = command_task_items(&combined.items, command_name)?;
+    let probe =
+        eval_file_with_imports_mode_allow_incomplete(&combined, &imports, &injected, false)?;
+    let probe_tasks = extract_command_tasks(&probe, command_name)?;
+    let mut probe_scheduled = Vec::new();
+    collect_schedule(&probe_tasks, Some(&task_items), &mut probe_scheduled)?;
+    let task_name_set: std::collections::HashSet<String> = probe_scheduled
+        .iter()
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    let value = eval_file_with_imports_mode_allow_outputs(
+        &combined,
+        &imports,
+        &injected,
+        false,
+        &task_name_set,
+    )?;
+    let mut tasks = extract_command_tasks(&value, command_name)?;
+
+    let mut scheduled = Vec::new();
+    collect_schedule(&tasks, Some(&task_items), &mut scheduled)?;
+    if scheduled.is_empty() {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "tool command `{command_name}` has no tasks"
+        )));
+    }
+    let mut task_names = std::collections::BTreeSet::new();
+    for (name, _, _) in &scheduled {
+        if !task_names.insert(name.clone()) {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "ambiguous tool task name `{name}`"
+            )));
+        }
+    }
+    add_output_dependencies(&combined.items, &mut scheduled);
+    for (name, dependencies, _) in &scheduled {
+        for dependency in dependencies {
+            if !task_names.contains(dependency) {
+                return Err(ostinato_lang::LangError::Workflow(format!(
+                    "task `{name}` has unknown `$after` task `{dependency}`"
+                )));
+            }
+        }
+    }
+
+    let mut flat: BTreeMap<String, BTreeMap<String, Value>> = scheduled
+        .iter()
+        .map(|(name, _, task)| (name.clone(), task.clone()))
+        .collect();
+    validate_task_inputs(&flat)?;
+    let mut done = std::collections::BTreeSet::new();
+    let mut failed = std::collections::BTreeSet::new();
+    let mut last_reason = None;
+    while done.len() < scheduled.len() {
+        let mut progress = false;
+        let mut updated = false;
+        for (name, dependencies, _) in &scheduled {
+            if done.contains(name) {
+                continue;
+            }
+            if dependencies
+                .iter()
+                .any(|dependency| failed.contains(dependency))
+            {
+                done.insert(name.clone());
+                failed.insert(name.clone());
+                progress = true;
+                continue;
+            }
+            if !dependencies
+                .iter()
+                .all(|dependency| done.contains(dependency))
+            {
+                continue;
+            }
+            let Some(task) = flat.get(name) else {
+                continue;
+            };
+            match execute_tool_task(task, &source_dir)? {
+                ToolTaskOutcome::NotReady(reason) => last_reason = Some(reason.to_owned()),
+                ToolTaskOutcome::Done { outputs } => {
+                    done.insert(name.clone());
+                    progress = true;
+                    if !outputs.is_empty()
+                        && inject_command_outputs(&mut combined.items, command_name, name, &outputs)
+                    {
+                        let value = eval_file_with_imports_mode_allow_outputs(
+                            &combined,
+                            &imports,
+                            &injected,
+                            false,
+                            &task_name_set,
+                        )?;
+                        tasks = extract_command_tasks(&value, command_name)?;
+                        let mut rescheduled = Vec::new();
+                        collect_schedule(&tasks, Some(&task_items), &mut rescheduled)?;
+                        add_output_dependencies(&combined.items, &mut rescheduled);
+                        flat = rescheduled
+                            .iter()
+                            .map(|(name, _, task)| (name.clone(), task.clone()))
+                            .collect();
+                        validate_task_inputs(&flat)?;
+                        scheduled = rescheduled;
+                        updated = true;
+                        break;
+                    }
+                }
+                ToolTaskOutcome::Failed => {
+                    done.insert(name.clone());
+                    failed.insert(name.clone());
+                    progress = true;
+                }
+            }
+        }
+        if updated {
+            continue;
+        }
+        if !progress {
+            if !failed.is_empty() {
+                return Ok(1);
+            }
+            return Err(ostinato_lang::LangError::Workflow(last_reason.unwrap_or_else(|| {
+                "tool task inputs are not concrete; dependent task outputs are a documented limit"
+                    .to_owned()
+            })));
+        }
+    }
+    Ok(i32::from(!failed.is_empty()))
+}
+
+fn value_fields(value: &Value) -> Option<&BTreeMap<String, Value>> {
+    match value {
+        Value::Struct(fields) | Value::Definition { fields, .. } => Some(fields),
+        _ => None,
+    }
+}
+
+fn tool_module(path: &str) -> Option<Value> {
+    let mut exports = BTreeMap::new();
+    let marker = |id: &str| {
+        let mut fields = BTreeMap::new();
+        fields.insert("$id".to_owned(), Value::String(id.to_owned()));
+        Value::Struct(fields)
+    };
+    match path {
+        "tool/exec" => {
+            let mut run = match marker("tool/exec.Run") {
+                Value::Struct(fields) => fields,
+                _ => unreachable!(),
+            };
+            run.insert(
+                "success".to_owned(),
+                Value::Type(ostinato_lang::TypeKind::Bool),
+            );
+            exports.insert("Run".to_owned(), Value::Struct(run));
+        }
+        "tool/cli" => {
+            exports.insert("Print".to_owned(), marker("tool/cli.Print"));
+        }
+        "tool/file" => {
+            exports.insert("Append".to_owned(), marker("tool/file.Append"));
+            exports.insert("Create".to_owned(), marker("tool/file.Create"));
+        }
+        _ => return None,
+    }
+    Some(Value::Struct(exports))
+}
+
+fn command_task_items(
+    items: &[StructItem],
+    command_name: &str,
+) -> Result<Vec<StructItem>, ostinato_lang::LangError> {
+    let mut found = false;
+    let mut tasks = Vec::new();
+    for item in items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        let Label::Name(name, _) = &field.label else {
+            continue;
+        };
+        if name != "command" {
+            continue;
+        }
+        let Expr::Struct(command_items, _) = &field.value else {
+            continue;
+        };
+        for command_item in command_items {
+            let StructItem::Field(command_field) = command_item else {
+                continue;
+            };
+            let Label::Name(name, _) = &command_field.label else {
+                continue;
+            };
+            if name != command_name {
+                continue;
+            }
+            found = true;
+            if let Some(Expr::Struct(task_items, _)) =
+                resolve_command_expr(items, &command_field.value)
+            {
+                tasks.extend(task_items.iter().cloned());
+            }
+        }
+    }
+    if !found {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "unknown tool command `{command_name}`"
+        )));
+    }
+    Ok(tasks)
+}
+
+/// Follow identifier/parenthesised references to the declaration expression.
+fn resolve_command_expr<'a>(items: &'a [StructItem], expr: &'a Expr) -> Option<&'a Expr> {
+    match expr {
+        Expr::Ident(name, _) => {
+            named_field(items, name).and_then(|value| resolve_command_expr(items, value))
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            resolve_command_expr(items, inner)
+        }
+        other => Some(other),
+    }
+}
+
+/// Name of the top-level field that holds a referenced command value, if any.
+fn command_target<'a>(items: &'a [StructItem], expr: &'a Expr) -> Option<String> {
+    let mut current = expr;
+    loop {
+        match current {
+            Expr::Ident(name, _) => match named_field(items, name) {
+                Some(next @ Expr::Ident(_, _)) => current = next,
+                _ => return Some(name.clone()),
+            },
+            Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+                current = inner;
+            }
+            Expr::Unify(left, right, _) => {
+                return command_target(items, left).or_else(|| command_target(items, right));
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn named_field<'a>(items: &'a [StructItem], name: &str) -> Option<&'a Expr> {
+    items.iter().find_map(|item| match item {
+        StructItem::Field(field) => match &field.label {
+            Label::Name(label, _) if label == name => Some(&field.value),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn after_expr(expr: &Expr) -> Option<&Expr> {
+    match expr {
+        Expr::Struct(items, _) => named_field(items, "$after"),
+        Expr::Unify(left, right, _) => after_expr(left).or_else(|| after_expr(right)),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => after_expr(inner),
+        _ => None,
+    }
+}
+
+fn after_names(item: &StructItem) -> Result<Vec<String>, ostinato_lang::LangError> {
+    let StructItem::Field(field) = item else {
+        return Ok(Vec::new());
+    };
+    let Some(after) = after_expr(&field.value) else {
+        return Ok(Vec::new());
+    };
+    let mut names = Vec::new();
+    collect_after_names(after, &mut names)?;
+    Ok(names)
+}
+
+fn collect_after_names(expr: &Expr, out: &mut Vec<String>) -> Result<(), ostinato_lang::LangError> {
+    match expr {
+        Expr::Ident(name, _) => {
+            out.push(name.clone());
+            Ok(())
+        }
+        Expr::List(items, _) => {
+            for item in items {
+                collect_after_names(item, out)?;
+            }
+            Ok(())
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => collect_after_names(inner, out),
+        other => Err(ostinato_lang::LangError::Workflow(format!(
+            "unsupported $after expression: {other:?}"
+        ))),
+    }
+}
+
+fn collect_schedule(
+    map: &BTreeMap<String, Value>,
+    ast: Option<&[StructItem]>,
+    out: &mut Vec<(String, Vec<String>, BTreeMap<String, Value>)>,
+) -> Result<(), ostinato_lang::LangError> {
+    for (key, value) in map {
+        if key.starts_with('$') || key.starts_with('_') || key.starts_with('#') {
+            continue;
+        }
+        let Some(fields) = value_fields(value) else {
+            continue;
+        };
+        let item = ast.and_then(|items| field_item(items, key));
+        if fields.contains_key("$id") {
+            let dependencies = item.map(after_names).transpose()?.unwrap_or_default();
+            out.push((key.clone(), dependencies, fields.clone()));
+            continue;
+        }
+        let sub_ast = item.and_then(|item| match item {
+            StructItem::Field(field) => match &field.value {
+                Expr::Struct(items, _) => Some(items.as_slice()),
+                _ => None,
+            },
+            _ => None,
+        });
+        collect_schedule(fields, sub_ast, out)?;
+    }
+    Ok(())
+}
+
+fn field_item<'a>(items: &'a [StructItem], name: &str) -> Option<&'a StructItem> {
+    items.iter().find(|item| match item {
+        StructItem::Field(field) => matches!(&field.label, Label::Name(label, _) if label == name),
+        _ => false,
+    })
+}
+
+enum ToolTaskOutcome {
+    NotReady(&'static str),
+    Done { outputs: Vec<(String, Value)> },
+    Failed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureKind {
+    None,
+    String,
+    Other,
+}
+
+fn capture_kind(
+    task: &BTreeMap<String, Value>,
+    key: &str,
+) -> Result<CaptureKind, ostinato_lang::LangError> {
+    match task.get(key) {
+        None | Some(Value::Null) => Ok(CaptureKind::None),
+        Some(Value::String(_)) => Ok(CaptureKind::String),
+        Some(Value::Bytes(_)) => Ok(CaptureKind::Other),
+        Some(Value::Type(ostinato_lang::TypeKind::String)) => Ok(CaptureKind::String),
+        Some(Value::Type(_)) | Some(Value::Bottom) => Ok(CaptureKind::Other),
+        Some(Value::Disjunction(alternatives, defaults)) => {
+            let default = (defaults.len() == 1)
+                .then(|| defaults[0])
+                .and_then(|index| alternatives.get(index))
+                .cloned();
+            match default {
+                Some(Value::Null) => Ok(CaptureKind::None),
+                Some(Value::String(_)) | Some(Value::Type(ostinato_lang::TypeKind::String)) => {
+                    Ok(CaptureKind::String)
+                }
+                _ => Ok(CaptureKind::Other),
+            }
+        }
+        Some(other) => Err(ostinato_lang::LangError::Workflow(format!(
+            "tool/exec.Run `{key}` must be a string, bytes or null, found {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    true
+}
+
+fn resolve_executable(name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if name.contains('/') {
+        return is_executable_file(path).then(|| path.to_path_buf());
+    }
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|directory| directory.join(name))
+            .find(|candidate| is_executable_file(candidate))
+    })
+}
+
+fn spawn_detail(err: &std::io::Error, executable: &str) -> String {
+    if executable.contains('/') && err.kind() == std::io::ErrorKind::NotFound {
+        format!("fork/exec {executable}: no such file or directory")
+    } else if executable.contains('/') && err.kind() == std::io::ErrorKind::PermissionDenied {
+        format!("fork/exec {executable}: permission denied")
+    } else {
+        err.to_string()
+    }
+}
+
+fn io_detail(err: &std::io::Error) -> String {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => "no such file or directory".to_owned(),
+        std::io::ErrorKind::PermissionDenied => "permission denied".to_owned(),
+        _ => err.to_string(),
+    }
+}
+
+fn exec_failure(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("exit status {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            let name = match signal {
+                1 => "hangup",
+                2 => "interrupt",
+                3 => "quit",
+                6 => "aborted",
+                9 => "killed",
+                11 => "segmentation fault",
+                13 => "broken pipe",
+                15 => "terminated",
+                _ => return format!("signal {signal}"),
+            };
+            return format!("signal: {name}");
+        }
+    }
+    "terminated by signal".to_owned()
+}
+
+fn output_expr(value: &Value) -> Option<Expr> {
+    match value {
+        Value::String(text) => Some(Expr::Str(
+            vec![ostinato_lang::ast::StrPart::Text(text.clone())],
+            Span::default(),
+        )),
+        Value::Bool(value) => Some(Expr::Bool(*value, Span::default())),
+        _ => None,
+    }
+}
+
+fn inject_into_struct(expr: &mut Expr, field: &str, value: &Expr) -> bool {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                let StructItem::Field(existing) = item else {
+                    continue;
+                };
+                if matches!(&existing.label, Label::Name(name, _) if name == field) {
+                    existing.value = Expr::Unify(
+                        Box::new(existing.value.clone()),
+                        Box::new(value.clone()),
+                        Span::default(),
+                    );
+                    return true;
+                }
+            }
+            false
+        }
+        Expr::Unify(left, right, _) => {
+            inject_into_struct(left, field, value) || inject_into_struct(right, field, value)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => inject_into_struct(inner, field, value),
+        _ => false,
+    }
+}
+
+fn unwrap_ref_base(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            unwrap_ref_base(inner)
+        }
+        other => other,
+    }
+}
+
+fn local_definition<'a>(
+    scope: &'a [StructItem],
+    root: &'a [StructItem],
+    name: &str,
+) -> Option<&'a Expr> {
+    fn find<'a>(items: &'a [StructItem], name: &str) -> Option<&'a Expr> {
+        items.iter().find_map(|item| match item {
+            StructItem::Field(field) => match &field.label {
+                Label::Name(label, _) if label == name => Some(&field.value),
+                _ => None,
+            },
+            StructItem::Let {
+                name: let_name,
+                value,
+                ..
+            } if let_name == name => Some(value),
+            _ => None,
+        })
+    }
+    find(scope, name).or_else(|| find(root, name))
+}
+
+fn collect_output_refs(
+    expr: &Expr,
+    scope: &[StructItem],
+    root: &[StructItem],
+    names: &std::collections::BTreeSet<String>,
+    visited: &mut std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match expr {
+        Expr::Select(base, field, _, _) => {
+            if matches!(field.as_str(), "stdout" | "success")
+                && let Expr::Ident(name, _) = unwrap_ref_base(base)
+                && names.contains(name)
+            {
+                out.insert(name.clone());
+            }
+            collect_output_refs(base, scope, root, names, visited, out);
+        }
+        Expr::Ident(name, _) => {
+            if !names.contains(name)
+                && visited.insert(name.clone())
+                && let Some(value) = local_definition(scope, root, name)
+            {
+                collect_output_refs(value, scope, root, names, visited, out);
+            }
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            collect_output_refs(left, scope, root, names, visited, out);
+            collect_output_refs(right, scope, root, names, visited, out);
+        }
+        Expr::Bound(_, inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Paren(inner, _)
+        | Expr::Unary(_, inner, _) => {
+            collect_output_refs(inner, scope, root, names, visited, out);
+        }
+        Expr::Index(base, index, _) => {
+            collect_output_refs(base, scope, root, names, visited, out);
+            collect_output_refs(index, scope, root, names, visited, out);
+        }
+        Expr::Call(callee, arguments, _) => {
+            collect_output_refs(callee, scope, root, names, visited, out);
+            for argument in arguments {
+                collect_output_refs(argument, scope, root, names, visited, out);
+            }
+        }
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let ostinato_lang::ast::StrPart::Interp(inner) = part {
+                    collect_output_refs(inner, scope, root, names, visited, out);
+                }
+            }
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                collect_output_refs(item, scope, root, names, visited, out);
+            }
+        }
+        Expr::OpenList(Some(inner), _) => {
+            collect_output_refs(inner, scope, root, names, visited, out);
+        }
+        Expr::Struct(items, _) => {
+            for item in items {
+                match item {
+                    StructItem::Field(field) => {
+                        collect_output_refs(&field.value, scope, root, names, visited, out);
+                    }
+                    StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                        collect_output_refs(value, scope, root, names, visited, out);
+                    }
+                    StructItem::For { source, body, .. } => {
+                        collect_output_refs(source, scope, root, names, visited, out);
+                        collect_output_refs_items(body, scope, root, names, visited, out);
+                    }
+                    StructItem::If { cond, body, .. } => {
+                        collect_output_refs(cond, scope, root, names, visited, out);
+                        collect_output_refs_items(body, scope, root, names, visited, out);
+                    }
+                    StructItem::Ellipsis(_) => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_output_refs_items(
+    items: &[StructItem],
+    scope: &[StructItem],
+    root: &[StructItem],
+    names: &std::collections::BTreeSet<String>,
+    visited: &mut std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                collect_output_refs(&field.value, scope, root, names, visited, out);
+            }
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                collect_output_refs(value, scope, root, names, visited, out);
+            }
+            StructItem::For { source, body, .. } => {
+                collect_output_refs(source, scope, root, names, visited, out);
+                collect_output_refs_items(body, scope, root, names, visited, out);
+            }
+            StructItem::If { cond, body, .. } => {
+                collect_output_refs(cond, scope, root, names, visited, out);
+                collect_output_refs_items(body, scope, root, names, visited, out);
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+}
+
+fn collect_refs_for_task(
+    items: &[StructItem],
+    task_name: &str,
+    root: &[StructItem],
+    names: &std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                if matches!(&field.label, Label::Name(name, _) if name == task_name) {
+                    let mut visited = std::collections::BTreeSet::new();
+                    collect_output_refs(&field.value, items, root, names, &mut visited, out);
+                }
+                collect_refs_for_task_expr(&field.value, task_name, root, names, out);
+            }
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                collect_refs_for_task_expr(value, task_name, root, names, out);
+            }
+            StructItem::For { source, body, .. } => {
+                collect_refs_for_task_expr(source, task_name, root, names, out);
+                collect_refs_for_task(body, task_name, root, names, out);
+            }
+            StructItem::If { cond, body, .. } => {
+                collect_refs_for_task_expr(cond, task_name, root, names, out);
+                collect_refs_for_task(body, task_name, root, names, out);
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+}
+
+fn collect_refs_for_task_expr(
+    expr: &Expr,
+    task_name: &str,
+    root: &[StructItem],
+    names: &std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match expr {
+        Expr::Struct(items, _) => collect_refs_for_task(items, task_name, root, names, out),
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            collect_refs_for_task_expr(left, task_name, root, names, out);
+            collect_refs_for_task_expr(right, task_name, root, names, out);
+        }
+        Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Bound(_, inner, _)
+        | Expr::Unary(_, inner, _) => {
+            collect_refs_for_task_expr(inner, task_name, root, names, out);
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                collect_refs_for_task_expr(item, task_name, root, names, out);
+            }
+        }
+        Expr::OpenList(Some(inner), _) => {
+            collect_refs_for_task_expr(inner, task_name, root, names, out);
+        }
+        _ => {}
+    }
+}
+
+fn add_output_dependencies(
+    items: &[StructItem],
+    scheduled: &mut [(String, Vec<String>, BTreeMap<String, Value>)],
+) {
+    let names: std::collections::BTreeSet<String> =
+        scheduled.iter().map(|(name, _, _)| name.clone()).collect();
+    let mut refs: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+    for (name, _, _) in scheduled.iter() {
+        let mut found = std::collections::BTreeSet::new();
+        collect_refs_for_task(items, name, items, &names, &mut found);
+        refs.insert(name.clone(), found);
+    }
+    for (name, dependencies, _) in scheduled.iter_mut() {
+        if let Some(found) = refs.get(name) {
+            for dependency in found {
+                if dependency != name && !dependencies.contains(dependency) {
+                    dependencies.push(dependency.clone());
+                }
+            }
+        }
+    }
+}
+
+fn inject_command_outputs(
+    items: &mut [StructItem],
+    command_name: &str,
+    task_name: &str,
+    outputs: &[(String, Value)],
+) -> bool {
+    // Collect referenced declarations before taking a mutable borrow.
+    let mut targets: Vec<String> = Vec::new();
+    for item in items.iter() {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        if !matches!(&field.label, Label::Name(name, _) if name == "command") {
+            continue;
+        }
+        let Expr::Struct(command_items, _) = &field.value else {
+            continue;
+        };
+        for command_item in command_items {
+            let StructItem::Field(command_field) = command_item else {
+                continue;
+            };
+            if !matches!(&command_field.label, Label::Name(name, _) if name == command_name) {
+                continue;
+            }
+            if let Some(found) = command_target(items, &command_field.value) {
+                targets.push(found);
+            }
+        }
+    }
+
+    let mut injected = false;
+    // Inject into literal struct/unified command values.
+    for item in items.iter_mut() {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        if !matches!(&field.label, Label::Name(name, _) if name == "command") {
+            continue;
+        }
+        let Expr::Struct(command_items, _) = &mut field.value else {
+            continue;
+        };
+        for command_item in command_items {
+            let StructItem::Field(command_field) = command_item else {
+                continue;
+            };
+            if !matches!(&command_field.label, Label::Name(name, _) if name == command_name) {
+                continue;
+            }
+            if inject_task_outputs_in_expr(&mut command_field.value, task_name, outputs) {
+                injected = true;
+            }
+        }
+    }
+    // Inject into referenced declarations (`command: c: base`).
+    for target in targets {
+        for item in items.iter_mut() {
+            let StructItem::Field(field) = item else {
+                continue;
+            };
+            if matches!(&field.label, Label::Name(name, _) if name == &target) {
+                if inject_task_outputs_in_expr(&mut field.value, task_name, outputs) {
+                    injected = true;
+                }
+                break;
+            }
+        }
+    }
+    injected
+}
+
+fn inject_task_outputs(
+    items: &mut [StructItem],
+    task_name: &str,
+    outputs: &[(String, Value)],
+) -> bool {
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                if matches!(&field.label, Label::Name(name, _) if name == task_name) {
+                    let mut injected = false;
+                    for (name, value) in outputs {
+                        if let Some(expr) = output_expr(value)
+                            && inject_into_struct(&mut field.value, name, &expr)
+                        {
+                            injected = true;
+                        }
+                    }
+                    if injected {
+                        return true;
+                    }
+                }
+                if inject_task_outputs_in_expr(&mut field.value, task_name, outputs) {
+                    return true;
+                }
+            }
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                if inject_task_outputs_in_expr(value, task_name, outputs) {
+                    return true;
+                }
+            }
+            StructItem::For { source, body, .. } => {
+                if inject_task_outputs_in_expr(source, task_name, outputs)
+                    || inject_task_outputs(body, task_name, outputs)
+                {
+                    return true;
+                }
+            }
+            StructItem::If { cond, body, .. } => {
+                if inject_task_outputs_in_expr(cond, task_name, outputs)
+                    || inject_task_outputs(body, task_name, outputs)
+                {
+                    return true;
+                }
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+    false
+}
+
+fn inject_task_outputs_in_expr(
+    expr: &mut Expr,
+    task_name: &str,
+    outputs: &[(String, Value)],
+) -> bool {
+    match expr {
+        Expr::Struct(items, _) => inject_task_outputs(items, task_name, outputs),
+        Expr::Unify(left, right, _) => {
+            inject_task_outputs_in_expr(left, task_name, outputs)
+                || inject_task_outputs_in_expr(right, task_name, outputs)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+            inject_task_outputs_in_expr(inner, task_name, outputs)
+        }
+        _ => false,
+    }
+}
+
+fn extract_command_tasks(
+    value: &Value,
+    command_name: &str,
+) -> Result<BTreeMap<String, Value>, ostinato_lang::LangError> {
+    let Some(root) = value_fields(value) else {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool package did not evaluate to a struct".to_owned(),
+        ));
+    };
+    let Some(command) = root.get("command").and_then(value_fields) else {
+        return Err(ostinato_lang::LangError::Workflow(
+            "no `command` field in tool files".to_owned(),
+        ));
+    };
+    let Some(tasks) = command.get(command_name).and_then(value_fields) else {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "unknown tool command `{command_name}`"
+        )));
+    };
+    if tasks.contains_key("$id") {
+        let mut wrapped = BTreeMap::new();
+        wrapped.insert(command_name.to_owned(), Value::Struct(tasks.clone()));
+        return Ok(wrapped);
+    }
+    Ok(tasks.clone())
+}
+
+fn has_compatible(value: &Value, compatible: fn(&Value) -> bool) -> bool {
+    match value {
+        Value::Disjunction(alternatives, _) => alternatives
+            .iter()
+            .any(|alternative| has_compatible(alternative, compatible)),
+        value => compatible(value),
+    }
+}
+
+fn validate_task_inputs(
+    tasks: &BTreeMap<String, BTreeMap<String, Value>>,
+) -> Result<(), ostinato_lang::LangError> {
+    for task in tasks.values() {
+        let Some(Value::String(id)) = task.get("$id") else {
+            continue;
+        };
+        match id.as_str() {
+            "tool/exec.Run" => {
+                if let Some(cmd) = task.get("cmd") {
+                    if matches!(cmd, Value::Disjunction(..)) {
+                        if !has_compatible(cmd, |value| {
+                            matches!(
+                                value,
+                                Value::String(_) | Value::List(_) | Value::Type(_) | Value::Bottom
+                            )
+                        }) {
+                            return Err(ostinato_lang::LangError::Workflow(
+                                "tool/exec.Run `cmd` must be a string or list of strings"
+                                    .to_owned(),
+                            ));
+                        }
+                    } else {
+                        match cmd {
+                            Value::String(text) => {
+                                if text.split_whitespace().next().is_none() {
+                                    return Err(ostinato_lang::LangError::Workflow(
+                                        "tool/exec.Run `cmd` must not be empty".to_owned(),
+                                    ));
+                                }
+                            }
+                            Value::List(items) => {
+                                if items.is_empty() {
+                                    return Err(ostinato_lang::LangError::Workflow(
+                                        "tool/exec.Run `cmd` must not be empty".to_owned(),
+                                    ));
+                                }
+                                for item in items {
+                                    if !has_compatible(item, |value| {
+                                        matches!(
+                                            value,
+                                            Value::String(_)
+                                                | Value::Type(_)
+                                                | Value::Bottom
+                                                | Value::Recursive(_)
+                                                | Value::Deferred(..)
+                                        )
+                                    }) {
+                                        return Err(ostinato_lang::LangError::Workflow(
+                                            "tool/exec.Run `cmd` element must be a string"
+                                                .to_owned(),
+                                        ));
+                                    }
+                                }
+                            }
+                            Value::Type(_) | Value::Bottom => {}
+                            _ => {
+                                return Err(ostinato_lang::LangError::Workflow(
+                                    "tool/exec.Run `cmd` must be a string or list of strings"
+                                        .to_owned(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                if let Some(value) = task.get("dir")
+                    && !has_compatible(value, |value| {
+                        matches!(value, Value::String(_) | Value::Type(_) | Value::Bottom)
+                    })
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/exec.Run `dir` must be a string".to_owned(),
+                    ));
+                }
+                if let Some(value) = task.get("env")
+                    && !has_compatible(value, |value| {
+                        matches!(
+                            value,
+                            Value::Struct(_)
+                                | Value::Definition { .. }
+                                | Value::List(_)
+                                | Value::Type(_)
+                                | Value::Bottom
+                        )
+                    })
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/exec.Run `env` must be a struct or list".to_owned(),
+                    ));
+                }
+                match task.get("env") {
+                    None
+                    | Some(Value::Type(_))
+                    | Some(Value::Bottom)
+                    | Some(Value::Disjunction(..)) => {}
+                    Some(Value::Struct(env)) | Some(Value::Definition { fields: env, .. }) => {
+                        for value in env.values() {
+                            if !has_compatible(value, |value| {
+                                matches!(value, Value::String(_) | Value::Type(_) | Value::Bottom)
+                            }) {
+                                return Err(ostinato_lang::LangError::Workflow(
+                                    "tool/exec.Run `env` values must be strings".to_owned(),
+                                ));
+                            }
+                        }
+                    }
+                    Some(Value::List(entries)) => {
+                        for entry in entries {
+                            if !has_compatible(entry, |value| {
+                                matches!(value, Value::String(_) | Value::Type(_) | Value::Bottom)
+                            }) {
+                                return Err(ostinato_lang::LangError::Workflow(
+                                    "tool/exec.Run `env` list entries must be `NAME=value` strings"
+                                        .to_owned(),
+                                ));
+                            }
+                        }
+                    }
+                    Some(_) => {
+                        return Err(ostinato_lang::LangError::Workflow(
+                            "tool/exec.Run `env` must be a struct or list".to_owned(),
+                        ));
+                    }
+                }
+                if let Some(value) = task.get("stdin")
+                    && !has_compatible(value, |value| {
+                        matches!(
+                            value,
+                            Value::Null
+                                | Value::String(_)
+                                | Value::Bytes(_)
+                                | Value::Type(_)
+                                | Value::Bottom
+                        )
+                    })
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/exec.Run `stdin` must be a string or bytes".to_owned(),
+                    ));
+                }
+                for key in ["stdout", "stderr"] {
+                    match capture_kind(task, key) {
+                        Ok(CaptureKind::Other) => {
+                            return Err(ostinato_lang::LangError::Workflow(format!(
+                                "invalid {key}: conflicting values bytes and string"
+                            )));
+                        }
+                        Ok(CaptureKind::None | CaptureKind::String) => {}
+                        Err(err) => return Err(err),
+                    }
+                }
+                if let Some(value) = task.get("mustSucceed")
+                    && !has_compatible(value, |value| {
+                        matches!(value, Value::Bool(_) | Value::Type(_) | Value::Bottom)
+                    })
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/exec.Run `mustSucceed` must be a bool".to_owned(),
+                    ));
+                }
+            }
+            "tool/cli.Print" => {
+                if let Some(value) = task.get("text")
+                    && !has_compatible(value, |value| {
+                        matches!(value, Value::String(_) | Value::Type(_) | Value::Bottom)
+                    })
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/cli.Print `text` must be a string".to_owned(),
+                    ));
+                }
+            }
+            "tool/file.Append" | "tool/file.Create" => {
+                if let Some(value) = task.get("filename") {
+                    match value.concretize() {
+                        Value::String(filename) if filename.is_empty() => {
+                            return Err(ostinato_lang::LangError::Workflow(
+                                "tool/file task `filename` must not be empty".to_owned(),
+                            ));
+                        }
+                        Value::String(_) | Value::Type(_) | Value::Bottom => {}
+                        _ => {
+                            return Err(ostinato_lang::LangError::Workflow(
+                                "tool/file task `filename` must be a string".to_owned(),
+                            ));
+                        }
+                    }
+                }
+                if let Some(value) = task.get("contents")
+                    && !matches!(
+                        value.concretize(),
+                        Value::String(_) | Value::Bytes(_) | Value::Type(_) | Value::Bottom
+                    )
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/file task `contents` must be a string or bytes".to_owned(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn execute_tool_task(
+    task: &BTreeMap<String, Value>,
+    package_dir: &Path,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let Some(Value::String(id)) = task.get("$id") else {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool task is missing a `$id`; use a tool package task such as `exec.Run`".to_owned(),
+        ));
+    };
+    match id.as_str() {
+        "tool/exec.Run" => execute_exec(task, package_dir),
+        "tool/cli.Print" => execute_print(task),
+        "tool/file.Append" => execute_file(task, package_dir, false),
+        "tool/file.Create" => execute_file(task, package_dir, true),
+        other => Err(ostinato_lang::LangError::Workflow(format!(
+            "tool task `{other}` is not implemented"
+        ))),
+    }
+}
+
+fn execute_print(
+    task: &BTreeMap<String, Value>,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let text = match task.get("text").map(Value::concretize) {
+        Some(Value::String(text)) => text,
+        Some(Value::Bytes(_)) => {
+            return Err(ostinato_lang::LangError::Workflow(
+                "invalid string argument: non-concrete value".to_owned(),
+            ));
+        }
+        Some(Value::Type(_)) | Some(Value::Bottom) | None => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "invalid string argument: non-concrete value string",
+            ));
+        }
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/cli.Print `text` must be a string, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    let mut stdout = std::io::stdout();
+    stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.write_all(b"\n"))
+        .and_then(|()| stdout.flush())
+        .map_err(|err| {
+            ostinato_lang::LangError::Workflow(format!("tool/cli.Print failed: {err}"))
+        })?;
+    Ok(ToolTaskOutcome::Done {
+        outputs: Vec::new(),
+    })
+}
+
+fn execute_file(
+    task: &BTreeMap<String, Value>,
+    package_dir: &Path,
+    truncate: bool,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let filename = match task.get("filename").map(Value::concretize) {
+        Some(Value::String(filename)) => filename.clone(),
+        Some(Value::Type(_)) | Some(Value::Bottom) | None => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "tool/file task inputs are not concrete",
+            ));
+        }
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/file task `filename` must be a string, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    let contents = match task.get("contents").map(Value::concretize) {
+        Some(Value::String(text)) => text.clone().into_bytes(),
+        Some(Value::Bytes(bytes)) => bytes.clone(),
+        Some(Value::Type(_)) | Some(Value::Bottom) | None => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "tool/file task inputs are not concrete",
+            ));
+        }
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/file task `contents` must be a string or bytes, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    let path = Path::new(&filename);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        package_dir.join(path)
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true);
+    if truncate {
+        options.truncate(true);
+    } else {
+        options.append(true);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("task failed: open {filename}: {}", io_detail(&err));
+            return Ok(ToolTaskOutcome::Failed);
+        }
+    };
+    if let Err(err) = file.write_all(&contents) {
+        eprintln!("task failed: write {filename}: {}", io_detail(&err));
+        return Ok(ToolTaskOutcome::Failed);
+    }
+    Ok(ToolTaskOutcome::Done {
+        outputs: Vec::new(),
+    })
+}
+
+fn execute_exec(
+    task: &BTreeMap<String, Value>,
+    package_dir: &Path,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let Some(cmd) = task.get("cmd") else {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool/exec.Run task is missing `cmd`".to_owned(),
+        ));
+    };
+    let argv = match cmd {
+        Value::String(text) => text
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<String>>(),
+        Value::List(items) => {
+            let mut argv = Vec::with_capacity(items.len());
+            for item in items {
+                match item.concretize() {
+                    Value::String(text) => argv.push(text.clone()),
+                    Value::Type(_) | Value::Bottom | Value::Disjunction(..) => {
+                        return Ok(ToolTaskOutcome::NotReady(
+                            "tool/exec.Run `cmd` is not concrete",
+                        ));
+                    }
+                    other => {
+                        return Err(ostinato_lang::LangError::Workflow(format!(
+                            "tool/exec.Run `cmd` element must be a string, found {}",
+                            other.type_name()
+                        )));
+                    }
+                }
+            }
+            argv
+        }
+        Value::Type(_) | Value::Bottom | Value::Disjunction(..) => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "tool/exec.Run `cmd` is not concrete",
+            ));
+        }
+        other => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/exec.Run `cmd` must be a string or list of strings, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    if argv.is_empty() {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool/exec.Run `cmd` must not be empty".to_owned(),
+        ));
+    }
+
+    let mut process = Command::new(&argv[0]);
+    process.args(&argv[1..]);
+    process.current_dir(package_dir);
+    let mut resolved_dir = None;
+    let mut raw_dir = None;
+    match task.get("dir").map(Value::concretize) {
+        None => {}
+        Some(Value::String(dir)) => {
+            if !dir.is_empty() {
+                let path = Path::new(dir);
+                let resolved = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    package_dir.join(path)
+                };
+                process.current_dir(&resolved);
+                raw_dir = Some(dir.clone());
+                resolved_dir = Some(resolved);
+            }
+        }
+        Some(Value::Type(_)) | Some(Value::Bottom) => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "tool/exec.Run `dir` is not concrete",
+            ));
+        }
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/exec.Run `dir` must be a string, found {}",
+                other.type_name()
+            )));
+        }
+    }
+    match task.get("env").map(Value::concretize) {
+        None => {}
+        Some(Value::Struct(env)) if env.is_empty() => {}
+        Some(Value::Struct(env)) | Some(Value::Definition { fields: env, .. }) => {
+            process.env_clear();
+            for (key, value) in env {
+                match value.concretize() {
+                    Value::String(value) => {
+                        process.env(key, value);
+                    }
+                    Value::Type(_) | Value::Bottom => {
+                        return Ok(ToolTaskOutcome::NotReady(
+                            "tool/exec.Run `env` is not concrete",
+                        ));
+                    }
+                    other => {
+                        return Err(ostinato_lang::LangError::Workflow(format!(
+                            "tool/exec.Run `env` values must be strings, found {}",
+                            other.type_name()
+                        )));
+                    }
+                }
+            }
+        }
+        Some(Value::List(entries)) => {
+            if !entries.is_empty() {
+                process.env_clear();
+            }
+            for entry in entries {
+                match entry.concretize() {
+                    Value::String(entry) => {
+                        let Some((key, value)) = entry.split_once('=') else {
+                            return Err(ostinato_lang::LangError::Workflow(
+                                "tool/exec.Run `env` list entries must be `NAME=value` strings"
+                                    .to_owned(),
+                            ));
+                        };
+                        process.env(key, value);
+                    }
+                    Value::Type(_) | Value::Bottom | Value::Disjunction(..) => {
+                        return Ok(ToolTaskOutcome::NotReady(
+                            "tool/exec.Run `env` is not concrete",
+                        ));
+                    }
+                    other => {
+                        return Err(ostinato_lang::LangError::Workflow(format!(
+                            "tool/exec.Run `env` list entries must be `NAME=value` strings, found {}",
+                            other.type_name()
+                        )));
+                    }
+                }
+            }
+        }
+        Some(Value::Type(_)) | Some(Value::Bottom) => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "tool/exec.Run `env` is not concrete",
+            ));
+        }
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/exec.Run `env` must be a struct or list, found {}",
+                other.type_name()
+            )));
+        }
+    }
+    let stdin = match task.get("stdin") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(text.clone().into_bytes()),
+        Some(Value::Bytes(bytes)) => Some(bytes.clone()),
+        Some(Value::Disjunction(alternatives, defaults)) => {
+            let default = (defaults.len() == 1)
+                .then(|| defaults[0])
+                .and_then(|index| alternatives.get(index))
+                .cloned();
+            let has_null = alternatives
+                .iter()
+                .any(|value| matches!(value, Value::Null));
+            match default {
+                Some(Value::Null) => None,
+                Some(Value::String(text)) if !has_null => Some(text.into_bytes()),
+                Some(Value::Bytes(bytes)) if !has_null => Some(bytes),
+                Some(Value::Type(_)) | Some(Value::Bottom) | None
+                    if alternatives
+                        .iter()
+                        .any(|value| matches!(value, Value::Type(_) | Value::Bottom)) =>
+                {
+                    return Ok(ToolTaskOutcome::NotReady(
+                        "invalid input: non-concrete value",
+                    ));
+                }
+                _ => {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "invalid input: non-concrete value".to_owned(),
+                    ));
+                }
+            }
+        }
+        Some(Value::Type(_)) | Some(Value::Bottom) => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "invalid input: non-concrete value",
+            ));
+        }
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/exec.Run `stdin` must be a string or bytes, found {}",
+                other.type_name()
+            )));
+        }
+    };
+
+    let capture_stdout = capture_kind(task, "stdout")?;
+    let capture_stderr = capture_kind(task, "stderr")?;
+    if capture_stdout == CaptureKind::Other {
+        return Err(ostinato_lang::LangError::Workflow(
+            "invalid stdout: conflicting values bytes and string".to_owned(),
+        ));
+    }
+    if capture_stderr == CaptureKind::Other {
+        return Err(ostinato_lang::LangError::Workflow(
+            "invalid stderr: conflicting values bytes and string".to_owned(),
+        ));
+    }
+    let capture_stdout = capture_stdout == CaptureKind::String;
+    let capture_stderr = capture_stderr == CaptureKind::String;
+    process.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
+    process.stdout(if capture_stdout {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
+    process.stderr(if capture_stderr {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
+    let must_succeed = match task.get("mustSucceed") {
+        None => true,
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Type(_)) | Some(Value::Bottom) => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "invalid mustSucceed value: non-concrete value",
+            ));
+        }
+        Some(Value::Disjunction(alternatives, defaults)) => {
+            let default = (defaults.len() == 1)
+                .then(|| defaults[0])
+                .and_then(|index| alternatives.get(index));
+            match default {
+                Some(Value::Bool(true)) => true,
+                _ => {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "invalid mustSucceed value: non-concrete value".to_owned(),
+                    ));
+                }
+            }
+        }
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/exec.Run `mustSucceed` must be a bool, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            if !must_succeed {
+                return Ok(ToolTaskOutcome::Done {
+                    outputs: Vec::new(),
+                });
+            }
+            let printable = argv
+                .iter()
+                .map(|arg| format!("{arg:?}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let executable = resolve_executable(&argv[0]);
+            let detail = if executable.is_none() && !argv[0].contains('/') {
+                format!("exec: \"{}\": executable file not found in $PATH", argv[0])
+            } else if let Some(dir) = &resolved_dir {
+                let raw = raw_dir.as_deref().unwrap_or_default();
+                if !dir.exists() {
+                    format!("chdir {raw}: no such file or directory")
+                } else if !dir.is_dir() {
+                    format!(
+                        "fork/exec {}: not a directory",
+                        executable
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| argv[0].clone())
+                    )
+                } else {
+                    spawn_detail(&err, &argv[0])
+                }
+            } else {
+                spawn_detail(&err, &argv[0])
+            };
+            eprintln!("task failed: command [{printable}] failed: {detail}");
+            return Ok(ToolTaskOutcome::Failed);
+        }
+    };
+    let writer = stdin.map(|bytes| {
+        let mut pipe = child.stdin.take();
+        std::thread::spawn(move || {
+            if let Some(pipe) = pipe.as_mut() {
+                let _ = pipe.write_all(&bytes);
+            }
+        })
+    });
+    let (status, output) = if capture_stdout || capture_stderr {
+        let output = child.wait_with_output().map_err(|err| {
+            ostinato_lang::LangError::Workflow(format!("tool/exec.Run wait failed: {err}"))
+        })?;
+        (output.status, Some(output))
+    } else {
+        let status = child.wait().map_err(|err| {
+            ostinato_lang::LangError::Workflow(format!("tool/exec.Run wait failed: {err}"))
+        })?;
+        (status, None)
+    };
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
+    if !status.success() && must_succeed {
+        let printable = argv
+            .iter()
+            .map(|arg| format!("{arg:?}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!(
+            "task failed: command [{printable}] failed: {}",
+            exec_failure(&status)
+        );
+        return Ok(ToolTaskOutcome::Failed);
+    }
+    let mut outputs = Vec::new();
+    if let Some(output) = &output
+        && capture_stdout
+    {
+        outputs.push((
+            "stdout".to_owned(),
+            Value::String(String::from_utf8_lossy(&output.stdout).into_owned()),
+        ));
+    }
+    outputs.push(("success".to_owned(), Value::Bool(status.success())));
+    Ok(ToolTaskOutcome::Done { outputs })
 }
 
 #[cfg(test)]

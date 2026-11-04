@@ -6339,6 +6339,10 @@ substring: #S & {n: 3}
 pair: #Pair & {l: [{b: 5}, {b: 6}]}
 #LL: {l: [[{b: int | *1, c: b + 1}]], d: l[0][0].c + 1}
 nested_list: #LL & {l: [[{b: 5}]]}
+#Multi: {o: {b: int | *1, c: b + 1}, o: {d: 6}}
+multi_decl: #Multi & {o: {b: 5}}
+#Composed: {l: [{b: int | *1, c: b + 1}] & [{d: 6}]}
+composed_decl: #Composed & {l: [{b: 5}]}
 "#;
     let file = ostinato_lang::parse(source).expect("parse default narrowing");
     let value = ostinato_lang::eval_file(&file).expect("eval default narrowing");
@@ -6361,10 +6365,17 @@ nested_list: #LL & {l: [[{b: 5}]]}
     assert_eq!(json["pair"]["l"][1]["c"], 7);
     assert_eq!(json["nested_list"]["l"][0][0]["c"], 6);
     assert_eq!(json["nested_list"]["d"], 7);
+    assert_eq!(json["multi_decl"]["o"]["c"], 6);
+    assert_eq!(json["multi_decl"]["o"]["d"], 6);
+    assert_eq!(json["composed_decl"]["l"][0]["c"], 6);
+    assert_eq!(json["composed_decl"]["l"][0]["d"], 6);
 
     for source in [
         "package demo\n#L2: {l: [{b: int | *1, c: b + 1}]}\nx: #L2 & {l: [{b: 5}, {b: 6}]}\n",
         "package demo\n#L2: {l: [{b: int | *1, c: b + 1}]}\nx: #L2 & {l: []}\n",
+        "package demo\n#P: {l: [{b: int | *1}, {d: 6}, ...]}\nx: #P & {l: [{b: 5}]}\n",
+        "package demo\n#F: {l: [{b: int | *1}, {d: 6}]}\nx: #F & {l: [{b: 5}]}\n",
+        "package demo\n#F: {l: [{b: int | *1}, {d: 6}]}\nx: #F & {l: [{b: 5}, {d: 6}, {e: 7}]}\n",
     ] {
         let file = ostinato_lang::parse(source).expect("parse fixed-list arity");
         assert!(
@@ -6372,6 +6383,25 @@ nested_list: #LL & {l: [[{b: 5}]]}
             "fixed-list arity must conflict: {source:?}"
         );
     }
+
+    for source in [
+        "package demo\n#D: {d: 6}\n#X: {o: {b: int | *1, c: b + 1}, o: #D}\nx: #X & {o: {b: 5}}\n",
+        "package demo\n#D: {d: 6}\n#X: {o: {b: int | *1, c: b + 1}, o: #D}\nx: #X & {o: {b: 5, z: 9}}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse closed multi-declaration");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "closed multi/composed declarations must reject extra fields: {source:?}"
+        );
+    }
+
+    let open_multi = "package demo\n#X: {o: {b: int | *1, c: b + 1, ..., d: 6}, o: {e: 7}}\nx: #X & {o: {b: 5}}\n";
+    let file = ostinato_lang::parse(open_multi).expect("parse open multi-declaration");
+    let value = ostinato_lang::eval_file(&file).expect("eval open multi-declaration");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["o"]["c"], 6);
+    assert_eq!(json["x"]["o"]["d"], 6);
+    assert_eq!(json["x"]["o"]["e"], 7);
 
     let shadow =
         "package demo\n#A: {n: *1 | int, y: n + 1, inner: {#A: 5, v: #A}}\na: #A & {n: 3}\n";
@@ -6508,4 +6538,264 @@ fn gateway_n_of_duplicate_needs_and_non_injective_labels_are_rejected() {
         let error = compile_error(&source);
         assert!(error.contains(needle), "{error}");
     }
+}
+
+#[test]
+fn nested_multiline_literals_inside_interpolation_match_cue() {
+    let source = r#"
+package demo
+a: "x\("""
+hi
+""")y"
+b: "x\('''
+hi
+''')y"
+c: """
+x\("""
+hi
+""")y
+"""
+d: """
+x\('''
+hi
+''')y
+"""
+e: '''
+x\("""
+hi
+""")y
+'''
+f: '''
+x\('''
+hi
+''')y
+'''
+g: '''
+x\('''
+  v=\(1+2)
+  ''')y
+'''
+h: "x\('a)b')y"
+i: "x\('a"b')y"
+j: """
+x\('''
+"""
+''')y
+"""
+"#;
+    let file = ostinato_lang::parse(source).expect("parse nested multiline interpolation");
+    let value = ostinato_lang::eval_file(&file).expect("eval nested multiline interpolation");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], "xhiy");
+    assert_eq!(json["b"], "xhiy");
+    assert_eq!(json["c"], "xhiy");
+    assert_eq!(json["d"], "xhiy");
+    assert_eq!(json["e"], "eGhpeQ==");
+    assert_eq!(json["f"], "eGhpeQ==");
+    assert_eq!(json["g"], "eHY9M3k=");
+    assert_eq!(json["h"], "xa)by");
+    assert_eq!(json["i"], "xa\"by");
+    assert_eq!(json["j"], "x\"\"\"y");
+
+    for source in [
+        "package demo\na: \"x\\(\"\"\"\nhi\n\"\"\"\n\"\n",
+        "package demo\na: '''\nx\\('''\nhi\n'''\n'''\n",
+    ] {
+        assert!(
+            ostinato_lang::parse(source).is_err(),
+            "unterminated or malformed nested literal must fail: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn bytes_literal_field_labels_match_string_labels() {
+    let source = r#"
+package demo
+plain: {'k': 1}
+nested: {'a': {'b': 2}}
+unicode: {'日': 3}
+multiline: {'''
+k
+''': 4}
+#D: {'k'?: int}
+typed: #D & {'k': 5}
+invalid_utf8: {'\xff': 6}
+escaped: {'\x6b': 7}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse bytes labels");
+    let value = ostinato_lang::eval_file(&file).expect("eval bytes labels");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["plain"]["k"], 1);
+    assert_eq!(json["nested"]["a"]["b"], 2);
+    assert_eq!(json["unicode"]["日"], 3);
+    assert_eq!(json["multiline"]["k"], 4);
+    assert_eq!(json["typed"]["k"], 5);
+    assert_eq!(json["invalid_utf8"]["�"], 6);
+    assert_eq!(json["escaped"]["k"], 7);
+
+    let comprehensions = r#"
+package demo
+list_comp: [for i in [1, 2] {'k': i}]
+list_comp_if: [for i in [1] if true {'k': i}]
+list_comp_optional: [for i in [1] {'k'?: int}]
+list_comp_def: [for i in [1] {'#D': i}]
+list_comp_multiline: [for i in [1] {
+	'k': i
+}]
+struct_comp: {for i in [1] {'k': i}}
+"#;
+    let file = ostinato_lang::parse(comprehensions).expect("parse bytes-label comprehensions");
+    let value = ostinato_lang::eval_file(&file).expect("eval bytes-label comprehensions");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["list_comp"][0]["k"], 1);
+    assert_eq!(json["list_comp"][1]["k"], 2);
+    assert_eq!(json["list_comp_if"][0]["k"], 1);
+    assert_eq!(json["list_comp_multiline"][0]["k"], 1);
+    assert_eq!(json["struct_comp"]["k"], 1);
+
+    // Documented limit: non-UTF-8 label bytes decode lossily to U+FFFD.
+    let lossy = "package demo\nx: {'\\xff': 1}\ny: x[\"�\"]\n";
+    let file = ostinato_lang::parse(lossy).expect("parse lossy label identity");
+    let value = ostinato_lang::eval_file(&file).expect("eval lossy label identity");
+    assert_eq!(value.to_json().expect("json")["y"], 1);
+
+    let selection = r#"
+package demo
+x: {'k': 1}
+dot: x.k
+index: x["k"]
+"#;
+    let file = ostinato_lang::parse(selection).expect("parse bytes-label selection");
+    let value = ostinato_lang::eval_file(&file).expect("eval bytes-label selection");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["dot"], 1);
+    assert_eq!(json["index"], 1);
+
+    let duplicate = "package demo\nx: {\"k\": 1, 'k': 2}\n";
+    let file = ostinato_lang::parse(duplicate).expect("parse duplicate labels");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "quoted string and bytes labels must share identity"
+    );
+
+    let interpolated = "package demo\nx: {'\\(1)': 2}\n";
+    assert!(
+        ostinato_lang::parse(interpolated).is_err(),
+        "bytes labels cannot interpolate"
+    );
+}
+
+#[test]
+fn tag_placement_rules_match_cue() {
+    // Allowed: identifier/quoted labels, single-rune bytes labels, definitions,
+    // nested structs, and a tag on the field that holds a list.
+    let allowed = r#"
+package demo
+ident: string | *"i" @tag(ident)
+quoted: string | *"q" @tag(quoted)
+single: {'a': string | *"s" @tag(single)}
+single_unicode: {'日': string | *"u" @tag(unicode)}
+single_invalid: {'\xff': string | *"v" @tag(invalid)}
+empty: {'': string | *"e" @tag(empty)}
+unicode_escape: {'\u00e9': string | *"u" @tag(escap)}
+#D: {a: string @tag(def_field)}
+def_value: #D & {a: "d"}
+nested: {a: string | *"n" @tag(nested_field)}
+list_holder: [{a: string | *"l"}] @tag(list_holder)
+dynamic_ok: {k: "a", "\(k)": {x: string | *"d"}}
+pattern_newline_attr: {[string]: string | *"ok"
+@tag(standalone)}
+pattern_leading_attr: {
+	@tag(standalone)
+	[string]: 1
+}
+pattern_between_attrs: {
+	[string]: 1
+	@tag(standalone)
+	[string]: int
+}
+pattern_listcomp_leading: {
+	p: [for i in [1] {
+		@tag(standalone)
+		[string]: int
+	}]
+}
+list_leading_field: [{
+	@tag(note)
+	a: 1
+	b: 2
+}]
+comp_leading_field: {for i in [1] {
+	@tag(note)
+	a: 1
+}}
+"#;
+    let file = ostinato_lang::parse(allowed).expect("parse allowed tags");
+    let value = ostinato_lang::eval_file(&file).expect("eval allowed tags");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["ident"], "i");
+    assert_eq!(json["single"]["a"], "s");
+    assert_eq!(json["def_value"]["a"], "d");
+    assert_eq!(json["unicode_escape"]["é"], "u");
+    assert_eq!(json["dynamic_ok"]["a"]["x"], "d");
+    assert_eq!(json["pattern_newline_attr"], serde_json::json!({}));
+    assert_eq!(json["pattern_leading_attr"], serde_json::json!({}));
+    assert_eq!(json["pattern_between_attrs"], serde_json::json!({}));
+    assert_eq!(
+        json["pattern_listcomp_leading"]["p"],
+        serde_json::json!([{}])
+    );
+    assert_eq!(json["list_leading_field"][0]["a"], 1);
+    assert_eq!(json["comp_leading_field"]["a"], 1);
+
+    // Rejected: multi-rune bytes labels and any tag lexically inside a list.
+    for source in [
+        "package demo\nparams: {x: {'ab': string | *\"v\" @tag(ab)}}\n",
+        "package demo\nparams: {x: {'日本': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {x: {'\\xff\\xff': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {x: {'\\xc3\\xa9': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {x: {'\\xe6\\x97\\xa5': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {x: {'\\303\\251': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {x: {'''\na\n''': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {for i in [1] {\"k\": string | *\"v\" @tag(k)}}\n",
+        "package demo\nparams: {if true {a: string | *\"v\" @tag(a)}}\n",
+        "package demo\nparams: {for i in [\"a\"] {#D: {x: string | *\"v\" @tag(d)}}}\n",
+        "package demo\nparams: {let L = {for i in [1] {\"k\": string | *\"v\" @tag(k)}}, x: L}\n",
+        "package demo\nparams: {for k, v in {k: {a: string | *\"v\" @tag(src)}} {b: string | *\"z\"}}\n",
+        "package demo\nparams: {[string]: {p: string | *\"v\" @tag(p)}}\n",
+        "package demo\nparams: {x: {[string]: string | *\"v\" @tag(p)}}\n",
+        "package demo\nparams: {x: {[string]: {a: 1} @tag(p)}}\n",
+        "package demo\nparams: {x: {for i in [1] {[string]: string | *\"v\" @tag(p)}}}\n",
+        "package demo\nparams: {[string]: {#D: {p: string | *\"v\" @tag(p)}}}\n",
+        "package demo\nparams: {k: \"a\", \"\\(k)\": string | *\"v\" @tag(t)}\n",
+        "package demo\nparams: {k: \"a\", \"\\(k)\": {x: string | *\"v\" @tag(t)}}\n",
+        "package demo\nparams: {@tag(x) a: string | *\"v\"}\n",
+        "package demo\nparams: {@tag(x) [string]: int}\n",
+        "package demo\nparams: {@tag(x) @tag(y)}\n",
+        "package demo\n#D: {'ab': string @tag(ab)}\nx: #D\n",
+        "package demo\nparams: {l: [{a: string | *\"v\" @tag(a)}]}\n",
+        "package demo\nparams: {l: [{\"a\": string | *\"v\" @tag(a)}]}\n",
+        "package demo\nparams: {l: [...{a: string | *\"v\" @tag(a)}]}\n",
+        "package demo\nparams: {l: [for i in [1] {a: string | *\"v\" @tag(a)}]}\n",
+        "package demo\nparams: {l: [{outer: {a: string | *\"v\" @tag(a)}}]}\n",
+        "package demo\nparams: {v: [{#D: {a: string | *\"v\" @tag(a)}}]}\n",
+        "package demo\nparams: {v: [for i in [{a: string | *\"v\" @tag(a)}] {i.a}]}\n",
+    ] {
+        let outcome = ostinato_lang::parse(source).and_then(|file| ostinato_lang::eval_file(&file));
+        let error = outcome.expect_err("tag placement must fail");
+        assert!(
+            !error.to_string().is_empty(),
+            "unexpected empty error: {error}"
+        );
+    }
+
+    // Standalone own-line attributes are declaration metadata, not field tags.
+    let standalone = "package demo\nparams: {\n@tag(x)\na: string | *\"v\"\n}\n";
+    let file = ostinato_lang::parse(standalone).expect("parse standalone attribute");
+    let tags = ostinato_lang::parameter_tags(&file).expect("collect tags");
+    assert!(
+        !tags.contains_key("x"),
+        "standalone @tag must not register as a field tag"
+    );
 }

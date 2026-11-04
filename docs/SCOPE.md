@@ -18,7 +18,8 @@ workflow outside the Rust surface has a supported escape hatch.
 - file-scoped `let`, lazy/forward bindings;
 - `for`/`if` struct comprehensions, clause sequences (`for ... if ...`,
   nested `for`), dynamic labels, list comprehensions;
-- nested field shorthand, **closed definitions by default**, `...` open,
+- nested field shorthand, string and bytes literal field labels, **closed
+  definitions by default**, `...` open,
   nested closedness, `[string]` / `[=~"regex"]` patterns, field aliases
   (`X=field: value`), unification,
   defaults, disjunctions with defaults and narrowing, numeric bounds
@@ -27,7 +28,8 @@ workflow outside the Rust surface has a supported escape hatch.
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - recursive definition materialization through optional fields and lists
   (`#Tree: {children?: [...#Tree]}`, mutually recursive definitions);
-- string and bytes interpolation, including nested quoted expressions;
+- string and bytes interpolation, including nested quoted expressions and
+  nested """..."""/'''...''' literals inside interpolation;
 - multiline strings (`"""..."""`) with CUE opening/closing rules, dedent, CR
   stripping and interpolation continuations;
 - self-selection of a definition's or struct field's own fields
@@ -46,7 +48,12 @@ workflow outside the Rust surface has a supported escape hatch.
   and interpolated) and global `len`;
 - constraint-based parameter overrides for split/definition-backed params and
   dependent params;
-- CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files);
+- CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files) for workflow loading;
+- CUE tool commands via `ostinato cmd <name> <path>`: `*_tool.cue` `command:`
+  tasks using `tool/exec.Run` (cmd/env/dir/stdin/capture/mustSucceed),
+  `tool/cli.Print`, `tool/file.Append`/`Create`, `stdout`/`success` output
+  injection and interpolation for literal task structs, `$after` ordering and
+  `@tag` injection;
 - workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, `n_of`
   quorum joins, complex `expression` joins, branch conditions, default
   branches, dead-path elimination, `stepStatus` routing, gateway-bearing
@@ -57,7 +64,7 @@ workflow outside the Rust surface has a supported escape hatch.
 
 | Feature | Why |
 |---|---|
-| Nested multiline literals inside interpolation | A `"""..."""` or `'''...'''` literal used as the expression inside `\(...)` is not parsed; use the oracle |
+| Non-UTF-8 bytes-label identity | Bytes labels decode lossily to U+FFFD, so `{'\xff': 1}` shares identity with `"\uFFFD"` and selection differs from CUE, which preserves the raw label bytes (its own JSON export also emits duplicate keys) |
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
 | `math` transcendental precision | `Pow`/`Exp`/`Log` and other transcendental helpers use native floating-point conversion where CUE uses its 34-digit decimal context; JSON export matches, but string interpolation can show fewer digits |
@@ -72,7 +79,12 @@ workflow outside the Rust surface has a supported escape hatch.
 | Dependent fields after a generated declaration merge | `#P: {env: string, greeting: "hello \(env)"}` plus `if true {#P: {env: "prod"}}` does not recompute `greeting`; declared declaration order or the oracle |
 | Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |
 | Bare references to comprehension-generated fields | `x: {if true {b: 1}, a: b}` is accepted although CUE requires `x.b`; use an explicit field or selector |
-| Tool packages (`tool/...`, `@cmd` tool commands) | Ostinato has its own workflow engine; `_tool.cue` files stay excluded by build semantics and tool commands are not run |
+| Unused imports | CUE rejects unused imports; Ostinato accepts them (the package still evaluates) |
+| Output injection into base/definition-composed tasks | `run: exec.Run & #B` / `run: exec.Run & base` do not receive injected `stdout`/`success`; write the task struct literally |
+| Relative tool-task paths | `dir` and file-task `filename` resolve against the package directory, not the invocation cwd as `cue cmd` does |
+| Derived expressions over pending task outputs | `len(run.stdout)`, string/number operations or comparisons on a pending output are not evaluated as incomplete; use a direct field reference/interpolation (`\(run.stdout)`) |
+| Package-scoped `$after` / task nodes outside `command.<name>` | `$after` dependencies are resolved within the command subtree; top-level task nodes referenced only from a command are not scheduled. Use the oracle |
+| Tool packages beyond `tool/exec.Run`/`tool/cli.Print`/`tool/file.Append`/`Create` | `ostinato cmd` runs `*_tool.cue` tasks with those packages, `stdout`/`success` injection, `$after` and `@tag`; `tool/os`/`tool/http`/other task packages, `stderr` output injection, tasks consuming non-stdout outputs, `$usage`/`$short`/`$long`, multi-instance inputs and `@cmd` attributes remain unimplemented |
 | `let` cycles mediated by fields (`let X = f, f: X`) | Direct and indirect `let` cycles are rejected; a cycle routed through a field is reported as an error rather than solved as an incomplete value. Use the oracle for that shape |
 | Arbitrary CUE packages with package-level patterns | Oracle territory |
 

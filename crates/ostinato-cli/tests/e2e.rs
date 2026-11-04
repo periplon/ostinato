@@ -3819,3 +3819,1253 @@ workflow: {
             .success()
     );
 }
+
+#[test]
+fn tag_placement_violations_match_both_evaluators() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let cases = [
+        (
+            "multi-bytes.cue",
+            r#"
+package demo
+params: {x: {'ab': string | *"v" @tag(ab)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "in-list.cue",
+            r#"
+package demo
+params: {l: [{a: string | *"v" @tag(a)}]}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "in-listcomp.cue",
+            r#"
+package demo
+params: {l: [for i in [1] {a: string | *"v" @tag(a)}]}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "struct-for.cue",
+            r#"
+package demo
+params: {for i in [1] {"k": string | *"v" @tag(k)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "pattern.cue",
+            r#"
+package demo
+params: {[string]: {p: string | *"v" @tag(p)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "dynamic-label.cue",
+            r#"
+package demo
+params: {k: "a", "\(k)": {x: string | *"v" @tag(t)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "pattern-value.cue",
+            r#"
+package demo
+params: {x: {[string]: string | *"v" @tag(p)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "same-line-prefix.cue",
+            r#"
+package demo
+params: {@tag(x) a: string | *"v"}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "combined-hex.cue",
+            r#"
+package demo
+params: {x: {'\xc3\xa9': string | *"v" @tag(e)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+    ];
+    for (name, body) in cases {
+        let workflow = directory.path().join(name);
+        write(&workflow, body);
+        let db_rust = directory.path().join(format!("{name}.rust.sqlite"));
+        let rust = ost(&[
+            "--db",
+            db_rust.to_str().expect("db"),
+            "--json",
+            "validate",
+            workflow.to_str().expect("workflow"),
+        ]);
+        assert!(
+            !rust.status.success(),
+            "rust must reject {name}: {}",
+            String::from_utf8_lossy(&rust.stdout)
+        );
+        let db_cue = directory.path().join(format!("{name}.cue.sqlite"));
+        let oracle = ost(&[
+            "--db",
+            db_cue.to_str().expect("db"),
+            "--cue",
+            &cue,
+            "--evaluator",
+            "cue",
+            "--json",
+            "validate",
+            workflow.to_str().expect("workflow"),
+        ]);
+        assert!(
+            !oracle.status.success(),
+            "cue must reject {name}: {}",
+            String::from_utf8_lossy(&oracle.stdout)
+        );
+    }
+}
+
+#[test]
+fn tool_commands_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let fixtures = [
+        (
+            "hello",
+            r#"
+package foo
+import "tool/exec"
+city: "Amsterdam"
+who: *"World" | string @tag(who)
+command: hello: {
+	print: exec.Run & {
+		cmd: "echo Hello \(who)! Welcome to \(city)."
+	}
+}
+"#,
+            true,
+        ),
+        (
+            "argv",
+            r#"
+package foo
+import "tool/exec"
+command: argv: {
+	run: exec.Run & {cmd: ["printf", "%s-%s", "a", "b"]}
+}
+"#,
+            false,
+        ),
+        (
+            "env",
+            r#"
+package foo
+import "tool/exec"
+command: env: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "printf '%s' \"$FOO\""]
+		env: FOO: "bar"
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "fail",
+            r#"
+package foo
+import "tool/exec"
+command: fail: {
+	run: exec.Run & {cmd: ["sh", "-c", "echo bad >&2; exit 3"]}
+}
+"#,
+            false,
+        ),
+        (
+            "after",
+            r#"
+package foo
+import "tool/exec"
+command: after: {
+	two: exec.Run & {
+		$after: one
+		cmd: ["sh", "-c", "echo two"]
+	}
+	one: exec.Run & {cmd: ["sh", "-c", "echo one"]}
+}
+"#,
+            false,
+        ),
+        (
+            "helper",
+            r#"
+package foo
+import "tool/exec"
+command: helper: {
+	message: "hi there"
+	run: exec.Run & {cmd: ["echo", message]}
+}
+"#,
+            false,
+        ),
+        (
+            "strmeta",
+            r#"
+package foo
+import "tool/exec"
+command: strmeta: {run: exec.Run & {cmd: "echo $HOME; echo meta >&2"}}
+"#,
+            false,
+        ),
+        (
+            "envreplace",
+            r#"
+package foo
+import "tool/exec"
+command: envreplace: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "printf '<%s>' \"$HOME\""]
+		env: FOO: "bar"
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "envlist",
+            r#"
+package foo
+import "tool/exec"
+command: envlist: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "printf '%s-%s' \"$FOO\" \"$BAZ\""]
+		env: ["FOO=bar", "BAZ=qux"]
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "nullcap",
+            r#"
+package foo
+import "tool/exec"
+command: nullcap: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "echo OUT; echo ERR >&2"]
+		stdout: null
+		stderr: null
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "failstop",
+            r#"
+package foo
+import "tool/exec"
+command: failstop: {
+	a: exec.Run & {cmd: ["sh", "-c", "exit 3"]}
+	b: exec.Run & {$after: a, cmd: ["sh", "-c", "echo B"]}
+}
+"#,
+            false,
+        ),
+        (
+            "mustfalse",
+            r#"
+package foo
+import "tool/exec"
+command: mustfalse: {run: exec.Run & {cmd: ["sh", "-c", "exit 7"], mustSucceed: false}}
+"#,
+            false,
+        ),
+        (
+            "bytesstdin",
+            r#"
+package foo
+import "tool/exec"
+command: bytesstdin: {run: exec.Run & {cmd: ["cat"], stdin: 'bytes-in'}}
+"#,
+            false,
+        ),
+        (
+            "g",
+            r#"
+package foo
+import "tool/exec"
+command: f: {run: exec.Run & {cmd: ["echo", "F"]}}
+command: g: {run: exec.Run & {cmd: ["echo", "G"]}}
+"#,
+            false,
+        ),
+        (
+            "helperdef",
+            r#"
+package foo
+import "tool/exec"
+command: helperdef: {
+	#args: ["echo", "DEF"]
+	run: exec.Run & {#note: "helper", cmd: #args}
+}
+"#,
+            false,
+        ),
+        (
+            "defaults",
+            r#"
+package foo
+import "tool/exec"
+who: *"World" | string @tag(who)
+command: defaults: {run: exec.Run & {cmd: ["echo", who]}}
+"#,
+            false,
+        ),
+        (
+            "envlistreplace",
+            r#"
+package foo
+import "tool/exec"
+command: envlistreplace: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "printf '<%s>|<%s>' \"$FOO\" \"$HOME\""]
+		env: ["FOO=bar"]
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "mustfalsespawn",
+            r#"
+package foo
+import "tool/exec"
+command: mustfalsespawn: {run: exec.Run & {cmd: ["definitely-not-a-real-binary-xyz"], mustSucceed: false}}
+"#,
+            false,
+        ),
+        (
+            "single",
+            r#"
+package foo
+import "tool/exec"
+command: single: exec.Run & {cmd: ["echo", "DIRECT"]}
+"#,
+            false,
+        ),
+        (
+            "grp",
+            r#"
+package foo
+import "tool/exec"
+command: grp: {g: {run: exec.Run & {cmd: ["echo", "G"]}}}
+"#,
+            false,
+        ),
+        (
+            "ref",
+            r#"
+package foo
+import "tool/exec"
+base: {run: exec.Run & {cmd: ["echo", "BASE"]}}
+command: ref: base
+"#,
+            false,
+        ),
+        (
+            "envwhole",
+            r#"
+package foo
+import "tool/exec"
+command: envwhole: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "printf '<%s>' \"$FOO\""]
+		env: *{FOO: "bar"} | {[string]: string}
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "outdefault",
+            r#"
+package foo
+import "tool/exec"
+command: outdefault: {run: exec.Run & {cmd: ["sh", "-c", "echo O"], stdout: *null | string}}
+"#,
+            false,
+        ),
+        (
+            "mustdefault",
+            r#"
+package foo
+import "tool/exec"
+command: mustdefault: {run: exec.Run & {cmd: ["true"], mustSucceed: *true | bool}}
+"#,
+            false,
+        ),
+        (
+            "stdindefault",
+            r#"
+package foo
+import "tool/exec"
+command: stdindefault: {run: exec.Run & {cmd: ["cat"], stdin: *"y" | string}}
+"#,
+            false,
+        ),
+        (
+            "musttruefalse",
+            r#"
+package foo
+import "tool/exec"
+command: musttruefalse: {run: exec.Run & {cmd: ["true"], mustSucceed: *true | false}}
+"#,
+            false,
+        ),
+        (
+            "stderrdefault",
+            r#"
+package foo
+import "tool/exec"
+command: stderrdefault: {run: exec.Run & {cmd: ["sh", "-c", "echo hi"], stderr: *"x" | "y"}}
+"#,
+            false,
+        ),
+        (
+            "cap",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: cap: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc\n'"], stdout: string}
+	print: cli.Print & {text: run.stdout}
+}
+"#,
+            false,
+        ),
+        (
+            "printfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: printfirst: {
+	print: cli.Print & {text: run.stdout}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "envpending",
+            r#"
+package foo
+import "tool/exec"
+command: envpending: {
+	a: exec.Run & {cmd: ["sh", "-c", "printf '%s' \"$FOO\""], env: {FOO: z.stdout}}
+	z: exec.Run & {cmd: ["sh", "-c", "printf bar"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "stdinpending",
+            r#"
+package foo
+import "tool/exec"
+command: stdinpending: {
+	a: exec.Run & {cmd: ["cat"], stdin: *z.stdout | string}
+	z: exec.Run & {cmd: ["sh", "-c", "printf payload"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "envlistpending",
+            r#"
+package foo
+import "tool/exec"
+command: envlistpending: {
+	a: exec.Run & {cmd: ["sh", "-c", "printf '%s' \"$FOO\""], env: [z.stdout]}
+	z: exec.Run & {cmd: ["sh", "-c", "printf 'FOO=bar'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "cmddisj",
+            r#"
+package foo
+import "tool/exec"
+command: cmddisj: {
+	a: exec.Run & {$after: z, cmd: [z.stdout | "echo"]}
+	z: exec.Run & {cmd: ["sh", "-c", "printf echo"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "envdef",
+            r#"
+package foo
+import "tool/exec"
+#E: {FOO: "bar"}
+command: envdef: {run: exec.Run & {cmd: ["sh", "-c", "printf '%s' \"$FOO\""], env: #E}}
+"#,
+            false,
+        ),
+        (
+            "interp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: interp: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc\n'"], stdout: string}
+	p: cli.Print & {text: "got: \(run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "success",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: success: {
+	run: exec.Run & {cmd: ["false"], mustSucceed: false, success: bool}
+	p: cli.Print & {text: "success=\(run.success)"}
+}
+"#,
+            false,
+        ),
+        (
+            "cmdinterp",
+            r#"
+package foo
+import "tool/exec"
+command: cmdinterp: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'X'"], stdout: string}
+	use: exec.Run & {cmd: ["sh", "-c", "printf 'v=\(run.stdout)'"]}
+}
+"#,
+            false,
+        ),
+        (
+            "interpfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: interpfirst: {
+	p: cli.Print & {text: "got: \(run.stdout)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "defaultstdout",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: defaultstdout: {
+	p: cli.Print & {text: "ok=\(run.stdout)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: *"x" | string}
+}
+"#,
+            false,
+        ),
+        (
+            "defaultsuccess",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: defaultsuccess: {
+	p: cli.Print & {text: "ok=\(run.success)"}
+	run: exec.Run & {cmd: ["true"], success: *false | bool}
+}
+"#,
+            false,
+        ),
+        (
+            "b",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: a: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'AAA'"], stdout: string}
+	p: cli.Print & {text: "\(run.stdout)"}
+}
+command: b: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'BBB'"], stdout: string}
+	p: cli.Print & {text: "\(run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "ref",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+command: ref: base
+"#,
+            false,
+        ),
+        (
+            "refunify",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+command: refunify: base & {extra: 1}
+"#,
+            false,
+        ),
+        (
+            "helper",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helper: {
+	msg: "v=\(run.stdout)"
+	p: cli.Print & {text: msg}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "helperlet",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helperlet: {
+	let msg = "v=\(run.stdout)"
+	p: cli.Print & {text: msg}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "paren",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: paren: {
+	p: cli.Print & {text: "v=\((run).stdout)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+    ];
+    for (name, source, injected) in fixtures {
+        let directory = tempfile::tempdir().expect("tempdir");
+        write(&directory.path().join("fixture_tool.cue"), source);
+        let cue_args = if injected {
+            vec!["cmd", "-t", "who=Jan", name]
+        } else {
+            vec!["cmd", name]
+        };
+        let expected = Command::new(&cue)
+            .args(&cue_args)
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let mut rust_args = vec!["cmd"];
+        if injected {
+            rust_args.extend(["-p", "who=Jan"]);
+        }
+        rust_args.push(name);
+        rust_args.push(directory.path().to_str().expect("path"));
+        let actual = ost(&rust_args);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: exit codes differ; rust stderr: {}",
+            String::from_utf8_lossy(&actual.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+        assert_eq!(actual.stderr, expected.stderr, "{name}: stderr differs");
+    }
+}
+
+#[test]
+fn tool_files_stay_excluded_from_normal_workflow_loading() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("workflow.cue"),
+        r#"
+package demo
+workflow: {name: "plain", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    write(
+        &directory.path().join("ignored_tool.cue"),
+        r#"
+package demo
+command: nope: {run: {cmd: ["false"]}}
+"#,
+    );
+    let db = directory.path().join("db.sqlite");
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        directory
+            .path()
+            .join("workflow.cue")
+            .to_str()
+            .expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json(&output)["workflow"]["name"], "plain");
+}
+
+#[test]
+fn tool_command_handles_large_stdin_and_capture() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let big = "x".repeat(200_000);
+    let source = format!(
+        r#"
+package foo
+import "tool/exec"
+command: bigstdin: {{
+	run: exec.Run & {{
+		cmd: ["wc", "-c"]
+		stdin: "{big}"
+		stdout: string
+	}}
+}}
+"#
+    );
+    write(&directory.path().join("big_tool.cue"), &source);
+    let expected = Command::new(&cue)
+        .args(["cmd", "bigstdin"])
+        .current_dir(directory.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&["cmd", "bigstdin", directory.path().to_str().expect("path")]);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert_eq!(actual.stderr, expected.stderr);
+}
+
+#[test]
+fn tool_command_unknown_tag_matches_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("tag_tool.cue"),
+        r#"
+package foo
+import "tool/exec"
+command: tagged: {run: exec.Run & {cmd: ["echo", "x"]}}
+"#,
+    );
+    let expected = Command::new(&cue)
+        .args(["cmd", "-t", "nope=1", "tagged"])
+        .current_dir(directory.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&[
+        "cmd",
+        "-p",
+        "nope=1",
+        "tagged",
+        directory.path().to_str().expect("path"),
+    ]);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert_eq!(actual.stderr, expected.stderr);
+}
+
+#[test]
+fn tool_command_resolves_relative_dir_from_package() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let package = directory.path().join("pkg");
+    std::fs::create_dir_all(package.join("sub")).expect("subdir");
+    std::fs::write(package.join("sub/data.txt"), "relative-ok").expect("data");
+    write(
+        &package.join("rel_tool.cue"),
+        r#"
+package foo
+import "tool/exec"
+command: rel: {run: exec.Run & {cmd: ["cat", "sub/data.txt"], dir: *"sub" | string}}
+"#,
+    );
+    let expected = Command::new(&cue)
+        .args(["cmd", "rel"])
+        .current_dir(&package)
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&["cmd", "rel", package.to_str().expect("path")]);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert_eq!(actual.stderr, expected.stderr);
+}
+
+#[test]
+fn tool_command_rejects_conflicting_defaults() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let fixtures = [
+        (
+            "mustfalse",
+            r#"
+package foo
+import "tool/exec"
+command: mustfalse: {run: exec.Run & {cmd: ["sh", "-c", "echo RAN"], mustSucceed: *false | bool}}
+"#,
+            false,
+        ),
+        (
+            "stdinconflict",
+            r#"
+package foo
+import "tool/exec"
+command: stdinconflict: {run: exec.Run & {cmd: ["cat"], stdin: *"y" | null}}
+"#,
+            false,
+        ),
+        (
+            "stdoutconflict",
+            r#"
+package foo
+import "tool/exec"
+command: stdoutconflict: {run: exec.Run & {cmd: ["sh", "-c", "echo O"], stdout: *"x" | null}}
+"#,
+            false,
+        ),
+        (
+            "baddir",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: baddir: {
+	print: cli.Print & {text: "SIBLING"}
+	run: exec.Run & {$after: print, cmd: ["echo", "R"], dir: 5}
+}
+"#,
+            false,
+        ),
+        (
+            "baddir-d",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"tool/file"
+)
+command: baddir-d: {
+	print: cli.Print & {text: "SIBLING"}
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: [print, write], cmd: ["sh", "-c", "echo RAN"], dir: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badenv",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"tool/file"
+)
+command: badenv: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["sh", "-c", "echo RAN"], env: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badenvvalue",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badenvvalue: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["sh", "-c", "echo RAN"], env: {FOO: 5 | 6}}
+}
+"#,
+            true,
+        ),
+        (
+            "badenvlist",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badenvlist: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["sh", "-c", "echo RAN"], env: [5 | 6]}
+}
+"#,
+            true,
+        ),
+        (
+            "badstdin",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badstdin: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["cat"], stdin: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badmust",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badmust: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["true"], mustSucceed: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badcmd",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badcmd: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badcmdlist",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badcmdlist: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: [5 | 6]}
+}
+"#,
+            true,
+        ),
+        (
+            "badprint",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/file"
+)
+command: badprint: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	p: cli.Print & {$after: write, text: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "nontaskinterp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/file"
+)
+command: nontaskinterp: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	x: string
+	p: cli.Print & {$after: write, text: "v=\(x)" & "v=abc"}
+}
+"#,
+            false,
+        ),
+    ];
+    for (name, source, file_task) in fixtures {
+        let directory = tempfile::tempdir().expect("tempdir");
+        write(&directory.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, directory.path().to_str().expect("path")]);
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        if file_task {
+            assert!(
+                !directory.path().join("side.txt").exists(),
+                "{name}: sibling file task ran"
+            );
+        }
+    }
+}
+
+#[test]
+fn tool_command_spawn_error_messages_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases = [
+        (
+            "missdir",
+            r#"
+package foo
+import "tool/exec"
+command: missdir: {run: exec.Run & {cmd: ["echo", "X"], dir: "nope"}}
+"#,
+        ),
+        (
+            "missboth",
+            r#"
+package foo
+import "tool/exec"
+command: missboth: {run: exec.Run & {cmd: ["no-such-bin-xyz"], dir: "nope"}}
+"#,
+        ),
+        (
+            "dirfile",
+            r#"
+package foo
+import "tool/exec"
+command: dirfile: {run: exec.Run & {cmd: ["echo", "X"], dir: "file.txt"}}
+"#,
+        ),
+        (
+            "absbin",
+            r#"
+package foo
+import "tool/exec"
+command: absbin: {run: exec.Run & {cmd: ["/no/such/bin-xyz"]}}
+"#,
+        ),
+        (
+            "relbin",
+            r#"
+package foo
+import "tool/exec"
+command: relbin: {run: exec.Run & {cmd: ["./prog"], dir: "sub"}}
+"#,
+        ),
+    ];
+    for (name, source) in cases {
+        let directory = tempfile::tempdir().expect("tempdir");
+        if name == "dirfile" {
+            std::fs::write(directory.path().join("file.txt"), "x").expect("file");
+        }
+        if name == "relbin" {
+            std::fs::create_dir_all(directory.path().join("sub")).expect("dir");
+        }
+        write(&directory.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, directory.path().to_str().expect("path")]);
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert_eq!(actual.stderr, expected.stderr, "{name}");
+    }
+}
+
+#[test]
+fn tool_command_print_and_file_tasks_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases = [
+        (
+            "append",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: append: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'line1\\n'"], stdout: string}
+	write: file.Append & {$after: run, filename: "out.txt", contents: run.stdout}
+}
+"#,
+            Some("out.txt"),
+        ),
+        (
+            "create",
+            r#"
+package foo
+import "tool/file"
+command: create: {write: file.Create & {filename: "created.txt", contents: "c"}}
+"#,
+            Some("created.txt"),
+        ),
+        (
+            "missing",
+            r#"
+package foo
+import "tool/file"
+command: missing: {write: file.Append & {filename: "sub/out.txt", contents: "x"}}
+"#,
+            None,
+        ),
+        (
+            "interpfile",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: interpfile: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc\n'"], stdout: string}
+	w: file.Create & {filename: "out.txt", contents: "pre-\(run.stdout)post"}
+}
+"#,
+            Some("out.txt"),
+        ),
+        (
+            "defaultcapfile",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: defaultcapfile: {
+	w: file.Create & {filename: "out.txt", contents: "pre-\(run.stdout)post"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: *"x" | string}
+}
+"#,
+            Some("out.txt"),
+        ),
+    ];
+    for (name, source, artifact) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        write(&cue_dir.path().join("fixture_tool.cue"), source);
+        write(&rust_dir.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert_eq!(actual.stderr, expected.stderr, "{name}");
+        if let Some(artifact) = artifact {
+            assert_eq!(
+                std::fs::read(cue_dir.path().join(artifact)).expect("cue artifact"),
+                std::fs::read(rust_dir.path().join(artifact)).expect("rust artifact"),
+                "{name}: file contents differ"
+            );
+        }
+    }
+}

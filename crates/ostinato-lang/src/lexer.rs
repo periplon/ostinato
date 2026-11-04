@@ -21,7 +21,7 @@ pub enum Tok {
     BigInt(BigInt),
     Float(BigDecimal),
     Str(String),
-    Bytes(Vec<LexBytePart>),
+    Bytes(Vec<LexBytePart>, Option<usize>, bool),
     Package,
     Import,
     For,
@@ -69,11 +69,11 @@ pub enum Tok {
 
 impl Tok {
     fn is_ident_start(c: char) -> bool {
-        c.is_alphabetic() || c == '_' || c == '#'
+        c.is_alphabetic() || c == '_' || c == '#' || c == '$'
     }
 
     fn is_ident_continue(c: char) -> bool {
-        c.is_alphanumeric() || c == '_'
+        c.is_alphanumeric() || c == '_' || c == '$'
     }
 }
 
@@ -201,9 +201,9 @@ impl Lexer {
                     });
                 }
                 '\'' => {
-                    let raw = self.read_bytes(line, col)?;
+                    let (parts, units, multiline) = self.read_bytes(line, col)?;
                     out.push(Token {
-                        tok: Tok::Bytes(raw),
+                        tok: Tok::Bytes(parts, units, multiline),
                         line,
                         col,
                     });
@@ -219,9 +219,10 @@ impl Lexer {
                 }
                 c if Tok::is_ident_start(c) => {
                     let mut ident = String::new();
-                    if self.peek() == Some('#') {
-                        ident.push('#');
-                        self.bump();
+                    if matches!(self.peek(), Some('#') | Some('$'))
+                        && let Some(prefix) = self.bump()
+                    {
+                        ident.push(prefix);
                     }
                     while let Some(c) = self.peek() {
                         if Tok::is_ident_continue(c) {
@@ -420,7 +421,11 @@ impl Lexer {
         }
     }
 
-    fn read_bytes(&mut self, line: u32, col: u32) -> Result<Vec<LexBytePart>, LangError> {
+    fn read_bytes(
+        &mut self,
+        line: u32,
+        col: u32,
+    ) -> Result<(Vec<LexBytePart>, Option<usize>, bool), LangError> {
         self.bump(); // opening quote
         let multiline = self.peek() == Some('\'') && self.peek_n(1) == Some('\'');
         if multiline {
@@ -463,7 +468,8 @@ impl Lexer {
                         self.bump();
                         self.bump();
                         let content = dedent_multiline_literal(&raw, &indent, line, col, "bytes")?;
-                        return decode_bytes_parts(&content, line, col);
+                        return decode_bytes_parts(&content, line, col)
+                            .map(|parts| (parts, None, true));
                     }
                     raw.push_str(&indent);
                     at_line_start = false;
@@ -474,6 +480,19 @@ impl Lexer {
                 };
                 self.bump();
                 raw.push(current);
+                if current == '\\' {
+                    if self.peek() == Some('(') {
+                        self.bump();
+                        raw.push('(');
+                        self.scan_interpolation(&mut raw, line, col)?;
+                    } else if let Some(escaped) = self.bump() {
+                        raw.push(escaped);
+                        if escaped == '\n' {
+                            at_line_start = true;
+                        }
+                    }
+                    continue;
+                }
                 if current == '\n' {
                     at_line_start = true;
                 }
@@ -510,7 +529,8 @@ impl Lexer {
                 }
             }
         }
-        decode_bytes_parts(&raw, line, col)
+        let units = byte_rune_units(&raw);
+        decode_bytes_parts(&raw, line, col).map(|parts| (parts, Some(units), false))
     }
 
     /// Consume the remainder of an interpolation started by `\(`.
@@ -524,33 +544,122 @@ impl Lexer {
         col: u32,
     ) -> Result<(), LangError> {
         let mut depth = 1usize;
-        let mut quote: Option<char> = None;
-        while let Some(current) = self.peek() {
-            self.bump();
-            out.push(current);
-            if let Some(open) = quote {
-                if current == '\\' {
-                    if let Some(next) = self.bump() {
-                        out.push(next);
-                    }
-                } else if current == open {
-                    quote = None;
-                }
-                continue;
-            }
+        loop {
+            let Some(current) = self.peek() else {
+                return Err(LangError::parse(line, col, "unterminated interpolation"));
+            };
             match current {
-                '"' | '\'' => quote = Some(current),
-                '(' => depth += 1,
+                '(' => {
+                    self.bump();
+                    out.push('(');
+                    depth += 1;
+                }
                 ')' => {
+                    self.bump();
+                    out.push(')');
                     depth -= 1;
                     if depth == 0 {
                         return Ok(());
                     }
                 }
-                _ => {}
+                '"' | '\'' => {
+                    let triple = self.peek_n(1) == Some(current) && self.peek_n(2) == Some(current);
+                    self.bump();
+                    out.push(current);
+                    if triple {
+                        self.bump();
+                        out.push(current);
+                        self.bump();
+                        out.push(current);
+                        self.scan_multiline_literal(current, out, line, col)?;
+                    } else {
+                        self.scan_single_literal(current, out, line, col)?;
+                    }
+                }
+                _ => {
+                    self.bump();
+                    out.push(current);
+                }
             }
         }
-        Err(LangError::parse(line, col, "unterminated interpolation"))
+    }
+
+    fn scan_single_literal(
+        &mut self,
+        quote: char,
+        out: &mut String,
+        line: u32,
+        col: u32,
+    ) -> Result<(), LangError> {
+        loop {
+            let Some(current) = self.peek() else {
+                return Err(LangError::parse(line, col, "unterminated string"));
+            };
+            self.bump();
+            if current == '\\' {
+                if self.peek() == Some('(') {
+                    self.bump();
+                    out.push('\\');
+                    out.push('(');
+                    self.scan_interpolation(out, line, col)?;
+                } else if let Some(escaped) = self.bump() {
+                    out.push('\\');
+                    out.push(escaped);
+                } else {
+                    return Err(LangError::parse(line, col, "unterminated escape sequence"));
+                }
+                continue;
+            }
+            out.push(current);
+            if current == quote {
+                return Ok(());
+            }
+            if current == '\n' {
+                return Err(LangError::parse(line, col, "unterminated string"));
+            }
+        }
+    }
+
+    fn scan_multiline_literal(
+        &mut self,
+        quote: char,
+        out: &mut String,
+        line: u32,
+        col: u32,
+    ) -> Result<(), LangError> {
+        loop {
+            let Some(current) = self.peek() else {
+                return Err(LangError::parse(line, col, "unterminated multiline string"));
+            };
+            if self.peek() == Some(quote)
+                && self.peek_n(1) == Some(quote)
+                && self.peek_n(2) == Some(quote)
+            {
+                self.bump();
+                self.bump();
+                self.bump();
+                out.push(quote);
+                out.push(quote);
+                out.push(quote);
+                return Ok(());
+            }
+            self.bump();
+            if current == '\\' {
+                if self.peek() == Some('(') {
+                    self.bump();
+                    out.push('\\');
+                    out.push('(');
+                    self.scan_interpolation(out, line, col)?;
+                } else if let Some(escaped) = self.bump() {
+                    out.push('\\');
+                    out.push(escaped);
+                } else {
+                    return Err(LangError::parse(line, col, "unterminated escape sequence"));
+                }
+                continue;
+            }
+            out.push(current);
+        }
     }
 
     fn read_string(&mut self, line: u32, col: u32) -> Result<String, LangError> {
@@ -606,6 +715,19 @@ impl Lexer {
                 };
                 self.bump();
                 raw.push(current);
+                if current == '\\' {
+                    if self.peek() == Some('(') {
+                        self.bump();
+                        raw.push('(');
+                        self.scan_interpolation(&mut raw, line, col)?;
+                    } else if let Some(escaped) = self.bump() {
+                        raw.push(escaped);
+                        if escaped == '\n' {
+                            at_line_start = true;
+                        }
+                    }
+                    continue;
+                }
                 if current == '\n' {
                     at_line_start = true;
                 }
@@ -613,73 +735,10 @@ impl Lexer {
         }
 
         let mut raw = String::new();
-        let mut interpolation_depth = 0usize;
-        let mut in_inner_string = false;
         loop {
             let Some(current) = self.peek() else {
-                return Err(LangError::parse(
-                    line,
-                    col,
-                    if interpolation_depth > 0 {
-                        "unterminated interpolation"
-                    } else {
-                        "unterminated string"
-                    },
-                ));
+                return Err(LangError::parse(line, col, "unterminated string"));
             };
-
-            if interpolation_depth > 0 {
-                if in_inner_string {
-                    match current {
-                        '\\' => {
-                            raw.push(current);
-                            self.bump();
-                            if let Some(escaped) = self.bump() {
-                                raw.push(escaped);
-                            } else {
-                                return Err(LangError::parse(
-                                    line,
-                                    col,
-                                    "unterminated escape sequence",
-                                ));
-                            }
-                        }
-                        '"' => {
-                            raw.push(current);
-                            self.bump();
-                            in_inner_string = false;
-                        }
-                        _ => {
-                            raw.push(current);
-                            self.bump();
-                        }
-                    }
-                } else {
-                    match current {
-                        '"' => {
-                            raw.push(current);
-                            self.bump();
-                            in_inner_string = true;
-                        }
-                        '(' => {
-                            interpolation_depth += 1;
-                            raw.push(current);
-                            self.bump();
-                        }
-                        ')' => {
-                            interpolation_depth -= 1;
-                            raw.push(current);
-                            self.bump();
-                        }
-                        _ => {
-                            raw.push(current);
-                            self.bump();
-                        }
-                    }
-                }
-                continue;
-            }
-
             if current == '\n' {
                 return Err(LangError::parse(line, col, "unterminated string"));
             }
@@ -705,7 +764,7 @@ impl Lexer {
                         '(' => {
                             raw.push('\\');
                             raw.push('(');
-                            interpolation_depth = 1;
+                            self.scan_interpolation(&mut raw, line, col)?;
                         }
                         other => {
                             raw.push('\\');
@@ -728,7 +787,83 @@ enum MultilinePart {
 }
 
 /// Split multiline bytes source into literal text and interpolation spans.
-fn split_multiline_parts(source: &str) -> Vec<MultilinePart> {
+pub(crate) fn interpolation_end(chars: &[char], start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut index = start;
+    while index < chars.len() {
+        let current = chars[index];
+        match current {
+            '(' => {
+                depth += 1;
+                index += 1;
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+                index += 1;
+            }
+            '"' | '\'' => {
+                let triple = chars.get(index + 1) == Some(&current)
+                    && chars.get(index + 2) == Some(&current);
+                index += if triple { 3 } else { 1 };
+                index = if triple {
+                    skip_multiline_literal(chars, index, current)?
+                } else {
+                    skip_single_literal(chars, index, current)?
+                };
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn skip_single_literal(chars: &[char], mut index: usize, quote: char) -> Option<usize> {
+    while index < chars.len() {
+        let current = chars[index];
+        if current == '\\' {
+            if chars.get(index + 1) == Some(&'(') {
+                index = interpolation_end(chars, index + 2)? + 1;
+            } else {
+                index += 2;
+            }
+            continue;
+        }
+        if current == quote {
+            return Some(index + 1);
+        }
+        if current == '\n' {
+            return None;
+        }
+        index += 1;
+    }
+    None
+}
+
+fn skip_multiline_literal(chars: &[char], mut index: usize, quote: char) -> Option<usize> {
+    while index < chars.len() {
+        if chars[index] == quote
+            && chars.get(index + 1) == Some(&quote)
+            && chars.get(index + 2) == Some(&quote)
+        {
+            return Some(index + 3);
+        }
+        if chars[index] == '\\' {
+            if chars.get(index + 1) == Some(&'(') {
+                index = interpolation_end(chars, index + 2)? + 1;
+            } else {
+                index += 2;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    None
+}
+
+fn split_multiline_parts(source: &str) -> Option<Vec<MultilinePart>> {
     let chars: Vec<char> = source.chars().collect();
     let mut parts = Vec::new();
     let mut text = String::new();
@@ -736,7 +871,7 @@ fn split_multiline_parts(source: &str) -> Vec<MultilinePart> {
     while index < chars.len() {
         if chars[index] == '\\' && chars.get(index + 1) != Some(&'(') {
             // An escape pair is literal text. Its second character must not be
-            // re-examined as a possible `\(` interpolation start: `\\(` is a
+            // re-examined as a possible `\\(` interpolation start: `\\\\` is a
             // literal backslash followed by a literal parenthesis.
             text.push('\\');
             index += 1;
@@ -751,27 +886,8 @@ fn split_multiline_parts(source: &str) -> Vec<MultilinePart> {
                 parts.push(MultilinePart::Text(std::mem::take(&mut text)));
             }
             let start = index;
-            index += 2;
-            let mut depth = 1usize;
-            let mut quote: Option<char> = None;
-            while index < chars.len() && depth > 0 {
-                let current = chars[index];
-                if let Some(open) = quote {
-                    if current == '\\' {
-                        index += 1;
-                    } else if current == open {
-                        quote = None;
-                    }
-                } else {
-                    match current {
-                        '"' | '\'' => quote = Some(current),
-                        '(' => depth += 1,
-                        ')' => depth -= 1,
-                        _ => {}
-                    }
-                }
-                index += 1;
-            }
+            let end = interpolation_end(&chars, index + 2)?;
+            index = end + 1;
             parts.push(MultilinePart::Interp(chars[start..index].iter().collect()));
             continue;
         }
@@ -781,7 +897,7 @@ fn split_multiline_parts(source: &str) -> Vec<MultilinePart> {
     if !text.is_empty() || parts.is_empty() {
         parts.push(MultilinePart::Text(text));
     }
-    parts
+    Some(parts)
 }
 
 fn dedent_multiline_literal(
@@ -792,7 +908,9 @@ fn dedent_multiline_literal(
     kind: &str,
 ) -> Result<String, LangError> {
     let body = raw.strip_suffix('\n').unwrap_or(raw);
-    let parts = split_multiline_parts(body);
+    let Some(parts) = split_multiline_parts(body) else {
+        return Err(LangError::parse(line, col, "unterminated interpolation"));
+    };
     let whitespace_error = || {
         LangError::parse(
             line,
@@ -884,6 +1002,39 @@ fn dedent_multiline_literal(
     Ok(out)
 }
 
+/// Count CUE rune-literal units in single-line bytes source.
+///
+/// Each raw character and each escape sequence counts as one unit; this is the
+/// `strconv.Unquote` rule CUE uses to decide whether a bytes label may carry
+/// `@tag`.
+fn byte_rune_units(source: &str) -> usize {
+    let chars: Vec<char> = source.chars().collect();
+    let mut index = 0usize;
+    let mut count = 0usize;
+    while index < chars.len() {
+        if chars[index] == '\\' {
+            index += 1;
+            if index >= chars.len() {
+                break;
+            }
+            let escape = chars[index];
+            index += 1;
+            let extra = match escape {
+                'x' => 2,
+                'u' => 4,
+                'U' => 8,
+                '0'..='7' => 2,
+                _ => 0,
+            };
+            index = (index + extra).min(chars.len());
+        } else {
+            index += 1;
+        }
+        count += 1;
+    }
+    count
+}
+
 fn decode_bytes_parts(source: &str, line: u32, col: u32) -> Result<Vec<LexBytePart>, LangError> {
     let chars: Vec<char> = source.chars().collect();
     let mut parts = Vec::new();
@@ -895,35 +1046,9 @@ fn decode_bytes_parts(source: &str, line: u32, col: u32) -> Result<Vec<LexBytePa
                 parts.push(LexBytePart::Text(std::mem::take(&mut text)));
             }
             let start = index + 2;
-            let mut depth = 1usize;
-            let mut end = start;
-            let mut quote: Option<char> = None;
-            while end < chars.len() {
-                let current = chars[end];
-                if let Some(open) = quote {
-                    if current == '\\' {
-                        end += 1;
-                    } else if current == open {
-                        quote = None;
-                    }
-                } else {
-                    match current {
-                        '"' | '\'' => quote = Some(current),
-                        '(' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                end += 1;
-            }
-            if depth != 0 {
+            let Some(end) = interpolation_end(&chars, start) else {
                 return Err(LangError::parse(line, col, "unterminated interpolation"));
-            }
+            };
             let inner: String = chars[start..end].iter().collect();
             parts.push(LexBytePart::Interp(inner));
             index = end + 1;

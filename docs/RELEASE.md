@@ -12,6 +12,184 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.23.2
+
+- Referenced-command scheduling/injection, transitive helper/let output
+  dependencies and parenthesised selector parity.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.23.1
+
+- Scoped incomplete interpolation, inferred output dependencies, selected-command
+  injection and derived-expression limit.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.23.0
+
+- Interpolation over captured tool outputs via allow-incomplete evaluation
+  and re-evaluation; cli.Print/file/cmd/success consumers.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.22.4
+
+- Definition-valued tool `env`, fixed evidence binary/version guard and
+  expanded tool E2E side-effect coverage.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.22.3
+
+- Pending-output env/stdin/cmd handling and disjunction-aware tool input
+  validation (no side effects for all-invalid inputs).
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.22.2
+
+- Complete concrete-input pre-validation for exec tasks before any side
+  effects.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.22.1
+
+- Tool-task pre-validation, print defaults, specific not-ready reasons and
+  documented interpolation/base-composition/path limits.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.22.0
+
+- `tool/cli.Print`, `tool/file.Append`/`Create`, stdout/success injection,
+  inferred output ordering and mixed exec/print/file tool graphs.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.21.5
+
+- Compatible non-null stdin/stderr defaults and `*true | false`
+  mustSucceed; path-binary spawn diagnostics; `*_tool.cue` docs.
+- 354 tests (69 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.21.4
+
+- Reject conflicting whole-field defaults without running commands; classify
+  spawn/chdir/not-a-directory errors like cue; document `*_tool.cue` and the
+  package-scoped `$after` limit.
+- 354 tests (69 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.21.3
+
+- Tool-command package-relative cwd/dir, whole-field default
+  concretization, single/grouped/referenced tasks and precise spawn messages.
+- 352 tests (67 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.21.2
+
+- Tool-command parity: helper `#definitions`, default concretization,
+  env-list replacement, empty `dir`, spawn/chdir tolerance under
+  `mustSucceed: false`.
+- 351 tests (66 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.21.1
+
+- Tool-command review corrections: `$after` through unification, merged
+  `command:` declarations, task filtering, shell-less string `cmd`, null
+  capture, `mustSucceed`, threaded stdin, failure-dependent skipping and
+  exit-1 command errors.
+- 351 tests (66 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.21.0
+
+- `ostinato cmd` runs `*_tool.cue` `command:` tasks with `tool/exec.Run`;
+  workflow loading still excludes tool files.
+- 349 tests (64 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.20.6
+
+- List-comprehension leading attributes, own-line declaration attributes and
+  same-line prefix rejection.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.20.5
+
+- Leading/between-pattern standalone `@tag` stays detached and accepted while
+  same-line pattern-value tags remain rejected like CUE.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.20.4
+
+- Pattern-value `@tag` attributes are retained and rejected with the correct
+  forbidden-zone message; newline-separated standalone tags remain accepted.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.20.3
+
+- Source-unit byte-label eligibility, struct-comprehension and
+  pattern/dynamic-label `@tag` forbidden zones.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.20.2
+
+- CUE-compatible `@tag` placement (reject inside lists and on multi-rune
+  bytes labels) across loader and evaluator paths.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.20.1
+
+- Bytes-label comprehension bodies (incl. multiline) and documented lossy
+  non-UTF-8 label identity.
+- 345 tests (61 CLI E2E, 1 conformance, 241 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.20.0
+
+- Bytes-literal field labels decode to string labels with string-label
+  identity, selection and definition semantics.
+- 345 tests (61 CLI E2E, 1 conformance, 241 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.19.1
+
+- Recursive interpolation boundaries in single-line strings and the parser,
+  matching nested bytes/strings with quotes/parentheses.
+- 344 tests (61 CLI E2E, 1 conformance, 240 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.19.0
+
+- Nested multiline string/bytes literals inside interpolation, including
+  nested interpolation and own-line closing delimiters.
+- 344 tests (61 CLI E2E, 1 conformance, 240 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.18.4
+
+- Narrowing preserves declaration closedness and restores list arity checks.
+- 343 tests (61 CLI E2E, 1 conformance, 239 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+## v0.18.3
+
+- Multi-declaration/composed field narrowing merges declarations and lists
+  element-wise.
+- 343 tests (61 CLI E2E, 1 conformance, 239 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.18.2
 
 - Fixed-arity/list-of-list default narrowing and documented shadowing limit.

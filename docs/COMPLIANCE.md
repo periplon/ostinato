@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.18.2 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.23.2 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -20,7 +20,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 |---|---|---|
 | Package selection and same-package sibling files | ✅ | File, directory, and `package _` / no-package fallbacks |
 | Split packages and sibling conflicts | ✅ | Same-directory package files are unified |
-| Imports: `strings`, `list`, `regexp`, `math`, `time` | ✅ | String/list helpers; regexp, math and full Go time layouts with `Parse`/`Format`/`FormatString`/`Split`/`ToUnix`/`FormatDuration` and constants; global `len`; single-line, multiline and interpolated bytes literals |
+| Imports: `strings`, `list`, `regexp`, `math`, `time` | ✅ | String/list helpers; regexp, math and full Go time layouts with `Parse`/`Format`/`FormatString`/`Split`/`ToUnix`/`FormatDuration` and constants; global `len`; single-line, multiline and interpolated bytes literals; nested multiline literals inside interpolation |
 | Local module imports (`cue.mod/module.cue`) | ✅ | Module path prefix resolution, `@v` suffixes, comments, cycle detection |
 | Relative imports (`./pkg`) | ✅ | |
 | `let` declarations | ✅ | File-scoped, lazy (forward references work) |
@@ -41,7 +41,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | Quoted labels (`"x": v`) | ✅ | Exported but not identifier-bindable; a quoted `"#D"` stays distinct from the definition `#D` |
 | Full disjunction lattice over patterns | ⚠️ | Alternatives, defaults, bounds, `&` narrowing and intersection work; richer pattern intersections are out of scope |
 | Workflow gateways (`kind: "gateway"`) | ✅ | Ordinary CUE data; XOR/OR/AND split and join routing, `n_of` quorum joins, `expression` joins, conditions, default branches and gateway cycles compile identically through both evaluators (see `conformance/cases/gateway*.cue`) |
-| Tool packages / `@cmd` tool commands | ❌ | `_tool.cue` files stay excluded; Ostinato has its own workflow engine |
+| Tool commands (`*_tool.cue`) | ⚠️ | `ostinato cmd` runs single/grouped/referenced `command:` tasks with `tool/exec.Run`, `tool/cli.Print` and `tool/file.Append`/`Create`, including `stdout`/`success` injection and interpolation for literal task structs and `$after`/`@tag`; other tool packages and stderr output injection remain out of scope |
 
 Unsupported features fail explicitly or are documented here. Use `--evaluator cue` for a workflow that needs them.
 
@@ -49,7 +49,7 @@ Unsupported features fail explicitly or are documented here. Use `--evaluator cu
 
 The Rust evaluator accepts `-p key=value` and injects values before evaluation, so compile-time `\(params.x)` and runtime `{{ params.x }}` see the same override.
 
-Injection types follow `@tag(name,type=string|int|bool|number)`: untyped values keep the JSON-style fallback (`5` integer, `true` boolean, otherwise string), typed values use the declared type. Boolean aliases (`TRUE`, `t`, `1`, ...), CUE integer literals (`0x`, `0o`, `0b`, signs, validated underscores) and numbers are accepted; invalid values for a declared type are errors. Duplicate tag names inject every declared field, including nested `params` groups and definition-backed params; nested overrides are unified with the declared field constraints. Tag discovery follows CUE label identity (quoted/index vs dot selectors), full lexical scope chains for nested definitions and expression-valued selector bases (field aliases, inline structs, unification and disjunction).
+`@tag` placement follows CUE (identifier/quoted/single-rune bytes labels, definitions and nested structs allowed; multi-rune bytes labels and fields inside lists rejected). Injection types follow `@tag(name,type=string|int|bool|number)`: untyped values keep the JSON-style fallback (`5` integer, `true` boolean, otherwise string), typed values use the declared type. Boolean aliases (`TRUE`, `t`, `1`, ...), CUE integer literals (`0x`, `0o`, `0b`, signs, validated underscores) and numbers are accepted; invalid values for a declared type are errors. Duplicate tag names inject every declared field, including nested `params` groups and definition-backed params; nested overrides are unified with the declared field constraints. Tag discovery follows CUE label identity (quoted/index vs dot selectors), full lexical scope chains for nested definitions and expression-valued selector bases (field aliases, inline structs, unification and disjunction).
 
 ## Official CUE oracle
 
