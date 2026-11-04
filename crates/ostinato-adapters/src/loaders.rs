@@ -1068,17 +1068,17 @@ pub fn run_tool_command(
     }
 
     let value = eval_file_with_imports_mode(&combined, &imports, &injected, false)?;
-    let Value::Struct(root) = value else {
+    let Some(root) = value_fields(&value) else {
         return Err(ostinato_lang::LangError::Workflow(
             "tool package did not evaluate to a struct".to_owned(),
         ));
     };
-    let Some(Value::Struct(command)) = root.get("command") else {
+    let Some(command) = root.get("command").and_then(value_fields) else {
         return Err(ostinato_lang::LangError::Workflow(
             "no `command` field in tool files".to_owned(),
         ));
     };
-    let Some(Value::Struct(tasks)) = command.get(command_name) else {
+    let Some(tasks) = command.get(command_name).and_then(value_fields) else {
         return Err(ostinato_lang::LangError::Workflow(format!(
             "unknown tool command `{command_name}`"
         )));
@@ -1098,7 +1098,8 @@ pub fn run_tool_command(
         }
         if tasks
             .get(name)
-            .is_some_and(|task| matches!(task, Value::Struct(task) if task.contains_key("$id")))
+            .and_then(value_fields)
+            .is_some_and(|task| task.contains_key("$id"))
         {
             ordered.push((name.clone(), item.clone()));
         }
@@ -1138,7 +1139,7 @@ pub fn run_tool_command(
             if !after_done(item, &done, &failed)? {
                 continue;
             }
-            let Some(Value::Struct(task)) = tasks.get(name) else {
+            let Some(task) = tasks.get(name).and_then(value_fields) else {
                 continue;
             };
             match execute_tool_task(task)? {
@@ -1162,6 +1163,13 @@ pub fn run_tool_command(
         }
     }
     Ok(i32::from(!failed.is_empty()))
+}
+
+fn value_fields(value: &Value) -> Option<&BTreeMap<String, Value>> {
+    match value {
+        Value::Struct(fields) | Value::Definition { fields, .. } => Some(fields),
+        _ => None,
+    }
 }
 
 fn tool_module(path: &str) -> Option<Value> {
@@ -1364,7 +1372,7 @@ fn execute_tool_task(
         Value::List(items) => {
             let mut argv = Vec::with_capacity(items.len());
             for item in items {
-                match item {
+                match item.concretize() {
                     Value::String(text) => argv.push(text.clone()),
                     Value::Type(_) | Value::Bottom => return Ok(ToolTaskOutcome::NotReady),
                     other => {
@@ -1393,10 +1401,12 @@ fn execute_tool_task(
 
     let mut process = Command::new(&argv[0]);
     process.args(&argv[1..]);
-    match task.get("dir") {
+    match task.get("dir").map(Value::concretize) {
         None => {}
         Some(Value::String(dir)) => {
-            process.current_dir(dir);
+            if !dir.is_empty() {
+                process.current_dir(dir);
+            }
         }
         Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
         Some(other) => {
@@ -1412,7 +1422,7 @@ fn execute_tool_task(
         Some(Value::Struct(env)) => {
             process.env_clear();
             for (key, value) in env {
-                let Value::String(value) = value else {
+                let Value::String(value) = value.concretize() else {
                     return Err(ostinato_lang::LangError::Workflow(
                         "tool/exec.Run `env` values must be strings".to_owned(),
                     ));
@@ -1421,8 +1431,11 @@ fn execute_tool_task(
             }
         }
         Some(Value::List(entries)) => {
+            if !entries.is_empty() {
+                process.env_clear();
+            }
             for entry in entries {
-                let Value::String(entry) = entry else {
+                let Value::String(entry) = entry.concretize() else {
                     return Err(ostinato_lang::LangError::Workflow(
                         "tool/exec.Run `env` list entries must be `NAME=value` strings".to_owned(),
                     ));
@@ -1443,7 +1456,7 @@ fn execute_tool_task(
             )));
         }
     }
-    let stdin = match task.get("stdin") {
+    let stdin = match task.get("stdin").map(Value::concretize) {
         None | Some(Value::Null) => None,
         Some(Value::String(text)) => Some(text.clone().into_bytes()),
         Some(Value::Bytes(bytes)) => Some(bytes.clone()),
@@ -1473,9 +1486,41 @@ fn execute_tool_task(
     } else {
         Stdio::inherit()
     });
-    let mut child = process.spawn().map_err(|err| {
-        ostinato_lang::LangError::Workflow(format!("tool/exec.Run failed to start: {err}"))
-    })?;
+    let must_succeed = match task.get("mustSucceed") {
+        None => true,
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/exec.Run `mustSucceed` must be a bool, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            if !must_succeed {
+                return Ok(ToolTaskOutcome::Done);
+            }
+            let printable = argv
+                .iter()
+                .map(|arg| format!("{arg:?}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let detail = if err.kind() == std::io::ErrorKind::NotFound {
+                if let Some(Value::String(dir)) = task.get("dir").map(Value::concretize) {
+                    format!("chdir {dir}: no such file or directory")
+                } else {
+                    format!("exec: \"{}\": executable file not found in $PATH", argv[0])
+                }
+            } else {
+                err.to_string()
+            };
+            eprintln!("task failed: command [{printable}] failed: {detail}");
+            return Ok(ToolTaskOutcome::Failed);
+        }
+    };
     let writer = stdin.map(|bytes| {
         let mut pipe = child.stdin.take();
         std::thread::spawn(move || {
@@ -1499,30 +1544,17 @@ fn execute_tool_task(
     if let Some(writer) = writer {
         let _ = writer.join();
     }
-    if !status.success() {
-        let must_succeed = match task.get("mustSucceed") {
-            None => true,
-            Some(Value::Bool(value)) => *value,
-            Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
-            Some(other) => {
-                return Err(ostinato_lang::LangError::Workflow(format!(
-                    "tool/exec.Run `mustSucceed` must be a bool, found {}",
-                    other.type_name()
-                )));
-            }
-        };
-        if must_succeed {
-            let printable = argv
-                .iter()
-                .map(|arg| format!("{arg:?}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            eprintln!(
-                "task failed: command [{printable}] failed: {}",
-                exec_failure(&status)
-            );
-            return Ok(ToolTaskOutcome::Failed);
-        }
+    if !status.success() && must_succeed {
+        let printable = argv
+            .iter()
+            .map(|arg| format!("{arg:?}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!(
+            "task failed: command [{printable}] failed: {}",
+            exec_failure(&status)
+        );
+        return Ok(ToolTaskOutcome::Failed);
     }
     Ok(ToolTaskOutcome::Done)
 }

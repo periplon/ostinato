@@ -3605,6 +3605,51 @@ command: g: {run: exec.Run & {cmd: ["echo", "G"]}}
 "#,
             false,
         ),
+        (
+            "helperdef",
+            r#"
+package foo
+import "tool/exec"
+command: helperdef: {
+	#args: ["echo", "DEF"]
+	run: exec.Run & {#note: "helper", cmd: #args}
+}
+"#,
+            false,
+        ),
+        (
+            "defaults",
+            r#"
+package foo
+import "tool/exec"
+who: *"World" | string @tag(who)
+command: defaults: {run: exec.Run & {cmd: ["echo", who]}}
+"#,
+            false,
+        ),
+        (
+            "envlistreplace",
+            r#"
+package foo
+import "tool/exec"
+command: envlistreplace: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "printf '<%s>|<%s>' \"$FOO\" \"$HOME\""]
+		env: ["FOO=bar"]
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "mustfalsespawn",
+            r#"
+package foo
+import "tool/exec"
+command: mustfalsespawn: {run: exec.Run & {cmd: ["definitely-not-a-real-binary-xyz"], mustSucceed: false}}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");

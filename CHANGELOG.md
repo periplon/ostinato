@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.21.2
+
+Tool-command parity corrections (second pass).
+
+- Command/task structs containing `#definitions` are accepted.
+- Defaulted values are concretized for `cmd` elements, `env`, `dir` and
+  `stdin`; `dir: ""` runs in the current directory.
+- Non-empty `env` lists replace the environment (empty inherits), matching
+  `cue cmd`; `mustSucceed: false` tolerates spawn/chdir failures.
+- 351 tests (66 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.21.1
 
 Tool-command review corrections.
@@ -8,9 +21,9 @@ Tool-command review corrections.
   all visible, helper fields are not treated as tasks, and failures skip
   `$after` dependents while independent tasks continue.
 - `tool/exec.Run` matches CUE more closely: string `cmd` splits without a shell,
-  `env` maps replace the environment (lists append), `stdout`/`stderr: null`
-  stream, `mustSucceed: false` accepts failure, captured output uses a writer
-  thread (large stdin no longer deadlocks) and bytes `stdin` is supported.
+  `stdout`/`stderr: null` stream, `mustSucceed: false` accepts failure,
+  captured output uses a writer thread (large stdin no longer deadlocks) and
+  bytes `stdin` is supported.
 - Unknown `-p` tags error like `cue cmd`; command errors exit 1.
 - 351 tests (66 CLI E2E, 1 conformance, 242 language, 3 language unit,
   18 application, 17 domain, 3 store, 1 adapters unit).
