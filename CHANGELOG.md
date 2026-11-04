@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.26.1
+
+Unused-import validation corrections.
+
+- `params` used as an import alias is no longer skipped by the workflow-params
+  shortcut; `import params "strings"` validates as a normal import.
+- List-comprehension clause sources use the sequential comprehension scope,
+  so earlier loop variables shadow imports in later sources and unused errors
+  report the original alias rather than an internal one.
+- Duplicate imports with the same alias are rejected like cue.
+- Added language/e2e regressions and invalid conformance cases.
+- 433 tests (96 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.26.0
 
 Unused-import rejection.
