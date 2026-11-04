@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.25.2
+
+Inherited `$after` across split declarations and selector aliases.
+
+- `$after` collection enumerates every declaration of a referenced base or
+  definition and follows Select/Index alias chains, so split declarations
+  (`base` twice, split `#base`, split selector bases) and multi-hop aliases
+  honour inherited dependencies.
+- Added e2e and tool conformance cases for split base/selector and multi-hop
+  alias forms.
+- 430 tests (95 CLI E2E, 1 conformance, 1 tool conformance, 245 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.25.1
 
 Inherited `$after` for composed tasks.

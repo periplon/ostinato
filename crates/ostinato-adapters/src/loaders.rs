@@ -1724,31 +1724,151 @@ fn named_field<'a>(items: &'a [StructItem], name: &str) -> Option<&'a Expr> {
     })
 }
 
-fn after_expr<'a>(
+fn all_definitions_scopes<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    name: &str,
+) -> Vec<&'a Expr> {
+    for scope in scopes.iter().rev() {
+        let values = definitions(scope, name);
+        if !values.is_empty() {
+            return values;
+        }
+    }
+    definitions(root, name)
+}
+
+fn all_field_values_scoped<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    expr: &'a Expr,
+    field: &str,
+    visited: &mut std::collections::BTreeSet<String>,
+    out: &mut Vec<&'a Expr>,
+) {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                if let StructItem::Field(field_item) = item
+                    && matches!(&field_item.label, Label::Name(name, _) if name == field)
+                {
+                    out.push(&field_item.value);
+                }
+            }
+        }
+        Expr::Unify(left, right, _) => {
+            all_field_values_scoped(scopes, root, left, field, visited, out);
+            all_field_values_scoped(scopes, root, right, field, visited, out);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            all_field_values_scoped(scopes, root, inner, field, visited, out);
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return;
+            }
+            for value in all_definitions_scopes(scopes, root, name) {
+                all_field_values_scoped(scopes, root, value, field, visited, out);
+            }
+        }
+        Expr::Select(..) | Expr::Index(..) => {
+            let mut values = Vec::new();
+            resolve_after_values(scopes, root, expr, visited, &mut values);
+            for value in values {
+                all_field_values_scoped(scopes, root, value, field, visited, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn resolve_after_values<'a>(
     scopes: &[&'a [StructItem]],
     root: &'a [StructItem],
     expr: &'a Expr,
     visited: &mut std::collections::BTreeSet<String>,
-) -> Option<&'a Expr> {
+    out: &mut Vec<&'a Expr>,
+) {
     match expr {
-        Expr::Struct(items, _) => named_field(items, "$after"),
-        Expr::Unify(left, right, _) => after_expr(scopes, root, left, visited)
-            .or_else(|| after_expr(scopes, root, right, visited)),
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return;
+            }
+            for value in all_definitions_scopes(scopes, root, name) {
+                resolve_after_values(scopes, root, value, visited, out);
+            }
+        }
+        Expr::Select(base, field, _, _) => {
+            let mut bases = Vec::new();
+            resolve_after_values(scopes, root, base, visited, &mut bases);
+            for base_value in bases {
+                all_field_values_scoped(scopes, root, base_value, field, visited, out);
+            }
+        }
+        Expr::Index(base, index, _) => {
+            let field = index_field_name(index)
+                .or_else(|| resolve_string_value(scopes, root, index, visited));
+            let Some(field) = field else {
+                return;
+            };
+            let mut bases = Vec::new();
+            resolve_after_values(scopes, root, base, visited, &mut bases);
+            for base_value in bases {
+                all_field_values_scoped(scopes, root, base_value, &field, visited, out);
+            }
+        }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            after_expr(scopes, root, inner, visited)
+            resolve_after_values(scopes, root, inner, visited, out);
+        }
+        Expr::Unify(left, right, _) => {
+            resolve_after_values(scopes, root, left, visited, out);
+            resolve_after_values(scopes, root, right, visited, out);
+        }
+        Expr::Struct(..) => out.push(expr),
+        _ => {}
+    }
+}
+
+fn after_exprs<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    expr: &'a Expr,
+    visited: &mut std::collections::BTreeSet<String>,
+    out: &mut Vec<&'a Expr>,
+) {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                if let StructItem::Field(field) = item
+                    && matches!(&field.label, Label::Name(name, _) if name == "$after")
+                {
+                    out.push(&field.value);
+                }
+            }
+        }
+        Expr::Unify(left, right, _) => {
+            after_exprs(scopes, root, left, visited, out);
+            after_exprs(scopes, root, right, visited, out);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            after_exprs(scopes, root, inner, visited, out);
         }
         Expr::Ident(name, _) => {
             if !visited.insert(name.clone()) {
-                return None;
+                return;
             }
-            let value = local_definition_scopes(scopes, root, name)?;
-            after_expr(scopes, root, value, visited)
+            for value in all_definitions_scopes(scopes, root, name) {
+                after_exprs(scopes, root, value, visited, out);
+            }
         }
         Expr::Select(..) | Expr::Index(..) => {
-            let value = resolve_local_value(scopes, root, expr, visited)?;
-            after_expr(scopes, root, value, visited)
+            let mut values = Vec::new();
+            resolve_after_values(scopes, root, expr, visited, &mut values);
+            for value in values {
+                after_exprs(scopes, root, value, visited, out);
+            }
         }
-        _ => None,
+        _ => {}
     }
 }
 
@@ -1760,16 +1880,24 @@ fn after_names(
     let StructItem::Field(field) = item else {
         return Ok(Vec::new());
     };
-    let Some(after) = after_expr(
+    let mut exprs = Vec::new();
+    after_exprs(
         scopes,
         root,
         &field.value,
         &mut std::collections::BTreeSet::new(),
-    ) else {
-        return Ok(Vec::new());
-    };
+        &mut exprs,
+    );
     let mut names = Vec::new();
-    collect_after_names(after, &mut names)?;
+    for expr in exprs {
+        let mut found = Vec::new();
+        collect_after_names(expr, &mut found)?;
+        for name in found {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
     Ok(names)
 }
 
