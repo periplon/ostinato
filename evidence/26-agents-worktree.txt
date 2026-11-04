@@ -1,18 +1,19 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-3535748
+1d48943
 
 ### git worktree list
-/Users/joanmarc/dailywork/jmca/ostinato                                16a10c5 [main]
-/Users/joanmarc/dailywork/jmca/ostinato-gateways                       668e12f [feat/gateways]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions   cb3a2ae [feat/agent-definitions]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan       99e7541 [feat/gateways-r0-r4]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-def-output-refs 3535748 [docs/v0.31.5-release-notes]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection       e071d4e (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection  2f4178f (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports dda0eba (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps  fee7d72 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let        aab750d [fix/v0.24.5-let-rejection-scope]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/unused-imports      698ef6d (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244        768b178 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato                                    16a10c5 [main]
+/Users/joanmarc/dailywork/jmca/ostinato-gateways                           668e12f [feat/gateways]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions       cb3a2ae [feat/agent-definitions]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/definition-nested-reads 1d48943 [feat/v0.32.0-definition-nested-reads]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan           99e7541 [feat/gateways-r0-r4]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-def-output-refs     fabd011 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection           e071d4e (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection      2f4178f (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports     dda0eba (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps      fee7d72 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let            aab750d [fix/v0.24.5-let-rejection-scope]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/unused-imports          698ef6d (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244            768b178 (detached HEAD)

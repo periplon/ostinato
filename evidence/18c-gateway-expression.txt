@@ -1,6 +1,6 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-let3/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.APUroQAe0R/gateway-expression.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/gateway_expression.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-def4/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.70ZOkauwUV/gateway-expression.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/gateway_expression.cue
 
-run=918ec9a6-8889-46eb-9700-64e88628bc50 workflow=expression status=succeeded durationMs=2
+run=8591d196-7630-4d15-94f9-588321d00830 workflow=expression status=succeeded durationMs=2
 STEP                     STATUS     VISITS ATTEMPTS
 fast                     succeeded  1      1       
 merge                    succeeded  1      0       
