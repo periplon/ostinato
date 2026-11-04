@@ -1,0 +1,5 @@
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Z7AUIGLSpC/agents.sqlite validate examples/agents.cue
+
+OK agents (2 steps, maxParallel=2, evaluator=rust (CUE workflow semantics))
+
+exit=0

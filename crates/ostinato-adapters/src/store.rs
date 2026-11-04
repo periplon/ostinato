@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
 use ostinato_application::{Completion, MetricsSummary, PortError, PortResult, RunSnapshot, Store};
 use ostinato_domain::{
-    AuditEvent, Improvement, NewEvent, NewImprovement, NewTrial, RunRecord, RunStatus, StepRecord,
-    StepStatus, Trial, WorkflowSpec, audit,
+    AgentTrace, AgentTraceRecord, AuditEvent, CapturedArtifact, Improvement, NewEvent,
+    NewImprovement, NewTrial, RunRecord, RunStatus, StepRecord, StepStatus, StoredArtifact,
+    TraceVerification, Trial, WorkflowSpec, audit, sha256_hex,
 };
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use serde_json::{Value as Json, json};
@@ -129,9 +131,42 @@ impl SqliteStore {
                     FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS agent_traces (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id      TEXT NOT NULL,
+                    step        TEXT NOT NULL,
+                    round       INTEGER NOT NULL,
+                    attempt     INTEGER NOT NULL,
+                    definition  TEXT,
+                    provider    TEXT NOT NULL,
+                    model       TEXT,
+                    isolation   TEXT NOT NULL,
+                    cwd         TEXT NOT NULL,
+                    trace_hash  TEXT NOT NULL,
+                    trace_json  TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_artifacts (
+                    trace_id     INTEGER NOT NULL,
+                    name         TEXT NOT NULL,
+                    kind         TEXT NOT NULL,
+                    sha256       TEXT NOT NULL,
+                    size         INTEGER NOT NULL,
+                    stored_size  INTEGER NOT NULL,
+                    truncated    INTEGER NOT NULL,
+                    mode         INTEGER,
+                    content      BLOB NOT NULL,
+                    PRIMARY KEY (trace_id, name),
+                    FOREIGN KEY (trace_id) REFERENCES agent_traces(id) ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);
                 CREATE INDEX IF NOT EXISTS idx_trials_run ON trials(run_id, id);
+                CREATE INDEX IF NOT EXISTS idx_agent_traces_run ON agent_traces(run_id, id);
+                CREATE INDEX IF NOT EXISTS idx_agent_artifacts_trace ON agent_artifacts(trace_id);
                 "#,
         )?;
 
@@ -193,6 +228,376 @@ impl SqliteStore {
             .lock()
             .map_err(|_| PortError::Store("database mutex poisoned".to_owned()))
     }
+}
+
+impl SqliteStore {
+    /// All agent traces for a run, oldest first.
+    ///
+    /// # Errors
+    /// Fails when the rows cannot be read or a stored trace is not valid JSON.
+    pub fn agent_traces(&self, run_id: &str) -> PortResult<Vec<AgentTraceRecord>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, trace_hash, trace_json, created_at
+                 FROM agent_traces WHERE run_id = ?1 ORDER BY id",
+            )
+            .map_err(|err| PortError::Store(format!("prepare agent traces: {err}")))?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                let id: i64 = row.get(0)?;
+                let trace_hash: String = row.get(1)?;
+                let trace_json: String = row.get(2)?;
+                let created_at: String = row.get(3)?;
+                Ok((id, trace_hash, trace_json, created_at))
+            })
+            .map_err(|err| PortError::Store(format!("list agent traces: {err}")))?;
+        let mut traces = Vec::new();
+        for row in rows {
+            let (id, trace_hash, trace_json, created_at) =
+                row.map_err(|err| PortError::Store(format!("map agent trace: {err}")))?;
+            let trace: AgentTrace = serde_json::from_str(&trace_json).map_err(|err| {
+                PortError::Store(format!("agent trace {id} is not valid JSON: {err}"))
+            })?;
+            traces.push(AgentTraceRecord {
+                id,
+                trace_hash,
+                created_at,
+                trace,
+            });
+        }
+        Ok(traces)
+    }
+
+    /// Artifact blobs for a run, optionally filtered by step.
+    ///
+    /// # Errors
+    /// Fails when the rows cannot be read.
+    pub fn agent_artifacts(
+        &self,
+        run_id: &str,
+        step: Option<&str>,
+    ) -> PortResult<Vec<StoredArtifact>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT a.trace_id, a.name, a.kind, a.sha256, a.size, a.stored_size,
+                        a.truncated, a.content, a.mode
+                 FROM agent_artifacts a
+                 JOIN agent_traces t ON t.id = a.trace_id
+                 WHERE t.run_id = ?1 AND (?2 IS NULL OR t.step = ?2)
+                 ORDER BY a.trace_id, a.name",
+            )
+            .map_err(|err| PortError::Store(format!("prepare agent artifacts: {err}")))?;
+        let rows = statement
+            .query_map(params![run_id, step], artifact_from_row)
+            .map_err(|err| PortError::Store(format!("list agent artifacts: {err}")))?;
+        let mut artifacts = Vec::new();
+        for row in rows {
+            artifacts
+                .push(row.map_err(|err| PortError::Store(format!("map agent artifact: {err}")))?);
+        }
+        Ok(artifacts)
+    }
+
+    /// Re-hash every trace and artifact and prove each trace is anchored by an
+    /// `agent.traced` event in the run's audit chain.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be read.
+    pub fn verify_agent_traces(&self, run_id: &str) -> PortResult<Vec<TraceVerification>> {
+        let connection = self.lock()?;
+        let mut trace_statement = connection
+            .prepare(
+                "SELECT id, step, round, attempt, definition, provider, model, isolation,
+                        cwd, trace_hash, trace_json
+                 FROM agent_traces WHERE run_id = ?1 ORDER BY id",
+            )
+            .map_err(|err| PortError::Store(format!("prepare trace verification: {err}")))?;
+        let trace_rows = trace_statement
+            .query_map(params![run_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                ))
+            })
+            .map_err(|err| PortError::Store(format!("read trace verification rows: {err}")))?;
+        let mut traces = Vec::new();
+        for row in trace_rows {
+            traces.push(row.map_err(|err| PortError::Store(format!("map trace row: {err}")))?);
+        }
+
+        // Agent events are part of the chained audit log.
+        let mut anchored: BTreeMap<i64, String> = BTreeMap::new();
+        let mut event_statement = connection
+            .prepare(
+                "SELECT data_json FROM events WHERE run_id = ?1 AND kind = 'agent.traced' ORDER BY seq",
+            )
+            .map_err(|err| PortError::Store(format!("prepare agent events: {err}")))?;
+        let event_rows = event_statement
+            .query_map(params![run_id], |row| row.get::<_, String>(0))
+            .map_err(|err| PortError::Store(format!("read agent events: {err}")))?;
+        for row in event_rows {
+            let data_json =
+                row.map_err(|err| PortError::Store(format!("map agent event: {err}")))?;
+            let data: Json = serde_json::from_str(&data_json)
+                .map_err(|err| PortError::Store(format!("agent event JSON: {err}")))?;
+            if let Some(id) = data.get("traceId").and_then(Json::as_i64) {
+                anchored.insert(
+                    id,
+                    data.get("traceHash")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+            }
+        }
+
+        let mut verifications = Vec::new();
+        for (
+            id,
+            step,
+            round,
+            attempt,
+            definition,
+            provider,
+            model,
+            isolation,
+            cwd,
+            trace_hash,
+            trace_json,
+        ) in traces
+        {
+            let mut problems = Vec::new();
+            let recomputed = sha256_hex(trace_json.as_bytes());
+            if recomputed != trace_hash {
+                problems.push("trace hash does not match the stored trace JSON".to_owned());
+            }
+            match anchored.get(&id) {
+                None => problems.push("trace is not anchored by an agent.traced event".to_owned()),
+                Some(anchored_hash) if anchored_hash != &trace_hash => {
+                    problems.push("agent.traced event anchors a different trace hash".to_owned());
+                }
+                Some(_) => {}
+            }
+            let trace: AgentTrace = match serde_json::from_str(&trace_json) {
+                Ok(trace) => trace,
+                Err(err) => {
+                    problems.push(format!("trace JSON is invalid: {err}"));
+                    verifications.push(TraceVerification {
+                        trace_id: id,
+                        step,
+                        attempt: u32::try_from(attempt).unwrap_or(0),
+                        ok: false,
+                        problems,
+                    });
+                    continue;
+                }
+            };
+            if trace.step != step
+                || i64::from(trace.round) != round
+                || i64::from(trace.attempt) != attempt
+                || trace.definition != definition
+                || trace.provider != provider
+                || trace.model != model
+                || trace.isolation != isolation
+                || trace.cwd != cwd
+            {
+                problems.push("trace columns do not match the stored trace JSON".to_owned());
+            }
+            let mut artifact_statement = connection
+                .prepare(
+                    "SELECT a.trace_id, a.name, a.kind, a.sha256, a.size, a.stored_size,
+                            a.truncated, a.content, a.mode
+                     FROM agent_artifacts a WHERE a.trace_id = ?1 ORDER BY a.name",
+                )
+                .map_err(|err| PortError::Store(format!("prepare artifact verification: {err}")))?;
+            let artifact_rows = artifact_statement
+                .query_map(params![id], artifact_from_row)
+                .map_err(|err| PortError::Store(format!("read artifact rows: {err}")))?;
+            let mut stored = Vec::new();
+            for row in artifact_rows {
+                stored.push(row.map_err(|err| PortError::Store(format!("map artifact: {err}")))?);
+            }
+            if stored.len() != trace.artifacts.len() {
+                problems.push(format!(
+                    "artifact count mismatch: trace={} stored={}",
+                    trace.artifacts.len(),
+                    stored.len()
+                ));
+            }
+            let stored_by_name: BTreeMap<&str, &StoredArtifact> = stored
+                .iter()
+                .map(|item| (item.name.as_str(), item))
+                .collect();
+            for meta in &trace.artifacts {
+                let Some(item) = stored_by_name.get(meta.name.as_str()) else {
+                    problems.push(format!("artifact `{}` is missing", meta.name));
+                    continue;
+                };
+                if item.sha256 != meta.sha256 {
+                    problems.push(format!("artifact `{}` hash does not match", meta.name));
+                }
+                if item.size != meta.size || item.stored_size != meta.stored_size {
+                    problems.push(format!("artifact `{}` size does not match", meta.name));
+                }
+                if item.truncated != meta.truncated {
+                    problems.push(format!("artifact `{}` truncation flag differs", meta.name));
+                }
+                if item.kind != meta.kind || item.mode != meta.mode {
+                    problems.push(format!(
+                        "artifact `{}` kind or mode differs from the trace",
+                        meta.name
+                    ));
+                }
+                if u64::try_from(item.content.len()).unwrap_or(u64::MAX) != item.stored_size {
+                    problems.push(format!(
+                        "artifact `{}` stored size does not match its content",
+                        meta.name
+                    ));
+                }
+                if sha256_hex(&item.content) != item.sha256 {
+                    problems.push(format!(
+                        "artifact `{}` content does not match its hash",
+                        meta.name
+                    ));
+                }
+            }
+            verifications.push(TraceVerification {
+                trace_id: id,
+                step,
+                attempt: u32::try_from(attempt).unwrap_or(0),
+                ok: problems.is_empty(),
+                problems,
+            });
+        }
+        for (id, hash) in anchored {
+            if !verifications.iter().any(|item| item.trace_id == id) {
+                verifications.push(TraceVerification {
+                    trace_id: id,
+                    step: String::new(),
+                    attempt: 0,
+                    ok: false,
+                    problems: vec![format!(
+                        "agent.traced event anchors missing trace {id} (hash {hash})"
+                    )],
+                });
+            }
+        }
+
+        // Cross-check the trace ids/hashes referenced by committed step and
+        // trial outputs. This catches trace-row deletion even if an attacker
+        // re-seals the unkeyed audit chain.
+        let mut references: BTreeMap<i64, (String, String)> = BTreeMap::new();
+        let mut output_statement = connection
+            .prepare(
+                "SELECT output_json FROM steps WHERE run_id = ?1 AND output_json IS NOT NULL
+                 UNION ALL
+                 SELECT output_json FROM trials WHERE run_id = ?1 AND output_json IS NOT NULL",
+            )
+            .map_err(|err| PortError::Store(format!("prepare trace references: {err}")))?;
+        let output_rows = output_statement
+            .query_map(params![run_id], |row| row.get::<_, String>(0))
+            .map_err(|err| PortError::Store(format!("read trace references: {err}")))?;
+        for row in output_rows {
+            let output_json =
+                row.map_err(|err| PortError::Store(format!("map trace reference: {err}")))?;
+            if let Ok(value) = serde_json::from_str::<Json>(&output_json) {
+                let mut found = Vec::new();
+                collect_agent_refs(&value, &mut found);
+                for (id, hash) in found {
+                    references.entry(id).or_insert((hash, String::new()));
+                }
+            }
+        }
+        for (id, (hash, _step)) in references {
+            match trace_hash_for(&connection, id)? {
+                None => verifications.push(TraceVerification {
+                    trace_id: id,
+                    step: "<output>".to_owned(),
+                    attempt: 0,
+                    ok: false,
+                    problems: vec![format!(
+                        "step/trial output references missing trace {id} (hash {hash})"
+                    )],
+                }),
+                Some(known_hash) if known_hash != hash => {
+                    verifications.push(TraceVerification {
+                        trace_id: id,
+                        step: "<output>".to_owned(),
+                        attempt: 0,
+                        ok: false,
+                        problems: vec![format!(
+                            "step/trial output references trace {id} with a different hash"
+                        )],
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        verifications.sort_by_key(|item| item.trace_id);
+        Ok(verifications)
+    }
+}
+
+fn trace_hash_for(connection: &rusqlite::Connection, trace_id: i64) -> PortResult<Option<String>> {
+    connection
+        .query_row(
+            "SELECT trace_hash FROM agent_traces WHERE id = ?1",
+            params![trace_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| PortError::Store(format!("read trace hash: {err}")))
+}
+
+fn collect_agent_refs(value: &Json, out: &mut Vec<(i64, String)>) {
+    match value {
+        Json::Object(map) => {
+            if let Some(agent) = map.get("agent")
+                && let (Some(id), Some(hash)) = (
+                    agent.get("traceId").and_then(Json::as_i64),
+                    agent.get("traceHash").and_then(Json::as_str),
+                )
+            {
+                out.push((id, hash.to_owned()));
+            }
+            for child in map.values() {
+                collect_agent_refs(child, out);
+            }
+        }
+        Json::Array(items) => {
+            for item in items {
+                collect_agent_refs(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn artifact_from_row(row: &Row<'_>) -> rusqlite::Result<StoredArtifact> {
+    Ok(StoredArtifact {
+        trace_id: row.get(0)?,
+        name: row.get(1)?,
+        kind: row.get(2)?,
+        sha256: row.get(3)?,
+        size: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+        stored_size: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+        truncated: row.get::<_, i64>(6)? != 0,
+        content: row.get(7)?,
+        mode: row
+            .get::<_, Option<i64>>(8)?
+            .and_then(|mode| u32::try_from(mode).ok()),
+    })
 }
 
 impl Store for SqliteStore {
@@ -589,6 +994,123 @@ impl Store for SqliteStore {
             trials.push(row.map_err(|err| PortError::Store(format!("map trial: {err}")))?);
         }
         Ok(trials)
+    }
+
+    fn record_agent_trace(
+        &self,
+        trace: &AgentTrace,
+        artifacts: &[CapturedArtifact],
+    ) -> PortResult<AgentTraceRecord> {
+        let trace_bytes = serde_json::to_vec(trace)
+            .map_err(|err| PortError::Store(format!("serialize agent trace: {err}")))?;
+        let trace_hash = sha256_hex(&trace_bytes);
+        let trace_json = String::from_utf8(trace_bytes)
+            .map_err(|err| PortError::Store(format!("agent trace is not UTF-8: {err}")))?;
+        let artifact_meta: Vec<Json> = artifacts
+            .iter()
+            .map(|artifact| {
+                let meta = artifact.meta();
+                json!({
+                    "name": meta.name,
+                    "kind": meta.kind,
+                    "sha256": meta.sha256,
+                    "size": meta.size,
+                    "storedSize": meta.stored_size,
+                    "truncated": meta.truncated,
+                })
+            })
+            .collect();
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| PortError::Store(format!("begin agent trace: {err}")))?;
+        transaction
+            .execute(
+                "INSERT INTO agent_traces
+                 (run_id, step, round, attempt, definition, provider, model, isolation,
+                  cwd, trace_hash, trace_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    trace.run_id,
+                    trace.step,
+                    i64::from(trace.round),
+                    i64::from(trace.attempt),
+                    trace.definition,
+                    trace.provider,
+                    trace.model,
+                    trace.isolation,
+                    trace.cwd,
+                    trace_hash,
+                    trace_json,
+                    trace.finished_at,
+                ],
+            )
+            .map_err(|err| PortError::Store(format!("insert agent trace: {err}")))?;
+        let trace_id = transaction.last_insert_rowid();
+        for artifact in artifacts {
+            let meta = artifact.meta();
+            transaction
+                .execute(
+                    "INSERT INTO agent_artifacts
+                     (trace_id, name, kind, sha256, size, stored_size, truncated, mode, content)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     ON CONFLICT(trace_id, name) DO UPDATE SET
+                        kind = excluded.kind,
+                        sha256 = excluded.sha256,
+                        size = excluded.size,
+                        stored_size = excluded.stored_size,
+                        truncated = excluded.truncated,
+                        mode = excluded.mode,
+                        content = excluded.content",
+                    params![
+                        trace_id,
+                        meta.name,
+                        meta.kind,
+                        meta.sha256,
+                        i64::try_from(meta.size).unwrap_or(i64::MAX),
+                        i64::try_from(meta.stored_size).unwrap_or(i64::MAX),
+                        i64::from(meta.truncated as u8),
+                        meta.mode.map(i64::from),
+                        &artifact.bytes,
+                    ],
+                )
+                .map_err(|err| PortError::Store(format!("insert agent artifact: {err}")))?;
+        }
+        let event = NewEvent::new(
+            "agent.traced",
+            Some(trace.step.clone()),
+            json!({
+                "traceId": trace_id,
+                "traceHash": trace_hash,
+                "round": trace.round,
+                "attempt": trace.attempt,
+                "definition": trace.definition,
+                "provider": trace.provider,
+                "isolation": trace.isolation,
+                "success": trace.success,
+                "exitCode": trace.exit_code,
+                "artifacts": artifact_meta,
+            }),
+        );
+        let sealed = append_event_tx(&transaction, &trace.run_id, &event, &trace.finished_at)?;
+        let changed = transaction
+            .execute(
+                "UPDATE runs SET audit_head = ?2 WHERE id = ?1 AND status != 'cancelled'",
+                params![trace.run_id, sealed.hash],
+            )
+            .map_err(|err| PortError::Store(format!("update agent audit head: {err}")))?;
+        if changed == 0 {
+            return Err(PortError::Cancelled(trace.run_id.clone()));
+        }
+        transaction
+            .commit()
+            .map_err(|err| PortError::Store(format!("commit agent trace: {err}")))?;
+        Ok(AgentTraceRecord {
+            id: trace_id,
+            trace_hash,
+            created_at: trace.finished_at.clone(),
+            trace: trace.clone(),
+        })
     }
 
     fn record_improvement(&self, improvement: &NewImprovement) -> PortResult<i64> {

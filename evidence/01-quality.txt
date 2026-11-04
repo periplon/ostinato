@@ -2,133 +2,169 @@
 exit=0
 
 ### cargo clippy --all-targets --all-features -- -D warnings
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
 exit=0
 
 ### cargo test --all
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running unittests src/main.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/deps/ostinato-b8206d4e50c5ae97)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running unittests src/main.rs (target/debug/deps/ostinato-0efae4527dbc28e1)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/conformance.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/deps/conformance-571d38280abf4898)
+     Running tests/conformance.rs (target/debug/deps/conformance-201e2a8a7c811cab)
 
 running 1 test
 test rust_matches_official_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.90s
 
-     Running tests/e2e.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/deps/e2e-d58a2e46df9f8e3c)
+     Running tests/e2e.rs (target/debug/deps/e2e-92abb17b214e0172)
 
-running 70 tests
-test duplicate_and_nested_tags_follow_cue ... ok
-test gateway_graph_dot_and_json_expose_routing_metadata ... ok
+running 82 tests
 test bare_open_list_needs_and_params_compile ... ok
+test duplicate_and_nested_tags_follow_cue ... ok
+test agents_and_artifacts_error_on_unknown_runs ... ok
 test background_grandchild_does_not_extend_a_successful_step ... ok
-test gateway_audit_detects_a_tampered_skipped_row ... ok
-test gateway_failure_is_recorded_and_keeps_resume_index_at_the_gateway_group ... ok
-test gateway_audit_verifies_and_detects_tampered_gateway_output ... ok
-test hidden_metadata_is_allowed_throughout_the_workflow_schema ... ok
 test audit_verification_detects_tampering ... ok
 test audit_detects_tail_truncation_via_persisted_head ... ok
-test definition_backed_tags_work_in_both_evaluators ... ok
-test bad_template_is_a_durable_failure ... ok
-test gateway_dead_path_propagates_and_records_skips ... ok
-test gateway_or_runs_every_true_branch ... ok
 test cleared_integrity_hashes_are_not_silently_repaired ... ok
-test let_and_alias_backed_params_tags_work ... ok
+test gateway_audit_detects_a_tampered_skipped_row ... ok
+test bad_template_is_a_durable_failure ... ok
+test definition_backed_tags_work_in_both_evaluators ... ok
+test gateway_graph_dot_and_json_expose_routing_metadata ... ok
 test gateway_and_fan_out_and_fan_in_wait_for_both_branches ... ok
+test gateway_audit_verifies_and_detects_tampered_gateway_output ... ok
+test hidden_metadata_is_allowed_throughout_the_workflow_schema ... ok
+test gateway_failure_is_recorded_and_keeps_resume_index_at_the_gateway_group ... ok
+test gateway_dead_path_propagates_and_records_skips ... ok
+test deleting_a_trace_row_is_detected_from_step_outputs ... ok
+test let_and_alias_backed_params_tags_work ... ok
+test gateway_or_runs_every_true_branch ... ok
+test filtered_agents_verify_still_checks_the_whole_run ... ok
+test agent_trace_tampering_is_detected_by_audit_verify ... ok
+test cycles_stop_when_until_becomes_true ... ok
 test nested_definition_tags_inject_their_declaration ... ok
 test nested_tag_aliases_resolve_at_their_written_scope ... ok
-test non_struct_params_are_rejected ... ok
 test gateway_xor_default_branch_runs_when_no_condition_matches ... ok
 test nested_tags_cover_definitions_hidden_quoted_and_shorthand ... ok
+test agent_definitions_produce_verifiable_traces_and_artifacts ... ok
+test gateway_routes_on_continue_on_error_status ... ok
 test nested_tags_work_through_definitions_and_reject_bad_types ... ok
+test jsonl_provider_output_drives_until_conditions ... ok
+test non_struct_params_are_rejected ... ok
+test leaf_tag_injection_preserves_lexical_scopes ... ok
 test native_evaluator_supports_the_offline_subset ... ok
 test nested_tags_follow_label_identity_depth_and_expression_bases ... ok
 test package_underscore_files_are_file_local ... ok
 test quoted_labels_do_not_leak_evaluator_state_to_stderr ... ok
+test agent_retries_keep_one_trace_per_attempt ... ok
 test package_less_cue_file_is_loaded_by_filename ... ok
-test gateway_routes_on_continue_on_error_status ... ok
 test recursive_definitions_do_not_overflow_tag_collection ... ok
 test params_siblings_resolve_and_true_cycles_fail_cleanly ... ok
-test gateway_resume_after_split_does_not_re_evaluate_or_run_dead_branch ... ok
-test leaf_tag_injection_preserves_lexical_scopes ... ok
-test selector_tags_cover_leaves_duplicates_and_shadowed_definitions ... ok
 test multiline_and_interpolated_bytes_match_both_evaluators ... ok
-test selector_tags_follow_definitions_duplicates_and_scope ... ok
+test gateway_resume_after_split_does_not_re_evaluate_or_run_dead_branch ... ok
+test cycle_rounds_each_get_a_trace ... ok
 test nested_tags_inject_nested_parameters ... ok
+test selector_tags_cover_leaves_duplicates_and_shadowed_definitions ... ok
+test selector_tags_follow_definitions_duplicates_and_scope ... ok
 test split_and_duplicate_definition_tags_work ... ok
+test gateway_xor_routes_one_branch_and_skips_the_other ... ok
+test legacy_run_without_gateways_still_resumes_and_verifies ... ok
+test recursive_definitions_materialize_in_both_evaluators ... ok
+test split_package_and_sibling_conflicts_follow_cue_semantics ... ok
 test tag_attributes_drive_parameter_injection_types ... ok
 test tag_identity_handles_shadowing_selectors_and_disjunctions ... ok
-test recomputed_state_hash_is_still_rejected_by_the_chain_anchor ... ok
-test legacy_run_without_gateways_still_resumes_and_verifies ... ok
-test read_only_commands_do_not_require_cue ... ok
-test cycles_stop_when_until_becomes_true ... ok
 test tag_names_and_value_grammar_follow_cue ... ok
 test tag_number_grammar_and_parenthesized_params ... ok
-test split_package_and_sibling_conflicts_follow_cue_semantics ... ok
-test gateway_xor_routes_one_branch_and_skips_the_other ... ok
-test recursive_definitions_materialize_in_both_evaluators ... ok
-test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
-test official_cue_runs_and_audit_verifies ... ok
+test recomputed_state_hash_is_still_rejected_by_the_chain_anchor ... ok
+test read_only_commands_do_not_require_cue ... ok
+test official_cue_evaluator_resolves_agent_definitions ... ok
 test tag_literal_grammar_and_strict_types ... ok
 test state_tampering_is_detected_and_resume_refuses_it ... ok
+test status_row_tampering_is_detected_by_the_lifecycle_invariant ... ok
+test official_cue_runs_and_audit_verifies ... ok
 test tool_files_stay_excluded_from_normal_workflow_loading ... ok
-test tool_command_unknown_tag_matches_cue ... ok
+test resume_extraction_namespaces_replayed_traces_by_id ... ok
 test unknown_fields_are_rejected ... ok
+test tool_command_unknown_tag_matches_cue ... ok
 test tool_command_resolves_relative_dir_from_package ... ok
 test retries_are_attempted_and_logged_as_trials ... ok
+test exec_timeout_kills_the_process_group ... ok
+test resume_replays_a_group_without_trace_key_collisions ... ok
 test resume_skips_completed_steps_and_finishes ... ok
 test tool_command_handles_large_stdin_and_capture ... ok
 test truncation_blocks_resume_and_appends ... ok
-test tool_command_spawn_error_messages_match_cue ... ok
 test tool_command_print_and_file_tasks_match_cue ... ok
+test tool_command_spawn_error_messages_match_cue ... ok
 test recursive_improvement_creates_child_runs ... ok
 test tool_command_rejects_conflicting_defaults ... ok
 test tag_placement_violations_match_both_evaluators ... ok
-test exec_timeout_kills_the_process_group ... ok
+test worktree_isolation_keeps_the_checkout_clean_and_captures_changes ... ok
 test tool_commands_match_cue ... ok
 test deep_recursive_values_do_not_exhaust_the_stack ... ok
-run=9c58aee1-ca2b-4fe7-acff-3b08ee18ecca workflow=cancel status=cancelled durationMs=4023
+run=792346bc-5993-45d0-964b-63b8f72a09fd workflow=cancel status=cancelled durationMs=4025
 STEP                     STATUS     VISITS ATTEMPTS
 test cancel_stops_a_running_run_and_blocks_resume ... ok
 
-test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.09s
+test result: ok. 82 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.11s
 
-     Running unittests src/lib.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/deps/ostinato_adapters-cf9eaa2bab9e4523)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_adapters-d09512393ced4b6a)
 
-running 1 test
+running 8 tests
+test process::tests::arg_delivery_rejects_option_like_prompts ... ok
+test process::tests::explicit_command_and_delivery_override_the_provider ... ok
+test process::tests::missing_command_provider_is_a_configuration_error ... ok
 test loaders::tests::parses_release_pre_release_and_build_metadata ... ok
+test process::tests::provider_argv_templates_are_stable ... ok
+test process::tests::shell_commands_force_stdin_and_reject_arg_delivery ... ok
+test process::timeout_tests::timed_out_agents_still_capture_output ... ok
+test process::timeout_tests::escaped_descendants_do_not_erase_partial_output ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.66s
 
-     Running tests/store.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/deps/store-5ebeda5a0fe699b6)
+     Running tests/store.rs (target/debug/deps/store-482d1d07c62e5956)
 
-running 3 tests
+running 6 tests
 test database_and_wal_files_are_private ... ok
-test reopened_store_does_not_repair_blank_integrity_hashes ... ok
+test agent_traces_roundtrip_and_verify ... ok
 test sqlite_store_roundtrip_is_atomic_and_hash_chained ... ok
+test deleting_an_agent_event_breaks_trace_anchoring ... ok
+test reopened_store_does_not_repair_blank_integrity_hashes ... ok
+test agent_trace_and_artifact_tampering_are_detected ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running unittests src/lib.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/deps/ostinato_application-62815b43e01ea379)
+     Running tests/workspace.rs (target/debug/deps/workspace-c9c5cff17d99b27c)
+
+running 8 tests
+test relative_path_validation_is_strict ... ok
+test symlinks_and_hardlinks_are_not_captured ... ok
+test declared_globs_are_sorted_and_deduplicated ... ok
+test extraction_rejects_traversal_and_symlinked_parents ... ok
+test worktree_base_injection_and_non_repos_fail_cleanly ... ok
+test worktree_capture_sees_agent_commits_against_the_recorded_base ... ok
+test worktree_capture_is_relative_to_a_subdirectory_workflow ... ok
+test worktree_lifecycle_captures_tracked_and_untracked_changes ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running unittests src/lib.rs (target/debug/deps/ostinato_application-45ef6c8bb331e37f)
 
 running 18 tests
+test activation::tests::legacy_multiple_needs_keep_and_semantics ... ok
 test activation::tests::and_split_selects_all_branches ... ok
 test activation::tests::and_join_requires_every_active_input ... ok
-test activation::tests::legacy_multiple_needs_keep_and_semantics ... ok
-test activation::tests::missing_predecessor_is_invalid_state ... ok
 test activation::tests::condition_evaluation_error_is_a_gateway_error ... ok
-test activation::tests::or_no_true_no_default_fails ... ok
-test activation::tests::or_join_needs_one_active_input ... ok
 test activation::tests::normal_step_with_dead_input_is_dead ... ok
+test activation::tests::or_no_true_no_default_fails ... ok
+test activation::tests::missing_predecessor_is_invalid_state ... ok
 test activation::tests::or_none_uses_default ... ok
+test activation::tests::or_join_needs_one_active_input ... ok
 test activation::tests::or_selects_every_true_branch ... ok
-test activation::tests::split_gateway_branch_choice_controls_edge_state ... ok
 test activation::tests::xor_join_one_active_is_active ... ok
+test activation::tests::split_gateway_branch_choice_controls_edge_state ... ok
 test activation::tests::xor_join_two_active_is_ambiguous ... ok
 test activation::tests::xor_join_zero_active_is_dead ... ok
 test activation::tests::xor_no_true_no_default_fails ... ok
@@ -138,36 +174,38 @@ test activation::tests::xor_unique_true_selects_one ... ok
 
 test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/deps/ostinato_domain-d19ca1f9fdf8d2f5)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_domain-a2f2fd5e278735f7)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/domain.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/deps/domain-88daf1aa22b02538)
+     Running tests/domain.rs (target/debug/deps/domain-e568c0e4217e78f5)
 
-running 17 tests
+running 19 tests
 test branch_target_with_needs_is_rejected ... ok
-test cycles_require_an_explicit_policy ... ok
-test join_with_branches_is_rejected ... ok
+test cycles_expand_into_bounded_rounds ... ok
 test invalid_default_is_rejected ... ok
-test independent_steps_share_a_parallel_group ... ok
-test legacy_plan_shape_is_unchanged_without_gateways ... ok
-test implicit_join_with_gateways_is_rejected ... ok
-test gateway_and_cycle_combination_is_rejected ... ok
+test agent_trace_hash_is_deterministic_and_content_sensitive ... ok
 test new_event_helper_is_ergonomic ... ok
 test retry_backoff_is_capped_and_deterministic ... ok
-test gateway_plan_orders_branches_and_joins ... ok
-test cycles_expand_into_bounded_rounds ... ok
+test join_with_branches_is_rejected ... ok
+test cycles_require_an_explicit_policy ... ok
 test legacy_step_spec_deserializes_without_gateway_and_reserializes_identically ... ok
-test audit_chain_detects_tampering ... ok
-test unknown_branch_target_is_rejected ... ok
+test independent_steps_share_a_parallel_group ... ok
 test split_and_join_together_is_rejected ... ok
+test implicit_join_with_gateways_is_rejected ... ok
+test gateway_and_cycle_combination_is_rejected ... ok
+test legacy_plan_shape_is_unchanged_without_gateways ... ok
+test audit_chain_detects_tampering ... ok
+test legacy_agent_specs_keep_their_state_digest_bytes ... ok
+test gateway_plan_orders_branches_and_joins ... ok
+test unknown_branch_target_is_rejected ... ok
 test legacy_state_digest_is_stable_across_the_gateway_change ... ok
 
-test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/deps/ostinato_lang-18531af9f0f046b2)
+     Running unittests src/lib.rs (target/debug/deps/ostinato_lang-3f9cb731eb91f0e2)
 
 running 3 tests
 test gotime::tests::formats_durations ... ok
@@ -176,245 +214,257 @@ test gotime::tests::parses_go_layouts ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/lang.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/deps/lang-fdd9daa1e54dbe1c)
+     Running tests/agents.rs (target/debug/deps/agents-4a32addaff21b875)
+
+running 6 tests
+test definition_prompt_and_string_shorthand_are_supported ... ok
+test agent_spec_serialization_stays_compatible_for_inline_steps ... ok
+test string_command_is_shell_but_argv_is_preserved ... ok
+test unreferenced_definitions_are_still_validated ... ok
+test definitions_are_merged_with_step_overrides ... ok
+test invalid_agent_schemas_are_rejected ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/lang.rs (target/debug/deps/lang-983aaca2a64cff63)
 
 running 242 tests
+test aliases_and_lets_conflict_with_import_names ... ok
+test aliases_to_control_prefix_quoted_labels_resolve ... ok
+test absolute_params_paths_do_not_shadow_into_nested_groups ... ok
+test acyclic_let_chains_are_accepted ... ok
 test arithmetic_uses_a_disjunction_default ... ok
+test aliases_work_in_definitions_and_nested_structs ... ok
 test aliases_bind_field_values ... ok
 test aliases_can_bind_definitions_and_dynamic_labels ... ok
-test aliases_to_control_prefix_quoted_labels_resolve ... ok
-test attributes_parse_in_every_cue_position ... ok
-test aliases_and_lets_conflict_with_import_names ... ok
-test acyclic_let_chains_are_accepted ... ok
-test absolute_params_paths_do_not_shadow_into_nested_groups ... ok
-test aliases_work_in_definitions_and_nested_structs ... ok
-test bare_open_lists_behave_as_empty_lists ... ok
 test aliases_conflict_with_comprehension_bindings ... ok
 test aliases_used_only_in_optional_definition_or_pattern_are_referenced ... ok
-test absolute_params_references_inside_generated_groups_resolve ... ok
-test bound_disjunctions_and_defaults_are_lattice_aware ... ok
+test bare_open_lists_behave_as_empty_lists ... ok
+test attributes_parse_in_every_cue_position ... ok
 test bytes_literals_use_go_escape_rules ... ok
-test alias_scope_conflicts_and_duplicates_are_rejected ... ok
 test aliases_to_quoted_hash_labels_resolve_the_regular_field ... ok
-test bounds_narrow_concrete_values_and_types ... ok
+test absolute_params_references_inside_generated_groups_resolve ... ok
+test alias_scope_conflicts_and_duplicates_are_rejected ... ok
 test chained_dynamic_groups_resolve_sibling_values ... ok
+test bounds_narrow_concrete_values_and_types ... ok
 test arbitrary_precision_integer_literals_keep_exact_values ... ok
-test closed_definitions_apply_to_nested_dynamic_and_let_params ... ok
-test closed_definitions_reject_extra_fields_and_open_definitions_allow_them ... ok
-test bytes_interpolation_formats_scalars_and_rejects_incomplete ... ok
-test alias_shadowing_keeps_dead_bodies_dead ... ok
-test closed_definitions_stay_closed_through_params ... ok
-test closedness_through_let_mediated_definition_bodies ... ok
+test bound_disjunctions_and_defaults_are_lattice_aware ... ok
 test closed_definitions_are_checked_inside_referenced_bodies ... ok
+test closed_definitions_apply_to_nested_dynamic_and_let_params ... ok
+test closed_definitions_stay_closed_through_params ... ok
+test closed_definitions_reject_extra_fields_and_open_definitions_allow_them ... ok
+test comprehension_clause_sequences_are_supported ... ok
+test closedness_through_let_mediated_definition_bodies ... ok
+test bytes_interpolation_formats_scalars_and_rejects_incomplete ... ok
 test comprehension_bodies_keep_quoted_hash_fields_next_to_definitions ... ok
+test bounds_reject_out_of_range_values ... ok
 test compiles_workflow_and_resolves_parameters ... ok
+test alias_shadowing_keeps_dead_bodies_dead ... ok
 test big_integer_bounds_and_builtins_match_cue ... ok
 test composed_definitions_keep_referenced_closedness ... ok
-test bounds_reject_out_of_range_values ... ok
-test comprehension_clause_sequences_are_supported ... ok
 test comprehension_labels_use_displayed_names_for_control_prefixes ... ok
-test cross_conditional_params_groups_share_materialized_values ... ok
-test branch_condition_scope_is_enforced_at_compile_time ... ok
 test decimal_arithmetic_is_exact ... ok
+test branch_condition_scope_is_enforced_at_compile_time ... ok
+test cross_conditional_params_groups_share_materialized_values ... ok
 test control_prefix_labels_match_patterns ... ok
-test bytes_literal_field_labels_match_string_labels ... ok
-test comprehension_generated_definitions_are_selectable_and_hidden ... ok
 test closed_definition_intersections_check_every_operand ... ok
 test defaulted_disjunctions_work_in_select_index_and_for ... ok
-test definition_optional_conflicts_error_only_when_materialized ... ok
+test bytes_literal_field_labels_match_string_labels ... ok
+test comprehension_generated_declarations_merge_like_cue ... ok
 test definitions_can_be_used_in_conditions_and_selectors ... ok
+test comprehension_generated_definitions_are_selectable_and_hidden ... ok
+test definition_optional_conflicts_error_only_when_materialized ... ok
+test definitions_behave_like_structs_in_comprehensions_and_equality ... ok
+test dependent_parameter_overrides_are_order_independent ... ok
+test definition_selectors_and_quoted_hash_fields_in_params_paths ... ok
 test comprehension_generated_definitions_respect_caches_and_shadowing ... ok
 test derived_definitions_keep_referenced_closedness ... ok
-test dependent_parameter_overrides_are_order_independent ... ok
-test comprehension_generated_declarations_merge_like_cue ... ok
-test bounds_validate_operands_types_and_intervals ... ok
-test definitions_behave_like_structs_in_comprehensions_and_equality ... ok
 test definitions_preserve_optional_constraints_while_open ... ok
-test definition_disjunctions_keep_alternatives ... ok
-test definition_selectors_and_quoted_hash_fields_in_params_paths ... ok
 test disjunction_defaults_narrow_and_export ... ok
-test evaluates_conditions ... ok
-test duplicate_disjunction_defaults_collapse ... ok
 test definition_optional_constraint_applies_to_required_fields_in_both_orders ... ok
-test disjunction_drops_conflicting_alternatives_but_not_bad_references ... ok
-test disjunction_intersection_and_narrowing_match_cue ... ok
-test dynamic_index_then_selector_resolves_params_paths ... ok
 test definition_backed_params_see_overrides_in_dependents ... ok
+test disjunction_drops_conflicting_alternatives_but_not_bad_references ... ok
+test duplicate_disjunction_defaults_collapse ... ok
+test evaluates_conditions ... ok
+test dynamic_index_then_selector_resolves_params_paths ... ok
+test definition_disjunctions_keep_alternatives ... ok
+test disjunction_intersection_and_narrowing_match_cue ... ok
 test division_by_zero_is_an_error_not_a_panic ... ok
 test forward_let_references_are_lazy ... ok
 test dynamic_intermediate_and_repeated_segments_resolve ... ok
-test definitions_do_not_admit_regular_fields_of_the_same_label ... ok
+test bounds_validate_operands_types_and_intervals ... ok
 test compiles_every_split_and_join_mode ... ok
-test disjunction_dedupe_preserves_definition_metadata ... ok
 test escaped_patterns_and_quoted_labels_decode_correctly ... ok
+test definitions_do_not_admit_regular_fields_of_the_same_label ... ok
+test disjunction_dedupe_preserves_definition_metadata ... ok
 test evaluates_structs_defaults_unification_and_interpolation ... ok
-test generated_hidden_optionals_in_definitions_are_optional ... ok
-test gateway_compiles_identically_through_value_and_json ... ok
-test generated_optional_conflicts_when_required_field_comes_later ... ok
-test generated_hidden_optionals_do_not_hide_visible_sentinel_labels ... ok
-test generated_optional_conflicts_with_required_dynamic_label ... ok
 test gateway_condition_scope_accepts_transitive_predecessors_and_ignores_string_literals ... ok
+test generated_hidden_optionals_do_not_hide_visible_sentinel_labels ... ok
+test gateway_compiles_identically_through_value_and_json ... ok
+test generated_hidden_optionals_in_definitions_are_optional ... ok
 test escaped_slash_case_mapping_and_decimal_ranges ... ok
 test gateway_conditions_and_step_status_are_accepted ... ok
+test generated_optional_conflicts_with_required_dynamic_label ... ok
+test generated_optional_conflicts_when_required_field_comes_later ... ok
 test gateway_definition_backed_branches_compile_identically ... ok
-test dead_comprehension_bodies_do_not_create_required_cycles ... ok
 test generated_only_optional_fields_are_not_materialized ... ok
-test generated_optional_constraint_conflicts_with_a_required_field ... ok
 test generated_optional_constraint_applies_to_a_required_field ... ok
+test generated_optional_constraint_conflicts_with_a_required_field ... ok
 test gateway_cycles_and_implicit_joins_are_rejected_at_compile_time ... ok
-test generated_root_optionals_do_not_hide_definitions ... ok
+test dead_comprehension_bodies_do_not_create_required_cycles ... ok
 test equality_requires_concrete_operands ... ok
 test generated_hidden_params_are_not_reachable_through_quoted_selectors ... ok
+test generated_root_optionals_do_not_hide_definitions ... ok
 test hidden_fields_are_invisible_to_value_operations ... ok
-test identifier_select_does_not_reach_quoted_hash_fields ... ok
 test generated_quoted_optionals_target_the_regular_field ... ok
 test generated_quoted_optionals_do_not_touch_materialized_definitions ... ok
+test identifier_select_does_not_reach_quoted_hash_fields ... ok
 test imported_packages_drop_package_hidden_fields ... ok
-test generated_quoted_hash_and_control_labels_are_selectable ... ok
 test generated_optional_unifies_with_required_dynamic_label ... ok
-test interpolation_rejects_incomplete_disjunctions ... ok
-test imported_packages_keep_quoted_hash_fields_next_to_definitions ... ok
+test generated_quoted_hash_and_control_labels_are_selectable ... ok
 test identifier_selectors_prefer_hidden_over_quoted_twins ... ok
+test interpolation_rejects_incomplete_disjunctions ... ok
 test generated_params_fields_respect_hidden_quoting_namespaces ... ok
-test inner_alias_shadows_an_enclosing_let ... ok
+test imported_packages_keep_quoted_hash_fields_next_to_definitions ... ok
 test imported_hidden_fields_do_not_leak_into_the_importer ... ok
 test hidden_fields_are_distinct_from_quoted_underscore_fields ... ok
+test inner_alias_shadows_an_enclosing_let ... ok
+test invalid_regex_fails_even_when_optional_value_conflicts ... ok
+test inner_lets_can_shadow_outer_lets_and_aliases ... ok
 test invalid_aliases_are_rejected ... ok
 test invalid_until_is_rejected_at_validation_time ... ok
-test inner_lets_can_shadow_outer_lets_and_aliases ... ok
-test invalid_regex_fails_even_when_optional_value_conflicts ... ok
 test int_and_float_do_not_unify ... ok
 test let_cycles_are_rejected ... ok
-test hidden_fields_are_evaluated_selected_and_conflict_checked ... ok
 test list_comprehension_struct_bodies_still_support_patterns ... ok
 test list_comprehensions_support_struct_bodies ... ok
+test hidden_fields_are_evaluated_selected_and_conflict_checked ... ok
 test invalid_regex_on_optional_fields_is_eager ... ok
 test list_comprehension_bodies_can_start_with_brackets ... ok
-test missing_field_separators_are_rejected ... ok
-test list_comprehensions_are_supported ... ok
 test let_shadowing_does_not_require_an_outer_reference ... ok
-test multiline_bytes_escaped_backslash_before_paren_is_literal ... ok
-test integer_bound_intervals_respect_discreteness ... ok
-test math_rounding_is_decimal_exact ... ok
-test materialized_sentinel_fields_stay_required_and_conflict_checked ... ok
-test multiline_bytes_dedent_handles_cr_and_interpolation_lines ... ok
-test multi_expression_definitions_close_after_composition ... ok
+test list_comprehensions_are_supported ... ok
+test missing_field_separators_are_rejected ... ok
 test let_cycles_through_required_definitions_are_rejected ... ok
+test multiline_bytes_escaped_backslash_before_paren_is_literal ... ok
+test definitions_can_select_their_own_fields ... ok
+test materialized_sentinel_fields_stay_required_and_conflict_checked ... ok
+test math_rounding_is_decimal_exact ... ok
+test multiline_bytes_dedent_handles_cr_and_interpolation_lines ... ok
 test materialized_hidden_fields_do_not_satisfy_quoted_optionals ... ok
+test integer_bound_intervals_respect_discreteness ... ok
+test multi_expression_definitions_close_after_composition ... ok
 test let_conflicts_and_unreferenced_lets_are_rejected ... ok
 test multiline_bytes_literals_dedent_and_interpolate ... ok
-test definitions_can_select_their_own_fields ... ok
 test native_defaults_work_in_multibranch_disjunctions ... ok
+test named_definition_flattens_optional_field_materialization ... ok
 test multiple_matching_patterns_merge_before_closing ... ok
 test native_skips_attributes_with_equals_and_omits_optional_fields ... ok
-test native_overrides_apply_before_top_level_comprehensions ... ok
-test named_definition_flattens_optional_field_materialization ... ok
 test nested_definitions_are_selectable ... ok
 test native_parameter_overrides_are_injected_before_interpolation ... ok
-test math_integral_results_keep_the_cue_kind ... ok
+test native_overrides_apply_before_top_level_comprehensions ... ok
 test nested_definitions_are_closed_unless_opened ... ok
+test math_integral_results_keep_the_cue_kind ... ok
 test nested_definitions_are_not_exported_as_fields ... ok
 test nested_params_groups_see_lexical_siblings_through_paths ... ok
-test nested_disjunction_defaults_respect_direct_precedence ... ok
 test nested_params_groups_see_outer_overrides ... ok
-test open_list_element_types_are_enforced ... ok
+test nested_disjunction_defaults_respect_direct_precedence ... ok
 test nested_patterns_constrain_nested_fields ... ok
-test multiline_strings_use_cue_dedent_and_cr_rules ... ok
-test gateway_payload_rules_are_rejected_with_full_paths ... ok
 test nested_multiline_literals_inside_interpolation_match_cue ... ok
-test open_list_prefix_values_export_their_prefix ... ok
+test open_list_element_types_are_enforced ... ok
+test multiline_strings_use_cue_dedent_and_cr_rules ... ok
 test numeric_equality_and_float_export_match_cue ... ok
+test open_list_prefix_values_export_their_prefix ... ok
 test open_list_prefix_unifies_with_a_concrete_list ... ok
-test optional_fields_cannot_be_selected_from_a_definition ... ok
 test nested_params_groups_and_generated_chains_avoid_false_cycles ... ok
-test optional_definition_fields_are_not_materialized ... ok
+test optional_fields_cannot_be_selected_from_a_definition ... ok
+test gateway_payload_rules_are_rejected_with_full_paths ... ok
 test nested_struct_unification_is_closed_after_composition ... ok
+test optional_fields_are_pattern_constrained_when_materialized ... ok
+test optional_definition_fields_are_not_materialized ... ok
+test optional_intermediate_params_fields_are_rejected ... ok
 test optional_fields_cannot_be_referenced_by_bare_name ... ok
 test numeric_equality_is_scalar_only ... ok
-test optional_fields_are_pattern_constrained_when_materialized ... ok
-test optional_intermediate_params_fields_are_rejected ... ok
-test optional_nested_definitions_are_not_selectable ... ok
 test go_time_layouts_and_helpers_match_cue ... ok
-test optional_pattern_conflicts_are_deferred_until_materialized ... ok
-test non_struct_definition_values_close_nested_structs ... ok
-test optional_value_conflicts_are_still_deferred ... ok
+test optional_nested_definitions_are_not_selectable ... ok
 test open_list_prefixes_work_as_lists ... ok
+test optional_value_conflicts_are_still_deferred ... ok
+test non_struct_definition_values_close_nested_structs ... ok
+test optional_pattern_conflicts_are_deferred_until_materialized ... ok
 test optional_values_get_patterns_before_closing ... ok
 test parameter_overrides_narrow_a_default_free_disjunction ... ok
-test optional_fields_do_not_leak_through_unification_and_vars_shadow ... ok
 test parameter_overrides_are_constraints_and_dependent_fields_see_them ... ok
 test gateway_additional_validation_rules_are_path_qualified ... ok
-test parameters_can_be_backed_by_a_definition_or_split_struct ... ok
-test open_list_prefixes_align_and_enforce_element_constraints ... ok
 test parameter_overrides_respect_fixed_values_and_types ... ok
+test parameters_can_be_backed_by_a_definition_or_split_struct ... ok
+test optional_fields_do_not_leak_through_unification_and_vars_shadow ... ok
+test open_list_prefixes_align_and_enforce_element_constraints ... ok
 test overrides_keep_generated_optional_constraints ... ok
 test overrides_are_visible_to_params_comprehensions ... ok
-test params_cache_distinguishes_dotted_labels_from_paths ... ok
 test params_optional_and_shadowing_rules_hold ... ok
-test params_items_can_depend_on_later_generated_siblings ... ok
-test parenthesized_definition_literal_keeps_optional_constraints ... ok
-test pattern_values_can_be_disjunctions ... ok
+test params_cache_distinguishes_dotted_labels_from_paths ... ok
 test optional_open_metadata_on_struct_literals_matches_cue ... ok
 test parenthesized_dynamic_labels_and_if_clause_sequences_work ... ok
-test params_comprehensions_can_read_siblings_without_false_cycles ... ok
+test params_items_can_depend_on_later_generated_siblings ... ok
+test pattern_values_can_be_disjunctions ... ok
+test parenthesized_definition_literal_keeps_optional_constraints ... ok
 test patterns_apply_to_declared_fields ... ok
+test params_siblings_numeric_literals_and_bytes_concat ... ok
 test params_dynamic_fields_hidden_definitions_and_quoted_selectors ... ok
 test params_dependency_chains_resolve_in_comprehensions ... ok
+test params_paths_resolve_against_the_params_root ... ok
+test params_comprehensions_can_read_siblings_without_false_cycles ... ok
 test params_resolution_handles_nested_groups_lets_and_fields ... ok
 test parenthesized_params_keep_overrides ... ok
-test params_paths_resolve_against_the_params_root ... ok
 test quoted_hash_labels_are_regular_fields ... ok
-test quoted_labels_do_not_conflict_with_aliases ... ok
-test params_siblings_numeric_literals_and_bytes_concat ... ok
-test live_struct_sources_and_constant_conditions_keep_cycles ... ok
-test params_index_paths_resolve_through_nested_groups ... ok
-test quoted_hash_labels_are_selectable_from_struct_values ... ok
 test nested_comprehension_bodies_shadow_in_static_liveness ... ok
+test live_struct_sources_and_constant_conditions_keep_cycles ... ok
+test quoted_labels_do_not_conflict_with_aliases ... ok
 test promoted_optional_fields_are_closed_by_other_patterns ... ok
+test quoted_hash_labels_are_selectable_from_struct_values ... ok
 test quoted_parameter_names_use_identifier_values ... ok
 test quoted_hash_labels_are_distinct_from_definitions ... ok
+test pattern_value_structs_are_closed_for_external_fields ... ok
+test params_index_paths_resolve_through_nested_groups ... ok
+test renders_templates ... ok
 test quoted_labels_are_not_identifier_bindings ... ok
 test recursive_nested_definitions_do_not_overflow ... ok
-test renders_templates ... ok
-test patterns_allow_and_constrain_extra_fields ... ok
-test pattern_value_structs_are_closed_for_external_fields ... ok
-test rejects_missing_required_parameter ... ok
 test retry_int_shorthand_respects_the_cap ... ok
-test quoted_params_lookup_does_not_return_cached_definitions ... ok
+test patterns_allow_and_constrain_extra_fields ... ok
+test rejects_missing_required_parameter ... ok
 test quoted_and_index_selectors_do_not_reach_hidden_fields ... ok
 test recursive_definitions_apply_nested_constraints ... ok
-test self_selection_same_body_comprehension_is_a_documented_limit ... ok
-test recursive_definitions_materialize_finite_values ... ok
 test step_level_unknown_fields_are_rejected ... ok
 test regexp_quote_find_and_re2_classes_match_cue ... ok
-test string_escapes_are_decoded_and_invalid_ones_rejected ... ok
-test re2_quantifier_grammar_matches_cue ... ok
-test string_and_bytes_repetition_match_cue ... ok
+test quoted_params_lookup_does_not_return_cached_definitions ... ok
+test recursive_definitions_materialize_finite_values ... ok
 test root_params_patterns_constrain_fields ... ok
-test regexp_uses_ascii_classes_and_repeat_limits ... ok
+test self_selection_same_body_comprehension_is_a_documented_limit ... ok
 test sentinel_prefixed_quoted_labels_select_their_escaped_storage ... ok
+test regexp_uses_ascii_classes_and_repeat_limits ... ok
+test string_and_bytes_repetition_match_cue ... ok
 test scalar_unification_is_symmetric_and_strict ... ok
+test re2_quantifier_grammar_matches_cue ... ok
+test string_escapes_are_decoded_and_invalid_ones_rejected ... ok
 test string_index_addresses_regular_fields_only ... ok
 test underscore_alias_is_rejected ... ok
-test top_in_disjunctions_is_preserved ... ok
 test recursive_definitions_fill_defaults_at_every_depth ... ok
+test top_in_disjunctions_is_preserved ... ok
 test struct_string_indexes_respect_sentinel_namespaces ... ok
 test unicode_surrogates_and_string_escape_edges ... ok
+test unknown_workflow_fields_are_rejected ... ok
+test time_fractional_layouts_and_duration_edges ... ok
 test unicode_string_builtins_match_go_semantics ... ok
 test unreferenced_alias_inside_definition_is_rejected ... ok
-test unknown_workflow_fields_are_rejected ... ok
 test narrowed_defaults_recompute_dependent_fields ... ok
-test time_garbage_and_duration_fraction_edges ... ok
 test regex_class_complements_and_repeat_scanner_are_re2_compatible ... ok
 test versioned_imports_use_the_unversioned_alias ... ok
 test regexp_math_and_time_builtins_match_cue ... ok
-test unresolved_and_ambiguous_disjunctions_are_not_concrete ... ok
-test time_fractional_layouts_and_duration_edges ... ok
 test unification_sources_are_live_when_either_side_is_live ... ok
+test unresolved_and_ambiguous_disjunctions_are_not_concrete ... ok
+test time_garbage_and_duration_fraction_edges ... ok
 test struct_literal_shadowing_keeps_dead_bodies_dead ... ok
-test time_helpers_handle_fractions_signs_and_nanos ... ok
-test until_accepts_nested_json_provider_and_hyphenated_steps ... ok
 test required_fields_can_depend_on_materialized_optional_fields ... ok
+test until_accepts_nested_json_provider_and_hyphenated_steps ... ok
+test time_helpers_handle_fractions_signs_and_nanos ... ok
 test unresolved_disjunctions_are_rejected_in_boolean_contexts ... ok
 test time_layouts_enforce_go_field_widths ... ok
 test time_rfc3339_and_leap_seconds_are_strict ... ok
@@ -422,7 +472,7 @@ test undemanded_let_cycles_are_rejected_statically ... ok
 test tag_placement_rules_match_cue ... ok
 test deep_values_compare_and_materialize_beyond_128_levels ... ok
 
-test result: ok. 242 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+test result: ok. 242 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
 
    Doc-tests ostinato_adapters
 

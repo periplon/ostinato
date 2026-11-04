@@ -6,11 +6,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use ostinato_adapters::{
-    CommandAgent, CueCliLoader, NativeLoader, ProcessExecutor, SqliteStore, SystemClock,
-    TracingTelemetry, UuidGen, init_tracing,
+    CommandAgent, CueCliLoader, LocalWorkspace, NativeLoader, ProcessExecutor, SqliteStore,
+    SystemClock, TracingTelemetry, UuidGen, init_tracing,
 };
 use ostinato_application::{
-    Engine, EngineDeps, EngineOptions, ImproveRequest, LoadRequest, SpecLoader, params_patch,
+    Engine, EngineDeps, EngineOptions, ImproveRequest, LoadRequest, SpecLoader, Store, params_patch,
 };
 use ostinato_domain::{RunStatus, audit, build_plan};
 
@@ -107,6 +107,7 @@ enum Command {
     /// Resume a failed or interrupted run from its durable checkpoint.
     Resume {
         run: String,
+        /// Agent command for `provider: "command"` steps (receives the prompt on stdin).
         #[arg(long, env = "OSTINATO_AGENT")]
         agent_cmd: Option<String>,
         #[arg(long)]
@@ -135,6 +136,38 @@ enum Command {
         run: String,
         #[arg(long)]
         limit: Option<usize>,
+    },
+    /// List agent execution traces and verify their hashes.
+    Agents {
+        run: String,
+        /// Only show traces for this step.
+        #[arg(long)]
+        step: Option<String>,
+        /// Re-hash traces and artifacts; non-zero exit on mismatch.
+        #[arg(long)]
+        verify: bool,
+    },
+    /// List or extract agent artifacts.
+    Artifacts {
+        run: String,
+        /// Only list artifacts for this step.
+        #[arg(long)]
+        step: Option<String>,
+        /// Only list artifacts for this trace id.
+        #[arg(long)]
+        trace: Option<i64>,
+        /// Only list artifacts for this round.
+        #[arg(long)]
+        round: Option<u32>,
+        /// Only list artifacts for this attempt.
+        #[arg(long)]
+        attempt: Option<u32>,
+        /// Extract artifact contents under this directory.
+        #[arg(long)]
+        extract: Option<PathBuf>,
+        /// Allow writing into a non-empty directory or replacing files.
+        #[arg(long)]
+        force: bool,
     },
     /// Ask an agent for an improvement proposal (optionally recursive).
     Improve {
@@ -369,7 +402,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
         Command::Audit {
             command: AuditCommand::Verify { run },
         } => {
-            let (engine, _) = build_runtime(&cli, None, None)?;
+            let (engine, store) = build_runtime(&cli, None, None)?;
             let snapshot = engine
                 .store()
                 .snapshot(&run)?
@@ -432,6 +465,23 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                         );
                         return Ok(ExitCode::FAILURE);
                     }
+                    let trace_failures: Vec<_> = store
+                        .verify_agent_traces(&run)?
+                        .into_iter()
+                        .filter(|item| !item.ok)
+                        .collect();
+                    if !trace_failures.is_empty() {
+                        for item in trace_failures {
+                            eprintln!(
+                                "AUDIT FAILED run={run}: trace {} (step={} attempt={}): {}",
+                                item.trace_id,
+                                item.step,
+                                item.attempt,
+                                item.problems.join("; ")
+                            );
+                        }
+                        return Ok(ExitCode::FAILURE);
+                    }
                     println!("OK run={run} events={} head={head}", events.len());
                     Ok(ExitCode::SUCCESS)
                 }
@@ -470,6 +520,256 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::Agents { run, step, verify } => {
+            let (_, store) = build_runtime(&cli, None, None)?;
+            if store.load_run(&run)?.is_none() {
+                bail!("run not found: {run}");
+            }
+            let mut list_failed = false;
+            let mut traces = match store.agent_traces(&run) {
+                Ok(traces) => traces,
+                Err(err) if verify => {
+                    eprintln!("warning: cannot list traces: {err}");
+                    list_failed = true;
+                    Vec::new()
+                }
+                Err(err) => return Err(err.into()),
+            };
+            if let Some(step) = &step {
+                traces.retain(|record| &record.trace.step == step);
+            }
+            let verifications = if verify {
+                // Always verify the full run: a --step filter must not hide
+                // tampering in another step.
+                Some(store.verify_agent_traces(&run)?)
+            } else {
+                None
+            };
+            let verified = verifications
+                .as_ref()
+                .map(|items| items.iter().all(|item| item.ok));
+            if json {
+                if let Some(verifications) = &verifications {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "run": run,
+                            "verified": verified,
+                            "traces": traces,
+                            "verifications": verifications,
+                        }))?
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "run": run,
+                            "traces": traces,
+                        }))?
+                    );
+                }
+            } else {
+                if !list_failed {
+                    println!(
+                        "{:<6} {:<20} {:<5} {:<7} {:<9} {:<10} {:<12} {:<6} {:<8} {:<9} TRACE",
+                        "ID",
+                        "STEP",
+                        "ROUND",
+                        "ATTEMPT",
+                        "STATUS",
+                        "PROVIDER",
+                        "MODEL",
+                        "EXIT",
+                        "DUR(ms)",
+                        "ARTIFACTS"
+                    );
+                }
+                for record in &traces {
+                    let trace = &record.trace;
+                    println!(
+                        "{:<6} {:<20} {:<5} {:<7} {:<9} {:<10} {:<12} {:<6} {:<8} {:<9} {}",
+                        record.id,
+                        trace.step,
+                        trace.round,
+                        trace.attempt,
+                        if trace.success {
+                            "ok"
+                        } else if trace.timed_out {
+                            "timeout"
+                        } else {
+                            "failed"
+                        },
+                        trace.provider,
+                        trace.model.as_deref().unwrap_or("-"),
+                        trace
+                            .exit_code
+                            .map(|code| code.to_string())
+                            .unwrap_or_else(|| "-".to_owned()),
+                        trace.duration_ms,
+                        trace.artifacts.len(),
+                        record.trace_hash
+                    );
+                }
+                if traces.is_empty() && !list_failed {
+                    eprintln!("no agent traces matched");
+                }
+                if let Some(verifications) = &verifications {
+                    for item in verifications {
+                        if item.ok {
+                            println!(
+                                "OK trace={} step={} attempt={}",
+                                item.trace_id, item.step, item.attempt
+                            );
+                        } else {
+                            eprintln!(
+                                "TRACE FAILED trace={} step={} attempt={}: {}",
+                                item.trace_id,
+                                item.step,
+                                item.attempt,
+                                item.problems.join("; ")
+                            );
+                        }
+                    }
+                }
+            }
+            if verified == Some(false) {
+                Ok(ExitCode::FAILURE)
+            } else {
+                Ok(ExitCode::SUCCESS)
+            }
+        }
+        Command::Artifacts {
+            run,
+            step,
+            trace,
+            round,
+            attempt,
+            extract,
+            force,
+        } => {
+            let (_, store) = build_runtime(&cli, None, None)?;
+            if store.load_run(&run)?.is_none() {
+                bail!("run not found: {run}");
+            }
+            let traces = store.agent_traces(&run)?;
+            let selected: Vec<&ostinato_domain::AgentTraceRecord> = traces
+                .iter()
+                .filter(|record| {
+                    step.as_ref().is_none_or(|step| &record.trace.step == step)
+                        && trace.is_none_or(|trace| record.id == trace)
+                        && round.is_none_or(|round| record.trace.round == round)
+                        && attempt.is_none_or(|attempt| record.trace.attempt == attempt)
+                })
+                .collect();
+            let selected_ids: BTreeMap<i64, &ostinato_domain::AgentTraceRecord> =
+                selected.iter().map(|record| (record.id, *record)).collect();
+            if let Some(trace) = trace
+                && !selected_ids.contains_key(&trace)
+            {
+                bail!("agent trace {trace} not found for run {run}");
+            }
+            let mut artifacts = store.agent_artifacts(&run, step.as_deref())?;
+            artifacts.retain(|artifact| selected_ids.contains_key(&artifact.trace_id));
+            let mut extracted = Vec::new();
+            if let Some(directory) = &extract {
+                if directory.exists()
+                    && !force
+                    && std::fs::read_dir(directory)
+                        .map(|mut entries| entries.next().is_some())
+                        .unwrap_or(false)
+                {
+                    bail!(
+                        "extraction directory {} is not empty; pass --force to write into it",
+                        directory.display()
+                    );
+                }
+                let namespace = selected_ids.len() > 1;
+                for artifact in &artifacts {
+                    if artifact.kind == "deleted" {
+                        continue;
+                    }
+                    let Some(record) = selected_ids.get(&artifact.trace_id) else {
+                        continue;
+                    };
+                    let root = if namespace {
+                        directory
+                            .join(sanitize_path_component(&record.trace.step))
+                            .join(format!(
+                                "r{}-a{}-t{}",
+                                record.trace.round, record.trace.attempt, record.id
+                            ))
+                    } else {
+                        directory.clone()
+                    };
+                    let path = ostinato_adapters::write_artifact(
+                        &root,
+                        &artifact.name,
+                        &artifact.content,
+                        None,
+                        force,
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                    extracted.push(path.display().to_string());
+                }
+            }
+            if json {
+                let items: Vec<serde_json::Value> = artifacts
+                    .iter()
+                    .map(|artifact| {
+                        let record = selected_ids.get(&artifact.trace_id);
+                        serde_json::json!({
+                            "traceId": artifact.trace_id,
+                            "step": record.map(|record| record.trace.step.clone()),
+                            "round": record.map(|record| record.trace.round),
+                            "attempt": record.map(|record| record.trace.attempt),
+                            "name": artifact.name,
+                            "kind": artifact.kind,
+                            "sha256": artifact.sha256,
+                            "size": artifact.size,
+                            "storedSize": artifact.stored_size,
+                            "truncated": artifact.truncated,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "run": run,
+                        "artifacts": items,
+                        "extracted": extracted,
+                    }))?
+                );
+            } else {
+                println!(
+                    "{:<8} {:<20} {:<7} {:<9} {:<9} {:<9} NAME",
+                    "TRACE", "STEP", "ROUND", "ATTEMPT", "KIND", "SIZE"
+                );
+                for artifact in &artifacts {
+                    let record = selected_ids.get(&artifact.trace_id);
+                    println!(
+                        "{:<8} {:<20} {:<7} {:<9} {:<9} {:<9} {}",
+                        artifact.trace_id,
+                        record.map_or("-", |record| record.trace.step.as_str()),
+                        record.map_or(0, |record| record.trace.round),
+                        record.map_or(0, |record| record.trace.attempt),
+                        artifact.kind,
+                        if artifact.truncated {
+                            format!("{}*", artifact.size)
+                        } else {
+                            artifact.size.to_string()
+                        },
+                        display_safe(&artifact.name)
+                    );
+                }
+                if artifacts.is_empty() {
+                    eprintln!("no artifacts matched");
+                }
+                for path in &extracted {
+                    println!("extracted {}", display_safe(path));
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Improve {
             run,
             rounds,
@@ -491,6 +791,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     run_id: current_run.clone(),
                     parent_id: last_improvement_id,
                     round,
+                    attempt: 0,
                     prompt: prompt.clone(),
                     max_samples: 20,
                     command: None,
@@ -669,6 +970,57 @@ fn workflow_cwd(source: &str) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+fn display_safe(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_control() {
+            out.push_str(&format!("\\x{:02x}", u32::from(ch)));
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn sanitize_path_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len().min(64));
+    for ch in value.chars().take(64) {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() || out == "." || out == ".." {
+        "step".to_owned()
+    } else {
+        out
+    }
+}
+
+fn find_in_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(program);
+        if candidate.is_file() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(metadata) = candidate.metadata()
+                    && metadata.permissions().mode() & 0o111 != 0
+                {
+                    return Some(candidate);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 fn json_param_strings(value: &serde_json::Value) -> BTreeMap<String, String> {
     match value {
         serde_json::Value::Object(map) => map
@@ -696,6 +1048,7 @@ fn build_runtime(
             store: store.clone(),
             executor: Arc::new(ProcessExecutor),
             agent: Arc::new(CommandAgent::new(agent_cmd)),
+            workspace: Arc::new(LocalWorkspace::new(None)),
             clock: Arc::new(SystemClock),
             ids: Arc::new(UuidGen),
             telemetry: Arc::new(TracingTelemetry),
@@ -929,10 +1282,18 @@ fn doctor(cli: &Cli) -> Result<ExitCode> {
     println!(
         "agent {}",
         std::env::var("OSTINATO_AGENT").map_or_else(
-            |_| "not configured (agent steps will fail)".to_owned(),
+            |_| "not configured (command steps need agent.command)".to_owned(),
             |_| "configured".to_owned()
         )
     );
+    for provider in ["claude", "codex", "opencode"] {
+        println!(
+            "agent provider {} {}",
+            provider,
+            find_in_path(provider)
+                .map_or_else(|| "not found".to_owned(), |path| path.display().to_string())
+        );
+    }
     // Prove the store can be opened and migrated.
     let _ = SqliteStore::open(&cli.db)?;
     println!("store OK");

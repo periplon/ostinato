@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path};
 
 use ostinato_domain::{
-    AgentSpec, BranchSpec, CycleSpec, ExecSpec, GatewaySpec, ImproveSpec, JoinMode, RetryPolicy,
-    SplitMode, StepKind, StepSpec, WorkflowSpec, build_plan,
+    AgentDefinition, AgentProvider, AgentSpec, BranchSpec, CycleSpec, ExecSpec, GatewaySpec,
+    ImproveSpec, IsolationMode, IsolationSpec, JoinMode, PromptDelivery, RetryPolicy, SplitMode,
+    StepKind, StepSpec, WorkflowSpec, build_plan,
 };
 use serde_json::{Map, Value as Json};
 
@@ -123,7 +125,8 @@ pub fn compile_value(root: &Value) -> Result<WorkflowSpec, LangError> {
     let workflow = root
         .get("workflow")
         .ok_or_else(|| LangError::Workflow("missing top-level `workflow` struct".to_owned()))?;
-    let spec = extract_workflow(workflow)?;
+    let agents = extract_agents(root.get("agents"))?;
+    let spec = extract_workflow(workflow, &agents)?;
     validate_gateway_cross_references(&spec)?;
     validate_gateway_condition_scopes(&spec)?;
     build_plan(&spec).map_err(|err| LangError::Workflow(err.to_string()))?;
@@ -205,7 +208,10 @@ fn extract_params(root: &Struct) -> Result<Vec<ParamSpec>, LangError> {
     Ok(params)
 }
 
-fn extract_workflow(value: &Value) -> Result<WorkflowSpec, LangError> {
+fn extract_workflow(
+    value: &Value,
+    agents: &BTreeMap<String, AgentDefinition>,
+) -> Result<WorkflowSpec, LangError> {
     let map = expect_struct(value, "workflow")?;
     reject_unknown(map, "workflow", &["name", "maxParallel", "steps"])?;
     let name = opt_string(map, "name", "workflow.name")?.unwrap_or_else(|| "workflow".to_owned());
@@ -238,7 +244,7 @@ fn extract_workflow(value: &Value) -> Result<WorkflowSpec, LangError> {
         if is_hidden_key(step_name) {
             continue;
         }
-        let step = extract_step(step_name, step_value)?;
+        let step = extract_step(step_name, step_value, agents)?;
         steps.insert(step_name.clone(), step);
     }
 
@@ -249,7 +255,11 @@ fn extract_workflow(value: &Value) -> Result<WorkflowSpec, LangError> {
     })
 }
 
-fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
+fn extract_step(
+    name: &str,
+    value: &Value,
+    agents: &BTreeMap<String, AgentDefinition>,
+) -> Result<StepSpec, LangError> {
     let path = format!("workflow.steps.{name}");
     let map = expect_struct(value, &path)?;
     reject_unknown(
@@ -368,7 +378,7 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
         None => None,
     };
     let agent = match map.get("agent").map(Value::concretize) {
-        Some(value) => Some(extract_agent(value, &format!("{path}.agent"))?),
+        Some(value) => Some(extract_agent(value, &format!("{path}.agent"), agents)?),
         None => None,
     };
     let improve = match map.get("improve").map(Value::concretize) {
@@ -386,6 +396,11 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
                     "{path}.exec.cmd must not be empty"
                 )));
             }
+            if agent.is_some() {
+                return Err(LangError::Workflow(format!(
+                    "{path}.agent is only allowed when kind = \"agent\""
+                )));
+            }
         }
         StepKind::Agent => {
             let spec = agent.as_ref().ok_or_else(|| {
@@ -396,6 +411,16 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
                     "{path}.agent.prompt must not be empty"
                 )));
             }
+            if spec.timeout_ms == Some(0) {
+                return Err(LangError::Workflow(format!(
+                    "{path}.agent.timeoutMs must be >= 1 for agent steps"
+                )));
+            }
+            if timeout_ms == Some(0) {
+                return Err(LangError::Workflow(format!(
+                    "{path}.timeoutMs must be >= 1 for agent steps"
+                )));
+            }
         }
         StepKind::Improve => {
             if improve.is_none() {
@@ -403,8 +428,19 @@ fn extract_step(name: &str, value: &Value) -> Result<StepSpec, LangError> {
                     "{path}.improve is required when kind = \"improve\""
                 )));
             }
+            if agent.is_some() {
+                return Err(LangError::Workflow(format!(
+                    "{path}.agent is only allowed when kind = \"agent\""
+                )));
+            }
         }
-        StepKind::Noop | StepKind::Gateway => {}
+        StepKind::Noop | StepKind::Gateway => {
+            if agent.is_some() {
+                return Err(LangError::Workflow(format!(
+                    "{path}.agent is only allowed when kind = \"agent\""
+                )));
+            }
+        }
     }
 
     Ok(StepSpec {
@@ -699,39 +735,537 @@ fn extract_exec(value: &Value, path: &str) -> Result<ExecSpec, LangError> {
     })
 }
 
-fn extract_agent(value: &Value, path: &str) -> Result<AgentSpec, LangError> {
-    let map = expect_struct(value, path)?;
-    reject_unknown(map, path, &["prompt", "system", "model", "command"])?;
-    let prompt = opt_string(map, "prompt", &format!("{path}.prompt"))?
-        .ok_or_else(|| LangError::Workflow(format!("{path}.prompt is required")))?;
-    let system = opt_string(map, "system", &format!("{path}.system"))?;
+fn extract_agents(value: Option<&Value>) -> Result<BTreeMap<String, AgentDefinition>, LangError> {
+    let Some(value) = value else {
+        return Ok(BTreeMap::new());
+    };
+    let map = expect_struct(value, "agents")?;
+    let mut agents = BTreeMap::new();
+    for (name, value) in map {
+        if is_hidden_key(name) {
+            continue;
+        }
+        if name.is_empty() {
+            return Err(LangError::Workflow(
+                "agents: definition names must not be empty".to_owned(),
+            ));
+        }
+        let definition = extract_agent_definition(name, value)?;
+        agents.insert(name.clone(), definition);
+    }
+    Ok(agents)
+}
+
+fn extract_agent_definition(name: &str, value: &Value) -> Result<AgentDefinition, LangError> {
+    let path = format!("agents.{name}");
+    let map = expect_struct(value, &path)?;
+    reject_unknown(
+        map,
+        &path,
+        &[
+            "provider",
+            "command",
+            "model",
+            "system",
+            "prompt",
+            "promptDelivery",
+            "env",
+            "timeoutMs",
+            "isolation",
+            "artifacts",
+        ],
+    )?;
+    let provider = parse_provider(map, &path)?.unwrap_or_default();
+    let (command, command_shell) = match map.get("command").map(Value::concretize) {
+        Some(value) => {
+            let (command, shell) = parse_command(value, &format!("{path}.command"))?;
+            (Some(command), shell)
+        }
+        None => (None, false),
+    };
     let model = opt_string(map, "model", &format!("{path}.model"))?;
-    let command = match map.get("command").map(Value::concretize) {
+    let system = opt_string(map, "system", &format!("{path}.system"))?;
+    let prompt = opt_string(map, "prompt", &format!("{path}.prompt"))?;
+    if prompt
+        .as_ref()
+        .is_some_and(|prompt| prompt.trim().is_empty())
+    {
+        return Err(LangError::Workflow(format!(
+            "{path}.prompt must not be empty"
+        )));
+    }
+    let prompt_delivery = parse_prompt_delivery(map, &path)?;
+    let env = parse_agent_env(map.get("env"), &format!("{path}.env"))?;
+    let timeout_ms = parse_agent_timeout(map, &path)?;
+    let isolation = match map.get("isolation").map(Value::concretize) {
+        Some(value) => Some(parse_isolation(value, &format!("{path}.isolation"))?),
         None => None,
-        Some(Value::OpenList(_)) => Some(Vec::new()),
-        Some(Value::List(list) | Value::OpenListPrefix(list, _)) => {
-            let mut command = Vec::with_capacity(list.len());
-            for item in list {
-                command.push(as_string(item, &format!("{path}.command"))?);
-            }
-            Some(command)
+    };
+    let artifacts = match map.get("artifacts").map(Value::concretize) {
+        Some(value) => parse_artifacts(value, &format!("{path}.artifacts"))?,
+        None => Vec::new(),
+    };
+    validate_command_delivery(&path, command_shell, prompt_delivery)?;
+    Ok(AgentDefinition {
+        name: name.to_owned(),
+        provider,
+        command,
+        model,
+        system,
+        prompt,
+        prompt_delivery,
+        env,
+        timeout_ms,
+        isolation,
+        artifacts,
+    })
+}
+
+fn extract_agent(
+    value: &Value,
+    path: &str,
+    agents: &BTreeMap<String, AgentDefinition>,
+) -> Result<AgentSpec, LangError> {
+    let (step_map, use_name) = match value.concretize().clone() {
+        Value::String(name) => (None, Some(name)),
+        Value::Struct(map) | Value::Definition { fields: map, .. } => {
+            reject_unknown(
+                &map,
+                path,
+                &[
+                    "use",
+                    "provider",
+                    "command",
+                    "prompt",
+                    "system",
+                    "model",
+                    "promptDelivery",
+                    "env",
+                    "timeoutMs",
+                    "isolation",
+                    "artifacts",
+                ],
+            )?;
+            let use_name = opt_string(&map, "use", &format!("{path}.use"))?;
+            (Some(map), use_name)
         }
-        Some(Value::String(command)) => {
-            Some(vec!["sh".to_owned(), "-c".to_owned(), command.clone()])
-        }
-        Some(other) => {
+        other => {
             return Err(LangError::Workflow(format!(
-                "{path}.command must be a string or list, found {}",
+                "{path} must be a string or struct, found {}",
                 other.type_name()
             )));
         }
     };
+    merge_agent(step_map.as_ref(), use_name.as_deref(), path, agents)
+}
+
+fn merge_agent(
+    step_map: Option<&Struct>,
+    use_name: Option<&str>,
+    path: &str,
+    agents: &BTreeMap<String, AgentDefinition>,
+) -> Result<AgentSpec, LangError> {
+    let definition = match use_name {
+        Some(name) => Some(agents.get(name).ok_or_else(|| {
+            LangError::Workflow(format!(
+                "{path}.use: unknown agent definition `{name}` (declared under top-level `agents`)"
+            ))
+        })?),
+        None => None,
+    };
+    let definition_name = definition.map(|definition| definition.name.clone());
+
+    let provider = match step_map.and_then(|map| map.get("provider")) {
+        Some(value) => parse_provider_value(value, &format!("{path}.provider"))?,
+        None => definition.map_or(AgentProvider::Command, |definition| definition.provider),
+    };
+    let (command, command_shell) = match step_map.and_then(|map| map.get("command")) {
+        Some(value) => {
+            let (command, shell) = parse_command(value.concretize(), &format!("{path}.command"))?;
+            (Some(command), shell)
+        }
+        None => (
+            definition.and_then(|definition| definition.command.clone()),
+            definition
+                .and_then(|definition| definition.command.as_ref())
+                .is_some_and(|command| is_shell_argv(command)),
+        ),
+    };
+    let prompt = match step_map.and_then(|map| map.get("prompt")) {
+        Some(value) => as_string(value, &format!("{path}.prompt"))?,
+        None => definition
+            .and_then(|definition| definition.prompt.clone())
+            .unwrap_or_default(),
+    };
+    if prompt.trim().is_empty() {
+        return Err(match definition {
+            Some(definition) => LangError::Workflow(format!(
+                "{path}.prompt is required: definition `{}` has no prompt and the step supplies none",
+                definition.name
+            )),
+            None => LangError::Workflow(format!("{path}.prompt is required")),
+        });
+    }
+    let system = match step_map.and_then(|map| map.get("system")) {
+        Some(value) => Some(as_string(value, &format!("{path}.system"))?),
+        None => definition.and_then(|definition| definition.system.clone()),
+    };
+    let model = match step_map.and_then(|map| map.get("model")) {
+        Some(value) => Some(as_string(value, &format!("{path}.model"))?),
+        None => definition.and_then(|definition| definition.model.clone()),
+    };
+    let prompt_delivery = match step_map.and_then(|map| map.get("promptDelivery")) {
+        Some(value) => Some(parse_prompt_delivery_value(
+            value,
+            &format!("{path}.promptDelivery"),
+        )?),
+        None => definition.and_then(|definition| definition.prompt_delivery),
+    };
+    let mut env = definition
+        .map(|definition| definition.env.clone())
+        .unwrap_or_default();
+    if let Some(map) = step_map {
+        let step_env = parse_agent_env(map.get("env"), &format!("{path}.env"))?;
+        env.extend(step_env);
+    }
+    let timeout_ms = match step_map.and_then(|map| map.get("timeoutMs")) {
+        Some(value) => Some(parse_u64(value, &format!("{path}.timeoutMs"), true)?),
+        None => definition.and_then(|definition| definition.timeout_ms),
+    };
+    let isolation = match step_map.and_then(|map| map.get("isolation")) {
+        Some(value) => Some(parse_isolation(
+            value.concretize(),
+            &format!("{path}.isolation"),
+        )?),
+        None => definition.and_then(|definition| definition.isolation.clone()),
+    };
+    let artifacts = match step_map.and_then(|map| map.get("artifacts")) {
+        Some(value) => parse_artifacts(value.concretize(), &format!("{path}.artifacts"))?,
+        None => definition
+            .map(|definition| definition.artifacts.clone())
+            .unwrap_or_default(),
+    };
+    validate_command_delivery(path, command_shell, prompt_delivery)?;
     Ok(AgentSpec {
         prompt,
         system,
         model,
         command,
+        definition: definition_name,
+        provider,
+        prompt_delivery,
+        env,
+        timeout_ms,
+        isolation,
+        artifacts,
     })
+}
+
+fn parse_provider(map: &Struct, path: &str) -> Result<Option<AgentProvider>, LangError> {
+    match map.get("provider") {
+        Some(value) => Ok(Some(parse_provider_value(
+            value,
+            &format!("{path}.provider"),
+        )?)),
+        None => Ok(None),
+    }
+}
+
+fn parse_provider_value(value: &Value, path: &str) -> Result<AgentProvider, LangError> {
+    let name = as_string(value, path)?;
+    AgentProvider::parse(&name).ok_or_else(|| {
+        LangError::Workflow(format!(
+            "{path}: unknown provider `{name}` (expected command, claude, codex or opencode)"
+        ))
+    })
+}
+
+fn parse_prompt_delivery(map: &Struct, path: &str) -> Result<Option<PromptDelivery>, LangError> {
+    match map.get("promptDelivery") {
+        Some(value) => Ok(Some(parse_prompt_delivery_value(
+            value,
+            &format!("{path}.promptDelivery"),
+        )?)),
+        None => Ok(None),
+    }
+}
+
+fn parse_prompt_delivery_value(value: &Value, path: &str) -> Result<PromptDelivery, LangError> {
+    let name = as_string(value, path)?;
+    PromptDelivery::parse(&name).ok_or_else(|| {
+        LangError::Workflow(format!(
+            "{path}: unknown prompt delivery `{name}` (expected stdin or arg)"
+        ))
+    })
+}
+
+fn parse_command(value: &Value, path: &str) -> Result<(Vec<String>, bool), LangError> {
+    match value.concretize() {
+        Value::String(command) => {
+            if command.trim().is_empty() {
+                return Err(LangError::Workflow(format!("{path} must not be empty")));
+            }
+            Ok((
+                vec!["sh".to_owned(), "-c".to_owned(), command.clone()],
+                true,
+            ))
+        }
+        Value::OpenList(_) => Err(LangError::Workflow(format!(
+            "{path} must contain concrete argv elements"
+        ))),
+        Value::List(list) | Value::OpenListPrefix(list, _) => {
+            if list.is_empty() {
+                return Err(LangError::Workflow(format!("{path} must not be empty")));
+            }
+            let mut command = Vec::with_capacity(list.len());
+            for item in list {
+                command.push(as_string(item, path)?);
+            }
+            Ok((command, false))
+        }
+        other => Err(LangError::Workflow(format!(
+            "{path} must be a string or list of strings, found {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn is_shell_argv(argv: &[String]) -> bool {
+    argv.len() == 3
+        && argv[1] == "-c"
+        && matches!(argv[0].as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh")
+}
+
+fn validate_command_delivery(
+    path: &str,
+    command_shell: bool,
+    delivery: Option<PromptDelivery>,
+) -> Result<(), LangError> {
+    if command_shell && delivery == Some(PromptDelivery::Arg) {
+        return Err(LangError::Workflow(format!(
+            "{path}: promptDelivery `arg` cannot be used with a shell-string command; use argv form or `stdin`"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_isolation(value: &Value, path: &str) -> Result<IsolationSpec, LangError> {
+    match value.concretize() {
+        Value::String(name) => {
+            let mode = IsolationMode::parse(name).ok_or_else(|| {
+                LangError::Workflow(format!(
+                    "{path}: unknown isolation mode `{name}` (expected none or worktree)"
+                ))
+            })?;
+            Ok(IsolationSpec {
+                mode,
+                base: None,
+                keep: false,
+            })
+        }
+        Value::Struct(map) | Value::Definition { fields: map, .. } => {
+            reject_unknown(map, path, &["mode", "base", "keep"])?;
+            let mode = match opt_string(map, "mode", &format!("{path}.mode"))? {
+                Some(name) => IsolationMode::parse(&name).ok_or_else(|| {
+                    LangError::Workflow(format!(
+                        "{path}.mode: unknown isolation mode `{name}` (expected none or worktree)"
+                    ))
+                })?,
+                None => IsolationMode::None,
+            };
+            let base = opt_string(map, "base", &format!("{path}.base"))?;
+            if let Some(base) = &base {
+                if base.trim().is_empty() {
+                    return Err(LangError::Workflow(format!(
+                        "{path}.base must not be empty"
+                    )));
+                }
+                if base.starts_with('-') {
+                    return Err(LangError::Workflow(format!(
+                        "{path}.base must not start with `-`"
+                    )));
+                }
+                if base.contains('\0') {
+                    return Err(LangError::Workflow(format!(
+                        "{path}.base must not contain NUL"
+                    )));
+                }
+                if base.len() > 256 {
+                    return Err(LangError::Workflow(format!("{path}.base is too long")));
+                }
+            }
+            let keep = opt_bool(map, "keep", &format!("{path}.keep"))?.unwrap_or(false);
+            if mode == IsolationMode::None && (base.is_some() || keep) {
+                return Err(LangError::Workflow(format!(
+                    "{path}: `base` and `keep` are only meaningful with mode `worktree`"
+                )));
+            }
+            Ok(IsolationSpec { mode, base, keep })
+        }
+        other => Err(LangError::Workflow(format!(
+            "{path} must be a string or struct, found {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn parse_artifacts(value: &Value, path: &str) -> Result<Vec<String>, LangError> {
+    let patterns = match value.concretize().clone() {
+        Value::String(pattern) => vec![pattern],
+        Value::OpenList(_) => Vec::new(),
+        Value::List(list) | Value::OpenListPrefix(list, _) => {
+            let mut patterns = Vec::with_capacity(list.len());
+            for item in list {
+                patterns.push(as_string(&item, path)?);
+            }
+            patterns
+        }
+        other => {
+            return Err(LangError::Workflow(format!(
+                "{path} must be a string or list of strings, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    for pattern in &patterns {
+        validate_artifact_pattern(pattern, path)?;
+    }
+    Ok(patterns)
+}
+
+fn validate_artifact_pattern(pattern: &str, path: &str) -> Result<(), LangError> {
+    let trimmed = pattern.trim();
+    if trimmed.is_empty() {
+        return Err(LangError::Workflow(format!(
+            "{path}: artifact globs must not be empty"
+        )));
+    }
+    if trimmed.contains('\0') {
+        return Err(LangError::Workflow(format!(
+            "{path}: artifact globs must not contain NUL"
+        )));
+    }
+    glob::Pattern::new(trimmed).map_err(|err| {
+        LangError::Workflow(format!("{path}: invalid artifact glob `{pattern}`: {err}"))
+    })?;
+    let candidate = Path::new(trimmed);
+    if candidate.is_absolute() {
+        return Err(LangError::Workflow(format!(
+            "{path}: artifact glob `{pattern}` must be relative"
+        )));
+    }
+    for component in candidate.components() {
+        match component {
+            Component::Normal(value) => {
+                if matches!(
+                    value.to_string_lossy().as_ref(),
+                    ".git" | ".ostinato" | "_isolation"
+                ) {
+                    return Err(LangError::Workflow(format!(
+                        "{path}: artifact glob `{pattern}` may not capture internal directories"
+                    )));
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(LangError::Workflow(format!(
+                    "{path}: artifact glob `{pattern}` must be relative and must not contain `..`"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_agent_env(
+    value: Option<&Value>,
+    path: &str,
+) -> Result<BTreeMap<String, String>, LangError> {
+    let Some(value) = value else {
+        return Ok(BTreeMap::new());
+    };
+    let map = expect_struct(value, path)?;
+    let mut env = BTreeMap::new();
+    for (key, value) in map {
+        if is_hidden_key(key) {
+            continue;
+        }
+        validate_agent_env_key(key, path)?;
+        env.insert(key.clone(), as_string(value, &format!("{path}.{key}"))?);
+    }
+    Ok(env)
+}
+
+fn validate_agent_env_key(key: &str, path: &str) -> Result<(), LangError> {
+    if key.is_empty() || key.contains('=') || key.contains('\0') {
+        return Err(LangError::Workflow(format!(
+            "{path}: invalid environment variable name `{key}`"
+        )));
+    }
+    const DENIED: &[&str] = &[
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "BASH_ENV",
+        "ENV",
+        "SHELLOPTS",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_SSH_COMMAND",
+        "PAGER",
+        "PROMPT_COMMAND",
+        "NODE_OPTIONS",
+        "PYTHONSTARTUP",
+        "PERL5OPT",
+        "RUBYOPT",
+        "OSTINATO_AGENT",
+        "OSTINATO_AGENT_NAME",
+        "OSTINATO_STEP",
+        "OSTINATO_RUN_ID",
+        "OSTINATO_MODEL",
+        "OSTINATO_PROVIDER",
+    ];
+    if DENIED.contains(&key) {
+        return Err(LangError::Workflow(format!(
+            "{path}: environment variable `{key}` is reserved or unsafe for agent steps"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_agent_timeout(map: &Struct, path: &str) -> Result<Option<u64>, LangError> {
+    match map.get("timeoutMs") {
+        Some(value) => Ok(Some(parse_u64(value, &format!("{path}.timeoutMs"), true)?)),
+        None => Ok(None),
+    }
+}
+
+fn parse_u64(value: &Value, path: &str, positive: bool) -> Result<u64, LangError> {
+    let raw = opt_int_value(value, path)?;
+    let value = u64::try_from(raw)
+        .map_err(|_| LangError::Workflow(format!("{path} must be non-negative")))?;
+    if positive && value == 0 {
+        return Err(LangError::Workflow(format!("{path} must be >= 1")));
+    }
+    Ok(value)
+}
+
+fn opt_int_value(value: &Value, path: &str) -> Result<i64, LangError> {
+    match value.concretize() {
+        Value::Int(value) => Ok(*value),
+        Value::BigInt(value) => i64::try_from(value)
+            .map_err(|_| LangError::Workflow(format!("{path} must fit in an int"))),
+        other => Err(LangError::Workflow(format!(
+            "{path} must be an int, found {}",
+            other.type_name()
+        ))),
+    }
 }
 
 fn extract_improve(value: &Value, path: &str) -> Result<ImproveSpec, LangError> {

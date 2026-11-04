@@ -1,11 +1,11 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.XIQzy6rJp7/db.sqlite status e947c835-a3ee-45d5-8659-707b9c8d6593
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Z7AUIGLSpC/db.sqlite status ddfa1eea-0543-42a6-a9f7-08287c83bd8e
 
-run=e947c835-a3ee-45d5-8659-707b9c8d6593 workflow=cycle status=succeeded resumeIndex=11
-source=/Users/joanmarc/dailywork/jmca/ostinato/examples/cycle.cue
-created=2026-11-04T07:14:22.686Z updated=2026-11-04T07:14:22.781Z
+run=ddfa1eea-0543-42a6-a9f7-08287c83bd8e workflow=cycle status=succeeded resumeIndex=11
+source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/examples/cycle.cue
+created=2026-11-04T07:26:30.797Z updated=2026-11-04T07:26:30.859Z
 STEP                     STATUS     VISITS ATTEMPTS
-refine                   succeeded  3      1       
-review                   succeeded  3      1       
-setup                    succeeded  1      1       
+refine                   succeeded  3      1
+review                   succeeded  3      1
+setup                    succeeded  1      1
 
 exit=0

@@ -56,7 +56,10 @@ workflow outside the Rust surface has a supported escape hatch.
   `@tag` injection;
 - workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, branch
   conditions, default branches, dead-path elimination and `stepStatus` routing
-  (v1 rejects gateways combined with cycles and implicit joins).
+  (v1 rejects gateways combined with cycles and implicit joins);
+- named agent definitions (`agents` + `agent.use`), external CLI providers
+  (`command`/`claude`/`codex`/`opencode`), durable agent traces/artifacts and
+  optional git-worktree isolation.
 
 ## Explicitly out of scope
 

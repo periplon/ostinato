@@ -1,8 +1,8 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.XIQzy6rJp7/resume.sqlite resume 2cca6a50-4ddc-4fe8-9400-9d95c4853cb0
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Z7AUIGLSpC/resume.sqlite resume 2d1e0828-a7ef-467d-a7f4-abfbcf04d324
 
-run=2cca6a50-4ddc-4fe8-9400-9d95c4853cb0 workflow=resume-evidence status=succeeded durationMs=6
+run=2d1e0828-a7ef-467d-a7f4-abfbcf04d324 workflow=resume-evidence status=succeeded durationMs=8
 STEP                     STATUS     VISITS ATTEMPTS
-a                        succeeded  1      1       
-b                        succeeded  1      1       
+a                        succeeded  1      1
+b                        succeeded  1      1
 
 exit=0

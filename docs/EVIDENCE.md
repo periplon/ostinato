@@ -7,7 +7,7 @@ Reproduce with `CUE_BIN=cue ./scripts/evidence.sh`. Paths normalized; output/has
 Toolchain and pinning.
 
 ````text
-ostinato 0.23.2
+ostinato 0.24.0
 cue: cue version v0.17.1
 rust: rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)
 cargo: cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)
@@ -902,6 +902,151 @@ ostinato_gateways_evaluated_total 2
 ostinato_attempts_total 3
 ostinato_retries_total 0
 ostinato_attempt_duration_ms_avg 4.33
+
+exit=0
+````
+
+## Agents: definitions, traces and worktree isolation
+
+`examples/agents.cue` declares a reviewer definition with `provider: "command"`,
+`isolation: "worktree"` and an artifact glob. The run succeeds, the checkout
+stays clean, and the agent's report and patch are captured as artifacts.
+
+````text
+### ostinato validate examples/agents.cue
+
+OK agents (2 steps, maxParallel=2, evaluator=rust (CUE workflow semantics))
+
+exit=0
+````
+
+````text
+### ostinato run examples/agents.cue
+
+run=93c83ac2-91d5-466e-a893-3a3c142affe5 workflow=agents status=succeeded durationMs=390
+STEP                     STATUS     VISITS ATTEMPTS
+report                   succeeded  1      1
+review                   succeeded  1      1
+
+exit=0
+````
+
+````text
+### ostinato agents <run>
+
+ID     STEP                 ROUND ATTEMPT STATUS    PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
+1      review               0     0       ok        command    example-model 0      380      2         252e1aa0be0779784fd659abc2e9dd3f5aabfd79644b7912941c2229a242f7d4
+
+exit=0
+````
+
+````text
+### ostinato agents <run> --verify
+
+ID     STEP                 ROUND ATTEMPT STATUS    PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
+1      review               0     0       ok        command    example-model 0      380      2         252e1aa0be0779784fd659abc2e9dd3f5aabfd79644b7912941c2229a242f7d4
+OK trace=1 step=review attempt=0
+
+exit=0
+````
+
+````text
+### ostinato artifacts <run> --json
+
+{
+  "artifacts": [
+    {
+      "attempt": 0,
+      "kind": "patch",
+      "name": "_isolation/changes.patch",
+      "round": 0,
+      "sha256": "ee8459b07182fdbc0f789c415ac9bf2936c8f4fed550c02b4746f6cc8aa82475",
+      "size": 334,
+      "step": "review",
+      "storedSize": 361,
+      "traceId": 1,
+      "truncated": false
+    },
+    {
+      "attempt": 0,
+      "kind": "declared",
+      "name": "reports/review.md",
+      "round": 0,
+      "sha256": "e67b117e4c5b941e4ec725412f9eb23262e581323314253d970f9bead3628c18",
+      "size": 173,
+      "step": "review",
+      "storedSize": 173,
+      "traceId": 1,
+      "truncated": false
+    }
+  ],
+  "extracted": [],
+  "run": "93c83ac2-91d5-466e-a893-3a3c142affe5"
+}
+
+exit=0
+````
+
+````text
+### ostinato artifacts <run> --extract <dir>
+
+TRACE    STEP                 ROUND   ATTEMPT   KIND      SIZE      NAME
+1        review               0       0         patch     361       _isolation/changes.patch
+1        review               0       0         declared  173       reports/review.md
+extracted <dir>/_isolation/changes.patch
+extracted <dir>/reports/review.md
+
+exit=0
+````
+
+````text
+### ostinato audit verify <run>
+
+OK run=93c83ac2-91d5-466e-a893-3a3c142affe5 events=8 head=fe8ef4893473800d0a31799dbcb220832cd7eb42d82d673a7568f2106d8dbb26
+
+exit=0
+````
+
+The original checkout is untouched; the worktree is removed after capture. The
+E2E test `worktree_isolation_keeps_the_checkout_clean_and_captures_changes`
+asserts the tracked file is unchanged and the agent-created file is absent from
+the checkout; `evidence/26-agents-worktree.txt` shows the generated worktree
+list during the evidence run (the run itself was on a dirty working tree, so
+that transcript is not a cleanliness proof).
+
+````text
+### git worktree list
+/Users/joanmarc/dailywork/jmca/ostinato                              c2406e5 [main]
+/Users/joanmarc/dailywork/jmca/ostinato-gateways                     668e12f [feat/gateways]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions 085669c [feat/agent-definitions]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan     7b778bb [feat/gateways-r0-r4]
+````
+
+Tampering with the stored trace is detected by both entry points:
+
+````text
+### ostinato agents <run> --verify
+TRACE FAILED trace=1 step=review attempt=0: trace hash does not match the stored trace JSON; trace JSON is invalid: missing field `run_id` at line 1 column 17
+exit=1
+
+### ostinato audit verify <run>
+AUDIT FAILED run=...: trace 1 (step=review attempt=0): trace hash does not match the stored trace JSON; trace JSON is invalid: missing field `run_id` at line 1 column 17
+exit=1
+````
+
+`doctor` discovers the external CLIs:
+
+````text
+### ostinato doctor
+ostinato 0.24.0
+evaluator rust (required CUE workflow semantics; default)
+oracle cue version v0.17.1
+db <workdir>/agents.sqlite
+agent not configured (command steps need agent.command)
+agent provider claude /Users/joanmarc/.local/bin/claude
+agent provider codex /Users/joanmarc/.local/bin/codex
+agent provider opencode /Users/joanmarc/.opencode/bin/opencode
+store OK
 
 exit=0
 ````

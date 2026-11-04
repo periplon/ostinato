@@ -1,5 +1,5 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.XIQzy6rJp7/db.sqlite audit verify e947c835-a3ee-45d5-8659-707b9c8d6593
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Z7AUIGLSpC/db.sqlite audit verify ddfa1eea-0543-42a6-a9f7-08287c83bd8e
 
-OK run=e947c835-a3ee-45d5-8659-707b9c8d6593 events=19 head=848a6c646e4e9e69d2571c99a5ef005746ce15cd32290ffbd6cbfd51fea28277
+OK run=ddfa1eea-0543-42a6-a9f7-08287c83bd8e events=19 head=6d5d14d773f6b6489edb92ae3cd4067d309be996aee4f2d54cc5179fc36bb607
 
 exit=0
