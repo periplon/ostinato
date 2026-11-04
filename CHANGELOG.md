@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.29.0
+
+Local-module task exports.
+
+- Local CUE modules may import `tool/exec` (or aliases) and export tasks;
+  `a: producer: lib.run`, nested `lib.tasks.r1` and `lib.group.run` are
+  scheduled, injected and dependency-ordered like inline tasks.
+- Imported modules are evaluated lazily for incompleteness, so unused fields
+  with pending outputs no longer break module imports.
+- CUE leaves imported tasks non-concrete when one module supplies more than
+  one task in a command; Ostinato mirrors that to stay parity-compatible.
+- Added a differential e2e test (six success shapes plus the multi-task
+  rejection) and three module-backed tool-conformance cases.
+- 436 tests (99 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.28.1
 
 Nested-output inference correctness.
