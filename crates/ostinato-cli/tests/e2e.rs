@@ -6430,6 +6430,28 @@ command: selconcretesel: group.inner
             None,
             None,
         ),
+        (
+            "selindexconcrete",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let group = {inner: {
+	src: {
+		run: exec.Run & {cmd: ["true"], stdout: string}
+		producer: {stdout: "concrete"}
+	}
+	k: "producer"
+	alias: src[k]
+	p: cli.Print & {text: "S=\(alias.stdout)"}
+}}
+command: selindexconcrete: group.inner
+"#,
+            None,
+            None,
+        ),
     ];
     for (name, source, seed, artifact) in cases {
         let cue_dir = tempfile::tempdir().expect("tempdir");
@@ -6517,6 +6539,23 @@ let group = {inner: {
 	p: cli.Print & {text: "R=\(alias.stdout)"}
 }}
 command: letindexalias: group.inner
+"#,
+        ),
+        (
+            "letindexconst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let group = {inner: {
+	src: {run: exec.Run & {cmd: ["sh", "-c", "printf 'abc' > marker"], stdout: string}}
+	k: "run"
+	alias: src[k]
+	p: cli.Print & {text: "R=\(alias.stdout)"}
+}}
+command: letindexconst: group.inner
 "#,
         ),
     ];

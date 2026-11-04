@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.24.9
+
+Constant string-index task resolution.
+
+- String indexes bound to a local constant (`k: "run"; src[k]`) are resolved
+  for task-output detection, so index aliases reject before side effects.
+- Unresolved dynamic indexes fall back to detecting task-bearing bases.
+- Concrete values selected by a constant index still run.
+- Added e2e and tool conformance regressions.
+- 430 tests (95 CLI E2E, 1 conformance, 1 tool conformance, 245 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.24.8
 
 Selector/index task-binding resolution.
