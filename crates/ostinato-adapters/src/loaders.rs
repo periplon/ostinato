@@ -1062,6 +1062,14 @@ pub fn run_tool_command(
         imports.insert(import.alias.clone(), value);
     }
 
+    let concrete_imports: std::collections::BTreeSet<String> = combined
+        .imports
+        .iter()
+        .filter(|import| {
+            tool_module(&import.path).is_none() && builtin_module(&import.path).is_some()
+        })
+        .map(|import| import.alias.clone())
+        .collect();
     ostinato_lang::assign_field_ids(&mut combined);
     let tags = ostinato_lang::parameter_tags(&combined)?;
     let injected = BTreeMap::new();
@@ -1179,7 +1187,13 @@ pub fn run_tool_command(
                     done.insert(name.clone());
                     progress = true;
                     if !outputs.is_empty()
-                        && inject_command_outputs(&mut combined.items, command_name, name, &outputs)
+                        && inject_command_outputs(
+                            &mut combined.items,
+                            command_name,
+                            name,
+                            &outputs,
+                            &concrete_imports,
+                        )
                     {
                         let value = eval_file_with_imports_mode_allow_outputs(
                             &combined,
@@ -2099,12 +2113,13 @@ fn is_task_binding<'a>(
     root: &'a [StructItem],
     name: &str,
     visited: &mut std::collections::BTreeSet<String>,
+    concrete_imports: &std::collections::BTreeSet<String>,
 ) -> bool {
     if !visited.insert(name.to_owned()) {
         return false;
     }
     local_definition_scopes(scopes, root, name)
-        .is_some_and(|value| is_task_expr(value, scopes, root, visited))
+        .is_some_and(|value| is_task_expr(value, scopes, root, visited, concrete_imports))
 }
 
 fn select_field_value<'a>(
@@ -2199,24 +2214,26 @@ fn expr_contains_task<'a>(
     scopes: &[&'a [StructItem]],
     root: &'a [StructItem],
     visited: &mut std::collections::BTreeSet<String>,
+    concrete_imports: &std::collections::BTreeSet<String>,
 ) -> bool {
     match expr {
         Expr::Struct(items, _) => items
             .iter()
-            .any(|item| item_contains_task(item, scopes, root, visited)),
+            .any(|item| item_contains_task(item, scopes, root, visited, concrete_imports)),
         Expr::Unify(left, right, _) => {
-            expr_contains_task(left, scopes, root, visited)
-                || expr_contains_task(right, scopes, root, visited)
+            expr_contains_task(left, scopes, root, visited, concrete_imports)
+                || expr_contains_task(right, scopes, root, visited, concrete_imports)
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            expr_contains_task(inner, scopes, root, visited)
+            expr_contains_task(inner, scopes, root, visited, concrete_imports)
         }
         Expr::Ident(name, _) => {
             if !visited.insert(name.to_owned()) {
                 return false;
             }
-            local_definition_scopes(scopes, root, name)
-                .is_some_and(|value| expr_contains_task(value, scopes, root, visited))
+            local_definition_scopes(scopes, root, name).is_some_and(|value| {
+                expr_contains_task(value, scopes, root, visited, concrete_imports)
+            })
         }
         _ => false,
     }
@@ -2227,18 +2244,19 @@ fn item_contains_task<'a>(
     scopes: &[&'a [StructItem]],
     root: &'a [StructItem],
     visited: &mut std::collections::BTreeSet<String>,
+    concrete_imports: &std::collections::BTreeSet<String>,
 ) -> bool {
     match item {
         StructItem::Field(field) => {
-            is_task_expr(&field.value, scopes, root, visited)
-                || expr_contains_task(&field.value, scopes, root, visited)
+            is_task_expr(&field.value, scopes, root, visited, concrete_imports)
+                || expr_contains_task(&field.value, scopes, root, visited, concrete_imports)
         }
         StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-            expr_contains_task(value, scopes, root, visited)
+            expr_contains_task(value, scopes, root, visited, concrete_imports)
         }
         StructItem::For { body, .. } | StructItem::If { body, .. } => body
             .iter()
-            .any(|item| item_contains_task(item, scopes, root, visited)),
+            .any(|item| item_contains_task(item, scopes, root, visited, concrete_imports)),
         StructItem::Ellipsis(_) => false,
     }
 }
@@ -2248,25 +2266,45 @@ fn is_task_expr<'a>(
     scopes: &[&'a [StructItem]],
     root: &'a [StructItem],
     visited: &mut std::collections::BTreeSet<String>,
+    concrete_imports: &std::collections::BTreeSet<String>,
 ) -> bool {
     match expr {
         Expr::Select(base, field, _, _) => {
-            is_task_selection(base, Some(field), scopes, root, visited)
+            is_task_selection(base, Some(field), scopes, root, visited, concrete_imports)
         }
         Expr::Index(base, index, _) => {
             let field = index_field_name(index).or_else(|| {
                 resolve_string_value(scopes, root, index, &mut std::collections::BTreeSet::new())
             });
-            is_task_selection(base, field.as_deref(), scopes, root, visited)
+            is_task_selection(
+                base,
+                field.as_deref(),
+                scopes,
+                root,
+                visited,
+                concrete_imports,
+            )
         }
         Expr::Unify(left, right, _) => {
-            is_task_expr(left, scopes, root, visited) || is_task_expr(right, scopes, root, visited)
+            is_task_expr(left, scopes, root, visited, concrete_imports)
+                || is_task_expr(right, scopes, root, visited, concrete_imports)
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            is_task_expr(inner, scopes, root, visited)
+            is_task_expr(inner, scopes, root, visited, concrete_imports)
         }
-        Expr::Ident(name, _) => is_task_binding(scopes, root, name, visited),
+        Expr::Ident(name, _) => is_task_binding(scopes, root, name, visited, concrete_imports),
         _ => false,
+    }
+}
+
+fn selector_root_ident(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Ident(name, _) => Some(name),
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => selector_root_ident(base),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            selector_root_ident(inner)
+        }
+        _ => None,
     }
 }
 
@@ -2276,19 +2314,22 @@ fn is_task_selection<'a>(
     scopes: &[&'a [StructItem]],
     root: &'a [StructItem],
     visited: &mut std::collections::BTreeSet<String>,
+    concrete_imports: &std::collections::BTreeSet<String>,
 ) -> bool {
     let Some(base_value) = resolve_local_value(scopes, root, base, visited) else {
-        // Unresolvable selector chain (tool import/export): task-bearing.
-        return true;
+        // Unresolvable selector chain: only tool/local-module imports may
+        // contain task values; builtin imports (math, time, strings, ...) are
+        // concrete.
+        return selector_root_ident(base).is_none_or(|name| !concrete_imports.contains(name));
     };
     match field {
         Some(field) => match select_field_value(scopes, root, base_value, field, visited) {
-            Some(selected) => is_task_expr(selected, scopes, root, visited),
-            None => is_task_expr(base_value, scopes, root, visited),
+            Some(selected) => is_task_expr(selected, scopes, root, visited, concrete_imports),
+            None => is_task_expr(base_value, scopes, root, visited, concrete_imports),
         },
         None => {
-            is_task_expr(base_value, scopes, root, visited)
-                || expr_contains_task(base_value, scopes, root, visited)
+            is_task_expr(base_value, scopes, root, visited, concrete_imports)
+                || expr_contains_task(base_value, scopes, root, visited, concrete_imports)
         }
     }
 }
@@ -2306,7 +2347,13 @@ fn collect_output_refs<'a>(
             if matches!(field.as_str(), "stdout" | "success")
                 && let Expr::Ident(name, _) = unwrap_ref_base(base)
                 && names.contains(name)
-                && is_task_binding(scopes, root, name, &mut std::collections::BTreeSet::new())
+                && is_task_binding(
+                    scopes,
+                    root,
+                    name,
+                    &mut std::collections::BTreeSet::new(),
+                    &std::collections::BTreeSet::new(),
+                )
             {
                 out.insert(name.clone());
             }
@@ -2530,6 +2577,7 @@ fn collect_task_decl_ids_items<'a>(
     root: &'a [StructItem],
     scopes: &mut Vec<&'a [StructItem]>,
     out: &mut std::collections::BTreeSet<usize>,
+    concrete_imports: &std::collections::BTreeSet<String>,
 ) {
     scopes.push(items);
     for item in items {
@@ -2541,22 +2589,23 @@ fn collect_task_decl_ids_items<'a>(
                         scopes,
                         root,
                         &mut std::collections::BTreeSet::new(),
+                        concrete_imports,
                     )
                 {
                     out.insert(field.id);
                 }
-                collect_task_decl_ids_expr(&field.value, root, scopes, out);
+                collect_task_decl_ids_expr(&field.value, root, scopes, out, concrete_imports);
             }
             StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                collect_task_decl_ids_expr(value, root, scopes, out);
+                collect_task_decl_ids_expr(value, root, scopes, out, concrete_imports);
             }
             StructItem::For { source, body, .. } => {
-                collect_task_decl_ids_expr(source, root, scopes, out);
-                collect_task_decl_ids_items(body, root, scopes, out);
+                collect_task_decl_ids_expr(source, root, scopes, out, concrete_imports);
+                collect_task_decl_ids_items(body, root, scopes, out, concrete_imports);
             }
             StructItem::If { cond, body, .. } => {
-                collect_task_decl_ids_expr(cond, root, scopes, out);
-                collect_task_decl_ids_items(body, root, scopes, out);
+                collect_task_decl_ids_expr(cond, root, scopes, out, concrete_imports);
+                collect_task_decl_ids_items(body, root, scopes, out, concrete_imports);
             }
             StructItem::Ellipsis(_) => {}
         }
@@ -2569,27 +2618,32 @@ fn collect_task_decl_ids_expr<'a>(
     root: &'a [StructItem],
     scopes: &mut Vec<&'a [StructItem]>,
     out: &mut std::collections::BTreeSet<usize>,
+    concrete_imports: &std::collections::BTreeSet<String>,
 ) {
     match expr {
-        Expr::Struct(items, _) => collect_task_decl_ids_items(items, root, scopes, out),
+        Expr::Struct(items, _) => {
+            collect_task_decl_ids_items(items, root, scopes, out, concrete_imports)
+        }
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            collect_task_decl_ids_expr(left, root, scopes, out);
-            collect_task_decl_ids_expr(right, root, scopes, out);
+            collect_task_decl_ids_expr(left, root, scopes, out, concrete_imports);
+            collect_task_decl_ids_expr(right, root, scopes, out, concrete_imports);
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
         | Expr::Unary(_, inner, _) => {
-            collect_task_decl_ids_expr(inner, root, scopes, out);
+            collect_task_decl_ids_expr(inner, root, scopes, out, concrete_imports);
         }
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
             for item in items {
-                collect_task_decl_ids_expr(item, root, scopes, out);
+                collect_task_decl_ids_expr(item, root, scopes, out, concrete_imports);
             }
         }
-        Expr::OpenList(Some(inner), _) => collect_task_decl_ids_expr(inner, root, scopes, out),
+        Expr::OpenList(Some(inner), _) => {
+            collect_task_decl_ids_expr(inner, root, scopes, out, concrete_imports)
+        }
         _ => {}
     }
 }
@@ -2597,10 +2651,11 @@ fn collect_task_decl_ids_expr<'a>(
 fn collect_task_decl_ids(
     items: &[StructItem],
     root: &[StructItem],
+    concrete_imports: &std::collections::BTreeSet<String>,
 ) -> std::collections::BTreeSet<usize> {
     let mut out = std::collections::BTreeSet::new();
     let mut scopes = Vec::new();
-    collect_task_decl_ids_items(items, root, &mut scopes, &mut out);
+    collect_task_decl_ids_items(items, root, &mut scopes, &mut out, concrete_imports);
     out
 }
 
@@ -2684,8 +2739,9 @@ fn inject_command_outputs(
     command_name: &str,
     task_name: &str,
     outputs: &[(String, Value)],
+    concrete_imports: &std::collections::BTreeSet<String>,
 ) -> bool {
-    let task_decls = collect_task_decl_ids(items, items);
+    let task_decls = collect_task_decl_ids(items, items, concrete_imports);
     // Collect referenced declarations before taking a mutable borrow.
     let mut targets: Vec<Vec<String>> = Vec::new();
     for item in items.iter() {

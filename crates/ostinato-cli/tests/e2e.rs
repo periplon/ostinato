@@ -6725,6 +6725,49 @@ command: selconcretenotedefault: group.inner
             None,
             None,
         ),
+        (
+            "selbuiltinmath",
+            r#"
+package foo
+import (
+	"math"
+	"tool/cli"
+	"tool/exec"
+)
+let group = {inner: {
+	pipeline: {
+		producer: math.Pi & number
+		helper:   producer
+		p:        cli.Print & {text: "S=\(helper)"}
+	}
+	a: producer: exec.Run & {cmd: ["sh", "-c", "printf 'real'"], stdout: string}
+}}
+command: selbuiltinmath: group.inner
+"#,
+            None,
+            None,
+        ),
+        (
+            "selbuiltintime",
+            r#"
+package foo
+import (
+	"time"
+	"tool/cli"
+	"tool/exec"
+)
+command: selbuiltintime: {
+	pipeline: {
+		producer: time.RFC3339 & string
+		helper:   producer
+		p:        cli.Print & {text: "S=\(helper)"}
+	}
+	a: producer: exec.Run & {cmd: ["sh", "-c", "printf 'real'"], stdout: string}
+}
+"#,
+            None,
+            None,
+        ),
     ];
     for (name, source, seed, artifact) in cases {
         let cue_dir = tempfile::tempdir().expect("tempdir");

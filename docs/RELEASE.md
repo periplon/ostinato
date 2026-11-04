@@ -12,6 +12,14 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.27.3
+
+- Builtin-import selectors are concrete, so same-named concrete fields using
+  `math.*`/`time.*`/`strings.*` are not overwritten by injection.
+- 433 tests (96 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.27.2
 
 - Injection candidates use semantic task declarations and field ids, so
