@@ -1,4 +1,4 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.aLpLVapIfC/gateway.sqlite metrics --run db224c7d-6dc4-431a-8c64-cbacb7f0c431 --format prometheus
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.8ePL8B5YPw/gateway.sqlite metrics --run a023b487-7fb2-46aa-9c88-d50cddcad6ea --format prometheus
 
 # HELP ostinato_runs_total Runs started.
 # TYPE ostinato_runs_total counter
@@ -10,10 +10,8 @@ ostinato_steps_total 6
 ostinato_steps_failed_total 0
 ostinato_steps_skipped_total 1
 ostinato_gateways_evaluated_total 2
-ostinato_gateway_failures_total 0
-ostinato_gateway_quorum_short_total 0
 ostinato_attempts_total 3
 ostinato_retries_total 0
-ostinato_attempt_duration_ms_avg 5.33
+ostinato_attempt_duration_ms_avg 4.67
 
 exit=0
