@@ -1,4 +1,4 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-aliasread/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.laaYDtyulA/gateway-nof.sqlite metrics --run e01cae31-5fdd-47df-bafa-2cc08615ae92 --format prometheus
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-aliasread/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NpzrxxHyje/gateway-nof.sqlite metrics --run 4f492803-6d54-42b7-aee6-5be2e1c43969 --format prometheus
 
 # HELP ostinato_runs_total Runs started.
 # TYPE ostinato_runs_total counter

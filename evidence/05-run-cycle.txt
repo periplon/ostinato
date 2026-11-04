@@ -1,6 +1,6 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-aliasread/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.laaYDtyulA/db.sqlite run examples/cycle.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-aliasread/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NpzrxxHyje/db.sqlite run examples/cycle.cue
 
-run=1413361d-2f6d-4d4d-9338-ffc3d2e2bd60 workflow=cycle status=succeeded durationMs=54
+run=4a5d29ed-180e-41fa-b815-9c3210b73d9c workflow=cycle status=succeeded durationMs=91
 STEP                     STATUS     VISITS ATTEMPTS ROUND 
 refine                   succeeded  3      1        2     
 review                   succeeded  3      1        2     

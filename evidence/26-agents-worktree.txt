@@ -1,13 +1,13 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-c525c7d
+116d699
 
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                                    16a10c5 [main]
 /Users/joanmarc/dailywork/jmca/ostinato-gateways                           668e12f [feat/gateways]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions       cb3a2ae [feat/agent-definitions]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/alias-target-reads      c525c7d [fix/v0.38.1-alias-plain-order]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/alias-target-reads      116d699 [fix/v0.38.2-composed-alias-order]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/definition-nested-reads c6e8f7b (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan           99e7541 [feat/gateways-r0-r4]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-def-output-refs     fabd011 (detached HEAD)
