@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.24.4
+
+Selector and unified-command corrections.
+
+- `$after` is honoured for tasks reached through a let-rooted selector
+  (`command: c: group.inner`); output injection remains unavailable there and
+  is rejected before executing when consumed.
+- Mixed unified commands (`lib.base & group.inner`) are rejected only when a
+  task inside the let-rooted operand consumes a task output; output consumers
+  in non-let operands inject normally.
+- Tool conformance corpus adds let-rooted `$after` and mixed-unification
+  cases with seeded artifact comparison.
+- 430 tests (95 CLI E2E, 1 conformance, 1 tool conformance, 245 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.24.3
 
 Selector-valued tool commands.
