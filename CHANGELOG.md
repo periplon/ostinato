@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.25.0
+
+Task-level composed output injection.
+
+- Tasks composed with a base struct, an open definition, a unified binding
+  or parentheses (`exec.Run & base`, `exec.Run & #B`, `b1 & b2`,
+  `(exec.Run & base)`) now receive injected `stdout`/`success`; consumers
+  print the captured values like `cue cmd`.
+- Plain references (`run: base`, `run: #B`) remain non-injected, matching
+  cue; closed definitions still conflict as in cue.
+- Added e2e fixtures and five tool-conformance cases (base, open definition,
+  unified bindings, parentheses, success).
+- 430 tests (95 CLI E2E, 1 conformance, 1 tool conformance, 245 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.24.9
 
 Constant string-index task resolution.

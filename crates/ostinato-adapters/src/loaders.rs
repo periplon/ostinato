@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use ostinato_application::{LoadRequest, LoadedWorkflow, PortError, PortResult, SpecLoader};
-use ostinato_lang::ast::{Expr, Label, Span, StructItem};
+use ostinato_lang::ast::{Expr, Field, Label, Span, StructItem};
 use ostinato_lang::{
     Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode,
     eval_file_with_imports_mode_allow_incomplete, eval_file_with_imports_mode_allow_outputs, parse,
@@ -2602,6 +2602,62 @@ fn inject_command_outputs(
     injected
 }
 
+fn task_output_struct(outputs: &[(String, Value)], span: Span) -> Option<Expr> {
+    let mut items = Vec::new();
+    for (name, value) in outputs {
+        let Some(expr) = output_expr(value) else {
+            continue;
+        };
+        items.push(StructItem::Field(Field {
+            id: 0,
+            label: Label::Name(name.clone(), span),
+            value: expr,
+            optional: false,
+            definition: false,
+            alias: None,
+            quoted: false,
+            bytes_label_runes: None,
+            bytes_label_multiline: false,
+            attributes: Vec::new(),
+            span,
+        }));
+    }
+    if items.is_empty() {
+        None
+    } else {
+        Some(Expr::Struct(items, span))
+    }
+}
+
+fn inject_task_outputs_value(expr: &mut Expr, outputs: &[(String, Value)]) -> bool {
+    match expr {
+        Expr::Unify(..) => {
+            let span = expr.span();
+            let Some(wrapper) = task_output_struct(outputs, span) else {
+                return false;
+            };
+            let current = expr.clone();
+            *expr = Expr::Unify(Box::new(current), Box::new(wrapper), span);
+            true
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            inject_task_outputs_value(inner, outputs)
+        }
+        Expr::Struct(..) => {
+            let mut injected = false;
+            for (name, value) in outputs {
+                if let Some(value_expr) = output_expr(value)
+                    && inject_into_struct(expr, name, &value_expr)
+                {
+                    injected = true;
+                }
+            }
+            injected
+        }
+        _ => false,
+    }
+}
+
 fn inject_task_outputs(
     items: &mut [StructItem],
     task_name: &str,
@@ -2610,18 +2666,10 @@ fn inject_task_outputs(
     for item in items {
         match item {
             StructItem::Field(field) => {
-                if matches!(&field.label, Label::Name(name, _) if name == task_name) {
-                    let mut injected = false;
-                    for (name, value) in outputs {
-                        if let Some(expr) = output_expr(value)
-                            && inject_into_struct(&mut field.value, name, &expr)
-                        {
-                            injected = true;
-                        }
-                    }
-                    if injected {
-                        return true;
-                    }
+                if matches!(&field.label, Label::Name(name, _) if name == task_name)
+                    && inject_task_outputs_value(&mut field.value, outputs)
+                {
+                    return true;
                 }
                 if inject_task_outputs_in_expr(&mut field.value, task_name, outputs) {
                     return true;
