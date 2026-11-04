@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.39.1
+
+Module task-input rejection and root-backed alias reads.
+
+- Direct module task-output reads inside task inputs
+  (`cli.Print & {text: "\\(lib.run.stdout)"}`) are rejected before
+  evaluation, even when a plain read of the same task exists, matching CUE and
+  leaving no side effects.
+- Package-root, container and let-bound aliases to module tasks
+  (`prep: lib.run; r: prep; q: "\\(prep.stdout)"`, `prep: {inner: lib.run}`,
+  `let l = lib.run; prep: l`) materialise both the module instance and the
+  local declaration, so plain reads resolve and mixed alias-output/plain reads
+  work like CUE.
+- Added e2e coverage for the rejection and root-backed shapes, plus two
+  conformance cases.
+
+- 445 tests (108 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.39.0
 
 Module-task alias plain-field output reads.

@@ -1,5 +1,5 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-modalias/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.8BDEyc5g6M/agents.sqlite audit verify 649dc362-5917-4a78-b281-f710b770303d
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-modalias/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.GikHU9xLuG/agents.sqlite audit verify 9e627ad7-ab57-4c36-98d4-9588d67387c5
 
-OK run=649dc362-5917-4a78-b281-f710b770303d events=8 head=9316c862e31585b17c1d41c33bda4b48e8a3db520a3a8bf491547971479134e2
+OK run=9e627ad7-ab57-4c36-98d4-9588d67387c5 events=8 head=03c8de9181c8c125d1b51ded4403b8bdeeda0b26af107da1fbcf301a2bd8c2d8
 
 exit=0
