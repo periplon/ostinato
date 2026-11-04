@@ -6780,6 +6780,109 @@ command: letsuccess: {
             true,
         ),
         (
+            "letinlinetwice",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: letinlinetwice: {
+	let t = exec.Run & {cmd: ["sh", "-c", "printf T"], stdout: string}
+	a: p1: t
+	b: p2: t
+	q: cli.Print & {text: "R=\(a.p1.stdout)-\(b.p2.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "lettwoname",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: lettwoname: {
+	let t1 = lib.run
+	let t2 = lib.run
+	a: p1: t1
+	b: p2: t2
+	q: cli.Print & {text: "R=\(a.p1.stdout)-\(b.p2.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "letplusdirect",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: letplusdirect: {
+	let t = lib.run
+	a: p1: t
+	b: p2: lib.run
+	q: cli.Print & {text: "R=\(a.p1.stdout)-\(b.p2.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "letchain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: letchain: {
+	let a = lib.run
+	let b = a
+	x: p1: a
+	y: p2: b
+	q: cli.Print & {text: "R=\(x.p1.stdout)-\(y.p2.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "letfieldmodule",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+command: letfieldmodule: {
+	a: p1: base
+	q: cli.Print & {text: "R=\(a.p1.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "letfieldtwice",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+command: letfieldtwice: {
+	a: p1: base
+	b: p2: base
+	q: cli.Print & {text: "R=\(a.p1.stdout)-\(b.p2.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
             "lettwice",
             r#"
 package foo
