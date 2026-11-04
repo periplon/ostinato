@@ -93,6 +93,14 @@ pub struct StepRecord {
     pub output: Option<Value>,
     pub error: Option<String>,
     pub updated_at: String,
+    /// Cycle round this record belongs to. Zero for non-cycle rows, and
+    /// omitted from serialization so legacy state digests stay stable.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub round: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Result of driving a run to completion (or to the next failure).

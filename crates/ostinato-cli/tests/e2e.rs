@@ -1103,7 +1103,7 @@ workflow: {
 
     let mut statement = connection
         .prepare(
-            "SELECT run_id, name, status, visits, attempts, output_json, error, updated_at
+            "SELECT run_id, name, status, visits, attempts, output_json, error, updated_at, round
              FROM steps WHERE run_id = ?1",
         )
         .expect("prepare steps");
@@ -1126,6 +1126,7 @@ workflow: {
                 output: output.map(|text| serde_json::from_str(&text).expect("output")),
                 error: row.get(6)?,
                 updated_at: row.get(7)?,
+                round: row.get::<_, i64>(8)? as u32,
             })
         })
         .expect("query steps");
@@ -3306,6 +3307,514 @@ workflow: {{
     );
     assert!(
         ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn gateway_n_of_join_runs_when_quorum_is_met() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "nof"
+    steps: {
+        a: {kind: "noop"}
+        b: {kind: "noop"}
+        c: {kind: "noop"}
+        q: {kind: "gateway", needs: ["a", "b", "c"], gateway: {join: "n_of", n: 2}}
+    }
+}
+"#,
+    );
+    let run = run_workflow(&db, &workflow);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let id = run_id(&db);
+    let status = status_text(&db, &id);
+    assert!(
+        status.contains("q") && status.contains("succeeded"),
+        "{status}"
+    );
+    assert!(
+        ost(&["--db", db.to_str().expect("db"), "audit", "verify", &id])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn gateway_n_of_partial_quorum_fails_the_run() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "nof-partial"
+    steps: {
+        route: {kind: "gateway", gateway: {split: "xor", branches: {a: "true", b: true}, default: "b"}}
+        a: {kind: "noop"}
+        b: {kind: "noop"}
+        q: {kind: "gateway", needs: ["a", "b"], gateway: {join: "n_of", n: 2}}
+    }
+}
+"#,
+    );
+    let run = run_workflow(&db, &workflow);
+    assert!(!run.status.success());
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let id = stdout
+        .split("run=")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .expect("run id in output")
+        .to_owned();
+    let events = logs_json(&db, &id);
+    assert!(events.iter().any(|event| event["kind"] == "gateway.failed"));
+    let metrics = metrics_json(&db, &id);
+    assert!(
+        metrics["gatewayFailures"].as_u64().unwrap_or_default() >= 1,
+        "{metrics}"
+    );
+    assert!(
+        metrics["gatewayQuorumShort"].as_u64().unwrap_or_default() >= 1,
+        "{metrics}"
+    );
+}
+
+#[test]
+fn gateway_expression_join_runs_when_the_expression_is_true() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "expression"
+    steps: {
+        a: {kind: "noop"}
+        b: {kind: "noop"}
+        m: {kind: "gateway", needs: ["a", "b"], gateway: {join: "expression", expression: "edges.a && edges.b"}}
+    }
+}
+"#,
+    );
+    let run = run_workflow(&db, &workflow);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let id = run_id(&db);
+    assert!(status_text(&db, &id).contains("m"));
+}
+
+#[test]
+fn gateway_cycle_runs_rounds_and_audits() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+params: { go: bool | *false }
+workflow: {
+    name: "cycle-gateway"
+    maxParallel: 1
+    steps: {
+        loop: {kind: "noop", needs: ["tail"], cycle: {max: 3, until: "round >= 1"}}
+        split: {kind: "gateway", needs: ["loop"], gateway: {
+            split: "xor"
+            branches: {work: "params.go", idle: true}
+            default: "idle"
+        }}
+        work: {kind: "noop"}
+        idle: {kind: "noop"}
+        merge: {kind: "gateway", needs: ["work", "idle"], gateway: {join: "or"}}
+        tail: {kind: "noop", needs: ["merge"]}
+    }
+}
+"#,
+    );
+    let run = run_workflow(&db, &workflow);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let id = run_id(&db);
+    let events = logs_json(&db, &id);
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "cycle.completed")
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["kind"] == "gateway.evaluated")
+            .count(),
+        2
+    );
+    assert!(
+        ost(&["--db", db.to_str().expect("db"), "audit", "verify", &id])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn gateway_static_analysis_warns_and_strict_fails() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "analysis"
+    steps: {
+        left: {kind: "gateway", gateway: {split: "and", branches: {c: true}}}
+        right: {kind: "gateway", gateway: {split: "and", branches: {c: true}}}
+        c: {kind: "gateway", gateway: {split: "and", branches: {d: true}}}
+        d: {kind: "noop"}
+    }
+}
+"#,
+    );
+    let relaxed = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(relaxed.status.success());
+    let text = String::from_utf8_lossy(&relaxed.stdout);
+    assert!(text.contains("GatewaySharedBranchTarget"), "{text}");
+    let strict = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "--strict",
+    ]);
+    assert_eq!(strict.status.code(), Some(2));
+}
+
+#[test]
+fn gateway_cycle_with_external_entry_survives_round_one() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "external-cycle"
+    maxParallel: 1
+    steps: {
+        x: {kind: "noop"}
+        loop: {kind: "noop", needs: ["x", "tail"]}
+        split: {kind: "gateway", needs: ["loop"], gateway: {split: "and", branches: {work: true}}}
+        work: {kind: "noop"}
+        merge: {kind: "gateway", needs: ["work"], gateway: {join: "and"}}
+        tail: {kind: "noop", needs: ["merge"], cycle: {max: 2}}
+    }
+}
+"#,
+    );
+    let run = run_workflow(&db, &workflow);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let id = run_id(&db);
+    let status = status_text(&db, &id);
+    assert!(
+        status.contains("loop") && status.contains("succeeded"),
+        "{status}"
+    );
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    let (round, visits): (i64, i64) = connection
+        .query_row(
+            "SELECT round, visits FROM steps WHERE run_id = ?1 AND name = 'loop'",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("loop row");
+    assert!(round >= 1, "loop did not run a second round: round={round}");
+    assert!(
+        visits >= 2,
+        "loop did not record two visits: visits={visits}"
+    );
+    let events = logs_json(&db, &id);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["kind"] == "cycle.exhausted")
+            .count(),
+        1,
+        "{events:?}"
+    );
+    assert!(
+        ost(&["--db", db.to_str().expect("db"), "audit", "verify", &id])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn resume_refuses_a_recomputed_digest_that_is_not_anchored() {
+    use ostinato_domain::{StepRecord, StepStatus, WorkflowSpec, state_digest};
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+workflow: {
+    name: "anchor"
+    steps: {
+        a: { kind: "exec", exec: { cmd: ["sh", "-c", "exit 5"] } }
+    }
+}
+"#,
+    );
+    let first = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert_eq!(first.status.code(), Some(1));
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    let (spec_json, params_json, source_file, resume_index): (String, String, String, i64) =
+        connection
+            .query_row(
+                "SELECT spec_json, params_json, source_file, resume_index FROM runs WHERE id = ?1",
+                [&run],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("run row");
+    let mut spec: WorkflowSpec = serde_json::from_str(&spec_json).expect("spec");
+    let step = spec.steps.get_mut("a").expect("step a");
+    step.exec.as_mut().expect("exec").cmd = vec!["sh".into(), "-c".into(), "echo pwned".into()];
+    let params: Value = serde_json::from_str(&params_json).expect("params");
+    let mut statement = connection
+        .prepare(
+            "SELECT run_id, name, status, visits, attempts, output_json, error, updated_at, round
+             FROM steps WHERE run_id = ?1",
+        )
+        .expect("prepare steps");
+    let rows = statement
+        .query_map([&run], |row| {
+            let status: String = row.get(2)?;
+            let output: Option<String> = row.get(5)?;
+            Ok(StepRecord {
+                run_id: row.get(0)?,
+                name: row.get(1)?,
+                status: match status.as_str() {
+                    "succeeded" => StepStatus::Succeeded,
+                    "failed" => StepStatus::Failed,
+                    "skipped" => StepStatus::Skipped,
+                    "running" => StepStatus::Running,
+                    _ => StepStatus::Pending,
+                },
+                visits: row.get::<_, i64>(3)? as u32,
+                attempts: row.get::<_, i64>(4)? as u32,
+                output: output.map(|text| serde_json::from_str(&text).expect("output")),
+                error: row.get(6)?,
+                updated_at: row.get(7)?,
+                round: row.get::<_, i64>(8)? as u32,
+            })
+        })
+        .expect("query steps");
+    let steps: Vec<StepRecord> = rows.map(|row| row.expect("step")).collect();
+    drop(statement);
+    let digest = state_digest(&spec, &params, &source_file, resume_index, &steps);
+    let forged_spec = serde_json::to_string(&spec).expect("spec json");
+    connection
+        .execute(
+            "UPDATE runs SET spec_json = ?2, state_hash = ?3 WHERE id = ?1",
+            rusqlite::params![run, forged_spec, digest],
+        )
+        .expect("tamper spec and digest");
+    let resumed = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "resume",
+        &run,
+    ]);
+    assert!(!resumed.status.success());
+    assert!(
+        String::from_utf8_lossy(&resumed.stderr).contains("not anchored"),
+        "stderr: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert!(
+        !ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn gateway_cycle_round_tampering_fails_audit_verify() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+params: { go: bool | *false }
+workflow: {
+    name: "cycle-tamper"
+    maxParallel: 1
+    steps: {
+        loop: {kind: "noop", needs: ["tail"], cycle: {max: 2, until: "round >= 1"}}
+        split: {kind: "gateway", needs: ["loop"], gateway: {
+            split: "xor"
+            branches: {work: "params.go", idle: true}
+            default: "idle"
+        }}
+        work: {kind: "noop"}
+        idle: {kind: "noop"}
+        merge: {kind: "gateway", needs: ["work", "idle"], gateway: {join: "or"}}
+        tail: {kind: "noop", needs: ["merge"]}
+    }
+}
+"#,
+    );
+    let run = run_workflow(&db, &workflow);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let id = run_id(&db);
+    assert!(
+        ost(&["--db", db.to_str().expect("db"), "audit", "verify", &id])
+            .status
+            .success()
+    );
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    connection
+        .execute(
+            "UPDATE steps SET round = 9 WHERE run_id = ?1 AND name = 'split'",
+            [&id],
+        )
+        .expect("tamper round");
+    assert!(
+        !ost(&["--db", db.to_str().expect("db"), "audit", "verify", &id])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn acyclic_runs_do_not_emit_cycle_events() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "acyclic"
+    steps: {a: {kind: "noop"}}
+}
+"#,
+    );
+    let run = run_workflow(&db, &workflow);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let id = run_id(&db);
+    let events = logs_json(&db, &id);
+    assert!(
+        !events
+            .iter()
+            .any(|event| event["kind"] == "cycle.exhausted")
+    );
+    assert!(!events.iter().any(|event| event["kind"] == "cycle.exited"));
+}
+
+#[test]
+fn gateway_cycle_dead_carry_exits_and_skips_the_tail() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = write_gateway_workflow(
+        directory.path(),
+        r#"
+package demo
+workflow: {
+    name: "dead-carry"
+    maxParallel: 1
+    steps: {
+        loop: {kind: "noop", needs: ["tail"], cycle: {max: 3}}
+        split: {kind: "gateway", needs: ["loop"], gateway: {
+            split: "xor"
+            branches: {a: "true", b: true}
+            default: "b"
+        }}
+        a: {kind: "noop"}
+        b: {kind: "noop"}
+        merge: {kind: "gateway", needs: ["a", "b"], gateway: {join: "and"}}
+        tail: {kind: "noop", needs: ["merge"]}
+    }
+}
+"#,
+    );
+    let run = run_workflow(&db, &workflow);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let id = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    let (status, round): (String, i64) = connection
+        .query_row(
+            "SELECT status, round FROM steps WHERE run_id = ?1 AND name = 'tail'",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("tail row");
+    assert_eq!(status, "skipped", "tail must be skipped");
+    assert_eq!(round, 0, "tail should be skipped in the first round");
+    let events = logs_json(&db, &id);
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "cycle.exited" && event["data"]["reason"] == "dead_path"),
+        "{events:?}"
+    );
+    assert!(
+        ost(&["--db", db.to_str().expect("db"), "audit", "verify", &id])
             .status
             .success()
     );

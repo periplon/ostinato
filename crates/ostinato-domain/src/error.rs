@@ -59,18 +59,44 @@ pub enum DomainError {
     GatewayJoinWithoutNeeds(String),
     #[error("join gateway `{0}` must not declare `branches` or `default`")]
     GatewayJoinHasBranches(String),
+    #[error("join gateway `{0}` with `n_of` requires `n`")]
+    GatewayQuorumMissingN(String),
     #[error(
-        "gateway `{gateway}` branch `{branch}` references `{reference}` outside its predecessor scope"
+        "join gateway `{gateway}` has duplicate need `{need}`; `n_of` requires distinct inputs"
     )]
-    GatewayConditionScope {
+    GatewayDuplicateNeeds { gateway: String, need: String },
+    #[error("join gateway `{gateway}` has invalid quorum `{n}`; expected 1..={max}")]
+    GatewayQuorumInvalidN { gateway: String, n: u32, max: usize },
+    #[error("join gateway `{gateway}` requires {required} active inputs but only {active} arrived")]
+    GatewayQuorumNotMet {
         gateway: String,
-        branch: String,
-        reference: String,
+        required: u32,
+        active: usize,
     },
+    #[error("gateway `{0}` declares `n` but is not an `n_of` join")]
+    GatewayQuorumOnWrongMode(String),
+    #[error("join gateway `{0}` with `expression` requires `expression`")]
+    GatewayExpressionMissing(String),
+    #[error("gateway `{gateway}` label `{label}` does not name a join input")]
+    GatewayLabelUnknownStep { gateway: String, label: String },
+    #[error("gateway `{gateway}` maps multiple labels to the same input `{target}`")]
+    GatewayDuplicateLabelTarget { gateway: String, target: String },
+    #[error("gateway `{gateway}` has no label for input `{target}`")]
+    GatewayLabelMissing { gateway: String, target: String },
+    #[error("gateway `{gateway}` has an invalid edge label `{label}`")]
+    GatewayInvalidLabel { gateway: String, label: String },
     #[error(
-        "workflow combines gateways and cycles ({steps}); gateways inside cycles are not supported in v1"
+        "workflow.steps.{0}.gateway mixes cycle carry and same-round inputs; split it into separate gateways"
     )]
-    GatewayCycleUnsupported { steps: String },
+    GatewayCycleMixedScopeJoin(String),
+    #[error(
+        "workflow.steps.{gateway}.gateway.branches.{target} leaves its cycle; branch targets must stay inside the cycle"
+    )]
+    GatewayBranchLeavesCycle { gateway: String, target: String },
+    #[error(
+        "workflow.steps.{gateway}.gateway.branches.{target} enters a cycle from outside; add the gateway to the cycle"
+    )]
+    GatewayBranchIntoCycle { gateway: String, target: String },
     #[error(
         "workflow.steps.{0} has more than one incoming edge in a gateway workflow; use an explicit join gateway"
     )]
@@ -83,6 +109,10 @@ pub enum DomainError {
     GatewayCondition { gateway: String, message: String },
     #[error("invalid audit chain at sequence {seq}: {reason}")]
     InvalidAuditChain { seq: u64, reason: String },
+    #[error("audit chain has no state anchor for run `{0}`")]
+    MissingStateAnchor(String),
+    #[error("execution state is not anchored in the audit chain for run `{0}`")]
+    StateAnchorMismatch(String),
     #[error("audit event sequence is not contiguous at {0}")]
     AuditSequence(u64),
     #[error("serialization failure: {0}")]

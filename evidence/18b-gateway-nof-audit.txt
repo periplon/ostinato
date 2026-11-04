@@ -1,0 +1,5 @@
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.KOHYWshHCk/gateway-nof.sqlite audit verify 442db266-13de-4867-8bfe-cda2201fb870
+
+OK run=442db266-13de-4867-8bfe-cda2201fb870 events=11 head=e61553255e74feaf74198f23d1773d2fc6923527a4a0092f64b3535a745d0ca6
+
+exit=0

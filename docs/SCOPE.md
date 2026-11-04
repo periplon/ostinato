@@ -47,9 +47,11 @@ workflow outside the Rust surface has a supported escape hatch.
 - constraint-based parameter overrides for split/definition-backed params and
   dependent params;
 - CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files);
-- workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, branch
-  conditions, default branches, dead-path elimination and `stepStatus` routing
-  (v1 rejects gateways combined with cycles and implicit joins).
+- workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, `n_of`
+  quorum joins, complex `expression` joins, branch conditions, default
+  branches, dead-path elimination, `stepStatus` routing, gateway-bearing
+  cycles and structural branch analysis. Implicit joins in gateway workflows
+  are rejected; edge-level `when` and event-based gateways remain out of scope.
 
 ## Explicitly out of scope
 

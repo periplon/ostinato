@@ -42,7 +42,7 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 - **Resumable**: `ostinato resume <run>` skips completed work using a stable plan index.
 - **Retries**: bounded exponential backoff, deterministic jitter, per-attempt timeouts.
 - **Cycles**: strongly-connected components execute as bounded rounds; `until` conditions stop early.
-- **Gateways**: XOR/OR/AND splits and joins with conditions, default branches, explicit convergence, dead-path elimination, `stepStatus` failure routing and durable audit of every routing decision.
+- **Gateways**: XOR/OR/AND splits and joins, `n_of` quorum joins, complex `expression` joins, conditions, default branches, explicit convergence, dead-path elimination, gateway-bearing cycles, `stepStatus` failure routing and durable audit of every routing decision.
 - **Agentic + deterministic**: `exec`, `agent`, `improve`, `noop` and `gateway` step kinds share one scheduler.
 - **Audit**: SHA-256 hash chain per run with a persisted head, a state digest and a chained `state.committed` anchor; `ostinato audit verify` detects payload tampering, tail truncation, status flips and edits to the spec/checkpoint/step outputs.
 - **Trials**: append-only log of every attempt with input/output hashes, score, duration and error.

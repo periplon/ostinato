@@ -20,7 +20,7 @@ pub fn step_references(expr: &str) -> BTreeSet<String> {
         let CTok::Ident(root) = token else {
             continue;
         };
-        if root != "steps" && root != "stepStatus" {
+        if root != "steps" && root != "stepStatus" && root != "stepRound" {
             continue;
         }
         if index > 0 && matches!(tokens.get(index - 1), Some(CTok::Dot)) {
@@ -33,6 +33,29 @@ pub fn step_references(expr: &str) -> BTreeSet<String> {
         }
     }
     references
+}
+
+/// Collect the top-level reference roots in a condition expression.
+///
+/// This is a pure lexical pass used by complex-gateway validation. It returns
+/// roots such as `edges`, `activeCount` or `params`; invalid expressions yield
+/// an empty set.
+#[must_use]
+pub fn reference_roots(expr: &str) -> BTreeSet<String> {
+    let Ok(tokens) = tokenize(expr) else {
+        return BTreeSet::new();
+    };
+    let mut roots = BTreeSet::new();
+    for (index, token) in tokens.iter().enumerate() {
+        let CTok::Ident(root) = token else {
+            continue;
+        };
+        if index > 0 && matches!(tokens.get(index - 1), Some(CTok::Dot)) {
+            continue;
+        }
+        roots.insert(root.clone());
+    }
+    roots
 }
 
 /// Evaluate a boolean-ish condition such as `steps.review.score >= 0.9`.
@@ -408,6 +431,19 @@ fn valid_reference(context: &Json, path: &str) -> bool {
                 .and_then(|status| status.get(step))
                 .is_some()
         }),
+        "stepRound" => segments.next().is_some_and(|step| {
+            context
+                .get("stepRound")
+                .and_then(|rounds| rounds.get(step))
+                .is_some()
+        }),
+        "edges" => segments.next().is_some_and(|label| {
+            context
+                .get("edges")
+                .and_then(|edges| edges.get(label))
+                .is_some()
+        }),
+        "activeCount" | "deadCount" | "totalCount" => context.get(root).is_some(),
         "run_id" | "workflow" | "round" => true,
         _ => false,
     }

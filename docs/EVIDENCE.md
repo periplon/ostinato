@@ -893,3 +893,60 @@ ostinato_attempt_duration_ms_avg 8.33
 
 exit=0
 ````
+
+## Gateway phase 2: quorum join
+
+Two-of-three quorum succeeds; the status and audit output are from a real run.
+
+````text
+### ./target/debug/ostinato --db <workdir>/gateway-nof.sqlite run examples/gateway_nof.cue
+
+run=... workflow=quorum status=succeeded
+alice                    succeeded  1      1
+approve                  succeeded  1      0
+bob                      succeeded  1      1
+carol                    succeeded  1      1
+release                  succeeded  1      1
+
+### ./target/debug/ostinato --db <workdir>/gateway-nof.sqlite audit verify <run>
+
+OK run=<run> events=11 head=<hash>
+
+exit=0
+````
+
+## Gateway phase 2: expression join
+
+Named edge states make a complex boolean join readable and auditable.
+
+````text
+### ./target/debug/ostinato --db <workdir>/gateway-expression.sqlite run examples/gateway_expression.cue
+
+fast                     succeeded  1      1
+merge                    succeeded  1      0
+notify                   succeeded  1      1
+slow                     succeeded  1      1
+
+exit=0
+````
+
+## Gateway phase 2: gateway cycle
+
+Round-scoped activation, carry edges and `until` exit.
+
+````text
+### ./target/debug/ostinato --db <workdir>/gateway-cycle.sqlite run examples/gateway_cycle.cue
+
+idle                     succeeded  2      1
+loop                     succeeded  2      1
+merge                    succeeded  2      0
+split                    succeeded  2      0
+tail                     succeeded  2      1
+work                     skipped    0      0
+
+### ./target/debug/ostinato --db <workdir>/gateway-cycle.sqlite audit verify <run>
+
+OK run=<run> events=26 head=<hash>
+
+exit=0
+````

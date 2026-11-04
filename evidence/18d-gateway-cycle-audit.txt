@@ -1,0 +1,5 @@
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.KOHYWshHCk/gateway-cycle.sqlite audit verify 5edb2f3d-f177-405e-aaed-375dd111dc37
+
+OK run=5edb2f3d-f177-405e-aaed-375dd111dc37 events=26 head=369787f13d0fdde6ea04d97c6bd1e8bc610bf97cb786a52cca3dcd237c52f195
+
+exit=0

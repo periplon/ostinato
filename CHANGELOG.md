@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+Gateway phase 2: quorum, complex joins, cycles and analysis.
+
+- New `join: "n_of", n: N` quorum joins: zero active inputs is a dead path,
+  `1..n-1` fails the run, `n` or more succeeds. `n` is validated against
+  distinct `needs`.
+- New `join: "expression"` joins over named incoming edges
+  (`edges.<label>`, `activeCount`, `deadCount`, `totalCount`). Optional
+  `labels` map labels to `needs`; a false expression is a dead path and an
+  evaluation error fails the run.
+- Gateways may participate in cycles. Back-edges become carry edges, activation
+  is scoped by `(step, round)`, `steps.round` is persisted (additive schema
+  v2), and `cycle.exited` records a dead carry token.
+- Gateway decisions replay idempotently on resume; a committed row is reused
+  without a duplicate event or metric.
+- `step.skipped` events include the causing `gateway`/`branch` for branch
+  dead paths.
+- New pure structural branch analysis in `ostinato-domain/src/analysis.rs`;
+  `ostinato validate` prints findings and `--strict` promotes warnings to exit
+  2. Checks include unreachable AND/N_OF joins, shared branch targets, XOR join
+  ambiguity potential and missing default fallbacks.
+- `graph` labels `n_of` quorums; `metrics` adds `gateway_failures` and
+  `gateway_quorum_short`; `status` shows a `ROUND` column for gateway cycles.
+- `docs/GATEWAYS.md` is updated from the original plan to implemented status;
+  `docs/GATEWAYS-REMAINING-PLAN.md` records the phase-2 design and review.
+
 ## v0.18.2
 
 Fixed/list nested narrowing corrections.

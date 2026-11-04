@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use ostinato_domain::StepKind;
+use ostinato_domain::{JoinMode, StepKind};
 use ostinato_lang::{compile, eval_condition, eval_file, parse, render};
 use serde_json::json;
 
@@ -5757,9 +5757,7 @@ workflow: {
     }
 }
 "#;
-    let error = compile_error(cycle);
-    assert!(error.contains("gateways and cycles"), "{error}");
-    assert!(error.contains("workflow.steps."), "{error}");
+    ostinato_lang::compile(cycle).expect("a gateway outside a legacy cycle is allowed");
 
     let implicit = r#"
 package demo
@@ -6401,4 +6399,113 @@ nested_list: #LL & {l: [[{b: 5}]]}
         "recursive narrowing remains documented"
     );
     assert_eq!(json["x"]["children"][0]["total"], 2);
+}
+
+#[test]
+fn gateway_n_of_and_expression_modes_compile() {
+    let nof = r#"
+package demo
+workflow: {
+    name: "nof"
+    steps: {
+        a: {kind: "noop"}
+        b: {kind: "noop"}
+        q: {kind: "gateway", needs: ["a", "b"], gateway: {join: "n_of", n: 2}}
+    }
+}
+"#;
+    let compiled = ostinato_lang::compile(nof).expect("compile n_of");
+    let gateway = compiled
+        .spec
+        .step("q")
+        .and_then(|step| step.gateway.as_ref())
+        .expect("gateway");
+    assert_eq!(gateway.join, Some(JoinMode::NOf));
+    assert_eq!(gateway.n, Some(2));
+
+    let expression = r#"
+package demo
+workflow: {
+    name: "expression"
+    steps: {
+        a: {kind: "noop"}
+        b: {kind: "noop"}
+        m: {kind: "gateway", needs: ["a", "b"], gateway: {
+            join: "expression"
+            labels: {left: "a", right: "b"}
+            expression: "edges.left && !edges.right"
+        }}
+    }
+}
+"#;
+    let compiled = ostinato_lang::compile(expression).expect("compile expression");
+    let gateway = compiled
+        .spec
+        .step("m")
+        .and_then(|step| step.gateway.as_ref())
+        .expect("gateway");
+    assert_eq!(gateway.join, Some(JoinMode::Expression));
+    assert_eq!(gateway.labels["left"], "a");
+}
+
+#[test]
+fn gateway_n_of_and_expression_validation_is_path_qualified() {
+    for (source, needle) in [
+        (
+            r#"a: {kind:"gateway", needs:["b"], gateway:{join:"n_of"}}
+               b: {kind:"noop"}"#,
+            "workflow.steps.a.gateway.n is required",
+        ),
+        (
+            r#"a: {kind:"gateway", needs:["b"], gateway:{join:"n_of", n:2}}
+               b: {kind:"noop"}"#,
+            "workflow.steps.a.gateway.n must be between 1 and 1",
+        ),
+        (
+            r#"a: {kind:"gateway", needs:["b"], gateway:{join:"or", n:1}}
+               b: {kind:"noop"}"#,
+            "`n` is only allowed for `n_of`",
+        ),
+        (
+            r#"a: {kind:"gateway", needs:["b"], gateway:{join:"expression", expression:"edges.c"}}
+               b: {kind:"noop"}"#,
+            "workflow.steps.a.gateway.expression is invalid",
+        ),
+    ] {
+        let source =
+            format!("package demo\nworkflow: {{ name: \"bad\"\n steps: {{ {source} }} }}\n");
+        let error = compile_error(&source);
+        assert!(error.contains(needle), "{error}");
+    }
+}
+
+#[test]
+fn gateway_n_of_duplicate_needs_and_non_injective_labels_are_rejected() {
+    for (source, needle) in [
+        (
+            r#"q: {kind:"gateway", needs:["a","a"], gateway:{join:"n_of", n:1}}
+               a: {kind:"noop"}"#,
+            "duplicate `a`",
+        ),
+        (
+            r#"q: {kind:"gateway", needs:["a","b"], gateway:{
+                   join:"expression", labels:{x:"a", y:"a", z:"b"}, expression:"edges.x"
+               }}
+               a: {kind:"noop"}
+               b: {kind:"noop"}"#,
+            "maps multiple labels",
+        ),
+        (
+            r#"q: {kind:"gateway", needs:["a"], gateway:{
+                   join:"expression", labels:{and:"a"}, expression:"edges.and"
+               }}
+               a: {kind:"noop"}"#,
+            "must match",
+        ),
+    ] {
+        let source =
+            format!("package demo\nworkflow: {{ name: \"bad\"\n steps: {{ {source} }} }}\n");
+        let error = compile_error(&source);
+        assert!(error.contains(needle), "{error}");
+    }
 }

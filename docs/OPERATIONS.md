@@ -30,14 +30,16 @@ Default: `.ostinato/ostinato.db` (override with `--db` or `OSTINATO_DB`).
 ```text
 runs(id, workflow_name, source_file, spec_json, params_json, status, resume_index,
      parent_run_id, error, created_at, updated_at, audit_head, state_hash)
-steps(run_id, name, status, visits, attempts, output_json, error, updated_at)
+steps(run_id, name, status, visits, attempts, output_json, error, updated_at, round)
 events(run_id, seq, ts, kind, step, data_json, prev_hash, hash)
 trials(id, run_id, node_index, step, round, attempt, status, score, duration_ms,
        input_hash, output_hash, input_json, output_json, error, created_at)
 improvements(id, run_id, parent_id, round, diagnosis, proposal_json, created_at)
 ```
 
-Pragmas: WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`.
+Pragmas: WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=10000`.
+Schema version 2 adds `steps.round` for gateway cycles; the migration and
+version stamp commit atomically.
 The database and its `-wal`/`-shm` sidecars are created with mode `0600` on Unix.
 Schema migrations run once, gated by `PRAGMA user_version`; clearing an integrity
 hash after migration is treated as tampering, not as a repair request.
@@ -144,6 +146,8 @@ ostinato_steps_total
 ostinato_steps_failed_total
 ostinato_steps_skipped_total
 ostinato_gateways_evaluated_total
+ostinato_gateway_failures_total
+ostinato_gateway_quorum_short_total
 ostinato_attempts_total
 ostinato_retries_total
 ostinato_attempt_duration_ms_avg
@@ -152,12 +156,21 @@ ostinato_attempt_duration_ms_avg
 For a scrape endpoint, run `ostinato metrics --format prometheus` from a tiny cron/systemd timer and serve the file with your existing exporter. Ostinato itself stays CLI-only.
 
 `steps_skipped` counts dead-path rows (`status = "skipped"`) and
-`gateways_evaluated` counts `gateway.evaluated` + `gateway.joined` events. A
-gateway re-evaluated after a failed group is resumed is counted again; this is
-an evaluation counter, not a distinct-node counter. Skipped rows are never
-counted as failures. Use `ostinato status <run>` to see `skipped` rows and
-`ostinato logs <run>` for `step.skipped`, `gateway.evaluated`,
-`gateway.joined` and `gateway.failed` details.
+`gateways_evaluated` counts committed `gateway.evaluated` + `gateway.joined`
+events. Gateway decisions are replay-idempotent: a resume reuses a committed
+row instead of emitting a second event. `gateway_failures` counts
+`gateway.failed` events; `gateway_quorum_short` is the subset whose
+`reason = "quorum"`. `steps_failed` still counts all failed step rows,
+including gateway rows. Skipped rows are never counted as failures. Use
+`ostinato status <run>` to see `skipped` rows and the `ROUND` column for
+gateway cycles, and `ostinato logs <run>` for `step.skipped`,
+`gateway.evaluated`, `gateway.joined`, `gateway.failed`, `cycle.completed` and `cycle.exited`
+details.
+
+`attempts_total` and `retries_total` count physical trial rows. A group that is
+replayed after a crash or failure re-executes its normal steps, so these
+counters can exceed the number of distinct steps; gateway decisions and
+skipped rows are replay-idempotent and are not duplicated.
 
 ## Logs
 

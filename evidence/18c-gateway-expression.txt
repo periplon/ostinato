@@ -1,0 +1,10 @@
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.KOHYWshHCk/gateway-expression.sqlite --cue cue run examples/gateway_expression.cue
+
+run=6ee8053c-087f-4a73-b7ea-404c585501c7 workflow=expression status=succeeded durationMs=2
+STEP                     STATUS     VISITS ATTEMPTS
+fast                     succeeded  1      1
+merge                    succeeded  1      0
+notify                   succeeded  1      1
+slow                     succeeded  1      1
+
+exit=0

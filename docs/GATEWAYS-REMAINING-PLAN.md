@@ -1,9 +1,9 @@
 # Remaining gateway work — implementation plan
 
-**Status:** Planning complete, ready for phase-0 implementation  
-**Source design:** [`docs/GATEWAYS.md`](GATEWAYS.md) (v1 design, §14 deferred work)  
-**Baseline:** workspace `0.18.2`, `main` at `3cc24ea`  
-**Planning worktree:** `.worktrees/gateways-plan` (`plan/gateways-remaining`)  
+**Status:** Implemented in the `feat/gateways-r0-r4` branch (R0–R4); R5/R6 remain deliberately out of scope
+**Source design:** [`docs/GATEWAYS.md`](GATEWAYS.md) (v1 design, §14 deferred work)
+**Baseline:** workspace `0.18.2`, `main` at `3cc24ea`
+**Planning worktree:** `.worktrees/gateways-plan` (`plan/gateways-remaining`)
 **Target releases:** `0.19.0` (hardening + `n_of` + static analysis), then optional `0.20.0`
 
 ---

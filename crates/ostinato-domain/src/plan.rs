@@ -9,6 +9,8 @@ use crate::workflow::{GatewaySpec, StepKind, WorkflowSpec};
 /// a workflow file from exhausting memory during planning.
 pub const MAX_PLAN_NODES: usize = 100_000;
 
+type CycleLayoutMap = BTreeMap<usize, (Vec<Vec<usize>>, BTreeSet<(usize, usize)>)>;
+
 /// Where an incoming plan edge came from.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,11 +21,61 @@ pub enum EdgeOrigin {
     Branch { gateway: String, branch: String },
 }
 
+/// Whether an edge is evaluated in the current cycle round or carried from the
+/// previous round.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeScope {
+    #[default]
+    SameRound,
+    Carry,
+}
+
 /// One incoming edge of a plan node. Metadata only; not persisted.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PlanEdge {
     pub from: String,
+    #[serde(default, skip_serializing_if = "is_same_round")]
+    pub scope: EdgeScope,
     pub origin: EdgeOrigin,
+}
+
+fn is_same_round(scope: &EdgeScope) -> bool {
+    *scope == EdgeScope::SameRound
+}
+
+/// How activation is computed for a plan node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivationScope {
+    /// Ordinary DAG node.
+    #[default]
+    Global,
+    /// Member of a legacy cycle without gateways; always active.
+    LegacyCycle,
+    /// Member of a cycle with at least one gateway; round-scoped activation.
+    RoundCycle,
+}
+
+/// A removed back-edge that carries a token into the next cycle round.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarryEdge {
+    pub from: String,
+    pub to: String,
+    pub origin: EdgeOrigin,
+}
+
+/// Stable metadata for a gateway-bearing cycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CycleInfo {
+    /// Sorted member step names.
+    pub members: Vec<String>,
+    /// Nodes with no internal same-round incoming edge.
+    pub entries: Vec<String>,
+    /// Same-round edges entering the cycle from outside.
+    pub external_incoming: Vec<PlanEdge>,
+    /// Removed back-edges, with both endpoints.
+    pub carry: Vec<CarryEdge>,
 }
 
 /// One scheduled execution of a step.
@@ -41,12 +93,13 @@ pub struct PlanNode {
     pub is_round_end: bool,
     pub cycle_until: Option<String>,
     pub cycle_max_rounds: u32,
-    /// True when this node belongs to a materialised cycle. Activation is
-    /// bypassed for cycle members because their internal back-edges have no
-    /// record until the round completes.
+    /// True when this node belongs to a materialised cycle.
     #[serde(default)]
     pub in_cycle: bool,
-    /// Incoming edges in deterministic `(from, origin)` order.
+    /// How activation is derived for this node.
+    #[serde(default)]
+    pub activation: ActivationScope,
+    /// Incoming edges in deterministic `(from, scope, origin)` order.
     #[serde(default)]
     pub incoming: Vec<PlanEdge>,
     /// Gateway routing definition, if this node is a gateway.
@@ -65,6 +118,11 @@ pub struct Plan {
     pub has_cycles: bool,
     #[serde(default)]
     pub has_gateways: bool,
+    #[serde(default)]
+    pub has_gateway_cycles: bool,
+    /// Stable cycle metadata, sorted by member names.
+    #[serde(default)]
+    pub cycle_info: Vec<CycleInfo>,
 }
 
 /// Build a deterministic execution plan from a workflow specification.
@@ -113,6 +171,7 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
             adj[dependency].push(dependent);
             incoming[dependent].push(PlanEdge {
                 from: need.clone(),
+                scope: EdgeScope::SameRound,
                 origin: EdgeOrigin::Dependency,
             });
         }
@@ -136,6 +195,7 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
             adj[gateway_index].push(target_index);
             incoming[target_index].push(PlanEdge {
                 from: gateway_name.clone(),
+                scope: EdgeScope::SameRound,
                 origin: EdgeOrigin::Branch {
                     gateway: gateway_name.clone(),
                     branch: target.clone(),
@@ -165,22 +225,132 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
         component.sort_by(|a, b| names[*a].cmp(&names[*b]));
     }
 
-    if has_gateways {
-        let cyclic_steps: Vec<String> = (0..names.len())
-            .filter(|node| is_cyclic(comp_of[*node], &comp_nodes, &has_self_edge, &comp_of, &adj))
-            .map(|node| names[node].clone())
+    // Materialise the cycle layout up-front: levels plus the back-edges that
+    // become carry edges in the next round.
+    let mut cycle_layouts: CycleLayoutMap = BTreeMap::new();
+    let mut gateway_cycles: BTreeSet<usize> = BTreeSet::new();
+    for (comp_id, component) in comp_nodes.iter().enumerate() {
+        if !is_cyclic(comp_id, &comp_nodes, &has_self_edge, &comp_of, &adj) {
+            continue;
+        }
+        let external_targets: BTreeSet<usize> = component
+            .iter()
+            .copied()
+            .filter(|node| {
+                incoming[*node].iter().any(|edge| {
+                    edge.scope == EdgeScope::SameRound
+                        && index_of
+                            .get(edge.from.as_str())
+                            .is_some_and(|from| comp_of[*from] != comp_id)
+                })
+            })
             .collect();
-        if !cyclic_steps.is_empty() {
-            let steps = cyclic_steps
-                .iter()
-                .map(|step| format!("workflow.steps.{step}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(DomainError::GatewayCycleUnsupported { steps });
+        let (levels, carry) = cycle_layout(component, &adj, &names, spec, &external_targets);
+        if component
+            .iter()
+            .any(|node| spec.steps[&names[*node]].kind == StepKind::Gateway)
+        {
+            gateway_cycles.insert(comp_id);
+        }
+        cycle_layouts.insert(comp_id, (levels, carry));
+    }
+
+    let activation_for = |comp_id: usize| -> ActivationScope {
+        if !is_cyclic(comp_id, &comp_nodes, &has_self_edge, &comp_of, &adj) {
+            ActivationScope::Global
+        } else if gateway_cycles.contains(&comp_id) {
+            ActivationScope::RoundCycle
+        } else {
+            ActivationScope::LegacyCycle
+        }
+    };
+
+    // A split gateway inside a cycle may not branch out of it; a split
+    // outside a cycle may not branch into one. Both would bypass round-scoped
+    // activation.
+    if has_gateways {
+        for (name, step) in &spec.steps {
+            let Some(gateway) = &step.gateway else {
+                continue;
+            };
+            if gateway.split.is_none() {
+                continue;
+            }
+            let Some(&gateway_index) = index_of.get(name.as_str()) else {
+                continue;
+            };
+            let gateway_comp = comp_of[gateway_index];
+            let gateway_cyclic = cycle_layouts.contains_key(&gateway_comp);
+            for target in gateway.branches.keys() {
+                let Some(&target_index) = index_of.get(target.as_str()) else {
+                    continue;
+                };
+                let target_cyclic = cycle_layouts.contains_key(&comp_of[target_index]);
+                if gateway_cyclic && comp_of[target_index] != gateway_comp {
+                    return Err(DomainError::GatewayBranchLeavesCycle {
+                        gateway: name.clone(),
+                        target: target.clone(),
+                    });
+                }
+                if !gateway_cyclic && target_cyclic {
+                    return Err(DomainError::GatewayBranchIntoCycle {
+                        gateway: name.clone(),
+                        target: target.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Mark removed back-edges as carry edges on the target's incoming list.
+    for (_, carry) in cycle_layouts.values() {
+        for &(from, to) in carry {
+            for edge in &mut incoming[to] {
+                if edge.from == names[from] {
+                    edge.scope = EdgeScope::Carry;
+                }
+            }
+        }
+    }
+    for edges in &mut incoming {
+        edges.sort();
+        edges.dedup();
+    }
+
+    if has_gateways {
+        for &comp_id in cycle_layouts.keys() {
+            if !gateway_cycles.contains(&comp_id) {
+                continue;
+            }
+            for &node in &comp_nodes[comp_id] {
+                let Some(gateway) = &spec.steps[&names[node]].gateway else {
+                    continue;
+                };
+                if gateway.join.is_some()
+                    && incoming[node]
+                        .iter()
+                        .any(|edge| edge.scope == EdgeScope::Carry)
+                    && incoming[node]
+                        .iter()
+                        .any(|edge| edge.scope == EdgeScope::SameRound)
+                {
+                    return Err(DomainError::GatewayCycleMixedScopeJoin(names[node].clone()));
+                }
+            }
         }
         for (node, name) in names.iter().enumerate() {
-            let is_gateway = spec.steps[name].kind == StepKind::Gateway;
-            if !is_gateway && incoming[node].len() > 1 {
+            if spec.steps[name].kind == StepKind::Gateway {
+                continue;
+            }
+            if activation_for(comp_of[node]) == ActivationScope::LegacyCycle {
+                continue;
+            }
+            if incoming[node]
+                .iter()
+                .filter(|edge| edge.scope == EdgeScope::SameRound)
+                .count()
+                > 1
+            {
                 return Err(DomainError::ImplicitJoinWithGateways(name.clone()));
             }
         }
@@ -265,6 +435,7 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
                     cycle_until: None,
                     cycle_max_rounds: 1,
                     in_cycle: false,
+                    activation: ActivationScope::Global,
                     incoming: incoming[member].clone(),
                     gateway: spec.steps[&names[member]].gateway.clone(),
                 });
@@ -276,7 +447,14 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
             has_cycles = true;
             let members = &comp_nodes[comp_id];
             let (max_rounds, until) = cycle_policy(spec, members, &names)?;
-            let levels = inner_levels(members, &adj, &names);
+            let Some((levels, _)) = cycle_layouts.get(&comp_id) else {
+                return Err(DomainError::EmptyWorkflow);
+            };
+            let activation = if gateway_cycles.contains(&comp_id) {
+                ActivationScope::RoundCycle
+            } else {
+                ActivationScope::LegacyCycle
+            };
             for round in 0..max_rounds {
                 for (level_idx, inner) in levels.iter().enumerate() {
                     for &node in inner {
@@ -295,6 +473,7 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
                             cycle_until: until.clone(),
                             cycle_max_rounds: max_rounds,
                             in_cycle: true,
+                            activation,
                             incoming: incoming[node].clone(),
                             gateway: spec.steps[&names[node]].gateway.clone(),
                         });
@@ -305,10 +484,64 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
         }
     }
 
+    let mut cycle_info = Vec::new();
+    for &comp_id in &gateway_cycles {
+        let members = comp_nodes[comp_id].clone();
+        let member_names: Vec<String> = members.iter().map(|node| names[*node].clone()).collect();
+        let mut external_incoming = Vec::new();
+        let mut entries = Vec::new();
+        for &node in &members {
+            let internal_same_round = incoming[node].iter().any(|edge| {
+                edge.scope == EdgeScope::SameRound
+                    && index_of
+                        .get(edge.from.as_str())
+                        .is_some_and(|from| comp_of[*from] == comp_id)
+            });
+            if !internal_same_round {
+                entries.push(names[node].clone());
+            }
+            for edge in &incoming[node] {
+                if edge.scope == EdgeScope::SameRound
+                    && index_of
+                        .get(edge.from.as_str())
+                        .is_some_and(|from| comp_of[*from] != comp_id)
+                {
+                    external_incoming.push(edge.clone());
+                }
+            }
+        }
+        entries.sort();
+        external_incoming.sort();
+        let mut carry = Vec::new();
+        if let Some((_, carry_edges)) = cycle_layouts.get(&comp_id) {
+            for &(from, to) in carry_edges {
+                let origin = incoming[to]
+                    .iter()
+                    .find(|edge| edge.from == names[from])
+                    .map_or(EdgeOrigin::Dependency, |edge| edge.origin.clone());
+                carry.push(CarryEdge {
+                    from: names[from].clone(),
+                    to: names[to].clone(),
+                    origin,
+                });
+            }
+        }
+        carry.sort_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
+        cycle_info.push(CycleInfo {
+            members: member_names,
+            entries,
+            external_incoming,
+            carry,
+        });
+    }
+    cycle_info.sort_by(|a, b| a.members.cmp(&b.members));
+
     Ok(Plan {
         groups: group,
         has_cycles,
         has_gateways,
+        has_gateway_cycles: !gateway_cycles.is_empty(),
+        cycle_info,
         nodes,
     })
 }
@@ -374,6 +607,10 @@ fn validate_gateways(
             (Some(_), Some(_)) => return Err(DomainError::GatewaySplitAndJoin(name.clone())),
             (None, None) => return Err(DomainError::GatewayMissingMode(name.clone())),
             (Some(mode), None) => {
+                if gateway.n.is_some() || gateway.expression.is_some() || !gateway.labels.is_empty()
+                {
+                    return Err(DomainError::GatewayQuorumOnWrongMode(name.clone()));
+                }
                 if gateway.branches.is_empty() {
                     return Err(DomainError::GatewayEmptyBranches(name.clone()));
                 }
@@ -453,12 +690,100 @@ fn validate_gateways(
                     });
                 }
             }
-            (None, Some(_)) => {
+            (None, Some(mode)) => {
                 if step.needs.is_empty() {
                     return Err(DomainError::GatewayJoinWithoutNeeds(name.clone()));
                 }
                 if !gateway.branches.is_empty() || gateway.default.is_some() {
                     return Err(DomainError::GatewayJoinHasBranches(name.clone()));
+                }
+                if gateway.split.is_none()
+                    && gateway.n.is_some()
+                    && mode != crate::workflow::JoinMode::NOf
+                {
+                    return Err(DomainError::GatewayQuorumOnWrongMode(name.clone()));
+                }
+                match mode {
+                    crate::workflow::JoinMode::NOf => {
+                        let Some(n) = gateway.n else {
+                            return Err(DomainError::GatewayQuorumMissingN(name.clone()));
+                        };
+                        let mut distinct = BTreeSet::new();
+                        for need in &step.needs {
+                            if !distinct.insert(need.as_str()) {
+                                return Err(DomainError::GatewayDuplicateNeeds {
+                                    gateway: name.clone(),
+                                    need: need.clone(),
+                                });
+                            }
+                        }
+                        if n == 0 || n as usize > distinct.len() {
+                            return Err(DomainError::GatewayQuorumInvalidN {
+                                gateway: name.clone(),
+                                n,
+                                max: distinct.len(),
+                            });
+                        }
+                        if gateway.expression.is_some() || !gateway.labels.is_empty() {
+                            return Err(DomainError::GatewayJoinHasBranches(name.clone()));
+                        }
+                    }
+                    crate::workflow::JoinMode::Expression => {
+                        if gateway
+                            .expression
+                            .as_deref()
+                            .is_none_or(|expr| expr.trim().is_empty())
+                        {
+                            return Err(DomainError::GatewayExpressionMissing(name.clone()));
+                        }
+                        if gateway.n.is_some() {
+                            return Err(DomainError::GatewayQuorumOnWrongMode(name.clone()));
+                        }
+                        if !gateway.labels.is_empty() {
+                            let needs: BTreeSet<&str> =
+                                step.needs.iter().map(String::as_str).collect();
+                            let mut values = BTreeSet::new();
+                            for (label, target) in &gateway.labels {
+                                if !is_valid_label(label) {
+                                    return Err(DomainError::GatewayInvalidLabel {
+                                        gateway: name.clone(),
+                                        label: label.clone(),
+                                    });
+                                }
+                                if !needs.contains(target.as_str()) {
+                                    return Err(DomainError::GatewayLabelUnknownStep {
+                                        gateway: name.clone(),
+                                        label: label.clone(),
+                                    });
+                                }
+                                if !values.insert(target.as_str()) {
+                                    return Err(DomainError::GatewayDuplicateLabelTarget {
+                                        gateway: name.clone(),
+                                        target: target.clone(),
+                                    });
+                                }
+                            }
+                            if gateway.labels.len() != needs.len() {
+                                let missing = needs
+                                    .iter()
+                                    .find(|need| !values.contains(**need))
+                                    .map(|need| (*need).to_owned())
+                                    .unwrap_or_default();
+                                return Err(DomainError::GatewayLabelMissing {
+                                    gateway: name.clone(),
+                                    target: missing,
+                                });
+                            }
+                        }
+                    }
+                    _ => {
+                        if gateway.n.is_some()
+                            || gateway.expression.is_some()
+                            || !gateway.labels.is_empty()
+                        {
+                            return Err(DomainError::GatewayQuorumOnWrongMode(name.clone()));
+                        }
+                    }
                 }
             }
         }
@@ -516,12 +841,31 @@ fn cycle_policy(
     Ok((max_rounds, until))
 }
 
+fn is_valid_label(label: &str) -> bool {
+    if matches!(label, "and" | "or" | "not" | "true" | "false" | "null") {
+        return false;
+    }
+    let mut chars = label.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
 /// Remove DFS back-edges, then compute Kahn levels of the remaining DAG.
-fn inner_levels(members: &[usize], adj: &[Vec<usize>], names: &[String]) -> Vec<Vec<usize>> {
+/// Returns the levels and the removed `(from, to)` back-edges.
+fn cycle_layout(
+    members: &[usize],
+    adj: &[Vec<usize>],
+    names: &[String],
+    spec: &WorkflowSpec,
+    external_targets: &BTreeSet<usize>,
+) -> (Vec<Vec<usize>>, BTreeSet<(usize, usize)>) {
     let member_set: BTreeSet<usize> = members.iter().copied().collect();
     let mut state = BTreeMap::new();
     let mut kept: BTreeMap<usize, Vec<usize>> =
         members.iter().map(|member| (*member, Vec::new())).collect();
+    let mut carry = BTreeSet::new();
 
     fn visit(
         node: usize,
@@ -529,6 +873,7 @@ fn inner_levels(members: &[usize], adj: &[Vec<usize>], names: &[String]) -> Vec<
         adj: &[Vec<usize>],
         state: &mut BTreeMap<usize, u8>,
         kept: &mut BTreeMap<usize, Vec<usize>>,
+        carry: &mut BTreeSet<(usize, usize)>,
     ) {
         state.insert(node, 1);
         for &next in &adj[node] {
@@ -538,10 +883,11 @@ fn inner_levels(members: &[usize], adj: &[Vec<usize>], names: &[String]) -> Vec<
             match state.get(&next).copied().unwrap_or(0) {
                 0 => {
                     kept.entry(node).or_default().push(next);
-                    visit(next, member_set, adj, state, kept);
+                    visit(next, member_set, adj, state, kept, carry);
                 }
                 1 => {
-                    // Back-edge: removed to make this round a DAG.
+                    // Back-edge: carried into the next round.
+                    carry.insert((node, next));
                 }
                 _ => {
                     kept.entry(node).or_default().push(next);
@@ -551,9 +897,30 @@ fn inner_levels(members: &[usize], adj: &[Vec<usize>], names: &[String]) -> Vec<
         state.insert(node, 2);
     }
 
+    // Start at external entry targets, then cycle-policy nodes, so the DFS
+    // back-edge is the loop tail -> loop head edge rather than an arbitrary
+    // branch or external edge.
+    let mut roots: Vec<usize> = external_targets.iter().copied().collect();
+    roots.sort_by(|a, b| names[*a].cmp(&names[*b]));
+    let mut policy: Vec<usize> = members
+        .iter()
+        .copied()
+        .filter(|member| spec.steps[&names[*member]].cycle.is_some())
+        .collect();
+    policy.sort_by(|a, b| names[*a].cmp(&names[*b]));
+    for member in policy {
+        if !roots.contains(&member) {
+            roots.push(member);
+        }
+    }
     for &member in members {
+        if !roots.contains(&member) {
+            roots.push(member);
+        }
+    }
+    for member in roots {
         if state.get(&member).copied().unwrap_or(0) == 0 {
-            visit(member, &member_set, adj, &mut state, &mut kept);
+            visit(member, &member_set, adj, &mut state, &mut kept, &mut carry);
         }
     }
 
@@ -592,7 +959,7 @@ fn inner_levels(members: &[usize], adj: &[Vec<usize>], names: &[String]) -> Vec<
     if levels.is_empty() {
         levels.push(members.to_vec());
     }
-    levels
+    (levels, carry)
 }
 
 /// Tarjan's strongly connected components. Deterministic for a sorted graph.

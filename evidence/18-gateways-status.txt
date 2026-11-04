@@ -1,14 +1,14 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.216HQvhT45/gateway.sqlite status f1cf513f-2356-4ada-9a90-be964028f15d
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.KOHYWshHCk/gateway.sqlite status 990460c5-4846-4fd9-974b-8c542dab8225
 
-run=f1cf513f-2356-4ada-9a90-be964028f15d workflow=release-decision status=succeeded resumeIndex=6
-source=/Users/joanmarc/dailywork/jmca/ostinato/examples/gateway.cue
-created=2026-11-04T00:42:11.802Z updated=2026-11-04T00:42:11.835Z
+run=990460c5-4846-4fd9-974b-8c542dab8225 workflow=release-decision status=succeeded resumeIndex=6
+source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/examples/gateway.cue
+created=2026-11-04T07:00:29.518Z updated=2026-11-04T07:00:29.541Z
 STEP                     STATUS     VISITS ATTEMPTS
-deployFast               succeeded  1      1       
-deploySlow               skipped    0      0       
-merge                    succeeded  1      0       
-notify                   succeeded  1      1       
-route                    succeeded  1      0       
-test                     succeeded  1      1       
+deployFast               succeeded  1      1
+deploySlow               skipped    0      0
+merge                    succeeded  1      0
+notify                   succeeded  1      1
+route                    succeeded  1      0
+test                     succeeded  1      1
 
 exit=0

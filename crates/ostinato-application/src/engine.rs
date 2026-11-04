@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ostinato_domain::{
-    AuditEvent, Improvement, NewEvent, NewTrial, PlanNode, RunRecord, RunReport, RunStatus,
-    StepKind, StepRecord, StepSpec, StepStatus, TrialStatus, audit, build_plan,
+    ActivationScope, AuditEvent, DomainError, EdgeOrigin, EdgeScope, Improvement, NewEvent,
+    NewTrial, Plan, PlanNode, RunRecord, RunReport, RunStatus, StepKind, StepRecord, StepSpec,
+    StepStatus, TrialStatus, audit, build_plan,
 };
 use ostinato_lang::{eval_condition, render};
 use serde_json::{Map, Value as Json, json};
@@ -78,6 +79,8 @@ struct NodeResult {
     hard_failure: bool,
     continue_on_error: bool,
     skipped: bool,
+    skip_reason: Option<String>,
+    gateway_reason: Option<&'static str>,
 }
 
 struct GatewayFailure {
@@ -144,7 +147,7 @@ impl Engine {
         let id = self.ids.new_run_id();
         let now = self.clock.now();
         let state_hash = audit::state_digest(&spec, &params, &source_file, 0, &[]);
-        let run = RunRecord {
+        let mut run = RunRecord {
             id,
             workflow_name: spec.name.clone(),
             source_file,
@@ -159,9 +162,8 @@ impl Engine {
             audit_head: audit::GENESIS_HASH.to_owned(),
             state_hash: state_hash.clone(),
         };
-        self.store.create_run(&run)?;
-        let event = self.store.append_event(
-            &run.id,
+        let event = self.store.create_run_with_event(
+            &run,
             NewEvent::new(
                 "run.started",
                 None,
@@ -173,6 +175,7 @@ impl Engine {
             ),
             &now,
         )?;
+        run.audit_head.clone_from(&event.hash);
         self.telemetry.event(&event);
         self.drive(run)
     }
@@ -231,32 +234,19 @@ impl Engine {
                 run.id
             )));
         }
+        audit::verify_state_anchor(&events, &run.state_hash)?;
         let now = self.clock.now();
         run.status = RunStatus::Running;
         run.updated_at.clone_from(&now);
-        if let Err(err) =
-            self.store
-                .update_run_status(&run.id, RunStatus::Running, run.resume_index, None, &now)
-        {
-            match err {
-                PortError::Cancelled(_) => {
-                    let current = self
-                        .store
-                        .load_run(&run.id)?
-                        .ok_or_else(|| EngineError::RunNotFound(run.id.clone()))?;
-                    return self.report(&current, Instant::now());
-                }
-                other => return Err(other.into()),
-            }
-        }
-        let event = match self.store.append_event(
+        let event = match self.store.resume_run(
             &run.id,
+            run.resume_index,
+            &now,
             NewEvent::new(
                 "run.resumed",
                 None,
                 json!({"resumeIndex": run.resume_index}),
             ),
-            &now,
         ) {
             Ok(event) => event,
             Err(PortError::Cancelled(_)) => {
@@ -372,7 +362,7 @@ impl Engine {
             let group = plan.nodes[index..end].to_vec();
             let context = self.context(&run, group[0].round, &outputs, &records);
             let (mut results, to_execute, gateway_failure) =
-                self.activate_group(&run, &group, &context, &mut records, &mut outputs)?;
+                self.activate_group(&run, &group, &context, &mut records, &mut outputs, &plan)?;
 
             if let Some(failure) = gateway_failure {
                 let now = self.clock.now();
@@ -418,6 +408,19 @@ impl Engine {
             results.extend(executed);
             results.sort_by_key(|result| result.index);
 
+            for result in &results {
+                records.insert(result.step.name.clone(), result.step.clone());
+                if result.skipped {
+                    outputs.remove(&result.step.name);
+                } else if result.step.status == StepStatus::Succeeded {
+                    if let Some(output) = &result.step.output {
+                        outputs.insert(result.step.name.clone(), output.clone());
+                    }
+                } else {
+                    outputs.remove(&result.step.name);
+                }
+            }
+
             let aborting = results
                 .iter()
                 .any(|result| result.hard_failure && !result.continue_on_error);
@@ -426,19 +429,15 @@ impl Engine {
                 .find(|result| result.hard_failure && !result.continue_on_error)
                 .or_else(|| results.iter().find(|result| result.hard_failure))
                 .and_then(|result| result.step.error.clone());
-            let resume_index = if aborting {
+            let mut resume_after_group = if aborting {
                 i64::try_from(group[0].index).unwrap_or(i64::MAX)
             } else {
                 i64::try_from(end).unwrap_or(i64::MAX)
             };
-            let status = if aborting {
-                RunStatus::Failed
-            } else {
-                RunStatus::Running
-            };
             let now = self.clock.now();
             let mut group_events: Vec<NewEvent> =
                 results.iter().map(|result| result.event.clone()).collect();
+
             if aborting {
                 group_events.push(NewEvent::new(
                     "run.failed",
@@ -446,14 +445,124 @@ impl Engine {
                         .iter()
                         .find(|result| result.hard_failure && !result.continue_on_error)
                         .map(|result| result.step.name.clone()),
-                    json!({"error": first_error, "resumeIndex": resume_index}),
+                    json!({"error": first_error, "resumeIndex": resume_after_group}),
+                ));
+            }
+
+            let mut cycle_error: Option<String> = None;
+            if !aborting {
+                let mut round_checked = false;
+                for node in &group {
+                    if !node.is_round_end || round_checked {
+                        continue;
+                    }
+                    round_checked = true;
+
+                    if node.activation == ActivationScope::RoundCycle {
+                        let Some(cycle) = plan
+                            .cycle_info
+                            .iter()
+                            .find(|cycle| cycle.members.iter().any(|member| member == &node.step))
+                        else {
+                            return Err(EngineError::InvalidState(format!(
+                                "no cycle metadata for round-cycled step `{}`",
+                                node.step
+                            )));
+                        };
+                        let next_entered =
+                            activation::cycle_entered(cycle, &records, &run.spec, node.round + 1)
+                                .map_err(|err| EngineError::InvalidState(err.to_string()))?;
+                        if !next_entered {
+                            let mut skip = end;
+                            while skip < plan.nodes.len() && plan.nodes[skip].scc == node.scc {
+                                skip += 1;
+                            }
+                            group_events.push(NewEvent::new(
+                                "cycle.exited",
+                                Some(node.step.clone()),
+                                json!({
+                                    "round": node.round,
+                                    "reason": "dead_path",
+                                    "resumeIndex": skip,
+                                }),
+                            ));
+                            resume_after_group = i64::try_from(skip).unwrap_or(i64::MAX);
+                            break;
+                        }
+                    }
+
+                    let Some(until) = &node.cycle_until else {
+                        if node.in_cycle && node.round + 1 >= node.cycle_max_rounds {
+                            group_events.push(NewEvent::new(
+                                "cycle.exhausted",
+                                Some(node.step.clone()),
+                                json!({
+                                    "round": node.round,
+                                    "maxRounds": node.cycle_max_rounds,
+                                    "until": Json::Null,
+                                }),
+                            ));
+                        }
+                        continue;
+                    };
+                    let context = self.context(&run, node.round, &outputs, &records);
+                    let done = match eval_condition(until, &context) {
+                        Ok(done) => done,
+                        Err(err) => {
+                            cycle_error = Some(format!("invalid cycle condition `{until}`: {err}"));
+                            resume_after_group = i64::try_from(group[0].index).unwrap_or(i64::MAX);
+                            break;
+                        }
+                    };
+                    if done {
+                        let mut skip = end;
+                        while skip < plan.nodes.len() && plan.nodes[skip].scc == node.scc {
+                            skip += 1;
+                        }
+                        group_events.push(NewEvent::new(
+                            "cycle.completed",
+                            Some(node.step.clone()),
+                            json!({
+                                "round": node.round,
+                                "until": until,
+                                "resumeIndex": skip,
+                            }),
+                        ));
+                        resume_after_group = i64::try_from(skip).unwrap_or(i64::MAX);
+                        break;
+                    }
+                    if node.round + 1 >= node.cycle_max_rounds {
+                        group_events.push(NewEvent::new(
+                            "cycle.exhausted",
+                            Some(node.step.clone()),
+                            json!({
+                                "round": node.round,
+                                "maxRounds": node.cycle_max_rounds,
+                                "until": until,
+                            }),
+                        ));
+                    }
+                }
+            }
+
+            let status = if aborting || cycle_error.is_some() {
+                RunStatus::Failed
+            } else {
+                RunStatus::Running
+            };
+            let error = cycle_error.clone().or_else(|| first_error.clone());
+            if let Some(message) = &cycle_error {
+                group_events.push(NewEvent::new(
+                    "run.failed",
+                    group.first().map(|node| node.step.clone()),
+                    json!({"error": message, "resumeIndex": resume_after_group}),
                 ));
             }
             let completion = Completion {
                 run_id: run.id.clone(),
-                resume_index,
+                resume_index: resume_after_group,
                 status,
-                error: first_error.clone(),
+                error: error.clone(),
                 updated_at: now.clone(),
                 steps: results.iter().map(|result| result.step.clone()).collect(),
                 events: group_events,
@@ -470,116 +579,18 @@ impl Engine {
             for event in &events {
                 self.telemetry.event(event);
             }
-
-            for result in &results {
-                records.insert(result.step.name.clone(), result.step.clone());
-                if result.skipped {
-                    outputs.remove(&result.step.name);
-                } else if result.step.status == StepStatus::Succeeded {
-                    if let Some(output) = &result.step.output {
-                        outputs.insert(result.step.name.clone(), output.clone());
-                    }
-                } else {
-                    outputs.remove(&result.step.name);
-                }
-            }
             self.emit_result_metrics(&results, &run.spec);
 
-            if aborting {
+            if aborting || cycle_error.is_some() {
                 run.status = RunStatus::Failed;
-                run.error.clone_from(&first_error);
-                run.resume_index = resume_index;
+                run.error = error;
+                run.resume_index = resume_after_group;
                 run.updated_at = now;
                 return self.report(&run, started);
             }
 
-            index = end;
-            run.resume_index = i64::try_from(index).unwrap_or(i64::MAX);
-
-            let mut skipped_to: Option<usize> = None;
-            let mut round_checked = false;
-            for node in &group {
-                if !node.is_round_end || round_checked {
-                    continue;
-                }
-                let Some(until) = &node.cycle_until else {
-                    continue;
-                };
-                round_checked = true;
-                let context = self.context(&run, node.round, &outputs, &records);
-                let done = match eval_condition(until, &context) {
-                    Ok(done) => done,
-                    Err(err) => {
-                        return self.fail_run(
-                            run,
-                            node.index,
-                            format!("invalid cycle condition `{until}`: {err}"),
-                            started,
-                        );
-                    }
-                };
-                if done {
-                    let mut skip = end;
-                    while skip < plan.nodes.len() && plan.nodes[skip].scc == node.scc {
-                        skip += 1;
-                    }
-                    let now = self.clock.now();
-                    let event = match self.store.advance(
-                        &run.id,
-                        i64::try_from(skip).unwrap_or(i64::MAX),
-                        &now,
-                        NewEvent::new(
-                            "cycle.completed",
-                            Some(node.step.clone()),
-                            json!({
-                                "round": node.round,
-                                "until": until,
-                                "resumeIndex": skip,
-                            }),
-                        ),
-                    ) {
-                        Ok(event) => event,
-                        Err(PortError::Cancelled(_)) => {
-                            run.status = RunStatus::Cancelled;
-                            run.updated_at = now;
-                            return self.report(&run, started);
-                        }
-                        Err(err) => return Err(err.into()),
-                    };
-                    self.telemetry.event(&event);
-                    skipped_to = Some(skip);
-                    break;
-                }
-                if node.round + 1 >= node.cycle_max_rounds {
-                    let now = self.clock.now();
-                    let event = match self.store.append_event(
-                        &run.id,
-                        NewEvent::new(
-                            "cycle.exhausted",
-                            Some(node.step.clone()),
-                            json!({
-                                "round": node.round,
-                                "maxRounds": node.cycle_max_rounds,
-                                "until": until,
-                            }),
-                        ),
-                        &now,
-                    ) {
-                        Ok(event) => event,
-                        Err(PortError::Cancelled(_)) => {
-                            run.status = RunStatus::Cancelled;
-                            run.updated_at = now;
-                            return self.report(&run, started);
-                        }
-                        Err(err) => return Err(err.into()),
-                    };
-                    self.telemetry.event(&event);
-                }
-            }
-            if let Some(skip) = skipped_to {
-                index = skip;
-                run.resume_index = i64::try_from(index).unwrap_or(i64::MAX);
-            }
+            index = usize::try_from(resume_after_group).unwrap_or(plan.nodes.len());
+            run.resume_index = resume_after_group;
         }
 
         self.finish_success(run, plan.nodes.len(), started)
@@ -623,48 +634,6 @@ impl Engine {
         self.report(&run, started)
     }
 
-    fn fail_run(
-        &self,
-        mut run: RunRecord,
-        resume_index: usize,
-        error: String,
-        started: Instant,
-    ) -> Result<RunReport> {
-        let now = self.clock.now();
-        let resume_index = i64::try_from(resume_index).unwrap_or(i64::MAX);
-        let completion = Completion {
-            run_id: run.id.clone(),
-            resume_index,
-            status: RunStatus::Failed,
-            error: Some(error.clone()),
-            updated_at: now.clone(),
-            steps: Vec::new(),
-            events: vec![NewEvent::new(
-                "run.failed",
-                None,
-                json!({"error": error, "resumeIndex": resume_index}),
-            )],
-        };
-        match self.store.complete(completion) {
-            Ok(events) => {
-                for event in &events {
-                    self.telemetry.event(event);
-                }
-            }
-            Err(PortError::Cancelled(_)) => {
-                run.status = RunStatus::Cancelled;
-                run.updated_at = now;
-                return self.report(&run, started);
-            }
-            Err(err) => return Err(err.into()),
-        }
-        run.status = RunStatus::Failed;
-        run.error = Some(error);
-        run.resume_index = resume_index;
-        run.updated_at = now;
-        self.report(&run, started)
-    }
-
     fn report(&self, run: &RunRecord, started: Instant) -> Result<RunReport> {
         Ok(RunReport {
             run_id: run.id.clone(),
@@ -689,11 +658,13 @@ impl Engine {
             steps.insert(name.clone(), value.clone());
         }
         let mut step_status = Map::new();
+        let mut step_round = Map::new();
         for (name, record) in records {
             step_status.insert(
                 name.clone(),
                 Json::String(record.status.as_str().to_owned()),
             );
+            step_round.insert(name.clone(), Json::from(record.round));
         }
         json!({
             "run_id": run.id,
@@ -702,6 +673,7 @@ impl Engine {
             "params": run.params.clone(),
             "steps": steps,
             "stepStatus": step_status,
+            "stepRound": step_round,
         })
     }
 
@@ -714,19 +686,57 @@ impl Engine {
         context: &Json,
         records: &mut BTreeMap<String, StepRecord>,
         outputs: &mut BTreeMap<String, Json>,
+        plan: &Plan,
     ) -> Result<(Vec<NodeResult>, Vec<PlanNode>, Option<GatewayFailure>)> {
         let mut results = Vec::new();
         let mut to_execute = Vec::new();
 
         for node in group {
-            let activation = activation::decide(node, records, &run.spec)
-                .map_err(|err| EngineError::InvalidState(err.to_string()))?;
+            if let Some(record) = records.get(&node.step)
+                && record.round == node.round
+                && (node.gateway.is_some() || record.status == StepStatus::Skipped)
+                && matches!(
+                    record.status,
+                    StepStatus::Succeeded | StepStatus::Skipped | StepStatus::Failed
+                )
+            {
+                if record.status == StepStatus::Failed && node.gateway.is_some() {
+                    return Ok((
+                        results,
+                        to_execute,
+                        Some(GatewayFailure {
+                            step: node.step.clone(),
+                            error: record.error.clone().unwrap_or_default(),
+                        }),
+                    ));
+                }
+                // Reuse a committed decision/skip from an earlier attempt of
+                // this group. No duplicate event or metric is emitted.
+                continue;
+            }
+            let activation = if node.activation == ActivationScope::RoundCycle {
+                let cycle = plan
+                    .cycle_info
+                    .iter()
+                    .find(|cycle| cycle.members.iter().any(|member| member == &node.step))
+                    .ok_or_else(|| {
+                        EngineError::InvalidState(format!(
+                            "no cycle metadata for round-cycled step `{}`",
+                            node.step
+                        ))
+                    })?;
+                let entered = activation::cycle_entered(cycle, records, &run.spec, node.round)
+                    .map_err(|err| EngineError::InvalidState(err.to_string()))?;
+                activation::decide_round(node, records, &run.spec, context, cycle, entered)
+            } else {
+                activation::decide_with_context(node, records, &run.spec, context)
+            }
+            .map_err(|err| EngineError::InvalidState(err.to_string()))?;
             match activation {
                 Activation::Dead { reason } => {
-                    if records
-                        .get(&node.step)
-                        .is_some_and(|record| record.status == StepStatus::Skipped)
-                    {
+                    if records.get(&node.step).is_some_and(|record| {
+                        record.status == StepStatus::Skipped && record.round == node.round
+                    }) {
                         // The row and its event were committed by a previous
                         // attempt of this group. Do not duplicate the audit
                         // event or the skip metric on resume.
@@ -742,16 +752,21 @@ impl Engine {
                         output: None,
                         error: None,
                         updated_at: now,
+                        round: node.round,
                     };
-                    let event = NewEvent::new(
-                        "step.skipped",
-                        Some(node.step.clone()),
-                        json!({
-                            "step": node.step,
-                            "reason": reason,
-                            "round": node.round,
-                        }),
-                    );
+                    let mut data = json!({
+                        "step": node.step,
+                        "reason": reason.clone(),
+                        "round": node.round,
+                    });
+                    if reason == "dead_path"
+                        && let Some((gateway, branch)) =
+                            dead_branch_source(node, records, node.round)
+                    {
+                        data["gateway"] = Json::String(gateway);
+                        data["branch"] = Json::String(branch);
+                    }
+                    let event = NewEvent::new("step.skipped", Some(node.step.clone()), data);
                     records.insert(node.step.clone(), record.clone());
                     outputs.remove(&node.step);
                     results.push(NodeResult {
@@ -761,19 +776,25 @@ impl Engine {
                         hard_failure: false,
                         continue_on_error: false,
                         skipped: true,
+                        skip_reason: Some(reason),
+                        gateway_reason: None,
                     });
                 }
                 Activation::Fail { error } => {
                     let now = self.clock.now();
+                    let reason = matches!(error, DomainError::GatewayQuorumNotMet { .. })
+                        .then_some("quorum");
+                    let message = error.to_string();
                     let record = StepRecord {
                         run_id: run.id.clone(),
                         name: node.step.clone(),
                         status: StepStatus::Failed,
-                        visits: node.round,
+                        visits: node.round + 1,
                         attempts: 0,
                         output: None,
-                        error: Some(error.clone()),
+                        error: Some(message.clone()),
                         updated_at: now,
+                        round: node.round,
                     };
                     let mode = node.gateway.as_ref().map_or("gateway", |gateway| {
                         if gateway.split.is_some() {
@@ -788,7 +809,8 @@ impl Engine {
                         json!({
                             "gateway": node.step,
                             "mode": mode,
-                            "error": error,
+                            "error": message,
+                            "reason": reason,
                             "round": node.round,
                         }),
                     );
@@ -801,13 +823,15 @@ impl Engine {
                         hard_failure: true,
                         continue_on_error: false,
                         skipped: false,
+                        skip_reason: None,
+                        gateway_reason: reason,
                     });
                     return Ok((
                         results,
                         to_execute,
                         Some(GatewayFailure {
                             step: node.step.clone(),
-                            error,
+                            error: message,
                         }),
                     ));
                 }
@@ -826,11 +850,12 @@ impl Engine {
                                     run_id: run.id.clone(),
                                     name: node.step.clone(),
                                     status: StepStatus::Failed,
-                                    visits: node.round,
+                                    visits: node.round + 1,
                                     attempts: 0,
                                     output: None,
                                     error: Some(message.clone()),
                                     updated_at: now,
+                                    round: node.round,
                                 };
                                 let event = NewEvent::new(
                                     "gateway.failed",
@@ -851,6 +876,8 @@ impl Engine {
                                     hard_failure: true,
                                     continue_on_error: false,
                                     skipped: false,
+                                    skip_reason: None,
+                                    gateway_reason: None,
                                 });
                                 return Ok((
                                     results,
@@ -892,10 +919,18 @@ impl Engine {
                             hard_failure: false,
                             continue_on_error: false,
                             skipped: false,
+                            skip_reason: None,
+                            gateway_reason: None,
                         });
                     } else if gateway.join.is_some() {
-                        let edges = activation::incoming_edges(node, records, &run.spec)
-                            .map_err(|err| EngineError::InvalidState(err.to_string()))?;
+                        let cycle = plan
+                            .cycle_info
+                            .iter()
+                            .find(|cycle| cycle.members.iter().any(|member| member == &node.step));
+                        let edges = activation::incoming_edges_at(
+                            node, records, &run.spec, node.round, cycle,
+                        )
+                        .map_err(|err| EngineError::InvalidState(err.to_string()))?;
                         let incoming: Vec<String> =
                             edges.iter().map(|(edge, _)| edge.from.clone()).collect();
                         let active: Vec<String> = edges
@@ -905,25 +940,52 @@ impl Engine {
                             .collect();
                         let dead: Vec<String> = edges
                             .iter()
-                            .filter(|(_, state)| !state.is_active())
+                            .filter(|(_, state)| matches!(state, activation::EdgeState::Dead))
                             .map(|(edge, _)| edge.from.clone())
                             .collect();
+                        let edge_values = gateway
+                            .expression
+                            .as_ref()
+                            .map(|_| activation::expression_edges(gateway, &edges));
                         let output = activation::join_output(
-                            gateway, &incoming, &active, &dead, "taken", node.round,
+                            gateway,
+                            &incoming,
+                            &active,
+                            &dead,
+                            "taken",
+                            node.round,
+                            edge_values.as_ref(),
                         );
-                        let event = NewEvent::new(
-                            "gateway.joined",
-                            Some(node.step.clone()),
-                            json!({
-                                "gateway": node.step,
-                                "join": gateway.join.map(|mode| mode.as_str()),
-                                "incoming": incoming,
-                                "active": active,
-                                "dead": dead,
-                                "decision": "taken",
-                                "round": node.round,
-                            }),
-                        );
+                        let mut event_data = json!({
+                            "gateway": node.step,
+                            "join": gateway.join.map(|mode| mode.as_str()),
+                            "incoming": incoming,
+                            "active": active,
+                            "dead": dead,
+                            "decision": "taken",
+                            "round": node.round,
+                        });
+                        if let Some(n) = gateway.n {
+                            event_data["n"] = Json::from(n);
+                            event_data["quorum"] = json!({
+                                "required": n,
+                                "active": output
+                                    .get("quorum")
+                                    .and_then(|quorum| quorum.get("active"))
+                                    .cloned()
+                                    .unwrap_or(Json::from(0)),
+                                "met": output
+                                    .get("quorum")
+                                    .and_then(|quorum| quorum.get("met"))
+                                    .cloned()
+                                    .unwrap_or(Json::Bool(true)),
+                            });
+                        }
+                        if let Some(edges) = &edge_values {
+                            event_data["edges"] = edges.clone();
+                        }
+                        let event =
+                            NewEvent::new("gateway.joined", Some(node.step.clone()), event_data);
                         let record = gateway_record(run, node, output, &self.clock.now());
                         records.insert(node.step.clone(), record.clone());
                         outputs.insert(
@@ -937,6 +999,8 @@ impl Engine {
                             hard_failure: false,
                             continue_on_error: false,
                             skipped: false,
+                            skip_reason: None,
+                            gateway_reason: None,
                         });
                     } else {
                         return Err(EngineError::InvalidState(format!(
@@ -961,7 +1025,13 @@ impl Engine {
                 self.telemetry.metric(
                     "ostinato_step_skipped_total",
                     1.0,
-                    &[("step", name), ("reason", "dead_path")],
+                    &[
+                        ("step", name),
+                        (
+                            "reason",
+                            result.skip_reason.as_deref().unwrap_or("dead_path"),
+                        ),
+                    ],
                 );
                 if let Some(gateway) = gateway {
                     if let Some(mode) = gateway.join {
@@ -1037,8 +1107,34 @@ impl Engine {
                         .metric("ostinato_step_success_total", 1.0, &[("step", name)]);
                 }
             } else {
-                self.telemetry
-                    .metric("ostinato_step_failure_total", 1.0, &[("step", name)]);
+                if let Some(gateway) = gateway {
+                    if let Some(mode) = gateway.join {
+                        self.telemetry.metric(
+                            "ostinato_gateway_join_total",
+                            1.0,
+                            &[
+                                ("gateway", name),
+                                ("mode", mode.as_str()),
+                                (
+                                    "decision",
+                                    match result.gateway_reason {
+                                        Some("quorum") => "quorum_failed",
+                                        Some(reason) => reason,
+                                        None => "failed",
+                                    },
+                                ),
+                            ],
+                        );
+                    }
+                    self.telemetry.metric(
+                        "ostinato_gateway_failure_total",
+                        1.0,
+                        &[("gateway", name)],
+                    );
+                } else {
+                    self.telemetry
+                        .metric("ostinato_step_failure_total", 1.0, &[("step", name)]);
+                }
             }
         }
     }
@@ -1103,6 +1199,7 @@ impl Engine {
             output: success.then_some(outcome.output.clone()),
             error: outcome.error.clone(),
             updated_at: self.clock.now(),
+            round: node.round,
         };
         let event = NewEvent::new(
             if success {
@@ -1126,6 +1223,8 @@ impl Engine {
             hard_failure: !success,
             continue_on_error: step_spec.continue_on_error,
             skipped: false,
+            skip_reason: None,
+            gateway_reason: None,
         })
     }
 
@@ -1484,6 +1583,40 @@ impl Engine {
     }
 }
 
+fn dead_branch_source(
+    node: &PlanNode,
+    records: &BTreeMap<String, StepRecord>,
+    round: u32,
+) -> Option<(String, String)> {
+    for edge in &node.incoming {
+        if edge.scope != EdgeScope::SameRound {
+            continue;
+        }
+        let EdgeOrigin::Branch { gateway, branch } = &edge.origin else {
+            continue;
+        };
+        let dead = records.get(&edge.from).is_none_or(|record| {
+            record.round == round
+                && (record.status == StepStatus::Skipped
+                    || (record.status == StepStatus::Succeeded
+                        && record
+                            .output
+                            .as_ref()
+                            .and_then(|output| output.get("chosen"))
+                            .and_then(Json::as_array)
+                            .is_none_or(|chosen| {
+                                !chosen
+                                    .iter()
+                                    .any(|value| value.as_str() == Some(branch.as_str()))
+                            })))
+        });
+        if dead {
+            return Some((gateway.clone(), branch.clone()));
+        }
+    }
+    None
+}
+
 fn gateway_record(run: &RunRecord, node: &PlanNode, output: Json, now: &str) -> StepRecord {
     StepRecord {
         run_id: run.id.clone(),
@@ -1494,6 +1627,7 @@ fn gateway_record(run: &RunRecord, node: &PlanNode, output: Json, now: &str) -> 
         output: Some(output),
         error: None,
         updated_at: now.to_owned(),
+        round: node.round,
     }
 }
 

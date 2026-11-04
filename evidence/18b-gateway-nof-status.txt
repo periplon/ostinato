@@ -1,0 +1,13 @@
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.KOHYWshHCk/gateway-nof.sqlite status 442db266-13de-4867-8bfe-cda2201fb870
+
+run=442db266-13de-4867-8bfe-cda2201fb870 workflow=quorum status=succeeded resumeIndex=5
+source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/examples/gateway_nof.cue
+created=2026-11-04T07:00:29.606Z updated=2026-11-04T07:00:29.609Z
+STEP                     STATUS     VISITS ATTEMPTS
+alice                    succeeded  1      1
+approve                  succeeded  1      0
+bob                      succeeded  1      1
+carol                    succeeded  1      1
+release                  succeeded  1      1
+
+exit=0

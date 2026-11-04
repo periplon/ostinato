@@ -85,7 +85,7 @@ run(file, params)
 
 The materialised plan is what makes resume exact: `runs.resume_index` is an index into this list, not a semantic guess. `ostinato graph --format json` prints it, including `has_gateways`, each node's `incoming` edges (`dependency` or `branch {gateway, branch}`) and its `gateway` payload.
 
-Gateway activation is a separate pure step in `ostinato-application/src/activation.rs`. It derives `Active`/`Dead`/`Fail` from persisted predecessor records and materialises gateway and skipped rows alongside executed rows in the same `Completion` transaction. No new table is required: the gateway output contains `chosen` for splits and `active`/`dead`/`decision` for joins.
+Gateway activation is a separate pure step in `ostinato-application/src/activation.rs`. It derives `Active`/`Dead`/`Fail` from persisted predecessor records and materialises gateway and skipped rows alongside executed rows in the same `Completion` transaction. No new table is required: the gateway output contains `chosen` for splits and `active`/`dead`/`decision` for joins. `n_of` adds a quorum block, `expression` adds `edges`/`expression`, and gateway cycles add round-scoped activation with `Carry` edges. `ostinato-domain/src/analysis.rs` is a pure structural pass used by `validate`; it reports warnings/notes and never rewrites the plan.
 
 ## Transaction boundary
 
