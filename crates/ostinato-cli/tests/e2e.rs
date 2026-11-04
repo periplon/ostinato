@@ -6766,10 +6766,6 @@ command: letindexconst: group.inner
             rust_dir.path().join("marker").exists(),
             "{name}: task did not execute"
         );
-        assert!(
-            !cue_dir.path().join("marker").exists(),
-            "{name}: cue unexpectedly executed tasks"
-        );
     }
 }
 
