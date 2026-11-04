@@ -2066,6 +2066,86 @@ fn resolve_local_value<'a>(
     }
 }
 
+fn resolve_string_value<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    expr: &'a Expr,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<String> {
+    match expr {
+        Expr::Str(parts, _) => {
+            let mut text = String::new();
+            for part in parts {
+                match part {
+                    ostinato_lang::ast::StrPart::Text(value) => text.push_str(value),
+                    ostinato_lang::ast::StrPart::Interp(_) => return None,
+                }
+            }
+            Some(text)
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.to_owned()) {
+                return None;
+            }
+            local_definition_scopes(scopes, root, name)
+                .and_then(|value| resolve_string_value(scopes, root, value, visited))
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            resolve_string_value(scopes, root, inner, visited)
+        }
+        _ => None,
+    }
+}
+
+fn expr_contains_task<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    visited: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    match expr {
+        Expr::Struct(items, _) => items
+            .iter()
+            .any(|item| item_contains_task(item, scopes, root, visited)),
+        Expr::Unify(left, right, _) => {
+            expr_contains_task(left, scopes, root, visited)
+                || expr_contains_task(right, scopes, root, visited)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            expr_contains_task(inner, scopes, root, visited)
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.to_owned()) {
+                return false;
+            }
+            local_definition_scopes(scopes, root, name)
+                .is_some_and(|value| expr_contains_task(value, scopes, root, visited))
+        }
+        _ => false,
+    }
+}
+
+fn item_contains_task<'a>(
+    item: &'a StructItem,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    visited: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    match item {
+        StructItem::Field(field) => {
+            is_task_expr(&field.value, scopes, root, visited)
+                || expr_contains_task(&field.value, scopes, root, visited)
+        }
+        StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+            expr_contains_task(value, scopes, root, visited)
+        }
+        StructItem::For { body, .. } | StructItem::If { body, .. } => body
+            .iter()
+            .any(|item| item_contains_task(item, scopes, root, visited)),
+        StructItem::Ellipsis(_) => false,
+    }
+}
+
 fn is_task_expr<'a>(
     expr: &'a Expr,
     scopes: &[&'a [StructItem]],
@@ -2076,13 +2156,12 @@ fn is_task_expr<'a>(
         Expr::Select(base, field, _, _) => {
             is_task_selection(base, Some(field), scopes, root, visited)
         }
-        Expr::Index(base, index, _) => is_task_selection(
-            base,
-            index_field_name(index).as_deref(),
-            scopes,
-            root,
-            visited,
-        ),
+        Expr::Index(base, index, _) => {
+            let field = index_field_name(index).or_else(|| {
+                resolve_string_value(scopes, root, index, &mut std::collections::BTreeSet::new())
+            });
+            is_task_selection(base, field.as_deref(), scopes, root, visited)
+        }
         Expr::Unify(left, right, _) => {
             is_task_expr(left, scopes, root, visited) || is_task_expr(right, scopes, root, visited)
         }
@@ -2105,11 +2184,15 @@ fn is_task_selection<'a>(
         // Unresolvable selector chain (tool import/export): task-bearing.
         return true;
     };
-    let selected =
-        field.and_then(|field| select_field_value(scopes, root, base_value, field, visited));
-    match selected {
-        Some(selected) => is_task_expr(selected, scopes, root, visited),
-        None => is_task_expr(base_value, scopes, root, visited),
+    match field {
+        Some(field) => match select_field_value(scopes, root, base_value, field, visited) {
+            Some(selected) => is_task_expr(selected, scopes, root, visited),
+            None => is_task_expr(base_value, scopes, root, visited),
+        },
+        None => {
+            is_task_expr(base_value, scopes, root, visited)
+                || expr_contains_task(base_value, scopes, root, visited)
+        }
     }
 }
 

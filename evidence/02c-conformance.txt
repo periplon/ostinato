@@ -1,20 +1,20 @@
 ### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244/scripts/conformance.sh
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
-     Running tests/conformance.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/deps/conformance-583917ad61a1ab23)
+     Running tests/conformance.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/deps/conformance-4a4fd411d4d4ecdf)
 
 running 1 test
 test rust_matches_official_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.81s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.98s
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
-     Running tests/tool_conformance.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/deps/tool_conformance-b7383fa8a1eccfac)
+     Running tests/tool_conformance.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/deps/tool_conformance-5e6a30715fc099a7)
 
 running 1 test
 test tool_commands_match_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
 
 
 exit=0
