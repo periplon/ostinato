@@ -2127,6 +2127,15 @@ fn local_definition<'a>(
     find_definition(scope, name).or_else(|| find_definition(root, name))
 }
 
+fn is_let_binding(scopes: &[&[StructItem]], root: &[StructItem], name: &str) -> bool {
+    let is_let = |items: &[StructItem]| {
+        items
+            .iter()
+            .any(|item| matches!(item, StructItem::Let { name: let_name, .. } if let_name == name))
+    };
+    scopes.iter().rev().any(|scope| is_let(scope)) || is_let(root)
+}
+
 fn local_definition_scopes<'a>(
     scopes: &[&'a [StructItem]],
     root: &'a [StructItem],
@@ -2915,15 +2924,31 @@ fn collect_task_decl_ids_items<'a>(
     for item in items {
         match item {
             StructItem::Field(field) => {
-                if struct_has_task_id(&field.value)
-                    || is_task_expr(
-                        &field.value,
-                        scopes,
-                        root,
-                        &mut std::collections::BTreeSet::new(),
-                        non_task_imports,
-                    )
-                {
+                let is_task = match &field.value {
+                    // Plain field references are not injected by CUE; only
+                    // `let` bindings receive captured outputs.
+                    Expr::Ident(name, _) => {
+                        is_let_binding(scopes, root, name)
+                            && is_task_expr(
+                                &field.value,
+                                scopes,
+                                root,
+                                &mut std::collections::BTreeSet::new(),
+                                non_task_imports,
+                            )
+                    }
+                    value => {
+                        struct_has_task_id(value)
+                            || is_task_expr(
+                                value,
+                                scopes,
+                                root,
+                                &mut std::collections::BTreeSet::new(),
+                                non_task_imports,
+                            )
+                    }
+                };
+                if is_task {
                     out.insert(field.id);
                 }
                 collect_task_decl_ids_expr(&field.value, root, scopes, out, non_task_imports);
@@ -3362,6 +3387,15 @@ fn inject_task_outputs_value(
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             inject_task_outputs_value(inner, outputs, imports)
+        }
+        Expr::Ident(..) => {
+            let span = expr.span();
+            let Some(wrapper) = task_output_struct(outputs, span) else {
+                return false;
+            };
+            let current = expr.clone();
+            *expr = Expr::Unify(Box::new(current), Box::new(wrapper), span);
+            true
         }
         Expr::Select(..) | Expr::Index(..) => {
             if !is_import_task_expr(expr, imports) {
