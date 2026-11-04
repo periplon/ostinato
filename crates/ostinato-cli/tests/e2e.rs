@@ -8517,11 +8517,18 @@ command: aliasplainsuccess: {
                 std::fs::read(rust_dir.path().join(artifact)).ok(),
                 "{name}: artifact {artifact} differs"
             );
-        } else {
+        } else if expected.status.success() {
             assert!(
                 !cue_dir.path().join("order.txt").exists(),
                 "{name}: cue side effect"
             );
+            assert!(
+                !rust_dir.path().join("order.txt").exists(),
+                "{name}: rust side effect"
+            );
+        } else {
+            // CUE may or may not leave side effects behind when evaluation
+            // rejects; only our own non-execution is deterministic.
             assert!(
                 !rust_dir.path().join("order.txt").exists(),
                 "{name}: rust side effect"
@@ -10518,11 +10525,13 @@ command: modulealiastaskinputreadfirst: {
         if expected.status.success() {
             assert_eq!(actual.stderr, expected.stderr, "{name}");
         }
-        assert_eq!(
-            std::fs::read(cue_dir.path().join("order.txt")).ok(),
-            std::fs::read(rust_dir.path().join("order.txt")).ok(),
-            "{name}: order.txt differs"
-        );
+        if expected.status.success() {
+            assert_eq!(
+                std::fs::read(cue_dir.path().join("order.txt")).ok(),
+                std::fs::read(rust_dir.path().join("order.txt")).ok(),
+                "{name}: order.txt differs"
+            );
+        }
         assert_eq!(
             rust_dir.path().join("order.txt").exists(),
             *expects_run,
