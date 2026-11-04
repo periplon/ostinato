@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.18.0
+
+- Default narrowing recomputes dependent required fields, with recursive
+  defaults preserved.
+- 343 tests (61 CLI E2E, 1 conformance, 239 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.17.1
 
 - Optional-reference and comprehension-shadowing guards for unification.

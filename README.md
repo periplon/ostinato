@@ -15,7 +15,7 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 ```
 
 [![CI](https://github.com/periplon/ostinato/actions/workflows/ci.yml/badge.svg)](https://github.com/periplon/ostinato/actions/workflows/ci.yml)
-![CUE](https://img.shields.io/badge/CUE-v0.17.1-6C3EF4)
+![CUE](https://img.shields.io/badge/CUE-v0.18.0-6C3EF4)
 ![Rust](https://img.shields.io/badge/Rust-2024-000000)
 
 ---
@@ -32,12 +32,12 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 
 ## Status
 
-`v0.17.1` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
+`v0.18.0` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
 
 ## Features
 
 - **Rust CUE front-end (default)**: packages, imports/modules, `let`, comprehensions, nested field shorthand, closed definitions with `...`, comprehension-generated definitions and patterns, field aliases, bounds, exact decimals and arbitrary-precision integers, unification, disjunctions/defaults, optional fields, `strings`/`list`/`regexp`/`math`/`time` builtins, single-line/multiline/interpolated bytes literals, CUE-compatible multiline strings, `@tag` injection (top-level and nested) and attributes are implemented in Rust.
-- **Official CUE oracle**: `--evaluator cue` and the conformance suite compare the Rust evaluator against CUE v0.17.1.
+- **Official CUE oracle**: `--evaluator cue` and the conformance suite compare the Rust evaluator against CUE v0.18.0.
 - **Durable**: SQLite WAL + `synchronous=FULL`; each parallel group commits atomically with its audit events.
 - **Resumable**: `ostinato resume <run>` skips completed work using a stable plan index.
 - **Retries**: bounded exponential backoff, deterministic jitter, per-attempt timeouts.
@@ -57,7 +57,7 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 Requirements:
 
 - Rust stable (edition 2024; `rust-version = 1.88`)
-- **Optional**: official CUE **>= v0.17.1** for `--evaluator cue` and conformance tests
+- **Optional**: official CUE **>= v0.18.0** for `--evaluator cue` and conformance tests
 
 ```sh
 # Ostinato
@@ -66,16 +66,16 @@ cargo install --path crates/ostinato-cli
 cargo build --release -p ostinato
 
 # Optional conformance oracle
-./scripts/install-cue.sh v0.17.1 ~/.local/bin
+./scripts/install-cue.sh v0.18.0 ~/.local/bin
 ```
 
 Verify:
 
 ```sh
 ostinato doctor
-# ostinato 0.17.1
+# ostinato 0.18.0
 # evaluator rust (required CUE workflow semantics; default)
-# oracle cue version v0.17.1
+# oracle cue version v0.18.0
 # db .ostinato/ostinato.db
 # store OK
 ```
@@ -238,10 +238,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and SOLID mapping. Th
 
 **The default evaluator is Rust.** `ostinato-lang` implements the required CUE workflow semantics directly: package selection, imports and local modules, `let`, comprehensions, nested field shorthand, definitions/unification, defaults, optional fields, `strings`/`list` builtins and parameter injection.
 
-**Official CUE is the conformance oracle, not the runtime.** `--evaluator cue` exports the containing package with CUE v0.17.1; the conformance suite (`conformance/cases`, `conformance/module`) runs the same source through both evaluators and compares the compiled workflow and params.
+**Official CUE is the conformance oracle, not the runtime.** `--evaluator cue` exports the containing package with CUE v0.18.0; the conformance suite (`conformance/cases`, `conformance/module`) runs the same source through both evaluators and compares the compiled workflow and params.
 
 - `--evaluator rust` is the default (`native` is an alias).
-- `--evaluator cue` requires CUE **>= v0.17.1**; CI installs and pins v0.17.1.
+- `--evaluator cue` requires CUE **>= v0.18.0**; CI installs and pins v0.18.0.
 - The Rust evaluator targets the workflow-relevant CUE semantics, not every CUE feature. Clause-sequence/list comprehensions and file-scoped `let` are implemented; tool packages, self-selection through split composed non-definition literals and the full disjunction lattice over bounds/patterns are explicitly out of scope in [docs/SCOPE.md](docs/SCOPE.md).
 - There is **no silent fallback**: the default is Rust; `--evaluator cue` errors if the oracle is missing.
 

@@ -2023,13 +2023,30 @@ impl<'a> Frame<'a> {
         let pending_injections = self.next_injections.borrow_mut().take();
         if let Some(injections) = pending_injections {
             for (name, value) in injections {
-                if let Some(key) = child.any_field_key(&name)
-                    && child
-                        .fields
-                        .borrow()
-                        .get(&key)
-                        .is_some_and(|definition| definition.optional && !definition.definition)
-                {
+                if let Some(key) = child.any_field_key(&name) {
+                    let field = child.fields.borrow().get(&key).cloned();
+                    let optional = field
+                        .as_ref()
+                        .is_some_and(|definition| definition.optional && !definition.definition);
+                    let required_narrowable = field.as_ref().is_some_and(|definition| {
+                        !definition.optional
+                            && !definition.definition
+                            && definition.exprs.iter().any(contains_default)
+                    });
+                    if !optional && !required_narrowable {
+                        continue;
+                    }
+                    if required_narrowable {
+                        let declared = close_nested(&child.eval_field_key(&key, span)?);
+                        let unified = unify_values(&declared, &value, span)?;
+                        child.values.borrow_mut().insert(key.clone(), unified);
+                        child.materialized.borrow_mut().insert(key.clone());
+                        child
+                            .materialized
+                            .borrow_mut()
+                            .insert(display_field_name(&key).to_owned());
+                        continue;
+                    }
                     if !matches!(
                         value.concretize(),
                         Value::String(_)
@@ -2759,19 +2776,89 @@ fn eval_definition_with_injections(
     Ok(None)
 }
 
+fn struct_narrows_key(items: &[StructItem], injections: &BTreeMap<String, Value>) -> bool {
+    items.iter().any(|item| match item {
+        StructItem::Field(field) => {
+            let crate::ast::Label::Name(name, _) = &field.label else {
+                return false;
+            };
+            injections.contains_key(name) && contains_default(&field.value)
+        }
+        StructItem::If { body, .. } | StructItem::For { body, .. } => {
+            struct_narrows_key(body, injections)
+        }
+        _ => false,
+    })
+}
+
+fn expr_narrows_key(expr: &Expr, injections: &BTreeMap<String, Value>) -> bool {
+    match expr {
+        Expr::Struct(items, _) => struct_narrows_key(items, injections),
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            expr_narrows_key(left, injections) || expr_narrows_key(right, injections)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => expr_narrows_key(inner, injections),
+        _ => false,
+    }
+}
+
+fn definition_needs_narrowing(
+    frame: &Frame<'_>,
+    name: &str,
+    injections: &BTreeMap<String, Value>,
+) -> bool {
+    let mut cursor = Some(frame);
+    while let Some(current) = cursor {
+        if let Some(key) = current.any_field_key(name) {
+            let exprs = current
+                .fields
+                .borrow()
+                .get(&key)
+                .map(|definition| definition.exprs.clone())
+                .unwrap_or_default();
+            if exprs.iter().any(|expr| format!("{expr:?}").contains(name)) {
+                return false;
+            }
+            return exprs.iter().any(|expr| expr_narrows_key(expr, injections));
+        }
+        cursor = current.parent;
+    }
+    false
+}
+
 fn try_definition_unify(
     definition: &Expr,
     other: &Expr,
     frame: &Frame<'_>,
     span: Span,
 ) -> Result<Option<Value>, LangError> {
-    let Expr::Ident(name, _) = strip_expr_parens(definition) else {
-        return Ok(None);
+    let definition = strip_expr_parens(definition);
+    let Expr::Ident(name, _) = definition else {
+        let Expr::Struct(items, _) = definition else {
+            return Ok(None);
+        };
+        let value = eval_expr(other, frame)?;
+        let Some(injections) = concrete_fields(&value) else {
+            return Ok(None);
+        };
+        if !struct_narrows_key(items, &injections) {
+            return Ok(None);
+        }
+        let previous = frame.next_injections.replace(Some(injections));
+        let result = eval_expr(definition, frame);
+        frame.next_injections.replace(previous);
+        return unify_values(&result?, &value, span).map(Some);
     };
     let value = eval_expr(other, frame)?;
     let Some(injections) = concrete_fields(&value) else {
         return Ok(None);
     };
+    if definition_needs_narrowing(frame, name, &injections) {
+        let Some(defined) = eval_definition_with_injections(frame, name, injections, span)? else {
+            return Ok(None);
+        };
+        return unify_values(&defined, &value, span).map(Some);
+    }
     match eval_definition_named(frame, name, span) {
         Ok(Some(defined)) => match unify_values(&defined, &value, span) {
             Ok(value) => return Ok(Some(value)),
@@ -2788,6 +2875,16 @@ fn try_definition_unify(
     unify_values(&defined, &value, span).map(Some)
 }
 
+fn contains_default(expr: &Expr) -> bool {
+    match expr {
+        Expr::Default(_, _) => true,
+        Expr::Disjunction(left, right, _) | Expr::Unify(left, right, _) => {
+            contains_default(left) || contains_default(right)
+        }
+        Expr::Paren(inner, _) => contains_default(inner),
+        _ => false,
+    }
+}
 fn merge_declaration(left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
     fn is_struct_like(value: &Value) -> bool {
         matches!(value, Value::Definition { .. } | Value::Struct(_))

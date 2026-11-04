@@ -1,8 +1,8 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.WFZjU84Lt7/gateway.sqlite status 80dc6ba8-06a7-461a-b541-ded0f4c448e6
+### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bLbOmXGjWH/gateway.sqlite status 0e81606f-1ea1-4f50-9e32-8ca2ddf92b09
 
-run=80dc6ba8-06a7-461a-b541-ded0f4c448e6 workflow=release-decision status=succeeded resumeIndex=6
+run=0e81606f-1ea1-4f50-9e32-8ca2ddf92b09 workflow=release-decision status=succeeded resumeIndex=6
 source=/Users/joanmarc/dailywork/jmca/ostinato/examples/gateway.cue
-created=2026-11-04T00:02:42.224Z updated=2026-11-04T00:02:42.245Z
+created=2026-11-04T00:18:45.491Z updated=2026-11-04T00:18:45.511Z
 STEP                     STATUS     VISITS ATTEMPTS
 deployFast               succeeded  1      1       
 deploySlow               skipped    0      0       

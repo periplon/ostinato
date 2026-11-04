@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.18.0
+
+Default narrowing with dependent-field recomputation.
+
+- Narrowing defaulted constraints (`{x: int | *1, y: x + 1} & {x: 3}`,
+  `#A & {n: 6}`, disjunction/typed/optional/string/list/nested forms)
+  recomputes dependent required fields like CUE.
+- Recursive definitions keep their normal defaults; narrowing through a
+  definition-valued definition remains a documented SCOPE limit.
+- 343 tests (61 CLI E2E, 1 conformance, 239 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.17.1
 
 Optional-reference and comprehension-shadowing guards.
