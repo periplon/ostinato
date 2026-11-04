@@ -6842,6 +6842,55 @@ command: defreadboth: {
             false,
         ),
         (
+            "readrootmodule",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+command: readrootmodule: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "readrootmodulechain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+other: base
+command: readrootmodulechain: {
+	let t = other
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "readrootmodulecomposed",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run & {stdout: string}
+command: readrootmodulecomposed: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
             "readrootfield",
             r#"
 package foo

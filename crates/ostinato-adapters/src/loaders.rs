@@ -1158,9 +1158,10 @@ pub fn run_tool_command(
             })
     });
     external_names.retain(|name| {
-        !probe_scheduled
-            .iter()
-            .any(|(scheduled_name, _, _)| scheduled_name == name)
+        !root_bare_module_task(&combined.items, name, &non_task_imports)
+            && !probe_scheduled
+                .iter()
+                .any(|(scheduled_name, _, _)| scheduled_name == name)
     });
     for name in &external_names {
         task_name_set.insert(name.clone());
@@ -1779,6 +1780,60 @@ fn resolved_label<'a>(
             resolved_label(inner, scopes, root, visited, allow_field)
         }
         _ => None,
+    }
+}
+
+/// Package-root fields that only alias a bare local-module task selector.
+///
+/// CUE does not schedule these through `let`/alias output reads, unlike root
+/// inline tasks and command-local fields.
+fn root_bare_module_task(items: &[StructItem], name: &str, imports: &ImportKinds) -> bool {
+    fn resolve<'a>(
+        items: &'a [StructItem],
+        expr: &'a Expr,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) -> Option<&'a Expr> {
+        match expr {
+            Expr::Ident(name, _) => {
+                if !seen.insert(name.clone()) {
+                    return None;
+                }
+                let value = items.iter().find_map(|item| match item {
+                    StructItem::Field(field)
+                        if !field.definition
+                            && matches!(&field.label, Label::Name(label, _) if label == name) =>
+                    {
+                        Some(&field.value)
+                    }
+                    StructItem::Let {
+                        name: label, value, ..
+                    } if label == name => Some(value),
+                    _ => None,
+                })?;
+                resolve(items, value, seen)
+            }
+            Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+                resolve(items, inner, seen)
+            }
+            other => Some(other),
+        }
+    }
+
+    let Some(root) = items.iter().find_map(|item| match item {
+        StructItem::Field(field)
+            if !field.definition
+                && matches!(&field.label, Label::Name(label, _) if label == name) =>
+        {
+            Some(&field.value)
+        }
+        _ => None,
+    }) else {
+        return false;
+    };
+
+    match resolve(items, root, &mut std::collections::BTreeSet::new()) {
+        Some(Expr::Unify(..)) | None => false,
+        Some(value) => import_task_alias(value, imports).is_some(),
     }
 }
 
