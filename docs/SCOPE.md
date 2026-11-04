@@ -60,7 +60,8 @@ workflow outside the Rust surface has a supported escape hatch.
   package-scoped `$after` dependencies on task nodes declared outside
   `command.<name>` (top-level fields, definitions, nested containers) with
   nested per-scope declaration/read ordering and non-task `$after` operands
-  ignored like CUE,
+  ignored like CUE (including missing members of struct/import selectors,
+  which keep the root binding used),
   output-dependency inference for nested task paths (`\(a.producer.stdout)`),
   output reads through `let`-over-field chains (root inline and command-local
   fields), package-root inline task reads (`\(prep.stdout)`,
