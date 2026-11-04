@@ -68,7 +68,8 @@ workflow outside the Rust surface has a supported escape hatch.
   `\(root.p1.stdout)`), alias-target plain-field reads (`r: prep`,
   `r: lib.run`, `q: "\(prep.stdout)"`, hidden/optional reads and
   root/container/definition/module targets, including module definition tasks
-  (`prep: lib.#def`)), and
+  (`prep: lib.#def`)), second-hop package alias chains (`p2: prep; r: p2`
+  executes the intermediate instance like CUE), and
   definitions and definition containers/aliases
   (`\(t.stdout)`, `\(#base.stdout)`, `\(#G.run.stdout)`, `\(#a.stdout)`),
   with definition-rooted path identity so duplicate leaf names, field aliases

@@ -10315,6 +10315,158 @@ command: moduletwoparen: (base)
 }
 
 #[test]
+fn tool_command_second_hop_alias_chains_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"package lib
+
+import e "tool/exec"
+
+run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+#def: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+"#;
+    let base = "base: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\n";
+    let module_import = "package foo\nimport \"example.com/k/lib\"\n";
+    let module_cli = "package foo\nimport (\n\t\"tool/cli\"\n\t\"example.com/k/lib\"\n)\n";
+    let local_cli = "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n";
+    let local = format!("package foo\nimport \"tool/exec\"\n{base}");
+    let cases: Vec<(&str, String, bool)> = vec![
+        (
+            "secondhopdirectmodule",
+            format!(
+                "{module_import}prep: lib.run\ncommand: secondhopdirectmodule: {{ r: prep }}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhopmodule",
+            format!(
+                "{module_import}prep: lib.run\np2: prep\ncommand: secondhopmodule: {{ r: p2 }}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhopmoduleplain",
+            format!(
+                "{module_import}prep: lib.run\np2: prep\ncommand: secondhopmoduleplain: {{\n\tr: p2\n\tq: \"\\\\(p2.stdout)\"\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhopmoduleoutput",
+            format!(
+                "{module_import}prep: lib.run\np2: prep\ncommand: secondhopmoduleoutput: {{\n\tr: p2\n\tq: \"\\\\(r.stdout)\"\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhopmoduletask",
+            format!(
+                "{module_cli}prep: lib.run\np2: prep\ncommand: secondhopmoduletask: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(p2.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhopmoduledef",
+            format!(
+                "{module_import}prep: lib.#def\np2: prep\ncommand: secondhopmoduledef: {{ r: p2 }}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhoplocaldirect",
+            format!("{local}command: secondhoplocaldirect: {{ r: base }}\n"),
+            false,
+        ),
+        (
+            "secondhoplocal",
+            format!("{local}p2: base\ncommand: secondhoplocal: {{ r: p2 }}\n"),
+            false,
+        ),
+        (
+            "secondhoplocalplain",
+            format!(
+                "{local}p2: base\ncommand: secondhoplocalplain: {{\n\tr: p2\n\tq: \"\\\\(p2.stdout)\"\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhoplocaltask",
+            format!(
+                "{local_cli}{base}p2: base\ncommand: secondhoplocaltask: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(p2.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhopthree",
+            format!("{local}p2: base\np3: p2\ncommand: secondhopthree: {{ r: p3 }}\n"),
+            false,
+        ),
+        (
+            "secondhopcomposed",
+            format!(
+                "{local}p2: base & {{stdout: string}}\ncommand: secondhopcomposed: {{ r: p2 }}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhoplet",
+            format!(
+                "{module_import}let l = lib.run\nprep: l\ncommand: secondhoplet: {{ r: prep }}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhopdefinition",
+            "package foo\nimport \"tool/exec\"\n#base: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\nprep: #base\ncommand: secondhopdefinition: { r: prep }\n".to_owned(),
+            false,
+        ),
+        (
+            "secondhopstruct",
+            "package foo\nimport \"tool/exec\"\ngroup: {base: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}}\np2: group.base\ncommand: secondhopstruct: { r: p2 }\n".to_owned(),
+            false,
+        ),
+        (
+            "secondhopcommandlocal",
+            format!("{local}command: secondhopcommandlocal: {{\n\tr: base\n\tr2: r\n}}\n"),
+            false,
+        ),
+    ];
+    for (name, source, _) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+            std::fs::create_dir_all(directory.join("lib")).expect("lib");
+            write(&directory.join("cue.mod/module.cue"), module);
+            write(&directory.join("lib/lib.cue"), library);
+            write(&directory.join("x_tool.cue"), &source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert_eq!(
+            std::fs::read(cue_dir.path().join("order.txt")).ok(),
+            std::fs::read(rust_dir.path().join("order.txt")).ok(),
+            "{name}: order.txt differs"
+        );
+    }
+}
+
+#[test]
 fn tool_command_module_alias_plain_reads_match_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");
