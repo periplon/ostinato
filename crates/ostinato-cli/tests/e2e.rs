@@ -3825,6 +3825,63 @@ command: envdef: {run: exec.Run & {cmd: ["sh", "-c", "printf '%s' \"$FOO\""], en
 "#,
             false,
         ),
+        (
+            "interp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: interp: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc\n'"], stdout: string}
+	p: cli.Print & {text: "got: \(run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "success",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: success: {
+	run: exec.Run & {cmd: ["false"], mustSucceed: false, success: bool}
+	p: cli.Print & {text: "success=\(run.success)"}
+}
+"#,
+            false,
+        ),
+        (
+            "cmdinterp",
+            r#"
+package foo
+import "tool/exec"
+command: cmdinterp: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'X'"], stdout: string}
+	use: exec.Run & {cmd: ["sh", "-c", "printf 'v=\(run.stdout)'"]}
+}
+"#,
+            false,
+        ),
+        (
+            "interpfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: interpfirst: {
+	p: cli.Print & {text: "got: \(run.stdout)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -4304,6 +4361,21 @@ import "tool/file"
 command: missing: {write: file.Append & {filename: "sub/out.txt", contents: "x"}}
 "#,
             None,
+        ),
+        (
+            "interpfile",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: interpfile: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc\n'"], stdout: string}
+	w: file.Create & {filename: "out.txt", contents: "pre-\(run.stdout)post"}
+}
+"#,
+            Some("out.txt"),
         ),
     ];
     for (name, source, artifact) in cases {
