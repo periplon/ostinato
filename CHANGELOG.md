@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.24.6
+
+Ancestor-scoped helper rejection.
+
+- The let-rooted selector rejection scan carries lexical ancestor scopes, so
+  output references through helpers defined in an enclosing struct
+  (`pipeline.msg` used by `pipeline.report.p`) are detected.
+- Such commands now exit before executing tasks (no side-effect files),
+  matching cue's evaluation failure; valid ancestor helpers without task
+  outputs still run.
+- 430 tests (95 CLI E2E, 1 conformance, 1 tool conformance, 245 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.24.5
 
 Scoped let-rooted rejection.

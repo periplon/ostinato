@@ -1962,32 +1962,45 @@ fn unwrap_ref_base(expr: &Expr) -> &Expr {
     }
 }
 
+fn find_definition<'a>(items: &'a [StructItem], name: &str) -> Option<&'a Expr> {
+    items.iter().find_map(|item| match item {
+        StructItem::Field(field) => match &field.label {
+            Label::Name(label, _) if label == name => Some(&field.value),
+            _ => None,
+        },
+        StructItem::Let {
+            name: let_name,
+            value,
+            ..
+        } if let_name == name => Some(value),
+        _ => None,
+    })
+}
+
 fn local_definition<'a>(
     scope: &'a [StructItem],
     root: &'a [StructItem],
     name: &str,
 ) -> Option<&'a Expr> {
-    fn find<'a>(items: &'a [StructItem], name: &str) -> Option<&'a Expr> {
-        items.iter().find_map(|item| match item {
-            StructItem::Field(field) => match &field.label {
-                Label::Name(label, _) if label == name => Some(&field.value),
-                _ => None,
-            },
-            StructItem::Let {
-                name: let_name,
-                value,
-                ..
-            } if let_name == name => Some(value),
-            _ => None,
-        })
-    }
-    find(scope, name).or_else(|| find(root, name))
+    find_definition(scope, name).or_else(|| find_definition(root, name))
 }
 
-fn collect_output_refs(
-    expr: &Expr,
-    scope: &[StructItem],
-    root: &[StructItem],
+fn local_definition_scopes<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    name: &str,
+) -> Option<&'a Expr> {
+    scopes
+        .iter()
+        .rev()
+        .find_map(|scope| find_definition(scope, name))
+        .or_else(|| find_definition(root, name))
+}
+
+fn collect_output_refs<'a>(
+    expr: &'a Expr,
+    scopes: &mut Vec<&'a [StructItem]>,
+    root: &'a [StructItem],
     names: &std::collections::BTreeSet<String>,
     visited: &mut std::collections::BTreeSet<String>,
     out: &mut std::collections::BTreeSet<String>,
@@ -2000,167 +2013,175 @@ fn collect_output_refs(
             {
                 out.insert(name.clone());
             }
-            collect_output_refs(base, scope, root, names, visited, out);
+            collect_output_refs(base, scopes, root, names, visited, out);
         }
         Expr::Ident(name, _) => {
             if !names.contains(name)
                 && visited.insert(name.clone())
-                && let Some(value) = local_definition(scope, root, name)
+                && let Some(value) = local_definition_scopes(scopes, root, name)
             {
-                collect_output_refs(value, scope, root, names, visited, out);
+                collect_output_refs(value, scopes, root, names, visited, out);
             }
         }
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            collect_output_refs(left, scope, root, names, visited, out);
-            collect_output_refs(right, scope, root, names, visited, out);
+            collect_output_refs(left, scopes, root, names, visited, out);
+            collect_output_refs(right, scopes, root, names, visited, out);
         }
         Expr::Bound(_, inner, _)
         | Expr::Default(inner, _)
         | Expr::Paren(inner, _)
         | Expr::Unary(_, inner, _) => {
-            collect_output_refs(inner, scope, root, names, visited, out);
+            collect_output_refs(inner, scopes, root, names, visited, out);
         }
         Expr::Index(base, index, _) => {
-            collect_output_refs(base, scope, root, names, visited, out);
-            collect_output_refs(index, scope, root, names, visited, out);
+            collect_output_refs(base, scopes, root, names, visited, out);
+            collect_output_refs(index, scopes, root, names, visited, out);
         }
         Expr::Call(callee, arguments, _) => {
-            collect_output_refs(callee, scope, root, names, visited, out);
+            collect_output_refs(callee, scopes, root, names, visited, out);
             for argument in arguments {
-                collect_output_refs(argument, scope, root, names, visited, out);
+                collect_output_refs(argument, scopes, root, names, visited, out);
             }
         }
         Expr::Str(parts, _) => {
             for part in parts {
                 if let ostinato_lang::ast::StrPart::Interp(inner) = part {
-                    collect_output_refs(inner, scope, root, names, visited, out);
+                    collect_output_refs(inner, scopes, root, names, visited, out);
                 }
             }
         }
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
             for item in items {
-                collect_output_refs(item, scope, root, names, visited, out);
+                collect_output_refs(item, scopes, root, names, visited, out);
             }
         }
         Expr::OpenList(Some(inner), _) => {
-            collect_output_refs(inner, scope, root, names, visited, out);
+            collect_output_refs(inner, scopes, root, names, visited, out);
         }
         Expr::Struct(items, _) => {
+            scopes.push(items);
             for item in items {
                 match item {
                     StructItem::Field(field) => {
-                        collect_output_refs(&field.value, scope, root, names, visited, out);
+                        collect_output_refs(&field.value, scopes, root, names, visited, out);
                     }
                     StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                        collect_output_refs(value, scope, root, names, visited, out);
+                        collect_output_refs(value, scopes, root, names, visited, out);
                     }
                     StructItem::For { source, body, .. } => {
-                        collect_output_refs(source, scope, root, names, visited, out);
-                        collect_output_refs_items(body, scope, root, names, visited, out);
+                        collect_output_refs(source, scopes, root, names, visited, out);
+                        collect_output_refs_items(body, scopes, root, names, visited, out);
                     }
                     StructItem::If { cond, body, .. } => {
-                        collect_output_refs(cond, scope, root, names, visited, out);
-                        collect_output_refs_items(body, scope, root, names, visited, out);
+                        collect_output_refs(cond, scopes, root, names, visited, out);
+                        collect_output_refs_items(body, scopes, root, names, visited, out);
                     }
                     StructItem::Ellipsis(_) => {}
                 }
             }
+            scopes.pop();
         }
         _ => {}
     }
 }
 
-fn collect_output_refs_items(
-    items: &[StructItem],
-    scope: &[StructItem],
-    root: &[StructItem],
+fn collect_output_refs_items<'a>(
+    items: &'a [StructItem],
+    scopes: &mut Vec<&'a [StructItem]>,
+    root: &'a [StructItem],
     names: &std::collections::BTreeSet<String>,
     visited: &mut std::collections::BTreeSet<String>,
     out: &mut std::collections::BTreeSet<String>,
 ) {
+    scopes.push(items);
     for item in items {
         match item {
             StructItem::Field(field) => {
-                collect_output_refs(&field.value, scope, root, names, visited, out);
+                collect_output_refs(&field.value, scopes, root, names, visited, out);
             }
             StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                collect_output_refs(value, scope, root, names, visited, out);
+                collect_output_refs(value, scopes, root, names, visited, out);
             }
             StructItem::For { source, body, .. } => {
-                collect_output_refs(source, scope, root, names, visited, out);
-                collect_output_refs_items(body, scope, root, names, visited, out);
+                collect_output_refs(source, scopes, root, names, visited, out);
+                collect_output_refs_items(body, scopes, root, names, visited, out);
             }
             StructItem::If { cond, body, .. } => {
-                collect_output_refs(cond, scope, root, names, visited, out);
-                collect_output_refs_items(body, scope, root, names, visited, out);
+                collect_output_refs(cond, scopes, root, names, visited, out);
+                collect_output_refs_items(body, scopes, root, names, visited, out);
             }
             StructItem::Ellipsis(_) => {}
         }
     }
+    scopes.pop();
 }
 
-fn collect_refs_for_task(
-    items: &[StructItem],
+fn collect_refs_for_task<'a>(
+    items: &'a [StructItem],
     task_name: &str,
-    root: &[StructItem],
+    root: &'a [StructItem],
     names: &std::collections::BTreeSet<String>,
+    scopes: &mut Vec<&'a [StructItem]>,
     out: &mut std::collections::BTreeSet<String>,
 ) {
+    scopes.push(items);
     for item in items {
         match item {
             StructItem::Field(field) => {
                 if matches!(&field.label, Label::Name(name, _) if name == task_name) {
                     let mut visited = std::collections::BTreeSet::new();
-                    collect_output_refs(&field.value, items, root, names, &mut visited, out);
+                    collect_output_refs(&field.value, scopes, root, names, &mut visited, out);
                 }
-                collect_refs_for_task_expr(&field.value, task_name, root, names, out);
+                collect_refs_for_task_expr(&field.value, task_name, root, names, scopes, out);
             }
             StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                collect_refs_for_task_expr(value, task_name, root, names, out);
+                collect_refs_for_task_expr(value, task_name, root, names, scopes, out);
             }
             StructItem::For { source, body, .. } => {
-                collect_refs_for_task_expr(source, task_name, root, names, out);
-                collect_refs_for_task(body, task_name, root, names, out);
+                collect_refs_for_task_expr(source, task_name, root, names, scopes, out);
+                collect_refs_for_task(body, task_name, root, names, scopes, out);
             }
             StructItem::If { cond, body, .. } => {
-                collect_refs_for_task_expr(cond, task_name, root, names, out);
-                collect_refs_for_task(body, task_name, root, names, out);
+                collect_refs_for_task_expr(cond, task_name, root, names, scopes, out);
+                collect_refs_for_task(body, task_name, root, names, scopes, out);
             }
             StructItem::Ellipsis(_) => {}
         }
     }
+    scopes.pop();
 }
 
-fn collect_refs_for_task_expr(
-    expr: &Expr,
+fn collect_refs_for_task_expr<'a>(
+    expr: &'a Expr,
     task_name: &str,
-    root: &[StructItem],
+    root: &'a [StructItem],
     names: &std::collections::BTreeSet<String>,
+    scopes: &mut Vec<&'a [StructItem]>,
     out: &mut std::collections::BTreeSet<String>,
 ) {
     match expr {
-        Expr::Struct(items, _) => collect_refs_for_task(items, task_name, root, names, out),
+        Expr::Struct(items, _) => collect_refs_for_task(items, task_name, root, names, scopes, out),
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            collect_refs_for_task_expr(left, task_name, root, names, out);
-            collect_refs_for_task_expr(right, task_name, root, names, out);
+            collect_refs_for_task_expr(left, task_name, root, names, scopes, out);
+            collect_refs_for_task_expr(right, task_name, root, names, scopes, out);
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
         | Expr::Unary(_, inner, _) => {
-            collect_refs_for_task_expr(inner, task_name, root, names, out);
+            collect_refs_for_task_expr(inner, task_name, root, names, scopes, out);
         }
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
             for item in items {
-                collect_refs_for_task_expr(item, task_name, root, names, out);
+                collect_refs_for_task_expr(item, task_name, root, names, scopes, out);
             }
         }
         Expr::OpenList(Some(inner), _) => {
-            collect_refs_for_task_expr(inner, task_name, root, names, out);
+            collect_refs_for_task_expr(inner, task_name, root, names, scopes, out);
         }
         _ => {}
     }
@@ -2216,7 +2237,8 @@ fn task_has_output_refs(
     names: &std::collections::BTreeSet<String>,
 ) -> bool {
     let mut refs = std::collections::BTreeSet::new();
-    collect_refs_for_task(items, name, items, names, &mut refs);
+    let mut scopes = Vec::new();
+    collect_refs_for_task(items, name, items, names, &mut scopes, &mut refs);
     !refs.is_empty()
 }
 
@@ -2229,7 +2251,8 @@ fn add_output_dependencies(
     let mut refs: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
     for (name, _, _) in scheduled.iter() {
         let mut found = std::collections::BTreeSet::new();
-        collect_refs_for_task(items, name, items, &names, &mut found);
+        let mut scopes = Vec::new();
+        collect_refs_for_task(items, name, items, &names, &mut scopes, &mut found);
         refs.insert(name.clone(), found);
     }
     for (name, dependencies, _) in scheduled.iter_mut() {
