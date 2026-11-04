@@ -12,6 +12,14 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.24.1
+
+- Unified/let/chained command references schedule and inject correctly;
+  transitive helper/let interpolation scoping for stdout/success.
+- 394 tests (83 CLI E2E, 1 conformance, 242 language, 6 language agents,
+  3 language unit, 18 application, 19 domain, 6 store, 8 workspace,
+  8 adapters unit).
+
 ## v0.24.0
 
 - Named CUE agent definitions (`agents` + `agent.use`), external CLI providers
