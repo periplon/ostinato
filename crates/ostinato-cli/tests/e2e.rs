@@ -6932,6 +6932,57 @@ command: letcmddefref: {
             false,
         ),
         (
+            "letdefalias",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#base: lib.run
+x: #base
+command: letdefalias: {
+	a: p1: x
+	q: cli.Print & {text: "R=\(a.p1.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "letdefletref",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#base: lib.run
+command: letdefletref: {
+	let t = #base
+	a: p1: t
+	q: cli.Print & {text: "R=\(a.p1.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "letfieldalias",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+command: letfieldalias: {
+	let t = base
+	a: p1: t
+	q: cli.Print & {text: "R=\(a.p1.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
             "lettwice",
             r#"
 package foo

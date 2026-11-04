@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.30.3
+
+Definition alias chains.
+
+- Definition-backed fields used as task values (`x: #base; a: p1: x`) inject
+  again like CUE, including parenthesised and chained aliases; direct
+  definition references and let aliases of definitions remain non-concrete.
+- In-place detection follows `let` chains, so `let t = base` over a
+  field-bound module task injects like CUE.
+- Added e2e and conformance cases for the alias shapes.
+- 438 tests (101 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.30.2
 
 Task reference identity corrections.
