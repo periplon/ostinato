@@ -6375,6 +6375,9 @@ composed_decl: #Composed & {l: [{b: 5}]}
     for source in [
         "package demo\n#L2: {l: [{b: int | *1, c: b + 1}]}\nx: #L2 & {l: [{b: 5}, {b: 6}]}\n",
         "package demo\n#L2: {l: [{b: int | *1, c: b + 1}]}\nx: #L2 & {l: []}\n",
+        "package demo\n#P: {l: [{b: int | *1}, {d: 6}, ...]}\nx: #P & {l: [{b: 5}]}\n",
+        "package demo\n#F: {l: [{b: int | *1}, {d: 6}]}\nx: #F & {l: [{b: 5}]}\n",
+        "package demo\n#F: {l: [{b: int | *1}, {d: 6}]}\nx: #F & {l: [{b: 5}, {d: 6}, {e: 7}]}\n",
     ] {
         let file = ostinato_lang::parse(source).expect("parse fixed-list arity");
         assert!(
@@ -6382,6 +6385,25 @@ composed_decl: #Composed & {l: [{b: 5}]}
             "fixed-list arity must conflict: {source:?}"
         );
     }
+
+    for source in [
+        "package demo\n#D: {d: 6}\n#X: {o: {b: int | *1, c: b + 1}, o: #D}\nx: #X & {o: {b: 5}}\n",
+        "package demo\n#D: {d: 6}\n#X: {o: {b: int | *1, c: b + 1}, o: #D}\nx: #X & {o: {b: 5, z: 9}}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse closed multi-declaration");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "closed multi/composed declarations must reject extra fields: {source:?}"
+        );
+    }
+
+    let open_multi = "package demo\n#X: {o: {b: int | *1, c: b + 1, ..., d: 6}, o: {e: 7}}\nx: #X & {o: {b: 5}}\n";
+    let file = ostinato_lang::parse(open_multi).expect("parse open multi-declaration");
+    let value = ostinato_lang::eval_file(&file).expect("eval open multi-declaration");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["o"]["c"], 6);
+    assert_eq!(json["x"]["o"]["d"], 6);
+    assert_eq!(json["x"]["o"]["e"], 7);
 
     let shadow =
         "package demo\n#A: {n: *1 | int, y: n + 1, inner: {#A: 5, v: #A}}\na: #A & {n: 3}\n";
