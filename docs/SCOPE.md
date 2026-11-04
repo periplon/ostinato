@@ -18,7 +18,8 @@ workflow outside the Rust surface has a supported escape hatch.
 - file-scoped `let`, lazy/forward bindings;
 - `for`/`if` struct comprehensions, clause sequences (`for ... if ...`,
   nested `for`), dynamic labels, list comprehensions;
-- nested field shorthand, **closed definitions by default**, `...` open,
+- nested field shorthand, string and bytes literal field labels, **closed
+  definitions by default**, `...` open,
   nested closedness, `[string]` / `[=~"regex"]` patterns, field aliases
   (`X=field: value`), unification,
   defaults, disjunctions with defaults and narrowing, numeric bounds

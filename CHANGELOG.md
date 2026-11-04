@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.20.0
+
+Bytes-literal field labels.
+
+- Field labels written as single-line, multiline or escaped bytes literals
+  decode to string labels and share identity with quoted string labels,
+  including dot/index selection, definitions, optionals and non-UTF-8 bytes.
+- Interpolated bytes labels are rejected like CUE.
+- 345 tests (61 CLI E2E, 1 conformance, 241 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.19.1
 
 Nested-interpolation scanner parity.

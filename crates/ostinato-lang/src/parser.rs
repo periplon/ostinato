@@ -351,7 +351,7 @@ impl Parser {
                 } else {
                     None
                 };
-                let quoted = matches!(self.peek_tok(), Tok::Str(_));
+                let quoted = matches!(self.peek_tok(), Tok::Str(_) | Tok::Bytes(_));
                 let definition = matches!(
                     self.peek_tok(),
                     Tok::Ident(name) if name.starts_with('#')
@@ -432,6 +432,22 @@ impl Parser {
                         .collect();
                     Ok(Label::Name(text, span))
                 }
+            }
+            Tok::Bytes(raw) => {
+                self.bump();
+                let mut bytes = Vec::new();
+                for part in raw {
+                    match part {
+                        LexBytePart::Text(value) => bytes.extend_from_slice(&value),
+                        LexBytePart::Interp(_) => {
+                            return Err(self.error("bytes label cannot interpolate"));
+                        }
+                    }
+                }
+                Ok(Label::Name(
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                    span,
+                ))
             }
             Tok::LBracket => {
                 self.bump();
@@ -567,14 +583,14 @@ impl Parser {
             None
         };
         let nested = alias.is_some()
-            || (matches!(self.peek_tok(), Tok::Ident(_) | Tok::Str(_))
+            || (matches!(self.peek_tok(), Tok::Ident(_) | Tok::Str(_) | Tok::Bytes(_))
                 && matches!(
                     self.tokens.get(self.pos + 1).map(|token| &token.tok),
                     Some(Tok::Colon)
                 ));
         if nested {
             let span = self.span();
-            let quoted = matches!(self.peek_tok(), Tok::Str(_));
+            let quoted = matches!(self.peek_tok(), Tok::Str(_) | Tok::Bytes(_));
             let definition = matches!(
                 self.peek_tok(),
                 Tok::Ident(name) if name.starts_with('#')

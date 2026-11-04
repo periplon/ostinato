@@ -6500,3 +6500,53 @@ x\('''
         );
     }
 }
+
+#[test]
+fn bytes_literal_field_labels_match_string_labels() {
+    let source = r#"
+package demo
+plain: {'k': 1}
+nested: {'a': {'b': 2}}
+unicode: {'日': 3}
+multiline: {'''
+k
+''': 4}
+#D: {'k'?: int}
+typed: #D & {'k': 5}
+invalid_utf8: {'\xff': 6}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse bytes labels");
+    let value = ostinato_lang::eval_file(&file).expect("eval bytes labels");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["plain"]["k"], 1);
+    assert_eq!(json["nested"]["a"]["b"], 2);
+    assert_eq!(json["unicode"]["日"], 3);
+    assert_eq!(json["multiline"]["k"], 4);
+    assert_eq!(json["typed"]["k"], 5);
+    assert_eq!(json["invalid_utf8"]["�"], 6);
+
+    let selection = r#"
+package demo
+x: {'k': 1}
+dot: x.k
+index: x["k"]
+"#;
+    let file = ostinato_lang::parse(selection).expect("parse bytes-label selection");
+    let value = ostinato_lang::eval_file(&file).expect("eval bytes-label selection");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["dot"], 1);
+    assert_eq!(json["index"], 1);
+
+    let duplicate = "package demo\nx: {\"k\": 1, 'k': 2}\n";
+    let file = ostinato_lang::parse(duplicate).expect("parse duplicate labels");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "quoted string and bytes labels must share identity"
+    );
+
+    let interpolated = "package demo\nx: {'\\(1)': 2}\n";
+    assert!(
+        ostinato_lang::parse(interpolated).is_err(),
+        "bytes labels cannot interpolate"
+    );
+}
