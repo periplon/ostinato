@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.20.3
+
+`@tag` placement parity corrections.
+
+- Byte-label eligibility uses CUE's rune-literal unit count from the source
+  (`'\xc3\xa9'` = 2 units) instead of decoded characters, and multiline bytes
+  labels never carry `@tag`.
+- `@tag` is rejected in struct comprehensions (`for`/`if`, including `let`
+  values and comprehension sources) and inside pattern or dynamic-label
+  constraints, matching CUE's forbidden zones.
+- Added allowed-placement conformance coverage and extended language/CLI
+  regressions.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.20.2
 
 `@tag` placement parity.

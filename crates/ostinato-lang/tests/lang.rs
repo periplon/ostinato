@@ -6591,10 +6591,12 @@ single: {'a': string | *"s" @tag(single)}
 single_unicode: {'日': string | *"u" @tag(unicode)}
 single_invalid: {'\xff': string | *"v" @tag(invalid)}
 empty: {'': string | *"e" @tag(empty)}
+unicode_escape: {'\u00e9': string | *"u" @tag(escap)}
 #D: {a: string @tag(def_field)}
 def_value: #D & {a: "d"}
 nested: {a: string | *"n" @tag(nested_field)}
 list_holder: [{a: string | *"l"}] @tag(list_holder)
+dynamic_ok: {k: "a", "\(k)": {x: string | *"d"}}
 "#;
     let file = ostinato_lang::parse(allowed).expect("parse allowed tags");
     let value = ostinato_lang::eval_file(&file).expect("eval allowed tags");
@@ -6602,12 +6604,27 @@ list_holder: [{a: string | *"l"}] @tag(list_holder)
     assert_eq!(json["ident"], "i");
     assert_eq!(json["single"]["a"], "s");
     assert_eq!(json["def_value"]["a"], "d");
+    assert_eq!(json["unicode_escape"]["é"], "u");
+    assert_eq!(json["dynamic_ok"]["a"]["x"], "d");
 
     // Rejected: multi-rune bytes labels and any tag lexically inside a list.
     for source in [
         "package demo\nparams: {x: {'ab': string | *\"v\" @tag(ab)}}\n",
         "package demo\nparams: {x: {'日本': string | *\"v\" @tag(v)}}\n",
         "package demo\nparams: {x: {'\\xff\\xff': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {x: {'\\xc3\\xa9': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {x: {'\\xe6\\x97\\xa5': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {x: {'\\303\\251': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {x: {'''\na\n''': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {for i in [1] {\"k\": string | *\"v\" @tag(k)}}\n",
+        "package demo\nparams: {if true {a: string | *\"v\" @tag(a)}}\n",
+        "package demo\nparams: {for i in [\"a\"] {#D: {x: string | *\"v\" @tag(d)}}}\n",
+        "package demo\nparams: {let L = {for i in [1] {\"k\": string | *\"v\" @tag(k)}}, x: L}\n",
+        "package demo\nparams: {for k, v in {k: {a: string | *\"v\" @tag(src)}} {b: string | *\"z\"}}\n",
+        "package demo\nparams: {[string]: {p: string | *\"v\" @tag(p)}}\n",
+        "package demo\nparams: {[string]: {#D: {p: string | *\"v\" @tag(p)}}}\n",
+        "package demo\nparams: {k: \"a\", \"\\(k)\": string | *\"v\" @tag(t)}\n",
+        "package demo\nparams: {k: \"a\", \"\\(k)\": {x: string | *\"v\" @tag(t)}}\n",
         "package demo\n#D: {'ab': string @tag(ab)}\nx: #D\n",
         "package demo\nparams: {l: [{a: string | *\"v\" @tag(a)}]}\n",
         "package demo\nparams: {l: [{\"a\": string | *\"v\" @tag(a)}]}\n",

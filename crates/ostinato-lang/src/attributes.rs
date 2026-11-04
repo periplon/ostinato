@@ -804,46 +804,109 @@ fn assign_expr_impl(expr: &mut Expr, next: &mut usize) {
 
 /// Validate CUE's `@tag` placement rules.
 ///
-/// CUE rejects `@tag` on fields that live inside lists and on field labels
-/// written as bytes literals longer than one rune.
+/// CUE rejects `@tag` inside lists and struct comprehensions, within pattern
+/// or dynamic-label constraints, and on multi-rune bytes-literal labels.
 ///
 /// # Errors
 /// Returns an evaluation error for a disallowed `@tag`.
 pub fn validate_tag_placement(file: &File) -> Result<(), LangError> {
-    stacker::grow(512 * 1024 * 1024, || validate_tag_items(&file.items, false))
+    stacker::grow(512 * 1024 * 1024, || {
+        validate_tag_items(&file.items, TagZone::Allowed)
+    })
 }
 
-fn validate_tag_items(items: &[StructItem], in_list: bool) -> Result<(), LangError> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TagZone {
+    Allowed,
+    InList,
+    Forbidden(&'static str),
+}
+
+fn tag_attribute(field: &crate::ast::Field) -> Option<&crate::ast::Attribute> {
+    field
+        .attributes
+        .iter()
+        .find(|attribute| attribute.name == "tag")
+}
+
+fn tag_error(attribute: &crate::ast::Attribute, message: &str) -> LangError {
+    LangError::eval(attribute.span.line, attribute.span.col, message)
+}
+
+fn list_zone(zone: TagZone) -> TagZone {
+    match zone {
+        TagZone::Allowed => TagZone::InList,
+        other => other,
+    }
+}
+
+fn validate_tag_items(items: &[StructItem], zone: TagZone) -> Result<(), LangError> {
     for item in items {
         match item {
             StructItem::Field(field) => {
-                if let Some(attribute) = field.attributes.iter().find(|a| a.name == "tag") {
-                    if in_list {
-                        return Err(LangError::eval(
-                            attribute.span.line,
-                            attribute.span.col,
-                            "@tag is not allowed within lists",
-                        ));
-                    }
-                    if field.bytes_label_runes.is_some_and(|runes| runes > 1) {
-                        return Err(LangError::eval(
-                            attribute.span.line,
-                            attribute.span.col,
-                            "@tag is not allowed on a multi-rune bytes label",
-                        ));
+                let dynamic = matches!(field.label, Label::Dynamic(..));
+                if let Some(attribute) = tag_attribute(field) {
+                    match zone {
+                        TagZone::InList => {
+                            return Err(tag_error(attribute, "@tag is not allowed within lists"));
+                        }
+                        TagZone::Forbidden(message) => {
+                            return Err(tag_error(attribute, message));
+                        }
+                        TagZone::Allowed => {
+                            if field.bytes_label_multiline
+                                || field.bytes_label_runes.is_some_and(|runes| runes > 1)
+                            {
+                                return Err(tag_error(
+                                    attribute,
+                                    "@tag is not allowed on a multi-rune bytes label",
+                                ));
+                            }
+                            if dynamic {
+                                return Err(tag_error(
+                                    attribute,
+                                    "@tag is not allowed within field constraint",
+                                ));
+                            }
+                        }
                     }
                 }
-                validate_tag_expr(&field.value, in_list)?;
+                let value_zone = if zone == TagZone::Allowed && dynamic {
+                    TagZone::Forbidden("@tag is not allowed within field constraint")
+                } else {
+                    zone
+                };
+                validate_tag_expr(&field.value, value_zone)?;
             }
-            StructItem::Pattern { value, .. } => validate_tag_expr(value, in_list)?,
-            StructItem::Let { value, .. } => validate_tag_expr(value, in_list)?,
+            StructItem::Pattern { value, .. } => {
+                let value_zone = match zone {
+                    TagZone::Allowed => {
+                        TagZone::Forbidden("@tag is not allowed within field constraint")
+                    }
+                    other => other,
+                };
+                validate_tag_expr(value, value_zone)?;
+            }
+            StructItem::Let { value, .. } => validate_tag_expr(value, zone)?,
             StructItem::For { source, body, .. } => {
-                validate_tag_expr(source, in_list)?;
-                validate_tag_items(body, in_list)?;
+                let zone = match zone {
+                    TagZone::Allowed => {
+                        TagZone::Forbidden("@tag is not allowed within comprehensions")
+                    }
+                    other => other,
+                };
+                validate_tag_expr(source, zone)?;
+                validate_tag_items(body, zone)?;
             }
             StructItem::If { cond, body, .. } => {
-                validate_tag_expr(cond, in_list)?;
-                validate_tag_items(body, in_list)?;
+                let zone = match zone {
+                    TagZone::Allowed => {
+                        TagZone::Forbidden("@tag is not allowed within comprehensions")
+                    }
+                    other => other,
+                };
+                validate_tag_expr(cond, zone)?;
+                validate_tag_items(body, zone)?;
             }
             StructItem::Ellipsis(_) => {}
         }
@@ -851,54 +914,56 @@ fn validate_tag_items(items: &[StructItem], in_list: bool) -> Result<(), LangErr
     Ok(())
 }
 
-fn validate_tag_expr(expr: &Expr, in_list: bool) -> Result<(), LangError> {
+fn validate_tag_expr(expr: &Expr, zone: TagZone) -> Result<(), LangError> {
     match expr {
-        Expr::Struct(items, _) => validate_tag_items(items, in_list),
+        Expr::Struct(items, _) => validate_tag_items(items, zone),
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            let zone = list_zone(zone);
             for item in items {
-                validate_tag_expr(item, true)?;
+                validate_tag_expr(item, zone)?;
             }
             Ok(())
         }
-        Expr::OpenList(Some(inner), _) => validate_tag_expr(inner, true),
+        Expr::OpenList(Some(inner), _) => validate_tag_expr(inner, list_zone(zone)),
         Expr::OpenList(None, _) => Ok(()),
         Expr::ListComp { clauses, body, .. } => {
+            let zone = list_zone(zone);
             for clause in clauses {
                 match clause {
-                    CompClause::For { source, .. } => validate_tag_expr(source, true)?,
-                    CompClause::If { cond, .. } => validate_tag_expr(cond, true)?,
+                    CompClause::For { source, .. } => validate_tag_expr(source, zone)?,
+                    CompClause::If { cond, .. } => validate_tag_expr(cond, zone)?,
                 }
             }
-            validate_tag_expr(body, true)
+            validate_tag_expr(body, zone)
         }
         Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            validate_tag_expr(left, in_list)?;
-            validate_tag_expr(right, in_list)
+            validate_tag_expr(left, zone)?;
+            validate_tag_expr(right, zone)
         }
         Expr::Binary(_, left, right, _) => {
-            validate_tag_expr(left, in_list)?;
-            validate_tag_expr(right, in_list)
+            validate_tag_expr(left, zone)?;
+            validate_tag_expr(right, zone)
         }
         Expr::Bound(_, inner, _)
         | Expr::Default(inner, _)
         | Expr::Paren(inner, _)
-        | Expr::Unary(_, inner, _) => validate_tag_expr(inner, in_list),
-        Expr::Select(base, _, _, _) => validate_tag_expr(base, in_list),
+        | Expr::Unary(_, inner, _) => validate_tag_expr(inner, zone),
+        Expr::Select(base, _, _, _) => validate_tag_expr(base, zone),
         Expr::Index(base, index, _) => {
-            validate_tag_expr(base, in_list)?;
-            validate_tag_expr(index, in_list)
+            validate_tag_expr(base, zone)?;
+            validate_tag_expr(index, zone)
         }
         Expr::Call(callee, arguments, _) => {
-            validate_tag_expr(callee, in_list)?;
+            validate_tag_expr(callee, zone)?;
             for argument in arguments {
-                validate_tag_expr(argument, in_list)?;
+                validate_tag_expr(argument, zone)?;
             }
             Ok(())
         }
         Expr::Str(parts, _) => {
             for part in parts {
                 if let StrPart::Interp(inner) = part {
-                    validate_tag_expr(inner, in_list)?;
+                    validate_tag_expr(inner, zone)?;
                 }
             }
             Ok(())
@@ -906,7 +971,7 @@ fn validate_tag_expr(expr: &Expr, in_list: bool) -> Result<(), LangError> {
         Expr::BytesInterp(parts, _) => {
             for part in parts {
                 if let BytePart::Interp(inner) = part {
-                    validate_tag_expr(inner, in_list)?;
+                    validate_tag_expr(inner, zone)?;
                 }
             }
             Ok(())
