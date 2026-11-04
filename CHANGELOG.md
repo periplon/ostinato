@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.36.0
+
+Package-scoped `$after` and package-root task reads.
+
+- `$after` dependencies may reference task nodes declared outside
+  `command.<name>`: top-level fields, definitions and nested containers are
+  scheduled (with their own `$after` dependencies and CUE's alias/let
+  resolution), deduplicated per dependency, and shadowed by command-local
+  tasks exactly like CUE.
+- Package tasks referenced only by `$after` are not run unless reachable, and
+  their outputs are injected when read from the command.
+- Package-root inline task reads are scheduled and injected
+  (`\(prep.stdout)`, `\(root.p1.stdout)`), while import-rooted module root
+  reads still deadlock like CUE.
+- Added a differential e2e test (13 shapes) and five tool-conformance cases.
+
+- 441 tests (104 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.35.0
 
 Invocation-cwd tool paths.

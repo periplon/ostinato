@@ -6745,6 +6745,261 @@ command: c: {
 }
 
 #[test]
+fn tool_command_package_after_schedule_matches_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases: &[(&str, &str, Option<&str>)] = &[
+        (
+            "pkgafter",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf prep > order.txt"]}
+command: pkgafter: {
+	a: exec.Run & {$after: prep, cmd: ["sh", "-c", "cat order.txt"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgafterchain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+one: exec.Run & {cmd: ["sh", "-c", "printf 1 >> order.txt"]}
+two: exec.Run & {$after: one, cmd: ["sh", "-c", "printf 2 >> order.txt"]}
+command: pkgafterchain: {
+	a: exec.Run & {$after: two, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgaftercontainer",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+group: {
+	prep: exec.Run & {cmd: ["sh", "-c", "printf prep > order.txt"]}
+}
+command: pkgaftercontainer: {
+	a: exec.Run & {$after: group.prep, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgafterdefinition",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+#prep: exec.Run & {cmd: ["sh", "-c", "printf D >> order.txt"]}
+command: pkgafterdefinition: {
+	a: exec.Run & {$after: #prep, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgafterread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf prep"], stdout: string}
+command: pkgafterread: {
+	a: exec.Run & {$after: prep, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)-\(prep.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "pkgrootread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P"], stdout: string}
+command: pkgrootread: {
+	q: cli.Print & {text: "R=\(prep.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "pkgrootnestedread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+root: p1: exec.Run & {cmd: ["sh", "-c", "printf P"], stdout: string}
+command: pkgrootnestedread: {
+	q: cli.Print & {text: "R=\(root.p1.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "pkgafterlet",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let p = prep
+prep: exec.Run & {cmd: ["sh", "-c", "printf prep > order.txt"]}
+command: pkgafterlet: {
+	a: exec.Run & {$after: p, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgafteralias",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf prep > order.txt"]}
+alias: prep
+command: pkgafteralias: {
+	a: exec.Run & {$after: alias, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgunreferenced",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf unused > unused.txt"]}
+command: pkgunreferenced: {
+	a: exec.Run & {cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "pkgshadow",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf TOP >> order.txt"]}
+command: pkgshadow: {
+	prep: exec.Run & {cmd: ["sh", "-c", "printf CMD >> order.txt"], stdout: string}
+	a: exec.Run & {$after: prep, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "R=\(prep.stdout)"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgduplicate",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"]}
+command: pkgduplicate: {
+	b: prep
+	a: exec.Run & {$after: prep, cmd: ["sh", "-c", "cat order.txt"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgunknownafter",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: pkgunknownafter: {
+	a: exec.Run & {$after: missing, cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+    ];
+    for (name, source, artifact) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        write(&cue_dir.path().join("fixture_tool.cue"), source);
+        write(&rust_dir.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        if expected.status.success() {
+            assert_eq!(actual.stderr, expected.stderr, "{name}");
+        }
+        if let Some(artifact) = artifact {
+            assert_eq!(
+                std::fs::read(cue_dir.path().join(artifact)).ok(),
+                std::fs::read(rust_dir.path().join(artifact)).ok(),
+                "{name}: artifact {artifact} differs"
+            );
+        }
+        if *name == "pkgunreferenced" {
+            assert!(!cue_dir.path().join("unused.txt").exists());
+            assert!(!rust_dir.path().join("unused.txt").exists());
+        }
+    }
+}
+
+#[test]
 fn tool_command_let_and_definition_output_reads_match_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");
