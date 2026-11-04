@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.22.1
+
+Tool-task input validation and documented limits.
+
+- `tool/cli.Print` concretizes defaulted `text` values.
+- Concrete-but-invalid tool inputs (empty filename, wrong text/contents types) are rejected before any task runs, preventing side effects.
+- Not-ready tasks report a specific reason; failed producers no longer add a generic error line.
+- Documented limits: interpolation over task outputs, output injection into base/definition-composed tasks, and package-relative task paths.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.22.0
 
 Tool command outputs, `cli.Print` and file tasks.
