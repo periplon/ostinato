@@ -12,6 +12,16 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.36.1
+
+- Package `$after` resolves in enclosing scopes, read-scheduled tasks
+  contribute dependencies, full-path task keys prevent duplicate-leaf
+  collapse, command aliases keep identity, and declaration/read order is
+  honored for package aliases.
+- 442 tests (105 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.36.0
 
 - Package-scoped `$after` scheduling for task nodes declared outside

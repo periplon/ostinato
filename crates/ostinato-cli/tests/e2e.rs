@@ -6949,6 +6949,108 @@ command: pkgduplicate: {
             Some("order.txt"),
         ),
         (
+            "pkgsiblingchain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+group: {
+	one: exec.Run & {cmd: ["sh", "-c", "printf 1 >> order.txt"]}
+	two: exec.Run & {$after: one, cmd: ["sh", "-c", "printf 2 >> order.txt"]}
+}
+command: pkgsiblingchain: {
+	a: exec.Run & {$after: group.two, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgopenbase",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"]}
+base: {$after: prep, cmd: ["sh", "-c", "printf 2 >> order.txt"]}
+two: exec.Run & base
+command: pkgopenbase: {
+	a: exec.Run & {$after: two, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgreaddeps",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"]}
+run: exec.Run & {$after: prep, cmd: ["sh", "-c", "cat order.txt"], stdout: string}
+command: pkgreaddeps: {
+	q: cli.Print & {text: "R=\(run.stdout)"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgcmdalias",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"]}
+command: pkgcmdalias: {
+	alias: prep
+	a: exec.Run & {$after: alias, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgaliasreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P"], stdout: string}
+command: pkgaliasreadfirst: {
+	q: cli.Print & {text: "R=\(prep.stdout)"}
+	r: prep
+}
+"#,
+            None,
+        ),
+        (
+            "pkgaliasreaddecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P"], stdout: string}
+command: pkgaliasreaddecl: {
+	r: prep
+	q: cli.Print & {text: "R=\(prep.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
             "pkgunknownafter",
             r#"
 package foo
@@ -6995,6 +7097,117 @@ command: pkgunknownafter: {
         if *name == "pkgunreferenced" {
             assert!(!cue_dir.path().join("unused.txt").exists());
             assert!(!rust_dir.path().join("unused.txt").exists());
+        }
+    }
+}
+
+#[test]
+fn tool_command_package_after_multi_task_matches_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "pkgshadowdep",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf TOP > top.txt"]}
+two: exec.Run & {$after: prep, cmd: ["sh", "-c", "printf TWO > two.txt"]}
+command: pkgshadowdep: {
+	prep: exec.Run & {cmd: ["sh", "-c", "printf CMD > cmd.txt"]}
+	a: exec.Run & {$after: two, cmd: ["sh", "-c", "printf A > a.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            &["top.txt", "two.txt", "cmd.txt", "a.txt"],
+        ),
+        (
+            "pkgselectorshadow",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+group: {prep: exec.Run & {cmd: ["sh", "-c", "printf GROUP > group.txt"]}}
+command: pkgselectorshadow: {
+	prep: exec.Run & {cmd: ["sh", "-c", "printf CMD > cmd.txt"]}
+	a: exec.Run & {$after: group.prep, cmd: ["sh", "-c", "printf A > a.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            &["group.txt", "cmd.txt", "a.txt"],
+        ),
+        (
+            "pkgduplicateleaves",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+g1: {prep: exec.Run & {cmd: ["sh", "-c", "printf 1 > g1.txt"]}}
+g2: {prep: exec.Run & {cmd: ["sh", "-c", "printf 2 > g2.txt"]}}
+command: pkgduplicateleaves: {
+	a: exec.Run & {$after: [g1.prep, g2.prep], cmd: ["sh", "-c", "printf A > a.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            &["g1.txt", "g2.txt", "a.txt"],
+        ),
+        (
+            "pkgduplicatechain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+g1: {
+	one: exec.Run & {cmd: ["sh", "-c", "printf 1 > g1one.txt"]}
+	two: exec.Run & {$after: one, cmd: ["sh", "-c", "printf 2 > g1two.txt"]}
+}
+g2: {
+	one: exec.Run & {cmd: ["sh", "-c", "printf 3 > g2one.txt"]}
+	two: exec.Run & {$after: one, cmd: ["sh", "-c", "printf 4 > g2two.txt"]}
+}
+command: pkgduplicatechain: {
+	a: exec.Run & {$after: [g1.two, g2.two], cmd: ["sh", "-c", "printf A > a.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            &["g1one.txt", "g1two.txt", "g2one.txt", "g2two.txt", "a.txt"],
+        ),
+    ];
+    for (name, source, artifacts) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        write(&cue_dir.path().join("fixture_tool.cue"), source);
+        write(&rust_dir.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        for artifact in *artifacts {
+            assert_eq!(
+                std::fs::read(cue_dir.path().join(artifact)).ok(),
+                std::fs::read(rust_dir.path().join(artifact)).ok(),
+                "{name}: artifact {artifact} differs"
+            );
         }
     }
 }

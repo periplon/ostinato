@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.36.1
+
+Package `$after` resolution and scheduling corrections.
+
+- Package task `$after` dependencies resolve in the task's enclosing scopes,
+  so sibling chains inside containers (`group.two.$after: one`), alias/definition
+  containers and inherited open bases schedule correctly.
+- Package tasks reached through output reads also contribute their own
+  `$after` dependencies.
+- Package tasks are keyed by their full definition-rooted path, so duplicate
+  leaf names in different containers each run and never collapse.
+- Command-local task aliases keep their own identity (`alias: prep` runs the
+  alias task, not a second package task) and explicit package selectors are
+  not shadowed by same-named command tasks.
+- Command tasks that alias a package task respect CUE's declaration/read
+  order: read-first injects, declaration-first stays non-concrete.
+- Hidden, optional and definition fields no longer count as aliases or reads.
+- Added differential e2e cases (multi-artifact set parity where CUE ordering
+  is nondeterministic) and six conformance cases.
+
+- 442 tests (105 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.36.0
 
 Package-scoped `$after` and package-root task reads.
