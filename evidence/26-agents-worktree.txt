@@ -1,7 +1,7 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-83baa18
+127d529
 
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                                16a10c5 [main]
@@ -9,7 +9,7 @@
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions   cb3a2ae [feat/agent-definitions]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan       99e7541 [feat/gateways-r0-r4]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection       e071d4e (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection  83baa18 [feat/v0.30.0-let-task-injection]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection  127d529 [fix/v0.30.1-let-suppression-keys]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports dda0eba (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps  fee7d72 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let        aab750d [fix/v0.24.5-let-rejection-scope]
