@@ -1,7 +1,7 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-aed12f5
+c642fc3
 
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                                    16a10c5 [main]
@@ -14,8 +14,9 @@ aed12f5
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection      2f4178f (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports     dda0eba (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps      fee7d72 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/order-scan              aed12f5 [fix/v0.33.3-label-selector-order]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/order-scan              79704b8 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/path-keyed-reads        6653528 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/root-alias-repeat       c642fc3 [feat/v0.34.0-root-alias-repeat]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let            aab750d [fix/v0.24.5-let-rejection-scope]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/unused-imports          698ef6d (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244            768b178 (detached HEAD)
