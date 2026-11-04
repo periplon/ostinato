@@ -6798,6 +6798,66 @@ command: moduleconcreteuse: {
 }
 "#,
         ),
+        (
+            "moduleignoreddef",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: moduleignoreddef: {
+	a: producer: lib.run
+	#template: {t: lib.tasks.r2}
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+        ),
+        (
+            "moduleignoredoptional",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: moduleignoredoptional: {
+	a: producer: lib.run
+	b?: producer2: lib.tasks.r2
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+        ),
+        (
+            "moduleignoredif",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: moduleignoredif: {
+	a: producer: lib.run
+	if false { b: producer2: lib.tasks.r2 }
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+        ),
+        (
+            "moduleignoredhidden",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: moduleignoredhidden: {
+	a: producer: lib.run
+	_hidden: producer2: lib.tasks.r2
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+        ),
     ];
     for (name, source) in cases {
         let cue_dir = tempfile::tempdir().expect("tempdir");
@@ -6859,6 +6919,70 @@ command: moduletwo: {
     );
     assert_eq!(actual.status.code(), expected.status.code());
     assert_eq!(actual.stdout, expected.stdout);
+}
+
+#[test]
+fn validate_tolerates_unused_incomplete_module_fields() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"package lib
+
+import (
+	e "tool/exec"
+	"tool/cli"
+)
+
+run: e.Run & {cmd: ["sh", "-c", "printf abc"], stdout: string}
+p:   cli.Print & {text: "G=\(run.stdout)"}
+val: {stdout: "concrete"}
+"#;
+    let workflow = r#"package foo
+import "example.com/k/lib"
+workflow: {
+	name: "v=\(lib.val.stdout)"
+	steps: {a: {kind: "exec", exec: {cmd: ["sh", "-c", "echo hello"]}}}
+}
+"#;
+    let directory = tempfile::tempdir().expect("tempdir");
+    let pkg = directory.path().join("pkg");
+    std::fs::create_dir_all(pkg.join("cue.mod")).expect("cue.mod");
+    std::fs::create_dir_all(pkg.join("lib")).expect("lib");
+    write(&pkg.join("cue.mod/module.cue"), module);
+    write(&pkg.join("lib/lib.cue"), library);
+    write(&pkg.join("workflow.cue"), workflow);
+    let expected = Command::new(&cue)
+        .args(["export", "workflow.cue"])
+        .current_dir(&pkg)
+        .output()
+        .expect("run cue export");
+    assert!(expected.status.success(), "cue export must succeed");
+    let actual = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "validate",
+        pkg.join("workflow.cue").to_str().expect("workflow"),
+    ]);
+    assert!(
+        actual.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&actual.stderr)
+    );
+
+    // A genuinely incomplete top-level interpolation still fails.
+    write(
+        &pkg.join("bad.cue"),
+        "package foo\nworkflow: {name: \"\\(undefined_field)\"}\n",
+    );
+    let bad = ost(&[
+        "--db",
+        directory.path().join("db.sqlite").to_str().expect("db"),
+        "validate",
+        pkg.join("bad.cue").to_str().expect("bad"),
+    ]);
+    assert!(!bad.status.success());
 }
 
 #[test]

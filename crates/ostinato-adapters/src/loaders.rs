@@ -114,14 +114,7 @@ fn evaluate_path(
             continue;
         }
         let imported_path = resolve_import(&source_dir, &import.path)?;
-        let value = evaluate_path(
-            &imported_path,
-            &BTreeMap::new(),
-            cache,
-            stack,
-            true,
-            allow_incomplete,
-        )?;
+        let value = evaluate_path(&imported_path, &BTreeMap::new(), cache, stack, true, true)?;
         imports.insert(import.alias.clone(), value);
     }
 
@@ -3106,28 +3099,19 @@ fn collect_import_task_fields(
     match value {
         Expr::Struct(items, _) => {
             for item in items {
-                match item {
-                    StructItem::Field(field) => {
-                        if let Some(alias) = import_task_alias(&field.value, imports) {
-                            ids.entry(alias).or_default().push(field.id);
-                        }
-                        collect_import_task_fields(&field.value, imports, ids);
-                    }
-                    StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                        collect_import_task_fields(value, imports, ids);
-                    }
-                    StructItem::For { body, .. } | StructItem::If { body, .. } => {
-                        for body_item in body {
-                            if let StructItem::Field(field) = body_item {
-                                if let Some(alias) = import_task_alias(&field.value, imports) {
-                                    ids.entry(alias).or_default().push(field.id);
-                                }
-                                collect_import_task_fields(&field.value, imports, ids);
-                            }
-                        }
-                    }
-                    StructItem::Ellipsis(_) => {}
+                let StructItem::Field(field) = item else {
+                    continue;
+                };
+                if field.definition
+                    || field.optional
+                    || matches!(&field.label, Label::Name(name, _) if name.starts_with('#') || name.starts_with('_'))
+                {
+                    continue;
                 }
+                if let Some(alias) = import_task_alias(&field.value, imports) {
+                    ids.entry(alias).or_default().push(field.id);
+                }
+                collect_import_task_fields(&field.value, imports, ids);
             }
         }
         Expr::Unify(left, right, _) => {
@@ -3158,8 +3142,23 @@ fn inject_command_outputs(
         let StructItem::Field(field) = item else {
             continue;
         };
-        if matches!(&field.label, Label::Name(name, _) if name == "command") {
-            collect_import_task_fields(&field.value, non_task_imports, &mut import_task_fields);
+        if !matches!(&field.label, Label::Name(name, _) if name == "command") {
+            continue;
+        }
+        let Expr::Struct(command_items, _) = &field.value else {
+            continue;
+        };
+        for command_item in command_items {
+            let StructItem::Field(command_field) = command_item else {
+                continue;
+            };
+            if matches!(&command_field.label, Label::Name(name, _) if name == command_name) {
+                collect_import_task_fields(
+                    &command_field.value,
+                    non_task_imports,
+                    &mut import_task_fields,
+                );
+            }
         }
     }
     let mut suppressed = std::collections::BTreeSet::new();

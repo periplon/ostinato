@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.29.1
+
+Module-task export corrections.
+
+- Multi-task suppression now counts only materialised task declarations:
+  definitions, optional fields, hidden fields and comprehension bodies are
+  ignored, so unused module references no longer disable injection.
+- Suppression is scoped to the invoked command, so two commands sharing a
+  module alias each inject normally.
+- Imported modules are always evaluated lazily for incompleteness, so
+  `validate`/`run` accept modules with unused pending-output fields while
+  genuinely incomplete top-level values still fail.
+- Added e2e cases for the ignored-reference shapes and a module-backed
+  `validate` test, plus two tool-conformance cases.
+- 437 tests (100 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.29.0
 
 Local-module task exports.
