@@ -1183,6 +1183,12 @@ pub fn run_tool_command(
         let Some(first) = path.first() else {
             return false;
         };
+        if matches!(
+            local_binding_location(&[task_items.as_slice()], &combined.items, first),
+            Some((false, _))
+        ) {
+            return false;
+        }
         match local_binding_location(&[combined.items.as_slice()], &combined.items, first) {
             Some((true, StructItem::Field(field))) if field.definition => return false,
             Some((true, _)) => {}
@@ -2403,7 +2409,15 @@ fn collect_output_task_paths<'a>(
                     &mut std::collections::BTreeSet::new(),
                     imports,
                 )
-                .filter(|path| find_field_expr_at_path(root, path).is_some())
+                .filter(|path| {
+                    find_field_expr_at_path(root, path).is_some()
+                        && path.first().is_none_or(|first| {
+                            !matches!(
+                                local_binding_location(scopes, root, first),
+                                Some((false, _))
+                            )
+                        })
+                })
                 .or_else(|| local_read_path(base, scopes, root, module_values));
                 let module_path = if local_path.is_none() {
                     module_task_path_scoped(
@@ -4591,15 +4605,21 @@ fn command_local_task_read(
 /// Local field path of a read base whose value is module-backed.
 fn local_read_path(
     expr: &Expr,
-    _scopes: &[&[StructItem]],
+    scopes: &[&[StructItem]],
     root: &[StructItem],
     module_values: &BTreeMap<String, Value>,
 ) -> Option<Vec<String>> {
     let path = selector_names(expr, None)?;
-    if path
-        .first()
-        .is_some_and(|segment| module_values.contains_key(segment))
-    {
+    let first = path.first()?;
+    if module_values.contains_key(first) {
+        return None;
+    }
+    // A command-local field shadows a package-root field of the same name.
+    // Definitions stay resolvable because their output reads are injectable.
+    if matches!(
+        local_binding_location(scopes, root, first),
+        Some((false, StructItem::Field(field))) if !field.definition
+    ) {
         return None;
     }
     find_field_expr_at_path(root, &path).map(|_| path)

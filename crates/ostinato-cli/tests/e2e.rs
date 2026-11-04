@@ -10559,6 +10559,59 @@ command: modulealiastaskinputindex: {
             false,
         ),
         (
+            "moduleshadowfield",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"example.com/k/lib"
+)
+base: lib.run
+command: moduleshadowfield: {
+	base: exec.Run & {cmd: ["sh", "-c", "printf L"], stdout: string}
+	t: cli.Print & {text: "R=\(base.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "moduleshadowcontainer",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"example.com/k/lib"
+)
+base: {inner: lib.run}
+command: moduleshadowcontainer: {
+	base: {inner: exec.Run & {cmd: ["sh", "-c", "printf L"], stdout: string}}
+	t: cli.Print & {text: "R=\(base.inner.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "moduleshadownested",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"example.com/k/lib"
+)
+base: lib.run
+command: moduleshadownested: {
+	x: {
+		base: exec.Run & {cmd: ["sh", "-c", "printf L"], stdout: string}
+		t: cli.Print & {text: "R=\(base.stdout)"}
+	}
+}
+"#,
+            false,
+        ),
+        (
             "modulealiassuccess",
             r#"
 package foo

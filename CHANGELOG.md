@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.39.2
+
+Command-local shadowing of module-backed root fields.
+
+- A command-local task field or nested scope that shadows a package-root field
+  of the same name no longer triggers module task-input rejection; the local
+  task schedules normally like CUE.
+- Plain reads through shadowed bindings stay local, while genuine
+  module-backed root/container task-input reads keep rejecting.
+- Added e2e coverage for field, container and nested shadowing.
+
+- 445 tests (108 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.39.1
 
 Module task-input rejection and root-backed alias reads.
