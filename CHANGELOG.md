@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.19.0
+
+Nested multiline literals inside interpolation.
+
+- Interpolation source may contain """...""" and '''...''' literals in
+  string and bytes interpolations, including interpolation nested inside the
+  nested literal and multiline outer literals whose nested closing delimiter
+  starts a line.
+- The lexer scans nested literals recursively for boundaries, so the outer
+  delimiter is no longer mistaken for an interpolation close.
+- 344 tests (61 CLI E2E, 1 conformance, 240 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.18.4
 
 Narrowing declaration-closedness and list-arity corrections.
