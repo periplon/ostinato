@@ -31,7 +31,8 @@ pub use condition::{eval_condition, validate_condition};
 pub use error::LangError;
 pub use eval::{
     Builtin, TypeKind, Value, builtin_module, eval_expr_with_json, eval_file,
-    eval_file_with_imports, eval_file_with_imports_mode, eval_file_with_overrides, strip_hidden,
+    eval_file_with_imports, eval_file_with_imports_mode,
+    eval_file_with_imports_mode_allow_incomplete, eval_file_with_overrides, strip_hidden,
     value_from_json,
 };
 pub use parser::{parse, parse_expr_fragment};

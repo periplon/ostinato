@@ -565,6 +565,33 @@ pub fn eval_file_with_imports_mode(
     overrides: &BTreeMap<String, Value>,
     include_definitions: bool,
 ) -> Result<Value, LangError> {
+    eval_file_with_imports_mode_inner(file, imports, overrides, include_definitions, false)
+}
+
+/// Like [`eval_file_with_imports_mode`], but non-concrete interpolations become
+/// incomplete placeholders instead of errors.
+///
+/// Tool commands use this mode so task inputs that reference captured outputs
+/// can be scheduled and re-evaluated after the producer injects its values.
+///
+/// # Errors
+/// Returns an evaluation error for invalid imports or tags.
+pub fn eval_file_with_imports_mode_allow_incomplete(
+    file: &File,
+    imports: &BTreeMap<String, Value>,
+    overrides: &BTreeMap<String, Value>,
+    include_definitions: bool,
+) -> Result<Value, LangError> {
+    eval_file_with_imports_mode_inner(file, imports, overrides, include_definitions, true)
+}
+
+fn eval_file_with_imports_mode_inner(
+    file: &File,
+    imports: &BTreeMap<String, Value>,
+    overrides: &BTreeMap<String, Value>,
+    include_definitions: bool,
+    allow_incomplete: bool,
+) -> Result<Value, LangError> {
     stacker::grow(512 * 1024 * 1024, || {
         crate::attributes::validate_tag_placement(file)?;
         let import_aliases: Vec<String> = imports.keys().cloned().collect();
@@ -574,6 +601,7 @@ pub fn eval_file_with_imports_mode(
             vars.insert(name.clone(), value.clone());
         }
         let frame = Frame::from_static(&file.items, None, vars)?;
+        frame.allow_incomplete.set(allow_incomplete);
         for (key, value) in overrides {
             frame
                 .overrides
@@ -611,6 +639,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         next_injections: RefCell::new(None),
         generated_definitions: RefCell::new(BTreeMap::new()),
         skip_cache: Cell::new(false),
+        allow_incomplete: Cell::new(false),
     };
     if let Json::Object(map) = context {
         let mut values = BTreeMap::new();
@@ -735,6 +764,7 @@ struct Frame<'a> {
     next_injections: RefCell<Option<BTreeMap<String, Value>>>,
     generated_definitions: RefCell<BTreeMap<String, Value>>,
     skip_cache: Cell<bool>,
+    allow_incomplete: Cell<bool>,
 }
 
 impl<'a> Frame<'a> {
@@ -779,6 +809,7 @@ impl<'a> Frame<'a> {
             next_injections: RefCell::new(None),
             generated_definitions: RefCell::new(BTreeMap::new()),
             skip_cache: Cell::new(false),
+            allow_incomplete: Cell::new(parent.is_some_and(|parent| parent.allow_incomplete.get())),
         };
 
         // Pass 1: static fields and lazy let bindings.
@@ -3257,6 +3288,9 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         let value = eval_expr(expr, frame)?;
                         let concrete = value.concretize();
                         if concrete.to_json().is_none() {
+                            if frame.allow_incomplete.get() {
+                                return Ok(Value::Type(TypeKind::Bytes));
+                            }
                             return Err(LangError::eval(
                                 span.line,
                                 span.col,
@@ -3291,6 +3325,9 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         let value = eval_expr(expr, frame)?;
                         let concrete = value.concretize();
                         if concrete.to_json().is_none() {
+                            if frame.allow_incomplete.get() {
+                                return Ok(Value::Type(TypeKind::String));
+                            }
                             return Err(LangError::eval(
                                 1,
                                 1,

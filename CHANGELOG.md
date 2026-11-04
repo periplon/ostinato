@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.23.0
+
+Interpolation over captured tool outputs.
+
+- Tool-command evaluation has an allow-incomplete mode, so strings and bytes
+  that interpolate pending task outputs evaluate to incomplete placeholders
+  and re-evaluate after injection instead of aborting the package.
+- `cli.Print text`, file `contents`, `cmd` elements and `success` can now use
+  `\(run.stdout)`/`\(run.success)` with or without `$after`, matching cue cmd.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.22.4
 
 Tool env definitions and reproducible evidence.

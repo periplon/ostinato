@@ -7,8 +7,8 @@ use std::sync::Arc;
 use ostinato_application::{LoadRequest, LoadedWorkflow, PortError, PortResult, SpecLoader};
 use ostinato_lang::ast::{Expr, Label, Span, StructItem};
 use ostinato_lang::{
-    Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode, parse,
-    rename_file_locals,
+    Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode,
+    eval_file_with_imports_mode_allow_incomplete, parse, rename_file_locals,
 };
 use serde_json::{Value as Json, json};
 
@@ -1067,7 +1067,8 @@ pub fn run_tool_command(
         }
     }
 
-    let value = eval_file_with_imports_mode(&combined, &imports, &injected, false)?;
+    let value =
+        eval_file_with_imports_mode_allow_incomplete(&combined, &imports, &injected, false)?;
     let mut tasks = extract_command_tasks(&value, command_name)?;
 
     let mut scheduled = Vec::new();
@@ -1137,8 +1138,9 @@ pub fn run_tool_command(
                     if !outputs.is_empty()
                         && inject_task_outputs(&mut combined.items, name, &outputs)
                     {
-                        let value =
-                            eval_file_with_imports_mode(&combined, &imports, &injected, false)?;
+                        let value = eval_file_with_imports_mode_allow_incomplete(
+                            &combined, &imports, &injected, false,
+                        )?;
                         tasks = extract_command_tasks(&value, command_name)?;
                         let mut rescheduled = Vec::new();
                         collect_schedule(&tasks, Some(&task_items), &mut rescheduled)?;
