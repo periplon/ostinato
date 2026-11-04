@@ -1,5 +1,5 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.eaglxTqX21/gateway-nof.sqlite audit verify 8767bfbe-c018-4fe0-a4b6-083f2c7e7d15
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.iaYqLYp3Ah/gateway-nof.sqlite audit verify f17f30e1-a4cc-4939-a287-1293bce8c8b9
 
-OK run=8767bfbe-c018-4fe0-a4b6-083f2c7e7d15 events=11 head=37f298464d58e6369de438b64d1c58a2ba5fd187f0c0ecc5f057aaea3e0f772b
+OK run=f17f30e1-a4cc-4939-a287-1293bce8c8b9 events=11 head=f0e48245e5f2e7d3a3bde38fd1ccc7dc2ca6a9656c4c00fa00411efd1725a9fa
 
 exit=0

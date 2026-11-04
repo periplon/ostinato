@@ -4976,6 +4976,60 @@ command: taskafterlist: {
 "#,
             false,
         ),
+        (
+            "taskaftersplit",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: taskaftersplit: {
+	base: {cmd: ["sh", "-c", "test -f ready && printf 'R' || printf 'X'"], stdout: string}
+	base: {$after: z}
+	run:  exec.Run & base
+	p:    cli.Print & {text: "P=\(run.stdout)"}
+	z:    exec.Run & {cmd: ["sh", "-c", "touch ready"]}
+}
+"#,
+            false,
+        ),
+        (
+            "taskaftersel",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: taskaftersel: {
+	bases: {base: {cmd: ["sh", "-c", "test -f ready && printf 'R' || printf 'X'"], stdout: string}}
+	bases: {base: {$after: z}}
+	run:   exec.Run & bases.base
+	p:     cli.Print & {text: "P=\(run.stdout)"}
+	z:     exec.Run & {cmd: ["sh", "-c", "touch ready"]}
+}
+"#,
+            false,
+        ),
+        (
+            "taskafterhop",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: taskafterhop: {
+	bases: {inner: {base: {cmd: ["sh", "-c", "test -f ready && printf 'R' || printf 'X'"], stdout: string, $after: z}}}
+	alias: bases.inner
+	run:   exec.Run & alias.base
+	p:     cli.Print & {text: "P=\(run.stdout)"}
+	z:     exec.Run & {cmd: ["sh", "-c", "touch ready"]}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
