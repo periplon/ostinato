@@ -1898,6 +1898,12 @@ impl<'a> Frame<'a> {
                             {
                                 return true;
                             }
+                            if self
+                                .ident_task_label(nested, &mut HashSet::new())
+                                .is_some_and(|label| allowed.contains(&label))
+                            {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -3370,6 +3376,38 @@ fn selector_leaf_name(expr: &Expr) -> Option<String> {
             Some(text)
         }
         _ => None,
+    }
+}
+
+impl Frame<'_> {
+    /// Follow identifier chains through lets and fields to a field label.
+    fn ident_task_label(&self, expr: &Expr, seen: &mut HashSet<String>) -> Option<String> {
+        match expr {
+            Expr::Ident(name, _) => {
+                if !seen.insert(name.clone()) {
+                    return None;
+                }
+                if let Some(value) = self.lets.borrow().get(name).cloned() {
+                    let found = self.ident_task_label(&value, seen);
+                    seen.remove(name);
+                    return found;
+                }
+                let fields = self.fields.borrow();
+                if fields.contains_key(name) || fields.contains_key(&prefixed_field(name)) {
+                    return Some(name.clone());
+                }
+                drop(fields);
+                seen.remove(name);
+                self.parent
+                    .and_then(|parent| parent.ident_task_label(expr, seen))
+            }
+            Expr::Select(_, field, _, _) => Some(field.clone()),
+            Expr::Index(_, index, _) => selector_leaf_name(index),
+            Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+                self.ident_task_label(inner, seen)
+            }
+            _ => None,
+        }
     }
 }
 

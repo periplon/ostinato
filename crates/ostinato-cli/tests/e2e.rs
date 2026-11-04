@@ -6686,6 +6686,207 @@ command: c: {
 }
 
 #[test]
+fn tool_command_let_and_definition_output_reads_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"package lib
+
+import e "tool/exec"
+
+run: e.Run & {cmd: ["sh", "-c", "printf abc"], stdout: string}
+"#;
+    let cases = [
+        (
+            "letreadfield",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf B"], stdout: string}
+command: letreadfield: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "letreadcmd",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: letreadcmd: {
+	base: lib.run
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "letreadchain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: letreadchain: {
+	base: lib.run
+	let u = base
+	let t = u
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "letreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf B"], stdout: string}
+command: letreadfirst: {
+	q: cli.Print & {text: "R=\(t.stdout)"}
+	let t = base
+}
+"#,
+            true,
+        ),
+        (
+            "defreadmodule",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#base: lib.run
+command: defreadmodule: {
+	q: cli.Print & {text: "R=\(#base.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defreadinline",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+#t: exec.Run & {cmd: ["sh", "-c", "printf T"], stdout: string}
+command: defreadinline: {
+	q: cli.Print & {text: "R=\(#t.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defreadlocal",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: defreadlocal: {
+	#base: lib.run
+	q: cli.Print & {text: "R=\(#base.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defreadtaskref",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#base: lib.run
+command: defreadtaskref: {
+	a: p1: #base
+	q: cli.Print & {text: "R=\(a.p1.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defreadboth",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#base: lib.run
+command: defreadboth: {
+	a: p1: #base
+	q: cli.Print & {text: "R=\(#base.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "readrootfield",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+command: readrootfield: {
+	q: cli.Print & {text: "R=\(base.stdout)"}
+}
+"#,
+            false,
+        ),
+    ];
+    for (name, source, success) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+            std::fs::create_dir_all(directory.join("lib")).expect("lib");
+            write(&directory.join("cue.mod/module.cue"), module);
+            write(&directory.join("lib/lib.cue"), library);
+            write(&directory.join("x_tool.cue"), source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        if success {
+            assert_eq!(actual.stderr, expected.stderr, "{name}");
+        }
+    }
+}
+
+#[test]
 fn tool_command_let_task_outputs_match_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");
