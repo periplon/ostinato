@@ -12,6 +12,14 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.21.4
+
+- Reject conflicting whole-field defaults without running commands; classify
+  spawn/chdir/not-a-directory errors like cue; document `*_tool.cue` and the
+  package-scoped `$after` limit.
+- 354 tests (69 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.21.3
 
 - Tool-command package-relative cwd/dir, whole-field default
@@ -38,7 +46,7 @@ for non-draft PRs and therefore waits for these checks before squashing.
 
 ## v0.21.0
 
-- `ostinato cmd` runs `_tool.cue` `command:` tasks with `tool/exec.Run`;
+- `ostinato cmd` runs `*_tool.cue` `command:` tasks with `tool/exec.Run`;
   workflow loading still excludes tool files.
 - 349 tests (64 CLI E2E, 1 conformance, 242 language, 3 language unit,
   18 application, 17 domain, 3 store, 1 adapters unit).

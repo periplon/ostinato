@@ -93,7 +93,7 @@ enum Command {
         #[arg(long, env = "OSTINATO_AGENT")]
         agent_cmd: Option<String>,
     },
-    /// Run a CUE tool command declared in `_tool.cue` files.
+    /// Run a CUE tool command declared in `*_tool.cue` files.
     Cmd {
         /// Tool command name (`command: <name>`).
         name: String,

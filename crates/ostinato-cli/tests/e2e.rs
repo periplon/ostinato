@@ -3872,3 +3872,94 @@ command: rel: {run: exec.Run & {cmd: ["cat", "sub/data.txt"], dir: *"sub" | stri
     assert_eq!(actual.stdout, expected.stdout);
     assert_eq!(actual.stderr, expected.stderr);
 }
+
+#[test]
+fn tool_command_rejects_conflicting_defaults() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let fixtures = [
+        (
+            "mustfalse",
+            r#"
+package foo
+import "tool/exec"
+command: mustfalse: {run: exec.Run & {cmd: ["sh", "-c", "echo RAN"], mustSucceed: *false | bool}}
+"#,
+        ),
+        (
+            "stdinconflict",
+            r#"
+package foo
+import "tool/exec"
+command: stdinconflict: {run: exec.Run & {cmd: ["cat"], stdin: *"y" | null}}
+"#,
+        ),
+    ];
+    for (name, source) in fixtures {
+        let directory = tempfile::tempdir().expect("tempdir");
+        write(&directory.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, directory.path().to_str().expect("path")]);
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+    }
+}
+
+#[test]
+fn tool_command_spawn_error_messages_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases = [
+        (
+            "missdir",
+            r#"
+package foo
+import "tool/exec"
+command: missdir: {run: exec.Run & {cmd: ["echo", "X"], dir: "nope"}}
+"#,
+            None,
+        ),
+        (
+            "missboth",
+            r#"
+package foo
+import "tool/exec"
+command: missboth: {run: exec.Run & {cmd: ["no-such-bin-xyz"], dir: "nope"}}
+"#,
+            None,
+        ),
+        (
+            "dirfile",
+            r#"
+package foo
+import "tool/exec"
+command: dirfile: {run: exec.Run & {cmd: ["echo", "X"], dir: "file.txt"}}
+"#,
+            Some(("file.txt", "x")),
+        ),
+    ];
+    for (name, source, file) in cases {
+        let directory = tempfile::tempdir().expect("tempdir");
+        if let Some((file_name, contents)) = file {
+            std::fs::write(directory.path().join(file_name), contents).expect("file");
+        }
+        write(&directory.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, directory.path().to_str().expect("path")]);
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert_eq!(actual.stderr, expected.stderr, "{name}");
+    }
+}

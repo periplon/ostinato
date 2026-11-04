@@ -1321,17 +1321,42 @@ fn capture_flag(
     task: &BTreeMap<String, Value>,
     key: &str,
 ) -> Result<bool, ostinato_lang::LangError> {
-    match task.get(key).map(Value::concretize) {
+    match task.get(key) {
         None | Some(Value::Null) => Ok(false),
         Some(Value::String(_))
         | Some(Value::Bytes(_))
         | Some(Value::Type(_))
         | Some(Value::Bottom) => Ok(true),
+        Some(Value::Disjunction(alternatives, defaults)) => {
+            let default = defaults
+                .first()
+                .and_then(|index| alternatives.get(*index))
+                .cloned();
+            if matches!(default, Some(Value::Null)) {
+                Ok(false)
+            } else {
+                Err(ostinato_lang::LangError::Workflow(format!(
+                    "invalid {key}: non-concrete value"
+                )))
+            }
+        }
         Some(other) => Err(ostinato_lang::LangError::Workflow(format!(
             "tool/exec.Run `{key}` must be a string, bytes or null, found {}",
             other.type_name()
         ))),
     }
+}
+
+fn resolve_executable(name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if name.contains('/') {
+        return path.is_file().then(|| path.to_path_buf());
+    }
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 fn exec_failure(status: &std::process::ExitStatus) -> String {
@@ -1417,6 +1442,7 @@ fn execute_tool_task(
     process.args(&argv[1..]);
     process.current_dir(package_dir);
     let mut resolved_dir = None;
+    let mut raw_dir = None;
     match task.get("dir").map(Value::concretize) {
         None => {}
         Some(Value::String(dir)) => {
@@ -1428,6 +1454,7 @@ fn execute_tool_task(
                     package_dir.join(path)
                 };
                 process.current_dir(&resolved);
+                raw_dir = Some(dir.clone());
                 resolved_dir = Some(resolved);
             }
         }
@@ -1479,10 +1506,24 @@ fn execute_tool_task(
             )));
         }
     }
-    let stdin = match task.get("stdin").map(Value::concretize) {
+    let stdin = match task.get("stdin") {
         None | Some(Value::Null) => None,
         Some(Value::String(text)) => Some(text.clone().into_bytes()),
         Some(Value::Bytes(bytes)) => Some(bytes.clone()),
+        Some(Value::Disjunction(alternatives, defaults)) => {
+            let default = defaults
+                .first()
+                .and_then(|index| alternatives.get(*index))
+                .cloned();
+            match default {
+                Some(Value::Null) => None,
+                _ => {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "invalid input: non-concrete value".to_owned(),
+                    ));
+                }
+            }
+        }
         Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
         Some(other) => {
             return Err(ostinato_lang::LangError::Workflow(format!(
@@ -1509,10 +1550,30 @@ fn execute_tool_task(
     } else {
         Stdio::inherit()
     });
-    let must_succeed = match task.get("mustSucceed").map(Value::concretize) {
+    let must_succeed = match task.get("mustSucceed") {
         None => true,
         Some(Value::Bool(value)) => *value,
         Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
+        Some(Value::Disjunction(alternatives, defaults)) => {
+            let default = defaults
+                .first()
+                .and_then(|index| alternatives.get(*index))
+                .cloned();
+            match default {
+                Some(Value::Bool(true))
+                    if alternatives
+                        .iter()
+                        .all(|value| matches!(value, Value::Bool(true) | Value::Type(_))) =>
+                {
+                    true
+                }
+                _ => {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "invalid mustSucceed value: non-concrete value".to_owned(),
+                    ));
+                }
+            }
+        }
         Some(other) => {
             return Err(ostinato_lang::LangError::Workflow(format!(
                 "tool/exec.Run `mustSucceed` must be a bool, found {}",
@@ -1531,13 +1592,23 @@ fn execute_tool_task(
                 .map(|arg| format!("{arg:?}"))
                 .collect::<Vec<_>>()
                 .join(" ");
-            let detail = if err.kind() == std::io::ErrorKind::NotFound {
-                if let Some(dir) = &resolved_dir
-                    && !dir.is_dir()
-                {
-                    format!("chdir {}: no such file or directory", dir.display())
+            let executable = resolve_executable(&argv[0]);
+            let detail = if executable.is_none() && !argv[0].contains('/') {
+                format!("exec: \"{}\": executable file not found in $PATH", argv[0])
+            } else if let Some(dir) = &resolved_dir {
+                let raw = raw_dir.as_deref().unwrap_or_default();
+                if !dir.exists() {
+                    format!("chdir {raw}: no such file or directory")
+                } else if !dir.is_dir() {
+                    format!(
+                        "fork/exec {}: not a directory",
+                        executable
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| argv[0].clone())
+                    )
                 } else {
-                    format!("exec: \"{}\": executable file not found in $PATH", argv[0])
+                    err.to_string()
                 }
             } else {
                 err.to_string()
