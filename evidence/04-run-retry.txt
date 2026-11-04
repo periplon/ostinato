@@ -1,6 +1,6 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-imports/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.CJOaw4zBt8/db.sqlite run examples/retry.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-let/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.O7gakVXIKO/db.sqlite run examples/retry.cue
 
-run=1f1a4f1a-5f52-45bc-9b9d-961f7bc39d2e workflow=retry status=succeeded durationMs=318
+run=f0a356f1-ecf4-4a75-a69f-c14978247dbb workflow=retry status=succeeded durationMs=314
 STEP                     STATUS     VISITS ATTEMPTS
 flaky                    succeeded  1      3       
 setup                    succeeded  1      1       
