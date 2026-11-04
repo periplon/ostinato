@@ -1,7 +1,7 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-308838d
+74c047b
 
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                                    16a10c5 [main]
@@ -14,7 +14,8 @@
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-def-output-refs     fabd011 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection           e071d4e (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection      2f4178f (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-alias-reads      308838d [fix/v0.39.3-module-alias-shadow-scope]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-alias-reads      9df3b61 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-definition-alias 74c047b [feat/v0.40.0-module-definition-alias]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports     dda0eba (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after      747bce6 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps      fee7d72 (detached HEAD)

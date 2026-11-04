@@ -10327,7 +10327,10 @@ import e "tool/exec"
 
 run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
 fail: e.Run & {cmd: ["false"], mustSucceed: false, success: bool}
-group: {run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}}
+group: {
+	run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+	#inner: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+}
 #def: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
 "#;
     let cases: &[(&str, &str, bool)] = &[
@@ -10642,6 +10645,98 @@ command: moduleshadownested: {
 }
 "#,
             false,
+        ),
+        (
+            "moduledefaliasroot",
+            r#"
+package foo
+import "example.com/k/lib"
+prep: lib.#def
+command: moduledefaliasroot: {
+	r: prep
+	q: "\(prep.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "moduledefaliasrootreadfirst",
+            r#"
+package foo
+import "example.com/k/lib"
+prep: lib.#def
+command: moduledefaliasrootreadfirst: {
+	q: "\(prep.stdout)"
+	r: prep
+}
+"#,
+            true,
+        ),
+        (
+            "moduledefaliashidden",
+            r#"
+package foo
+import "example.com/k/lib"
+prep: lib.#def
+command: moduledefaliashidden: {
+	r: prep
+	_q: "\(prep.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "moduledefrootcontainer",
+            r#"
+package foo
+import "example.com/k/lib"
+prep: {inner: lib.#def}
+command: moduledefrootcontainer: {
+	r: prep.inner
+	q: "\(prep.inner.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "moduledefletchain",
+            r#"
+package foo
+import "example.com/k/lib"
+let l = lib.#def
+prep: l
+command: moduledefletchain: {
+	r: prep
+	q: "\(prep.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "moduledefgroupalias",
+            r#"
+package foo
+import "example.com/k/lib"
+prep: lib.group.#inner
+command: moduledefgroupalias: {
+	r: prep
+	q: "\(prep.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "moduledefaliasoutput",
+            r#"
+package foo
+import "example.com/k/lib"
+prep: lib.#def
+command: moduledefaliasoutput: {
+	r: prep
+	q: "\(r.stdout)-\(prep.stdout)"
+}
+"#,
+            true,
         ),
         (
             "modulealiassuccess",

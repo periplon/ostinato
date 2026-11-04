@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.40.0
+
+Module definition task aliases and plain reads.
+
+- Imported definition tasks (`lib.#def`) are now recognised as module task
+  paths, so package-root/container/let aliases to them
+  (`prep: lib.#def`, `prep: {inner: lib.#def}`, `let l = lib.#def`)
+  materialise plain reads (`q: "\\(prep.stdout)"`) and mixed alias-output
+  reads exactly once like CUE.
+- Nested definition tasks inside module structs (`lib.group.#inner`) and
+  definition alias output reads (`r.stdout`) work too.
+- Added e2e coverage (7 shapes) and four conformance cases.
+
+- 445 tests (108 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.39.3
 
 Module alias shadowing scope correction.
