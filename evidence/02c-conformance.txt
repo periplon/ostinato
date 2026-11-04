@@ -1,20 +1,21 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244/scripts/conformance.sh
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/unused-imports/scripts/conformance.sh
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
-     Running tests/conformance.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/deps/conformance-e5853964893a6122)
+     Running tests/conformance.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-imports/debug/deps/conformance-f55d2f1266c09f76)
 
-running 1 test
+running 2 tests
+test rust_and_official_cue_reject_invalid_corpus ... ok
 test rust_matches_official_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.78s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.81s
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
-     Running tests/tool_conformance.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/deps/tool_conformance-9178b42f75d4ae23)
+     Running tests/tool_conformance.rs (/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-imports/debug/deps/tool_conformance-96337f5c52f3f32b)
 
 running 1 test
 test tool_commands_match_cue_on_the_conformance_corpus ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
 
 
 exit=0
