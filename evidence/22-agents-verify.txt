@@ -1,7 +1,7 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.x7qOy2izUH/agents.sqlite agents bb2bb119-9ccf-45a7-a0e3-ba8b62daa849 --verify
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.yRKXUpNhV0/agents.sqlite agents 7d3e57ea-93a2-4110-a581-30c84698ef9f --verify
 
 ID     STEP                 ROUND ATTEMPT STATUS    PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
-1      review               0     0       ok        command    example-model 0      256      2         d95c6558681945c34a3012be3f49139c303893e49ed58836bdd882db2a16de1a
+1      review               0     0       ok        command    example-model 0      476      2         6af54679f05e98862b4ca719c9d5a6df3a6a0bb5266143bb79f73525b36c21fb
 OK trace=1 step=review attempt=0
 
 exit=0

@@ -4600,6 +4600,208 @@ command: helpersuccessinterp: {
 "#,
             false,
         ),
+        (
+            "selbase",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+lib: {
+	base: {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+		p: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+command: selbase: lib.base
+"#,
+            false,
+        ),
+        (
+            "selnested",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+lib: {
+	inner: {
+		base: {
+			run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+			p: cli.Print & {text: "R=\(run.stdout)"}
+		}
+	}
+}
+command: selnested: lib.inner.base
+"#,
+            false,
+        ),
+        (
+            "selquoted",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+lib: {
+	"b-a": {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+		p: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+command: selquoted: lib."b-a"
+"#,
+            false,
+        ),
+        (
+            "selindex",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+lib: {
+	"b-a": {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+		p: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+command: selindex: lib["b-a"]
+"#,
+            false,
+        ),
+        (
+            "selparen",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+lib: {
+	base: {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+		p: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+command: selparen: (lib).base
+"#,
+            false,
+        ),
+        (
+            "seldef",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+#Lib: {
+	base: {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+		p: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+command: seldef: #Lib.base
+"#,
+            false,
+        ),
+        (
+            "selunify",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+lib: {
+	base: {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+		p: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+command: selunify: lib.base & {extra: 1}
+"#,
+            false,
+        ),
+        (
+            "selalias",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+other: {
+	inner: {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+		p: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+lib: {base: other.inner}
+command: selalias: lib.base
+"#,
+            false,
+        ),
+        (
+            "selmid",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+m: {
+	base: {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+		p: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+lib: {mid: m}
+command: selmid: lib.mid.base
+"#,
+            false,
+        ),
+        (
+            "selhelper",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+lib: {
+	base: {
+		msg: run.stdout
+		p: cli.Print & {text: "R=\(msg)"}
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+	}
+}
+command: selhelper: lib.base
+"#,
+            false,
+        ),
+        (
+            "selwhole",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+other: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+lib: other
+command: selwhole: lib
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -6068,4 +6270,134 @@ command: chainedunify: second
             );
         }
     }
+}
+
+#[test]
+fn tool_command_selector_commands_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases = [
+        (
+            "selafter",
+            r#"
+package foo
+import "tool/exec"
+lib: {
+	base: {
+		a: exec.Run & {$after: z, cmd: ["sh", "-c", "cat data.txt"]}
+		z: exec.Run & {cmd: ["sh", "-c", "printf fresh > data.txt"]}
+	}
+}
+command: selafter: lib.base
+"#,
+            Some(("data.txt", "stale")),
+            Some("data.txt"),
+        ),
+        (
+            "seltwobases",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"tool/file"
+)
+lib: {
+	b1: {
+		run1: exec.Run & {cmd: ["sh", "-c", "printf 'AAA'"], stdout: string}
+		p1: cli.Print & {text: "1=\(run1.stdout)"}
+	}
+	b2: {
+		run2: exec.Run & {cmd: ["sh", "-c", "printf 'BBB'"], stdout: string}
+		w2: file.Create & {filename: "out2.txt", contents: "2=\(run2.stdout)"}
+	}
+}
+command: seltwobases: lib.b1 & lib.b2
+"#,
+            None,
+            Some("out2.txt"),
+        ),
+        (
+            "selletnooutput",
+            r#"
+package foo
+import "tool/exec"
+let group = {inner: {run: exec.Run & {cmd: ["sh", "-c", "printf 'X'"]}}}
+command: selletnooutput: group.inner
+"#,
+            None,
+            None,
+        ),
+    ];
+    for (name, source, seed, artifact) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        write(&cue_dir.path().join("fixture_tool.cue"), source);
+        write(&rust_dir.path().join("fixture_tool.cue"), source);
+        if let Some((file, contents)) = seed {
+            write(&cue_dir.path().join(file), contents);
+            write(&rust_dir.path().join(file), contents);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert_eq!(actual.stderr, expected.stderr, "{name}");
+        if let Some(artifact) = artifact {
+            assert_eq!(
+                std::fs::read(cue_dir.path().join(artifact)).expect("cue artifact"),
+                std::fs::read(rust_dir.path().join(artifact)).expect("rust artifact"),
+                "{name}: file contents differ"
+            );
+        }
+    }
+}
+
+#[test]
+fn tool_command_let_selector_outputs_are_rejected_before_side_effects() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let source = r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let group = {
+	inner: {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc' > marker"], stdout: string}
+		p: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+command: letselector: group.inner
+"#;
+    let cue_dir = tempfile::tempdir().expect("tempdir");
+    let rust_dir = tempfile::tempdir().expect("tempdir");
+    write(&cue_dir.path().join("fixture_tool.cue"), source);
+    write(&rust_dir.path().join("fixture_tool.cue"), source);
+    let expected = Command::new(&cue)
+        .args(["cmd", "letselector"])
+        .current_dir(cue_dir.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&[
+        "cmd",
+        "letselector",
+        rust_dir.path().to_str().expect("path"),
+    ]);
+    assert!(!expected.status.success(), "cue must reject the fixture");
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert!(
+        !rust_dir.path().join("marker").exists(),
+        "ostinato must not execute tasks before rejecting the selector"
+    );
 }

@@ -1116,6 +1116,13 @@ pub fn run_tool_command(
         }
     }
     add_output_dependencies(&combined.items, &mut scheduled);
+    if command_uses_let_selector(&combined.items, command_name)
+        && scheduled_has_output_refs(&combined.items, &scheduled)
+    {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool command selector cannot receive task outputs through a `let`".to_owned(),
+        ));
+    }
     for (name, dependencies, _) in &scheduled {
         for dependency in dependencies {
             if !task_names.contains(dependency) {
@@ -1291,6 +1298,304 @@ fn command_task_items(
     Ok(tasks)
 }
 
+/// Extract a literal string index such as `lib["base"]`.
+fn index_field_name(expr: &Expr) -> Option<String> {
+    let Expr::Str(parts, _) = expr else {
+        return None;
+    };
+    let mut text = String::new();
+    for part in parts {
+        match part {
+            ostinato_lang::ast::StrPart::Text(value) => text.push_str(value),
+            ostinato_lang::ast::StrPart::Interp(_) => return None,
+        }
+    }
+    Some(text)
+}
+
+fn is_let_name(items: &[StructItem], name: &str) -> bool {
+    items
+        .iter()
+        .any(|item| matches!(item, StructItem::Let { name: let_name, .. } if let_name == name))
+}
+
+fn field_definition<'a>(items: &'a [StructItem], name: &str) -> Option<&'a Expr> {
+    items.iter().find_map(|item| match item {
+        StructItem::Field(field) => match &field.label {
+            Label::Name(label, _) if label == name => Some(&field.value),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// Whether a selector's root declaration is a file-scoped `let`.
+fn selector_root_is_let(
+    items: &[StructItem],
+    expr: &Expr,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return false;
+            }
+            if is_let_name(items, name) {
+                return true;
+            }
+            field_definition(items, name)
+                .is_some_and(|value| selector_root_is_let(items, value, visited))
+        }
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+            selector_root_is_let(items, base, visited)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            selector_root_is_let(items, inner, visited)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a command value is a selector whose root is a `let`.
+fn command_value_is_let_selector(
+    items: &[StructItem],
+    expr: &Expr,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    match expr {
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+            selector_root_is_let(items, base, visited)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            command_value_is_let_selector(items, inner, visited)
+        }
+        Expr::Unify(left, right, _) => {
+            command_value_is_let_selector(items, left, visited)
+                || command_value_is_let_selector(items, right, visited)
+        }
+        _ => false,
+    }
+}
+
+/// Turn an identifier/selector expression into the field path it denotes.
+fn selector_path(
+    items: &[StructItem],
+    expr: &Expr,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<Vec<String>> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return None;
+            }
+            if let Some(value) = local_definition(items, items, name)
+                && matches!(
+                    value,
+                    Expr::Ident(..)
+                        | Expr::Select(..)
+                        | Expr::Index(..)
+                        | Expr::Paren(..)
+                        | Expr::Default(..)
+                        | Expr::Bound(..)
+                )
+                && let Some(path) = selector_path(items, value, visited)
+            {
+                return Some(path);
+            }
+            Some(vec![name.clone()])
+        }
+        Expr::Select(base, field, _, _) => {
+            let mut path = selector_path(items, base, visited)?;
+            path.push(field.clone());
+            Some(path)
+        }
+        Expr::Index(base, index, _) => {
+            let mut path = selector_path(items, base, visited)?;
+            path.push(index_field_name(index)?);
+            Some(path)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            selector_path(items, inner, visited)
+        }
+        _ => None,
+    }
+}
+
+/// Find a field inside a (possibly unified or aliased) struct expression.
+fn field_in_expr<'a>(
+    items: &'a [StructItem],
+    expr: &'a Expr,
+    field: &str,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<&'a Expr> {
+    match expr {
+        Expr::Struct(struct_items, _) => named_field(struct_items, field),
+        Expr::Unify(left, right, _) => field_in_expr(items, left, field, visited)
+            .or_else(|| field_in_expr(items, right, field, visited)),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            field_in_expr(items, inner, field, visited)
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return None;
+            }
+            local_definition(items, items, name)
+                .and_then(|value| field_in_expr(items, value, field, visited))
+        }
+        Expr::Select(..) | Expr::Index(..) => {
+            let path = selector_path(items, expr, &mut std::collections::BTreeSet::new())?;
+            let value = navigate_path(items, &path)?;
+            field_in_expr(items, value, field, visited)
+        }
+        _ => None,
+    }
+}
+
+/// Follow a field path from a top-level declaration.
+fn navigate_path<'a>(items: &'a [StructItem], path: &[String]) -> Option<&'a Expr> {
+    let (first, rest) = path.split_first()?;
+    let mut value = local_definition(items, items, first)?;
+    for field in rest {
+        value = field_in_expr(items, value, field, &mut std::collections::BTreeSet::new())?;
+    }
+    Some(value)
+}
+
+fn definitions<'a>(items: &'a [StructItem], name: &str) -> Vec<&'a Expr> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            StructItem::Field(field) => match &field.label {
+                Label::Name(label, _) if label == name => Some(&field.value),
+                _ => None,
+            },
+            StructItem::Let {
+                name: let_name,
+                value,
+                ..
+            } if let_name == name => Some(value),
+            _ => None,
+        })
+        .collect()
+}
+
+fn all_field_values<'a>(
+    items: &'a [StructItem],
+    expr: &'a Expr,
+    field: &str,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Vec<&'a Expr> {
+    match expr {
+        Expr::Struct(struct_items, _) => struct_items
+            .iter()
+            .filter_map(|item| match item {
+                StructItem::Field(field_item) => match &field_item.label {
+                    Label::Name(label, _) if label == field => Some(&field_item.value),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect(),
+        Expr::Unify(left, right, _) => {
+            let mut values = all_field_values(items, left, field, visited);
+            values.extend(all_field_values(items, right, field, visited));
+            values
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            all_field_values(items, inner, field, visited)
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return Vec::new();
+            }
+            let mut values = Vec::new();
+            for value in definitions(items, name) {
+                values.extend(all_field_values(items, value, field, visited));
+            }
+            values
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn deref_value<'a>(
+    items: &'a [StructItem],
+    path: Vec<String>,
+    value: &'a Expr,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Vec<(Vec<String>, &'a Expr)> {
+    match value {
+        Expr::Ident(..) | Expr::Select(..) | Expr::Index(..) => {
+            let Some(alias_path) =
+                selector_path(items, value, &mut std::collections::BTreeSet::new())
+            else {
+                return vec![(path, value)];
+            };
+            let Some(alias_value) = navigate_path(items, &alias_path) else {
+                return vec![(path, value)];
+            };
+            let key = alias_path.join("\u{0}");
+            if !visited.insert(key) {
+                return vec![(path, value)];
+            }
+            deref_value(items, alias_path, alias_value, visited)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            deref_value(items, path, inner, visited)
+        }
+        Expr::Unify(left, right, _) => {
+            let mut out = deref_value(items, path.clone(), left, visited);
+            out.extend(deref_value(items, path, right, visited));
+            out
+        }
+        _ => vec![(path, value)],
+    }
+}
+
+/// Fully dereference a selector path through aliases at every segment.
+fn resolve_path_candidates<'a>(
+    items: &'a [StructItem],
+    path: &[String],
+) -> Vec<(Vec<String>, &'a Expr)> {
+    let Some((first, rest)) = path.split_first() else {
+        return Vec::new();
+    };
+    let mut candidates: Vec<(Vec<String>, &Expr)> = definitions(items, first)
+        .into_iter()
+        .map(|value| (vec![first.clone()], value))
+        .collect();
+    for field in rest {
+        let mut next = Vec::new();
+        for (prefix, value) in candidates {
+            for (alias_path, alias_value) in
+                deref_value(items, prefix, value, &mut std::collections::BTreeSet::new())
+            {
+                for field_value in all_field_values(
+                    items,
+                    alias_value,
+                    field,
+                    &mut std::collections::BTreeSet::new(),
+                ) {
+                    let mut target = alias_path.clone();
+                    target.push(field.clone());
+                    next.push((target, field_value));
+                }
+            }
+        }
+        candidates = next;
+    }
+    let mut out = Vec::new();
+    for (prefix, value) in candidates {
+        out.extend(deref_value(
+            items,
+            prefix,
+            value,
+            &mut std::collections::BTreeSet::new(),
+        ));
+    }
+    out
+}
+
 /// Resolve a command value into the union of its struct operands.
 fn resolve_command_items(
     items: &[StructItem],
@@ -1307,6 +1612,16 @@ fn resolve_command_items(
                 resolve_command_items(items, value, visited, out);
             }
         }
+        Expr::Select(..) | Expr::Index(..) => {
+            if selector_root_is_let(items, expr, &mut std::collections::BTreeSet::new()) {
+                return;
+            }
+            if let Some(path) = selector_path(items, expr, &mut std::collections::BTreeSet::new()) {
+                for (_, value) in resolve_path_candidates(items, &path) {
+                    resolve_command_items(items, value, visited, out);
+                }
+            }
+        }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             resolve_command_items(items, inner, visited, out);
         }
@@ -1319,21 +1634,39 @@ fn resolve_command_items(
     }
 }
 
-/// Names of the declarations (fields or lets) reachable from a command value.
+fn push_target(out: &mut Vec<Vec<String>>, path: Vec<String>) {
+    if !out.contains(&path) {
+        out.push(path);
+    }
+}
+
+/// Field paths of the declarations (fields or lets) reachable from a command value.
 fn command_targets(
     items: &[StructItem],
     expr: &Expr,
     visited: &mut std::collections::BTreeSet<String>,
-    out: &mut Vec<String>,
+    out: &mut Vec<Vec<String>>,
 ) {
     match expr {
         Expr::Ident(name, _) => {
             if !visited.insert(name.clone()) {
                 return;
             }
-            out.push(name.clone());
+            if let Some(path) = selector_path(items, expr, &mut std::collections::BTreeSet::new()) {
+                push_target(out, path);
+            }
             if let Some(value) = local_definition(items, items, name) {
                 command_targets(items, value, visited, out);
+            }
+        }
+        Expr::Select(..) | Expr::Index(..) => {
+            if selector_root_is_let(items, expr, &mut std::collections::BTreeSet::new()) {
+                return;
+            }
+            if let Some(path) = selector_path(items, expr, &mut std::collections::BTreeSet::new()) {
+                for (target, _) in resolve_path_candidates(items, &path) {
+                    push_target(out, target);
+                }
             }
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
@@ -1820,6 +2153,48 @@ fn collect_refs_for_task_expr(
     }
 }
 
+fn command_uses_let_selector(items: &[StructItem], command_name: &str) -> bool {
+    for item in items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        if !matches!(&field.label, Label::Name(name, _) if name == "command") {
+            continue;
+        }
+        let Expr::Struct(command_items, _) = &field.value else {
+            continue;
+        };
+        for command_item in command_items {
+            let StructItem::Field(command_field) = command_item else {
+                continue;
+            };
+            if matches!(&command_field.label, Label::Name(name, _) if name == command_name)
+                && command_value_is_let_selector(
+                    items,
+                    &command_field.value,
+                    &mut std::collections::BTreeSet::new(),
+                )
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn scheduled_has_output_refs(
+    items: &[StructItem],
+    scheduled: &[(String, Vec<String>, BTreeMap<String, Value>)],
+) -> bool {
+    let names: std::collections::BTreeSet<String> =
+        scheduled.iter().map(|(name, _, _)| name.clone()).collect();
+    scheduled.iter().any(|(name, _, _)| {
+        let mut refs = std::collections::BTreeSet::new();
+        collect_refs_for_task(items, name, items, &names, &mut refs);
+        !refs.is_empty()
+    })
+}
+
 fn add_output_dependencies(
     items: &[StructItem],
     scheduled: &mut [(String, Vec<String>, BTreeMap<String, Value>)],
@@ -1843,31 +2218,74 @@ fn add_output_dependencies(
     }
 }
 
-fn inject_into_named(
-    items: &mut [StructItem],
-    name: &str,
+fn inject_path_expr(
+    expr: &mut Expr,
+    path: &[String],
     task_name: &str,
     outputs: &[(String, Value)],
 ) -> bool {
-    for item in items.iter_mut() {
-        match item {
-            StructItem::Field(field) => {
-                if matches!(&field.label, Label::Name(label, _) if label == name)
-                    && inject_task_outputs_in_expr(&mut field.value, task_name, outputs)
-                {
-                    return true;
+    let Some((first, rest)) = path.split_first() else {
+        return inject_task_outputs_in_expr(expr, task_name, outputs);
+    };
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items.iter_mut() {
+                let value = match item {
+                    StructItem::Field(field) => match &field.label {
+                        Label::Name(label, _) if label == first => Some(&mut field.value),
+                        _ => None,
+                    },
+                    StructItem::Let {
+                        name: let_name,
+                        value,
+                        ..
+                    } if let_name == first => Some(value),
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    return inject_path_expr(value, rest, task_name, outputs);
                 }
             }
+            false
+        }
+        Expr::Unify(left, right, _) => {
+            inject_path_expr(left, path, task_name, outputs)
+                || inject_path_expr(right, path, task_name, outputs)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            inject_path_expr(inner, path, task_name, outputs)
+        }
+        _ => false,
+    }
+}
+
+fn inject_into_path(
+    items: &mut [StructItem],
+    path: &[String],
+    task_name: &str,
+    outputs: &[(String, Value)],
+) -> bool {
+    let Some((first, rest)) = path.split_first() else {
+        return false;
+    };
+    for item in items.iter_mut() {
+        let value = match item {
+            StructItem::Field(field) => match &field.label {
+                Label::Name(label, _) if label == first => Some(&mut field.value),
+                _ => None,
+            },
             StructItem::Let {
                 name: let_name,
                 value,
                 ..
-            } => {
-                if let_name == name && inject_task_outputs_in_expr(value, task_name, outputs) {
-                    return true;
-                }
+            } if let_name == first => Some(value),
+            _ => None,
+        };
+        if let Some(value) = value {
+            if rest.is_empty() {
+                return inject_task_outputs_in_expr(value, task_name, outputs);
             }
-            _ => {}
+            return inject_path_expr(value, rest, task_name, outputs);
         }
     }
     false
@@ -1880,7 +2298,7 @@ fn inject_command_outputs(
     outputs: &[(String, Value)],
 ) -> bool {
     // Collect referenced declarations before taking a mutable borrow.
-    let mut targets: Vec<String> = Vec::new();
+    let mut targets: Vec<Vec<String>> = Vec::new();
     for item in items.iter() {
         let StructItem::Field(field) = item else {
             continue;
@@ -1927,9 +2345,9 @@ fn inject_command_outputs(
             }
         }
     }
-    // Inject into referenced declarations (`command: c: base`, lets, unified bases).
+    // Inject into referenced declarations (`command: c: base`, selectors, lets).
     for target in targets {
-        if inject_into_named(items, &target, task_name, outputs) {
+        if inject_into_path(items, &target, task_name, outputs) {
             injected = true;
         }
     }

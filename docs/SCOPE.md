@@ -53,8 +53,8 @@ workflow outside the Rust surface has a supported escape hatch.
   tasks using `tool/exec.Run` (cmd/env/dir/stdin/capture/mustSucceed),
   `tool/cli.Print`, `tool/file.Append`/`Create`, `stdout`/`success` output
   injection and interpolation for literal task structs, referenced commands
-  (`command: c: base`, lets, unified bases) and helper fields/lets, `$after`
-  ordering and `@tag` injection;
+  (`command: c: base`, `lib.base`/`lib["base"]` selectors, lets, unified bases,
+  alias chains) and helper fields/lets, `$after` ordering and `@tag` injection;
 - workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, `n_of`
   quorum joins, complex `expression` joins, branch conditions, default
   branches, dead-path elimination, `stepStatus` routing, gateway-bearing
@@ -84,7 +84,8 @@ workflow outside the Rust surface has a supported escape hatch.
 | Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |
 | Bare references to comprehension-generated fields | `x: {if true {b: 1}, a: b}` is accepted although CUE requires `x.b`; use an explicit field or selector |
 | Unused imports | CUE rejects unused imports; Ostinato accepts them (the package still evaluates) |
-| Output injection into base/definition-composed *tasks* | Task values `run: exec.Run & #B` / `run: exec.Run & base` do not receive injected `stdout`/`success`; write the task struct literally. Command-level references (`command: c: base`) are supported |
+| Output injection into base/definition-composed *tasks* | Task values `run: exec.Run & #B` / `run: exec.Run & base` do not receive injected `stdout`/`success`; write the task struct literally. Command-level references (`command: c: base`) and selector references (`command: c: lib.base`) are supported |
+| Task outputs selected through a `let` | `command: c: group.inner` where `group` is a `let` cannot receive injected `stdout`/`success` (cue reports a non-concrete value); Ostinato rejects before executing tasks. Selectors through concrete fields, definitions and aliases are supported |
 | Relative tool-task paths | `dir` and file-task `filename` resolve against the package directory, not the invocation cwd as `cue cmd` does |
 | Derived expressions over pending task outputs | `len(run.stdout)`, string/number operations or comparisons on a pending output are not evaluated as incomplete; use a direct field reference/interpolation (`\(run.stdout)`) |
 | Package-scoped `$after` / task nodes outside `command.<name>` | `$after` dependencies are resolved within the command subtree; top-level task nodes referenced only from a command are not scheduled. Use the oracle |
