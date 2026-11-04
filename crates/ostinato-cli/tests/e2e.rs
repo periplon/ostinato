@@ -6422,7 +6422,10 @@ fn tool_command_let_selector_outputs_are_rejected_before_side_effects() {
         eprintln!("skipping: official cue not installed");
         return;
     };
-    let source = r#"
+    let fixtures = [
+        (
+            "letselector",
+            r#"
 package foo
 import (
 	"tool/cli"
@@ -6435,26 +6438,46 @@ let group = {
 	}
 }
 command: letselector: group.inner
-"#;
-    let cue_dir = tempfile::tempdir().expect("tempdir");
-    let rust_dir = tempfile::tempdir().expect("tempdir");
-    write(&cue_dir.path().join("fixture_tool.cue"), source);
-    write(&rust_dir.path().join("fixture_tool.cue"), source);
-    let expected = Command::new(&cue)
-        .args(["cmd", "letselector"])
-        .current_dir(cue_dir.path())
-        .output()
-        .expect("run cue cmd");
-    let actual = ost(&[
-        "cmd",
-        "letselector",
-        rust_dir.path().to_str().expect("path"),
-    ]);
-    assert!(!expected.status.success(), "cue must reject the fixture");
-    assert_eq!(actual.status.code(), expected.status.code());
-    assert_eq!(actual.stdout, expected.stdout);
-    assert!(
-        !rust_dir.path().join("marker").exists(),
-        "ostinato must not execute tasks before rejecting the selector"
-    );
+"#,
+        ),
+        (
+            "letancestor",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let group = {inner: {
+	pipeline: {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc' > marker"], stdout: string}
+		msg: run.stdout
+		report: {
+			p: cli.Print & {text: "R=\(msg)"}
+		}
+	}
+}}
+command: letancestor: group.inner
+"#,
+        ),
+    ];
+    for (name, source) in fixtures {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        write(&cue_dir.path().join("fixture_tool.cue"), source);
+        write(&rust_dir.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert!(!expected.status.success(), "{name}: cue must reject");
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert!(
+            !rust_dir.path().join("marker").exists(),
+            "{name}: ostinato must not execute tasks before rejecting the selector"
+        );
+    }
 }
