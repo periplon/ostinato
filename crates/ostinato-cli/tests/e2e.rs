@@ -3368,6 +3368,14 @@ workflow: {name: "t", steps: {s: {kind: "noop"}}}
 "#,
         ),
         (
+            "pattern-value.cue",
+            r#"
+package demo
+params: {x: {[string]: string | *"v" @tag(p)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
             "combined-hex.cue",
             r#"
 package demo

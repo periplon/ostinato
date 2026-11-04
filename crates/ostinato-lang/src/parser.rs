@@ -292,9 +292,13 @@ impl Parser {
             if let Some(pattern) = self.try_parse_pattern()? {
                 self.expect(&Tok::Colon, "`:`")?;
                 let value = self.parse_field_value()?;
+                while matches!(self.peek_tok(), Tok::At) {
+                    attributes.push(self.parse_attribute()?);
+                }
                 return Ok(Some(StructItem::Pattern {
                     pattern,
                     value,
+                    attributes,
                     span: self.span(),
                 }));
             }

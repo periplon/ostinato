@@ -94,6 +94,7 @@ pub enum StructItem {
     Pattern {
         pattern: Pattern,
         value: Expr,
+        attributes: Vec<Attribute>,
         span: Span,
     },
     Let {
