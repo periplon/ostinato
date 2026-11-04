@@ -5126,9 +5126,13 @@ fn collect_task_selector_paths(
     prefix: &mut Vec<String>,
     out: &mut std::collections::BTreeSet<Vec<String>>,
 ) {
-    let fields = match value {
-        Value::Struct(fields) => fields,
-        Value::Definition { fields, .. } => fields,
+    let (fields, definitions) = match value {
+        Value::Struct(fields) => (fields, None),
+        Value::Definition {
+            fields,
+            definitions,
+            ..
+        } => (fields, Some(definitions)),
         _ => return,
     };
     if fields.contains_key("$id") {
@@ -5142,6 +5146,16 @@ fn collect_task_selector_paths(
         prefix.push(name.clone());
         collect_task_selector_paths(field, prefix, out);
         prefix.pop();
+    }
+    if let Some(definitions) = definitions {
+        for (name, field) in definitions {
+            if name.starts_with('$') {
+                continue;
+            }
+            prefix.push(name.clone());
+            collect_task_selector_paths(field, prefix, out);
+            prefix.pop();
+        }
     }
 }
 
