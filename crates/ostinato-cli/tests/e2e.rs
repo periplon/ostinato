@@ -4802,6 +4802,25 @@ command: selwhole: lib
 "#,
             false,
         ),
+        (
+            "selmix",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+lib: {
+	base: {
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+		p: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+let group = {inner: {z: exec.Run & {cmd: ["true"]}}}
+command: selmix: lib.base & group.inner
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -6329,6 +6348,22 @@ command: selletnooutput: group.inner
 "#,
             None,
             None,
+        ),
+        (
+            "selletafter",
+            r#"
+package foo
+import "tool/exec"
+let group = {
+	inner: {
+		a: exec.Run & {$after: z, cmd: ["sh", "-c", "cat data.txt > result.txt"]}
+		z: exec.Run & {cmd: ["sh", "-c", "printf fresh > data.txt"]}
+	}
+}
+command: selletafter: group.inner
+"#,
+            Some(("data.txt", "stale")),
+            Some("result.txt"),
         ),
     ];
     for (name, source, seed, artifact) in cases {

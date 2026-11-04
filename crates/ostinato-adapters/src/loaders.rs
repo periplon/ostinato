@@ -1116,12 +1116,17 @@ pub fn run_tool_command(
         }
     }
     add_output_dependencies(&combined.items, &mut scheduled);
-    if command_uses_let_selector(&combined.items, command_name)
-        && scheduled_has_output_refs(&combined.items, &scheduled)
-    {
-        return Err(ostinato_lang::LangError::Workflow(
-            "tool command selector cannot receive task outputs through a `let`".to_owned(),
-        ));
+    let let_tasks = let_selector_task_names(&combined.items, command_name);
+    if !let_tasks.is_empty() {
+        let all_names: std::collections::BTreeSet<String> =
+            scheduled.iter().map(|(name, _, _)| name.clone()).collect();
+        if scheduled.iter().any(|(name, _, _)| {
+            let_tasks.contains(name) && task_has_output_refs(&combined.items, name, &all_names)
+        }) {
+            return Err(ostinato_lang::LangError::Workflow(
+                "tool command selector cannot receive task outputs through a `let`".to_owned(),
+            ));
+        }
     }
     for (name, dependencies, _) in &scheduled {
         for dependency in dependencies {
@@ -1613,9 +1618,6 @@ fn resolve_command_items(
             }
         }
         Expr::Select(..) | Expr::Index(..) => {
-            if selector_root_is_let(items, expr, &mut std::collections::BTreeSet::new()) {
-                return;
-            }
             if let Some(path) = selector_path(items, expr, &mut std::collections::BTreeSet::new()) {
                 for (_, value) in resolve_path_candidates(items, &path) {
                     resolve_command_items(items, value, visited, out);
@@ -2153,7 +2155,71 @@ fn collect_refs_for_task_expr(
     }
 }
 
-fn command_uses_let_selector(items: &[StructItem], command_name: &str) -> bool {
+fn collect_let_selector_operands<'a>(
+    items: &[StructItem],
+    expr: &'a Expr,
+    out: &mut Vec<&'a Expr>,
+) {
+    match expr {
+        Expr::Unify(left, right, _) => {
+            collect_let_selector_operands(items, left, out);
+            collect_let_selector_operands(items, right, out);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            collect_let_selector_operands(items, inner, out);
+        }
+        _ => {
+            if command_value_is_let_selector(items, expr, &mut std::collections::BTreeSet::new()) {
+                out.push(expr);
+            }
+        }
+    }
+}
+
+fn collect_field_names(items: &[StructItem], out: &mut std::collections::BTreeSet<String>) {
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                if let Label::Name(name, _) = &field.label
+                    && !name.starts_with('$')
+                    && !name.starts_with('_')
+                    && !name.starts_with('#')
+                {
+                    out.insert(name.clone());
+                }
+                collect_field_names_expr(&field.value, out);
+            }
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                collect_field_names_expr(value, out);
+            }
+            StructItem::For { body, .. } | StructItem::If { body, .. } => {
+                collect_field_names(body, out);
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+}
+
+fn collect_field_names_expr(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
+    match expr {
+        Expr::Struct(items, _) => collect_field_names(items, out),
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            collect_field_names_expr(left, out);
+            collect_field_names_expr(right, out);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            collect_field_names_expr(inner, out);
+        }
+        _ => {}
+    }
+}
+
+/// Task names contributed by let-rooted selector operands.
+fn let_selector_task_names(
+    items: &[StructItem],
+    command_name: &str,
+) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
     for item in items {
         let StructItem::Field(field) = item else {
             continue;
@@ -2168,31 +2234,34 @@ fn command_uses_let_selector(items: &[StructItem], command_name: &str) -> bool {
             let StructItem::Field(command_field) = command_item else {
                 continue;
             };
-            if matches!(&command_field.label, Label::Name(name, _) if name == command_name)
-                && command_value_is_let_selector(
+            if !matches!(&command_field.label, Label::Name(name, _) if name == command_name) {
+                continue;
+            }
+            let mut operands = Vec::new();
+            collect_let_selector_operands(items, &command_field.value, &mut operands);
+            for operand in operands {
+                let mut resolved = Vec::new();
+                resolve_command_items(
                     items,
-                    &command_field.value,
+                    operand,
                     &mut std::collections::BTreeSet::new(),
-                )
-            {
-                return true;
+                    &mut resolved,
+                );
+                collect_field_names(&resolved, &mut names);
             }
         }
     }
-    false
+    names
 }
 
-fn scheduled_has_output_refs(
+fn task_has_output_refs(
     items: &[StructItem],
-    scheduled: &[(String, Vec<String>, BTreeMap<String, Value>)],
+    name: &str,
+    names: &std::collections::BTreeSet<String>,
 ) -> bool {
-    let names: std::collections::BTreeSet<String> =
-        scheduled.iter().map(|(name, _, _)| name.clone()).collect();
-    scheduled.iter().any(|(name, _, _)| {
-        let mut refs = std::collections::BTreeSet::new();
-        collect_refs_for_task(items, name, items, &names, &mut refs);
-        !refs.is_empty()
-    })
+    let mut refs = std::collections::BTreeSet::new();
+    collect_refs_for_task(items, name, items, names, &mut refs);
+    !refs.is_empty()
 }
 
 fn add_output_dependencies(

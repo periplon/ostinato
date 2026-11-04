@@ -1,10 +1,11 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-92b6174
+bb4bca8
 
 ### git worktree list
-/Users/joanmarc/dailywork/jmca/ostinato                              92b6174 [fix/v0.24.3-selector-commands]
+/Users/joanmarc/dailywork/jmca/ostinato                              16a10c5 [main]
 /Users/joanmarc/dailywork/jmca/ostinato-gateways                     668e12f [feat/gateways]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions cb3a2ae [feat/agent-definitions]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan     99e7541 [feat/gateways-r0-r4]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let      bb4bca8 [fix/v0.24.4-selector-let]
