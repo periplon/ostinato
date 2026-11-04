@@ -7767,6 +7767,59 @@ command: afteraliasimportmissing: {
             None,
         ),
         (
+            "afterletimportconcrete",
+            r#"
+package foo
+import (
+	"math"
+	"tool/cli"
+	"tool/exec"
+)
+let g = math
+command: afterletimportconcrete: {
+	a: exec.Run & {$after: g.Pi.missing, cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterfieldimportconcrete",
+            r#"
+package foo
+import (
+	"math"
+	"tool/cli"
+	"tool/exec"
+)
+x: math
+p: x.Pi
+command: afterfieldimportconcrete: {
+	a: exec.Run & {$after: x.Pi.missing, cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+        (
+            "afteraliasimportconcrete",
+            r#"
+package foo
+import (
+	"math"
+	"tool/cli"
+	"tool/exec"
+)
+alias: math
+p: alias.Pi
+command: afteraliasimportconcrete: {
+	a: exec.Run & {$after: alias.Pi.missing, cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+        (
             "afterundefinedident",
             r#"
 package foo

@@ -1,4 +1,4 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nestedorder/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.L7SZSfaduw/db.sqlite metrics --run e9c5dd5d-0e77-4919-b13c-6fb939d2972a --format prometheus
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nestedorder/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NY7coPcZhO/db.sqlite metrics --run 1eb0ad28-9534-4ae1-b4cf-7101fe5d4550 --format prometheus
 
 # HELP ostinato_runs_total Runs started.
 # TYPE ostinato_runs_total counter
@@ -14,6 +14,6 @@ ostinato_gateway_failures_total 0
 ostinato_gateway_quorum_short_total 0
 ostinato_attempts_total 7
 ostinato_retries_total 0
-ostinato_attempt_duration_ms_avg 10.57
+ostinato_attempt_duration_ms_avg 10.71
 
 exit=0

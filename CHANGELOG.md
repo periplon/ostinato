@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.37.4
+
+Import-backed `$after` member classification.
+
+- Let-bound and field-bound import/module selectors are walked through the
+  imported values, so concrete members behind them
+  (`let g = math; $after: g.Pi.missing`, `let cfg = lib.cfg;
+  $after: cfg.x.missing`, `x: math; $after: x.Pi.missing`) fail like CUE
+  instead of being silently accepted.
+- Struct-rooted missing members still keep the root binding used and add no
+  dependency, and the walk is cycle-safe for self-referential lets.
+- Added e2e coverage for let-, field- and alias-bound import members.
+
+- 443 tests (106 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.37.3
 
 `$after` selector classification corrections.
