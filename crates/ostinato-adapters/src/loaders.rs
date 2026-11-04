@@ -2931,7 +2931,8 @@ fn collect_task_decl_ids_items<'a>(
                         let import_task =
                             reference_import_key(&field.value, scopes, root, non_task_imports)
                                 .is_some();
-                        (is_let_binding(scopes, root, name) || import_task)
+                        let in_place = is_in_place_reference(&field.value, scopes, root);
+                        ((is_let_binding(scopes, root, name) && !in_place) || import_task)
                             && is_task_expr(
                                 &field.value,
                                 scopes,
@@ -3178,17 +3179,33 @@ fn is_in_place_reference<'a>(
     scopes: &[&'a [StructItem]],
     root: &'a [StructItem],
 ) -> bool {
-    match expr {
-        Expr::Ident(name, _) => match local_binding_location(scopes, root, name) {
-            Some((true, StructItem::Field(field))) => field.definition,
-            Some((false, StructItem::Field(field))) => field.definition || !name.starts_with('_'),
+    fn walk<'a>(
+        expr: &'a Expr,
+        scopes: &[&'a [StructItem]],
+        root: &'a [StructItem],
+        visited: &mut std::collections::BTreeSet<String>,
+    ) -> bool {
+        match expr {
+            Expr::Ident(name, _) => {
+                if !visited.insert(name.clone()) {
+                    return false;
+                }
+                match local_binding_location(scopes, root, name) {
+                    Some((true, StructItem::Field(field))) => field.definition,
+                    Some((false, StructItem::Field(field))) => {
+                        field.definition || !name.starts_with('_')
+                    }
+                    Some((_, StructItem::Let { value, .. })) => walk(value, scopes, root, visited),
+                    _ => false,
+                }
+            }
+            Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+                walk(inner, scopes, root, visited)
+            }
             _ => false,
-        },
-        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            is_in_place_reference(inner, scopes, root)
         }
-        _ => false,
     }
+    walk(expr, scopes, root, &mut std::collections::BTreeSet::new())
 }
 
 fn reference_import_key<'a>(
@@ -3225,7 +3242,6 @@ fn ident_import_key<'a>(
                 StructItem::Let { value, .. } => {
                     ident_import_key(value, scopes, root, imports, visited)
                 }
-                StructItem::Field(field) if field.definition => None,
                 StructItem::Field(field) => {
                     ident_import_key(&field.value, scopes, root, imports, visited)
                 }
