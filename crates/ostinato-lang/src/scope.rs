@@ -712,7 +712,9 @@ impl AliasCtx {
             }
             Expr::Bound(_, inner, _) => self.expr(inner, chain, shadowed, from)?,
             Expr::Select(base, _, _, _) => {
-                if !matches!(&**base, Expr::Ident(name, _) if name == "params") {
+                if !matches!(&**base, Expr::Ident(name, _) if name == "params")
+                    || self.import_aliases.contains("params")
+                {
                     self.expr(base, chain, shadowed, from)?;
                 }
             }
@@ -774,8 +776,14 @@ impl AliasCtx {
                             source,
                             span,
                         } => {
-                            self.expr(source, chain, shadowed, if may_run { from } else { None })?;
-                            may_run = may_run && self.static_non_empty(source, chain, None, 0);
+                            self.expr(
+                                source,
+                                &comp_chain,
+                                &body_shadow,
+                                if may_run { from } else { None },
+                            )?;
+                            may_run =
+                                may_run && self.static_non_empty(source, &comp_chain, None, 0);
                             if let Some(key) = key {
                                 body_shadow.insert(key.clone());
                                 self.scopes[comp_id].bindings.insert(key.clone());
@@ -869,7 +877,15 @@ pub fn validate_imports(file: &File) -> Result<(), LangError> {
         import_used: HashSet::new(),
     };
     let root = ctx.scope(&file.items, None, &[], &HashSet::new(), None)?;
+    let mut seen = HashSet::new();
     for import in &file.imports {
+        if !seen.insert(import.alias.clone()) {
+            return Err(LangError::eval(
+                import.span.line,
+                import.span.col,
+                format!("{} redeclared as imported package name", import.alias),
+            ));
+        }
         if ctx.scopes[root].fields.contains(&import.alias) {
             return Err(LangError::eval(
                 import.span.line,

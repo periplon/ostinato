@@ -6816,6 +6816,21 @@ fn unused_imports_match_cue() {
             false,
         ),
         ("blank", "package p\nimport _ \"strings\"\nx: 1\n", false),
+        (
+            "params-alias",
+            "package p\nimport params \"strings\"\nx: params.ToUpper(\"a\")\n",
+            true,
+        ),
+        (
+            "comp-second-for",
+            "package p\nimport \"strings\"\nx: [for strings in [[1]] for b in strings {b}]\n",
+            false,
+        ),
+        (
+            "duplicate-import",
+            "package p\nimport \"strings\"\nimport \"strings\"\nx: strings.ToUpper(\"a\")\n",
+            false,
+        ),
     ];
     for (name, body, used) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");

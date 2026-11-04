@@ -6814,6 +6814,11 @@ fn unused_imports_are_rejected_like_cue() {
         "package demo\nimport \"strings\"\nx: {strings: 1, y: strings}\n",
         "package demo\nimport \"strings\"\nx: {strings?: 1, y: strings}\n",
         "package demo\nimport \"strings\"\nx: [for strings in [1] {strings}]\n",
+        "package demo\nimport \"strings\"\nx: [for strings in [[1]] for b in strings {b}]\n",
+        "package demo\nimport \"strings\"\nx: [for strings in [[1]] if len(strings) == 1 for b in strings {b}]\n",
+        "package demo\nimport params \"strings\"\nx: 1\n",
+        "package demo\nimport \"strings\"\nimport \"strings\"\nx: strings.ToUpper(\"a\")\n",
+        "package demo\nimport a \"strings\"\nimport a \"strings\"\nx: a.ToUpper(\"a\")\n",
     ] {
         let error = validate(source).expect_err("unused import must be rejected");
         assert!(
@@ -6833,6 +6838,8 @@ fn unused_imports_are_rejected_like_cue() {
         "package demo\nimport \"strings\"\nx: \"\\(strings.ToUpper(\"a\"))\"\n",
         "package demo\nimport \"strings\"\nx: {(strings.ToLower(\"K\")): 1}\n",
         "package demo\nimport \"strings\"\nx: {if strings.ToUpper(\"a\") == \"A\" {y: 1}}\n",
+        "package demo\nimport params \"strings\"\nx: params.ToUpper(\"a\")\n",
+        "package demo\nimport \"strings\"\nx: [for s in [[\"a\"]] for b in s {strings.ToUpper(b)}]\n",
     ] {
         assert!(validate(source).is_ok(), "used import rejected: {source:?}");
     }
@@ -6844,6 +6851,14 @@ fn unused_imports_are_rejected_like_cue() {
             .to_string()
             .contains("redeclared as imported package name"),
         "unexpected error: {error}"
+    );
+
+    let comp_shadow =
+        "package demo\nimport \"strings\"\nx: [for strings in [[1]] for b in strings {b}]\n";
+    let error = validate(comp_shadow).expect_err("shadowed import must be unused");
+    assert!(
+        !error.to_string().contains("__ost_"),
+        "unused-import error leaked an internal alias: {error}"
     );
 
     let unused = ostinato_lang::parse("package demo\nimport \"strings\"\nx: 1\n").expect("parse");
