@@ -3282,23 +3282,22 @@ fn package_read_order(
         let StructItem::Field(field) = item else {
             continue;
         };
-        if field.definition
-            || field.optional
-            || matches!(&field.label, Label::Name(name, _) if !field.quoted && name.starts_with('_'))
-        {
-            continue;
-        }
         let index = counter;
         counter += 1;
-        scan_package_declarations(
-            &field.value,
-            index,
-            &scopes,
-            root,
-            imports,
-            claimed,
-            &mut order,
-        );
+        if !(field.definition
+            || field.optional
+            || matches!(&field.label, Label::Name(name, _) if !field.quoted && name.starts_with('_')))
+        {
+            scan_package_declarations(
+                &field.value,
+                index,
+                &scopes,
+                root,
+                imports,
+                claimed,
+                &mut order,
+            );
+        }
         scan_package_reads(
             &field.value,
             index,
@@ -3401,12 +3400,6 @@ fn scan_package_reads(
             for item in items {
                 match item {
                     StructItem::Field(field) => {
-                        if field.definition
-                            || field.optional
-                            || matches!(&field.label, Label::Name(name, _) if !field.quoted && name.starts_with('_'))
-                        {
-                            continue;
-                        }
                         scan_package_reads(
                             &field.value,
                             index,
