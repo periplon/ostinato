@@ -12,6 +12,15 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.32.0
+
+- Definition container (`#G.run`) and alias (`#a: #b`)
+  output reads schedule and inject like CUE; container task references stay
+  non-concrete.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.31.5
 
 - Release-notes correction for v0.31.4 (real Markdown section and missing

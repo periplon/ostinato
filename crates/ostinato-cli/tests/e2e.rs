@@ -6842,6 +6842,132 @@ command: defreadboth: {
             false,
         ),
         (
+            "defcontainermodule",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defcontainermodule: {
+	q: cli.Print & {text: "R=\(#G.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defcontainerinline",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+#G: {run: exec.Run & {cmd: ["sh", "-c", "printf T"], stdout: string}}
+command: defcontainerinline: {
+	q: cli.Print & {text: "R=\(#G.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defcontainerdeep",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {group: {run: lib.run}}
+command: defcontainerdeep: {
+	q: cli.Print & {text: "R=\(#G.group.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defcontainercmd",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: defcontainercmd: {
+	#G: {run: lib.run}
+	q: cli.Print & {text: "R=\(#G.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defalias",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#a: #b
+#b: lib.run
+command: defalias: {
+	q: cli.Print & {text: "R=\(#a.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defaliaschain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#a: #b
+#b: #c
+#c: lib.run
+command: defaliaschain: {
+	q: cli.Print & {text: "R=\(#a.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defaliastaskref",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#a: #b
+#b: lib.run
+command: defaliastaskref: {
+	x: p1: #a
+	q: cli.Print & {text: "R=\(x.p1.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defcontainertaskref",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defcontainertaskref: {
+	a: p1: #G.run
+	q: cli.Print & {text: "R=\(a.p1.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
             "readrootmodule",
             r#"
 package foo

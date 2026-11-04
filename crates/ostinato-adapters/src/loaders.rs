@@ -1191,18 +1191,13 @@ pub fn run_tool_command(
     }
     let mut external_scheduled: Vec<(String, Vec<String>, BTreeMap<String, Value>)> = Vec::new();
     if !external_names.is_empty() {
-        let has_definitions = external_names.iter().any(|name| name.starts_with('#'));
-        let full = if has_definitions {
-            Some(eval_file_with_imports_mode_allow_outputs(
-                &combined,
-                &imports,
-                &injected,
-                true,
-                &task_name_set,
-            )?)
-        } else {
-            None
-        };
+        let full = Some(eval_file_with_imports_mode_allow_outputs(
+            &combined,
+            &imports,
+            &injected,
+            true,
+            &task_name_set,
+        )?);
         let source = full.as_ref().unwrap_or(&value);
         for name in &external_names {
             if scheduled
@@ -1999,10 +1994,15 @@ fn value_find_named<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
                     return Some(found);
                 }
             }
-            if let Value::Definition { definitions, .. } = value
-                && let Some(found) = definitions.get(name)
-            {
-                return Some(found);
+            if let Value::Definition { definitions, .. } = value {
+                if let Some(found) = definitions.get(name) {
+                    return Some(found);
+                }
+                for definition in definitions.values() {
+                    if let Some(found) = value_find_named(definition, name) {
+                        return Some(found);
+                    }
+                }
             }
             None
         }
@@ -3428,7 +3428,10 @@ fn collect_task_decl_ids_items<'a>(
                             reference_import_key(&field.value, scopes, root, non_task_imports)
                                 .is_some();
                         let in_place = is_in_place_reference(&field.value, scopes, root);
-                        ((is_let_binding(scopes, root, name) && !in_place) || import_task)
+                        (field.definition
+                            || (is_let_binding(scopes, root, name) && !in_place)
+                            || import_task
+                            || definition_is_alias(scopes, root, name))
                             && is_task_expr(
                                 &field.value,
                                 scopes,
@@ -3627,6 +3630,23 @@ fn is_task_leaf(expr: &Expr) -> bool {
         Expr::Struct(..) => struct_has_task_id(expr),
         _ => false,
     }
+}
+
+fn definition_is_alias(scopes: &[&[StructItem]], root: &[StructItem], name: &str) -> bool {
+    let Some(item) = local_binding(scopes, root, name) else {
+        return false;
+    };
+    let StructItem::Field(field) = item else {
+        return false;
+    };
+    if !field.definition {
+        return false;
+    }
+    let mut value = &field.value;
+    while let Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) = value {
+        value = inner;
+    }
+    matches!(value, Expr::Ident(..))
 }
 
 fn binding_matches(item: &&StructItem, name: &str) -> bool {
@@ -3889,6 +3909,7 @@ fn collect_definition_fields(
         if field.definition
             && let Label::Name(name, _) = &field.label
             && name.starts_with('#')
+            && !definition_is_alias(&[items], items, name)
         {
             ids.entry(format!("def:{name}")).or_default().push(field.id);
         }
