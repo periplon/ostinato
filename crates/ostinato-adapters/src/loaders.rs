@@ -1100,8 +1100,10 @@ pub fn run_tool_command(
         .iter()
         .map(|(name, _, task)| (name.clone(), task.clone()))
         .collect();
+    validate_task_inputs(&flat)?;
     let mut done = std::collections::BTreeSet::new();
     let mut failed = std::collections::BTreeSet::new();
+    let mut last_reason = None;
     while done.len() < scheduled.len() {
         let mut progress = false;
         let mut updated = false;
@@ -1128,7 +1130,7 @@ pub fn run_tool_command(
                 continue;
             };
             match execute_tool_task(task, &source_dir)? {
-                ToolTaskOutcome::NotReady => {}
+                ToolTaskOutcome::NotReady(reason) => last_reason = Some(reason.to_owned()),
                 ToolTaskOutcome::Done { outputs } => {
                     done.insert(name.clone());
                     progress = true;
@@ -1160,10 +1162,13 @@ pub fn run_tool_command(
             continue;
         }
         if !progress {
-            return Err(ostinato_lang::LangError::Workflow(
+            if !failed.is_empty() {
+                return Ok(1);
+            }
+            return Err(ostinato_lang::LangError::Workflow(last_reason.unwrap_or_else(|| {
                 "tool task inputs are not concrete; dependent task outputs are a documented limit"
-                    .to_owned(),
-            ));
+                    .to_owned()
+            })));
         }
     }
     Ok(i32::from(!failed.is_empty()))
@@ -1338,7 +1343,7 @@ fn field_item<'a>(items: &'a [StructItem], name: &str) -> Option<&'a StructItem>
 }
 
 enum ToolTaskOutcome {
-    NotReady,
+    NotReady(&'static str),
     Done { outputs: Vec<(String, Value)> },
     Failed,
 }
@@ -1581,6 +1586,84 @@ fn extract_command_tasks(
     Ok(tasks.clone())
 }
 
+fn validate_task_inputs(
+    tasks: &BTreeMap<String, BTreeMap<String, Value>>,
+) -> Result<(), ostinato_lang::LangError> {
+    for task in tasks.values() {
+        let Some(Value::String(id)) = task.get("$id") else {
+            continue;
+        };
+        match id.as_str() {
+            "tool/exec.Run" => {
+                if let Some(Value::List(items)) = task.get("cmd") {
+                    for item in items {
+                        if !matches!(
+                            item.concretize(),
+                            Value::String(_) | Value::Type(_) | Value::Bottom
+                        ) {
+                            return Err(ostinato_lang::LangError::Workflow(
+                                "tool/exec.Run `cmd` element must be a string".to_owned(),
+                            ));
+                        }
+                    }
+                }
+                if let Some(Value::Bool(_)) | None = task.get("mustSucceed") {
+                } else if let Some(value) = task.get("mustSucceed")
+                    && !matches!(
+                        value,
+                        Value::Type(_) | Value::Bottom | Value::Disjunction(..)
+                    )
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/exec.Run `mustSucceed` must be a bool".to_owned(),
+                    ));
+                }
+            }
+            "tool/cli.Print" => {
+                if let Some(value) = task.get("text")
+                    && !matches!(
+                        value.concretize(),
+                        Value::String(_) | Value::Type(_) | Value::Bottom | Value::Disjunction(..)
+                    )
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/cli.Print `text` must be a string".to_owned(),
+                    ));
+                }
+            }
+            "tool/file.Append" | "tool/file.Create" => {
+                if let Some(value) = task.get("filename") {
+                    match value.concretize() {
+                        Value::String(filename) if filename.is_empty() => {
+                            return Err(ostinato_lang::LangError::Workflow(
+                                "tool/file task `filename` must not be empty".to_owned(),
+                            ));
+                        }
+                        Value::String(_) | Value::Type(_) | Value::Bottom => {}
+                        _ => {
+                            return Err(ostinato_lang::LangError::Workflow(
+                                "tool/file task `filename` must be a string".to_owned(),
+                            ));
+                        }
+                    }
+                }
+                if let Some(value) = task.get("contents")
+                    && !matches!(
+                        value.concretize(),
+                        Value::String(_) | Value::Bytes(_) | Value::Type(_) | Value::Bottom
+                    )
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/file task `contents` must be a string or bytes".to_owned(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn execute_tool_task(
     task: &BTreeMap<String, Value>,
     package_dir: &Path,
@@ -1604,14 +1687,18 @@ fn execute_tool_task(
 fn execute_print(
     task: &BTreeMap<String, Value>,
 ) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
-    let text = match task.get("text") {
+    let text = match task.get("text").map(Value::concretize) {
         Some(Value::String(text)) => text,
         Some(Value::Bytes(_)) => {
             return Err(ostinato_lang::LangError::Workflow(
                 "invalid string argument: non-concrete value".to_owned(),
             ));
         }
-        Some(Value::Type(_)) | Some(Value::Bottom) | None => return Ok(ToolTaskOutcome::NotReady),
+        Some(Value::Type(_)) | Some(Value::Bottom) | None => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "invalid string argument: non-concrete value string",
+            ));
+        }
         Some(other) => {
             return Err(ostinato_lang::LangError::Workflow(format!(
                 "tool/cli.Print `text` must be a string, found {}",
@@ -1639,7 +1726,11 @@ fn execute_file(
 ) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
     let filename = match task.get("filename").map(Value::concretize) {
         Some(Value::String(filename)) => filename.clone(),
-        Some(Value::Type(_)) | Some(Value::Bottom) | None => return Ok(ToolTaskOutcome::NotReady),
+        Some(Value::Type(_)) | Some(Value::Bottom) | None => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "tool/file task inputs are not concrete",
+            ));
+        }
         Some(other) => {
             return Err(ostinato_lang::LangError::Workflow(format!(
                 "tool/file task `filename` must be a string, found {}",
@@ -1650,7 +1741,11 @@ fn execute_file(
     let contents = match task.get("contents").map(Value::concretize) {
         Some(Value::String(text)) => text.clone().into_bytes(),
         Some(Value::Bytes(bytes)) => bytes.clone(),
-        Some(Value::Type(_)) | Some(Value::Bottom) | None => return Ok(ToolTaskOutcome::NotReady),
+        Some(Value::Type(_)) | Some(Value::Bottom) | None => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "tool/file task inputs are not concrete",
+            ));
+        }
         Some(other) => {
             return Err(ostinato_lang::LangError::Workflow(format!(
                 "tool/file task `contents` must be a string or bytes, found {}",
@@ -1706,7 +1801,11 @@ fn execute_exec(
             for item in items {
                 match item.concretize() {
                     Value::String(text) => argv.push(text.clone()),
-                    Value::Type(_) | Value::Bottom => return Ok(ToolTaskOutcome::NotReady),
+                    Value::Type(_) | Value::Bottom => {
+                        return Ok(ToolTaskOutcome::NotReady(
+                            "tool/exec.Run `cmd` is not concrete",
+                        ));
+                    }
                     other => {
                         return Err(ostinato_lang::LangError::Workflow(format!(
                             "tool/exec.Run `cmd` element must be a string, found {}",
@@ -1717,7 +1816,11 @@ fn execute_exec(
             }
             argv
         }
-        Value::Type(_) | Value::Bottom => return Ok(ToolTaskOutcome::NotReady),
+        Value::Type(_) | Value::Bottom => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "tool/exec.Run `cmd` is not concrete",
+            ));
+        }
         other => {
             return Err(ostinato_lang::LangError::Workflow(format!(
                 "tool/exec.Run `cmd` must be a string or list of strings, found {}",
@@ -1751,7 +1854,11 @@ fn execute_exec(
                 resolved_dir = Some(resolved);
             }
         }
-        Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
+        Some(Value::Type(_)) | Some(Value::Bottom) => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "tool/exec.Run `dir` is not concrete",
+            ));
+        }
         Some(other) => {
             return Err(ostinato_lang::LangError::Workflow(format!(
                 "tool/exec.Run `dir` must be a string, found {}",
@@ -1791,7 +1898,11 @@ fn execute_exec(
                 process.env(key, value);
             }
         }
-        Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
+        Some(Value::Type(_)) | Some(Value::Bottom) => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "tool/exec.Run `env` is not concrete",
+            ));
+        }
         Some(other) => {
             return Err(ostinato_lang::LangError::Workflow(format!(
                 "tool/exec.Run `env` must be a struct or list, found {}",
@@ -1822,7 +1933,11 @@ fn execute_exec(
                 }
             }
         }
-        Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
+        Some(Value::Type(_)) | Some(Value::Bottom) => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "invalid input: non-concrete value",
+            ));
+        }
         Some(other) => {
             return Err(ostinato_lang::LangError::Workflow(format!(
                 "tool/exec.Run `stdin` must be a string or bytes, found {}",
@@ -1863,7 +1978,11 @@ fn execute_exec(
     let must_succeed = match task.get("mustSucceed") {
         None => true,
         Some(Value::Bool(value)) => *value,
-        Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
+        Some(Value::Type(_)) | Some(Value::Bottom) => {
+            return Ok(ToolTaskOutcome::NotReady(
+                "invalid mustSucceed value: non-concrete value",
+            ));
+        }
         Some(Value::Disjunction(alternatives, defaults)) => {
             let default = (defaults.len() == 1)
                 .then(|| defaults[0])
