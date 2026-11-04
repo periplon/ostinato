@@ -6992,6 +6992,73 @@ command: readrootunifybarealone: {
             false,
         ),
         (
+            "readrootdisjunction",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run & (string | {stdout: string})
+command: readrootdisjunction: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "readrootselector",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+x: {y: {stdout: string}}
+base: lib.run & x.y
+command: readrootselector: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "readrootlistindex",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+x: [{stdout: string}]
+base: lib.run & x[0]
+command: readrootlistindex: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "readrootselectorbare",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+x: {y: lib.run}
+base: lib.run & x.y
+command: readrootselectorbare: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
             "readrootfield",
             r#"
 package foo
