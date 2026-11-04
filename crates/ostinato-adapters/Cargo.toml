@@ -20,6 +20,7 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 glob = { workspace = true }
 libc = { workspace = true }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

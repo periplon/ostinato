@@ -144,7 +144,7 @@ timing, environment hashes, artifacts and worktree metadata) and anchored in
 the audit chain. See [AGENTS.md](AGENTS.md) for the full trace/isolation
 contract and `ostinato agents` / `ostinato artifacts`.
 
-If stdout parses as JSON and contains a numeric `score` (or `confidence`), that value is clamped to `[0, 1]` and becomes `steps.<name>.score`. JSONL provider output (Claude stream-json, Codex `--json`, OpenCode `--format json`) is searched line by line, including JSON encoded inside a string field. If no score is present the score is `0.0`, so a score-based `until` cannot terminate early on malformed agent output. This is how agent loops express quality.
+If stdout parses as JSON and contains a numeric `score` (or `confidence`), that value is clamped to `[0, 1]` and becomes `steps.<name>.score`. JSONL provider output (Claude stream-json, Codex `--json`, OpenCode `--format json`) is searched line by line, including JSON encoded inside a string field; the last event is exposed as `steps.<name>.json` with a normalized `score` key. If no score is present the score is `0.0`, so a score-based `until` cannot terminate early on malformed agent output. This is how agent loops express quality.
 
 ### `improve`
 

@@ -348,7 +348,13 @@ impl Engine {
             capture_error: None,
             cleanup_error: None,
         };
-        self.store.record_agent_trace(&trace, &[])?;
+        match self.store.record_agent_trace(&trace, &[]) {
+            Ok(_) => {}
+            Err(PortError::Cancelled(_)) => {
+                return Err(EngineError::Cancelled(request.run_id.clone()));
+            }
+            Err(err) => return Err(err.into()),
+        }
         match run.improvement {
             Some(improvement) => Ok(improvement),
             None => Err(EngineError::Agent(
@@ -478,7 +484,15 @@ impl Engine {
                 return self.report(&run, started);
             }
 
-            let executed = self.execute_group(&run, &to_execute, &context)?;
+            let executed = match self.execute_group(&run, &to_execute, &context) {
+                Ok(executed) => executed,
+                Err(EngineError::Cancelled(_)) => {
+                    run.status = RunStatus::Cancelled;
+                    run.updated_at = self.clock.now();
+                    return self.report(&run, started);
+                }
+                Err(err) => return Err(err),
+            };
             results.extend(executed);
             results.sort_by_key(|result| result.index);
 
@@ -1528,7 +1542,9 @@ impl Engine {
             match self.workspace.capture(&CaptureRequest {
                 cwd: handle.dir.clone(),
                 patterns: agent.artifacts.clone(),
-                include_git_changes: handle.mode == IsolationMode::Worktree,
+                base: (handle.mode == IsolationMode::Worktree)
+                    .then(|| handle.base.clone())
+                    .flatten(),
             }) {
                 Ok(captured) => {
                     artifacts = captured.artifacts;
@@ -1559,6 +1575,7 @@ impl Engine {
             .or_else(|| base_dir.as_ref().map(|path| path.display().to_string()))
             .unwrap_or_default();
         let program = outcome.argv.first().cloned();
+        let transcript = parse_transcript(&outcome.stdout);
         let trace = AgentTrace {
             run_id: run.id.clone(),
             step: node.step.clone(),
@@ -1613,13 +1630,19 @@ impl Engine {
             error: combined_error.clone(),
             stdout: outcome.stdout.clone(),
             stderr: outcome.stderr.clone(),
-            transcript: parse_transcript(&outcome.stdout),
+            transcript: transcript.clone(),
             artifacts: artifacts.iter().map(CapturedArtifact::meta).collect(),
             capture_warnings,
             capture_error,
             cleanup_error,
         };
-        let record = self.store.record_agent_trace(&trace, &artifacts)?;
+        let record = match self.store.record_agent_trace(&trace, &artifacts) {
+            Ok(record) => record,
+            Err(PortError::Cancelled(_)) => {
+                return Err(EngineError::Cancelled(run.id.clone()));
+            }
+            Err(err) => return Err(err.into()),
+        };
         let trace_hash = record.trace_hash.clone();
 
         let parsed = parse_json_maybe(&outcome.stdout);

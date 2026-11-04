@@ -122,8 +122,8 @@ Built-in argv templates (argv is always recorded verbatim in the trace):
 |---|---|---|
 | `command` | `command` (required from step/def/`--agent-cmd`/`OSTINATO_AGENT`) | stdin |
 | `claude` | `claude -p --output-format stream-json --verbose [--model M]` | stdin |
-| `codex` | `codex exec --json --skip-git-repo-check --full-auto [-m M] PROMPT` | arg |
-| `opencode` | `opencode run --format json [-m M] PROMPT` | arg |
+| `codex` | `codex exec --json --skip-git-repo-check --sandbox workspace-write [--model M] PROMPT` | arg |
+| `opencode` | `opencode run --format json [--model M] PROMPT` | arg |
 
 - `command` (step or definition) replaces the whole template. A string command
   is executed as `sh -c <string>` and always uses stdin.

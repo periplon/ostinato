@@ -4787,3 +4787,194 @@ workflow: {{
     assert_eq!(traces[0]["trace"]["round"], 0);
     assert!(traces[0]["trace"]["transcript"].is_array());
 }
+
+#[test]
+fn agents_and_artifacts_error_on_unknown_runs() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agents = ost(&["--db", db.to_str().expect("db"), "agents", "nope"]);
+    assert!(!agents.status.success());
+    assert!(String::from_utf8_lossy(&agents.stderr).contains("run not found"));
+    let artifacts = ost(&["--db", db.to_str().expect("db"), "artifacts", "nope"]);
+    assert!(!artifacts.status.success());
+    assert!(String::from_utf8_lossy(&artifacts.stderr).contains("run not found"));
+}
+
+#[test]
+fn resume_extraction_namespaces_replayed_traces_by_id() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let flag = directory.path().join("go");
+    let agent = directory.path().join("agent.sh");
+    write(
+        &agent,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'report\\n' > report.txt\necho '{\"score\":1}'\n",
+    );
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"], artifacts: ["report.txt"]}}}}
+workflow: {{
+    name: "resume-artifacts"
+    steps: {{
+        a: {{kind: "agent", agent: {{use: "a", prompt: "x"}}}}
+        b: {{kind: "exec", exec: {{cmd: ["sh", "-c", "test -f {flag} || exit 7"]}}}}
+    }}
+}}
+"#,
+            agent = agent.display(),
+            flag = flag.display()
+        ),
+    );
+    let first = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(!first.status.success());
+    let run = run_id(&db);
+    std::fs::write(&flag, "go").expect("flag");
+    let resumed = ost(&["--db", db.to_str().expect("db"), "resume", &run]);
+    assert!(
+        resumed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let extract = directory.path().join("out");
+    let extracted = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "artifacts",
+        &run,
+        "--extract",
+        extract.to_str().expect("extract"),
+    ]);
+    assert!(
+        extracted.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&extracted.stderr)
+    );
+    let namespaces: Vec<String> = std::fs::read_dir(extract.join("a"))
+        .expect("namespaces")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(namespaces.len(), 2, "{namespaces:?}");
+    assert!(
+        namespaces.iter().all(|name| name.contains("-t")),
+        "{namespaces:?}"
+    );
+}
+
+#[test]
+fn deleting_a_trace_row_is_detected_from_step_outputs() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agent = directory.path().join("agent.sh");
+    write(&agent, "#!/bin/sh\ncat >/dev/null\necho '{\"score\":1}'\n");
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"]}}}}
+workflow: {{name: "del", steps: {{s: {{kind: "agent", agent: {{use: "a", prompt: "x"}}}}}}}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(output.status.success());
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("db");
+    connection
+        .execute("DELETE FROM agent_traces WHERE run_id = ?1", [&run])
+        .expect("delete");
+    let verified = ost(&["--db", db.to_str().expect("db"), "agents", &run, "--verify"]);
+    assert!(!verified.status.success());
+    assert!(
+        String::from_utf8_lossy(&verified.stderr).contains("references missing trace"),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+}
+
+#[test]
+fn filtered_agents_verify_still_checks_the_whole_run() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agent = directory.path().join("agent.sh");
+    write(&agent, "#!/bin/sh\ncat >/dev/null\necho '{\"score\":1}'\n");
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"]}}}}
+workflow: {{
+    name: "multi"
+    steps: {{
+        a: {{kind: "agent", agent: {{use: "a", prompt: "a"}}}}
+        b: {{kind: "agent", agent: {{use: "a", prompt: "b"}}}}
+    }}
+}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(output.status.success());
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("db");
+    connection
+        .execute(
+            "UPDATE agent_traces SET trace_json = '{}' WHERE run_id = ?1 AND step = 'a'",
+            [&run],
+        )
+        .expect("tamper");
+    let verified = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "agents",
+        &run,
+        "--step",
+        "b",
+        "--verify",
+    ]);
+    assert!(!verified.status.success());
+    assert!(
+        String::from_utf8_lossy(&verified.stderr).contains("TRACE FAILED"),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+}

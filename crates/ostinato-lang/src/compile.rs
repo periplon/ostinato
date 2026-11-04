@@ -413,6 +413,11 @@ fn extract_step(
             }
             if spec.timeout_ms == Some(0) {
                 return Err(LangError::Workflow(format!(
+                    "{path}.agent.timeoutMs must be >= 1 for agent steps"
+                )));
+            }
+            if timeout_ms == Some(0) {
+                return Err(LangError::Workflow(format!(
                     "{path}.timeoutMs must be >= 1 for agent steps"
                 )));
             }
@@ -1150,7 +1155,10 @@ fn validate_artifact_pattern(pattern: &str, path: &str) -> Result<(), LangError>
     for component in candidate.components() {
         match component {
             Component::Normal(value) => {
-                if matches!(value.to_string_lossy().as_ref(), ".git" | ".ostinato") {
+                if matches!(
+                    value.to_string_lossy().as_ref(),
+                    ".git" | ".ostinato" | "_isolation"
+                ) {
                     return Err(LangError::Workflow(format!(
                         "{path}: artifact glob `{pattern}` may not capture internal directories"
                     )));

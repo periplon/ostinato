@@ -282,7 +282,7 @@ impl SqliteStore {
         let mut statement = connection
             .prepare(
                 "SELECT a.trace_id, a.name, a.kind, a.sha256, a.size, a.stored_size,
-                        a.truncated, a.content
+                        a.truncated, a.content, a.mode
                  FROM agent_artifacts a
                  JOIN agent_traces t ON t.id = a.trace_id
                  WHERE t.run_id = ?1 AND (?2 IS NULL OR t.step = ?2)
@@ -309,7 +309,8 @@ impl SqliteStore {
         let connection = self.lock()?;
         let mut trace_statement = connection
             .prepare(
-                "SELECT id, step, attempt, trace_hash, trace_json
+                "SELECT id, step, round, attempt, definition, provider, model, isolation,
+                        cwd, trace_hash, trace_json
                  FROM agent_traces WHERE run_id = ?1 ORDER BY id",
             )
             .map_err(|err| PortError::Store(format!("prepare trace verification: {err}")))?;
@@ -319,8 +320,14 @@ impl SqliteStore {
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
                 ))
             })
             .map_err(|err| PortError::Store(format!("read trace verification rows: {err}")))?;
@@ -356,7 +363,20 @@ impl SqliteStore {
         }
 
         let mut verifications = Vec::new();
-        for (id, step, attempt, trace_hash, trace_json) in traces {
+        for (
+            id,
+            step,
+            round,
+            attempt,
+            definition,
+            provider,
+            model,
+            isolation,
+            cwd,
+            trace_hash,
+            trace_json,
+        ) in traces
+        {
             let mut problems = Vec::new();
             let recomputed = sha256_hex(trace_json.as_bytes());
             if recomputed != trace_hash {
@@ -383,10 +403,21 @@ impl SqliteStore {
                     continue;
                 }
             };
+            if trace.step != step
+                || i64::from(trace.round) != round
+                || i64::from(trace.attempt) != attempt
+                || trace.definition != definition
+                || trace.provider != provider
+                || trace.model != model
+                || trace.isolation != isolation
+                || trace.cwd != cwd
+            {
+                problems.push("trace columns do not match the stored trace JSON".to_owned());
+            }
             let mut artifact_statement = connection
                 .prepare(
                     "SELECT a.trace_id, a.name, a.kind, a.sha256, a.size, a.stored_size,
-                            a.truncated, a.content
+                            a.truncated, a.content, a.mode
                      FROM agent_artifacts a WHERE a.trace_id = ?1 ORDER BY a.name",
                 )
                 .map_err(|err| PortError::Store(format!("prepare artifact verification: {err}")))?;
@@ -422,6 +453,18 @@ impl SqliteStore {
                 if item.truncated != meta.truncated {
                     problems.push(format!("artifact `{}` truncation flag differs", meta.name));
                 }
+                if item.kind != meta.kind || item.mode != meta.mode {
+                    problems.push(format!(
+                        "artifact `{}` kind or mode differs from the trace",
+                        meta.name
+                    ));
+                }
+                if u64::try_from(item.content.len()).unwrap_or(u64::MAX) != item.stored_size {
+                    problems.push(format!(
+                        "artifact `{}` stored size does not match its content",
+                        meta.name
+                    ));
+                }
                 if sha256_hex(&item.content) != item.sha256 {
                     problems.push(format!(
                         "artifact `{}` content does not match its hash",
@@ -450,8 +493,94 @@ impl SqliteStore {
                 });
             }
         }
+
+        // Cross-check the trace ids/hashes referenced by committed step and
+        // trial outputs. This catches trace-row deletion even if an attacker
+        // re-seals the unkeyed audit chain.
+        let mut references: BTreeMap<i64, (String, String)> = BTreeMap::new();
+        let mut output_statement = connection
+            .prepare(
+                "SELECT output_json FROM steps WHERE run_id = ?1 AND output_json IS NOT NULL
+                 UNION ALL
+                 SELECT output_json FROM trials WHERE run_id = ?1 AND output_json IS NOT NULL",
+            )
+            .map_err(|err| PortError::Store(format!("prepare trace references: {err}")))?;
+        let output_rows = output_statement
+            .query_map(params![run_id], |row| row.get::<_, String>(0))
+            .map_err(|err| PortError::Store(format!("read trace references: {err}")))?;
+        for row in output_rows {
+            let output_json =
+                row.map_err(|err| PortError::Store(format!("map trace reference: {err}")))?;
+            if let Ok(value) = serde_json::from_str::<Json>(&output_json) {
+                let mut found = Vec::new();
+                collect_agent_refs(&value, &mut found);
+                for (id, hash) in found {
+                    references.entry(id).or_insert((hash, String::new()));
+                }
+            }
+        }
+        for (id, (hash, _step)) in references {
+            match trace_hash_for(&connection, id)? {
+                None => verifications.push(TraceVerification {
+                    trace_id: id,
+                    step: "<output>".to_owned(),
+                    attempt: 0,
+                    ok: false,
+                    problems: vec![format!(
+                        "step/trial output references missing trace {id} (hash {hash})"
+                    )],
+                }),
+                Some(known_hash) if known_hash != hash => {
+                    verifications.push(TraceVerification {
+                        trace_id: id,
+                        step: "<output>".to_owned(),
+                        attempt: 0,
+                        ok: false,
+                        problems: vec![format!(
+                            "step/trial output references trace {id} with a different hash"
+                        )],
+                    });
+                }
+                Some(_) => {}
+            }
+        }
         verifications.sort_by_key(|item| item.trace_id);
         Ok(verifications)
+    }
+}
+
+fn trace_hash_for(connection: &rusqlite::Connection, trace_id: i64) -> PortResult<Option<String>> {
+    connection
+        .query_row(
+            "SELECT trace_hash FROM agent_traces WHERE id = ?1",
+            params![trace_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| PortError::Store(format!("read trace hash: {err}")))
+}
+
+fn collect_agent_refs(value: &Json, out: &mut Vec<(i64, String)>) {
+    match value {
+        Json::Object(map) => {
+            if let Some(agent) = map.get("agent")
+                && let (Some(id), Some(hash)) = (
+                    agent.get("traceId").and_then(Json::as_i64),
+                    agent.get("traceHash").and_then(Json::as_str),
+                )
+            {
+                out.push((id, hash.to_owned()));
+            }
+            for child in map.values() {
+                collect_agent_refs(child, out);
+            }
+        }
+        Json::Array(items) => {
+            for item in items {
+                collect_agent_refs(item, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -465,6 +594,9 @@ fn artifact_from_row(row: &Row<'_>) -> rusqlite::Result<StoredArtifact> {
         stored_size: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
         truncated: row.get::<_, i64>(6)? != 0,
         content: row.get(7)?,
+        mode: row
+            .get::<_, Option<i64>>(8)?
+            .and_then(|mode| u32::try_from(mode).ok()),
     })
 }
 
@@ -921,7 +1053,15 @@ impl Store for SqliteStore {
                 .execute(
                     "INSERT INTO agent_artifacts
                      (trace_id, name, kind, sha256, size, stored_size, truncated, mode, content)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     ON CONFLICT(trace_id, name) DO UPDATE SET
+                        kind = excluded.kind,
+                        sha256 = excluded.sha256,
+                        size = excluded.size,
+                        stored_size = excluded.stored_size,
+                        truncated = excluded.truncated,
+                        mode = excluded.mode,
+                        content = excluded.content",
                     params![
                         trace_id,
                         meta.name,

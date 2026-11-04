@@ -90,13 +90,17 @@ global command behaviour.
 |---|---|---|
 | `command` | the configured command | stdin |
 | `claude` | `claude -p --output-format stream-json --verbose [--model M]` | stdin |
-| `codex` | `codex exec --json --skip-git-repo-check --sandbox workspace-write [-m M] PROMPT` | arg |
-| `opencode` | `opencode run --format json [-m M] PROMPT` | arg |
+| `codex` | `codex exec --json --skip-git-repo-check --sandbox workspace-write [--model M] PROMPT` | arg |
+| `opencode` | `opencode run --format json [--model M] PROMPT` | arg |
 
 The templates are a convenience, not a compatibility guarantee: CLI flags
-change between releases. Pin behaviour with `command` when it matters. A
+change between releases. Pin behaviour with `command` when it matters. When a
+`command` overrides a built-in provider, prompt delivery still defaults from
+the provider (stdin for `command`/`claude`, argv for `codex`/`opencode`); set
+`promptDelivery` explicitly if the wrapper expects the other mode. A
 string `command` always uses stdin, and `promptDelivery: "arg"` with a string
-command is rejected.
+command is rejected. Arg delivery also refuses prompts beginning with `-`,
+which would otherwise be parsed as a CLI option.
 
 `system` keeps the existing framing:
 
@@ -110,11 +114,22 @@ USER:
 
 Every process receives `OSTINATO_STEP`, `OSTINATO_RUN_ID`, `OSTINATO_MODEL`,
 `OSTINATO_PROVIDER` and `OSTINATO_AGENT_NAME`. `OSTINATO_AGENT` is **not**
-overwritten: it remains the command configured by `--agent-cmd`. Dangerous
-variables (`LD_PRELOAD`, `DYLD_*`, `GIT_*`, `NODE_OPTIONS`, ...) and the
-reserved `OSTINATO_AGENT`, `OSTINATO_AGENT_NAME`, `OSTINATO_STEP`,
-`OSTINATO_RUN_ID`, `OSTINATO_MODEL` and `OSTINATO_PROVIDER` names are rejected
-in `agents.*.env` and step-level `agent.env`.
+overwritten: it remains the command configured by `--agent-cmd`.
+
+The following names are rejected in `agents.*.env` and step-level
+`agent.env`: `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`,
+`DYLD_LIBRARY_PATH`, `BASH_ENV`, `ENV`, `SHELLOPTS`, `GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG`, `GIT_CONFIG_GLOBAL`,
+`GIT_CONFIG_SYSTEM`, `GIT_CONFIG_COUNT`, `GIT_SSH_COMMAND`, `PAGER`,
+`PROMPT_COMMAND`, `NODE_OPTIONS`, `PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`,
+`OSTINATO_AGENT`, `OSTINATO_AGENT_NAME`, `OSTINATO_STEP`,
+`OSTINATO_RUN_ID`, `OSTINATO_MODEL` and `OSTINATO_PROVIDER`.
+
+The engine also removes that same inherited-variable set from the agent
+process, so a parent shell cannot inject `LD_PRELOAD`, `GIT_CONFIG_GLOBAL`
+and friends. Other inherited variables (including tokens such as
+`GITHUB_TOKEN`) are passed through, like `exec` steps. The list is a fixed
+denylist, not a wildcard over `GIT_*`/`DYLD_*`/`OSTINATO_*`.
 
 ## Traces
 
@@ -137,10 +152,13 @@ provider/definition/isolation metadata, artifact metadata, timestamps and
 error fields. The flat `provider` field keeps its historical meaning: the
 executable that ran (for example `claude` or `./agent.sh`).
 
-`ostinato agents --json` returns the serde representation of the trace, whose
-field names are `snake_case` (`isolation_path`, `isolation_base`,
-`prompt_sha256`, `stored_size`, ...). The `ostinato artifacts --json` summary
-uses `camelCase` (`traceId`, `storedSize`, `step`, `round`, `attempt`).
+`ostinato agents --json` returns the serde representation of the trace
+(`snake_case`: `isolation_path`, `isolation_base`, `prompt_sha256`,
+`stored_size`, ...). Step-output `agent` blocks, audit-event data and the
+`ostinato artifacts --json` summary use `camelCase` (`traceId`, `storedSize`,
+`cleanupError`, ...). This mixed casing is a compatibility boundary: the
+`snake_case` trace JSON is hashed verbatim, while the camelCase surfaces are
+the existing engine/CLI contracts.
 
 ### Verification
 
@@ -150,10 +168,18 @@ ostinato agents <run> --verify
 ostinato audit verify <run>
 ```
 
-`--verify` re-hashes every stored trace (over the stored JSON bytes), proves
+`--verify` always checks the whole run; `--step` only filters the listing.
+It re-hashes every stored trace (over the stored JSON bytes), proves
 each trace is anchored by an `agent.traced` event, compares artifact metadata
-against the trace, and re-hashes every artifact blob. `audit verify` performs
-the same checks in addition to the normal chain/state-digest verification.
+against the trace, and re-hashes every artifact blob. It also cross-checks the
+`traceId`/`traceHash` referenced by committed step and trial outputs, which
+catches trace-row deletion. `audit verify` performs the same checks in addition
+to the normal chain/state-digest verification.
+
+The audit chain is an **unkeyed** SHA-256 chain. It detects accidental edits and
+naive tampering, but an attacker who can rewrite the SQLite file can recompute
+the chain and digests. Worktree isolation is not a security boundary against a
+malicious agent either; use OS/container sandboxing for that.
 
 Traces are written when the attempt ends. A hard kill of the Ostinato process
 between the child exiting and the trace transaction commits is re-executed on
@@ -165,7 +191,8 @@ attempt remains visible if its transaction committed.
 Declared globs are expanded relative to the effective cwd: the workflow
 directory with `isolation: "none"`, or the same relative subdirectory inside
 the worktree with `isolation: "worktree"`. Globs support `*`, `**`, `?` and
-`[]`. Artifacts are stored as blobs in SQLite, not on the filesystem, so the
+`[]`; `*` does not cross `/`, and wildcards do not match a leading dot (use
+`.*` explicitly). Artifacts are stored as blobs in SQLite, not on the filesystem, so the
 database remains the durability boundary.
 
 - Caps: 8 MiB per file, 32 MiB per trace, 512 files per trace. Oversized
@@ -187,7 +214,8 @@ ostinato artifacts <run> --trace 7 --extract ./out --force
 ```
 
 When more than one trace matches, extraction is namespaced as
-`<step>/r<round>-a<attempt>/<artifact>`. Extraction refuses to follow
+`<step>/r<round>-a<attempt>-t<traceId>/<artifact>`; `kind: "deleted"`
+artifacts are listed but not written as empty files. Extraction refuses to follow
 symlinks or escape the target directory, writes `0600` files, refuses a
 non-empty directory unless `--force` is passed, and prints every written path.
 
@@ -204,10 +232,13 @@ non-empty directory unless `--force` is passed, and prints every written path.
 4. Runs the agent in the same relative subdirectory as the workflow.
 5. Captures declared artifacts and every changed/untracked file plus a patch.
 6. Removes the worktree unless `keep: true`; cleanup errors are recorded but
-   do not discard captured artifacts.
+   do not discard captured artifacts or fail the step. A cleanup failure can
+   leave an orphan worktree directory; remove it with
+   `git worktree prune` and `rm -rf` after investigating `cleanupError`.
 
 Worktree isolation isolates **filesystem edits only**. The agent still sees
-the user's environment, credentials, network and process privileges. There is
+the user's environment (minus the fixed denylist above), credentials, network
+and process privileges. There is
 no container or VM boundary. The command and any files it reads from the
 repository must exist in the committed tree (the worktree starts at `base`).
 
@@ -218,9 +249,11 @@ Both evaluators resolve `agents` and `use` at load time:
 - the Rust evaluator reads the top-level `agents` field directly;
 - `--evaluator cue` exports `agents` with the official CUE CLI and compiles it.
 
-`validate --json` shows the fully resolved agent spec (definition name,
-provider, merged env/model/isolation/artifacts), which is the debugging surface
-for merge precedence.
+`validate --json` shows the merged agent spec (definition name, explicit
+provider, merged env/model/isolation/artifacts). Defaults are omitted by the
+serde representation (`provider: "command"` is absent, `promptDelivery` is
+absent when the provider default applies), so read absent fields as the
+documented defaults. This is the debugging surface for merge precedence.
 
 ## Limits and caveats
 

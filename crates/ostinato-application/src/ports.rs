@@ -167,8 +167,8 @@ pub struct CaptureRequest {
     pub cwd: PathBuf,
     /// Glob patterns declared by the workflow.
     pub patterns: Vec<String>,
-    /// Capture git status/diff artifacts (worktree isolation).
-    pub include_git_changes: bool,
+    /// Capture git changes relative to this commit (worktree isolation).
+    pub base: Option<String>,
 }
 
 /// Captured artifacts plus non-fatal warnings (skipped symlinks/hardlinks).

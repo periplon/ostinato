@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 use ostinato_application::{
@@ -140,19 +140,20 @@ impl WorkspaceProvider for LocalWorkspace {
                 Err(err) => warnings.push(err),
             }
         }
-        if request.include_git_changes {
-            for (name, kind) in git_changes(&cwd)? {
+        if let Some(base) = &request.base {
+            for (name, kind) in git_changes(&cwd, base)? {
                 wanted.entry(name).or_insert(kind);
             }
         }
 
+        let total_wanted = wanted.len();
         let mut artifacts = Vec::new();
         let mut total: u64 = 0;
         for (name, kind) in wanted {
             if artifacts.len() >= MAX_ARTIFACTS {
                 warnings.push(format!(
                     "artifact limit reached; {} additional paths were not captured",
-                    MAX_ARTIFACTS
+                    total_wanted.saturating_sub(MAX_ARTIFACTS)
                 ));
                 break;
             }
@@ -198,19 +199,25 @@ impl WorkspaceProvider for LocalWorkspace {
             }
         }
 
-        if request.include_git_changes {
+        if let Some(base) = &request.base {
             let remaining = MAX_TOTAL_BYTES.saturating_sub(total);
-            match git_patch(&cwd, remaining) {
-                Ok(Some(patch)) => artifacts.push(CapturedArtifact {
-                    name: "_isolation/changes.patch".to_owned(),
-                    kind: "patch".to_owned(),
-                    bytes: patch.0,
-                    truncated: patch.1,
-                    original_size: patch.2,
-                    mode: None,
-                }),
-                Ok(None) => {}
-                Err(err) => warnings.push(err.to_string()),
+            if artifacts.len() >= MAX_ARTIFACTS {
+                warnings.push(
+                    "artifact limit reached; the isolation patch was not captured".to_owned(),
+                );
+            } else {
+                match git_patch(&cwd, base, remaining) {
+                    Ok(Some(patch)) => artifacts.push(CapturedArtifact {
+                        name: "_isolation/changes.patch".to_owned(),
+                        kind: "patch".to_owned(),
+                        bytes: patch.0,
+                        truncated: patch.1,
+                        original_size: patch.2,
+                        mode: None,
+                    }),
+                    Ok(None) => {}
+                    Err(err) => warnings.push(err.to_string()),
+                }
             }
         }
         Ok(CaptureOutcome {
@@ -234,10 +241,124 @@ impl WorkspaceProvider for LocalWorkspace {
             git_root,
             &["worktree", "remove", "--force", &path.to_string_lossy()],
         )?;
-        // Best effort: stale registrations must not accumulate.
+        // Best effort: stale registrations and empty run directories must not
+        // accumulate.
         let _ = run_git(git_root, &["worktree", "prune"]);
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir(parent);
+        }
         Ok(())
     }
+}
+
+fn run_git_limited(command: &mut Command, limit: u64) -> PortResult<(Vec<u8>, bool)> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| PortError::Io(format!("cannot run git: {err}")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| PortError::Io("git stdout unavailable".to_owned()))?;
+    let mut buffer = Vec::new();
+    stdout
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut buffer)
+        .map_err(|err| PortError::Io(format!("cannot read git output: {err}")))?;
+    let truncated = u64::try_from(buffer.len()).unwrap_or(u64::MAX) > limit;
+    if truncated {
+        buffer.truncate(usize::try_from(limit).unwrap_or(0));
+    }
+    if truncated {
+        // Stop git once the budget is reached; dropping the pipe also closes it.
+        let _ = child.kill();
+        let _ = child.wait();
+    } else {
+        let status = child
+            .wait()
+            .map_err(|err| PortError::Io(format!("git wait failed: {err}")))?;
+        if !status.success() {
+            return Err(PortError::Io(format!(
+                "git diff failed with exit {}",
+                status.code().unwrap_or(-1)
+            )));
+        }
+    }
+    Ok((buffer, truncated))
+}
+
+fn base_git_command(cwd: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(cwd).args([
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "core.quotepath=false",
+        "-c",
+        "diff.external=",
+        "--no-pager",
+    ]);
+    command
+}
+
+/// Neutralise every repository-configured filter and diff driver. The agent
+/// can write the shared `.git/config`; capture must never execute it.
+fn git_command(cwd: &Path) -> Command {
+    let mut command = base_git_command(cwd);
+    let output = base_git_command(cwd)
+        .args([
+            "config",
+            "--get-regexp",
+            r"^filter\..*\.(clean|smudge|process)$",
+        ])
+        .output();
+    if let Ok(output) = output
+        && output.status.success()
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Some(key) = line.split_whitespace().next() else {
+                continue;
+            };
+            let parts: Vec<&str> = key.split('.').collect();
+            if parts.len() >= 3 && parts[0] == "filter" {
+                seen.insert(parts[1].to_owned());
+            }
+        }
+        for driver in seen {
+            for kind in ["clean", "smudge"] {
+                command.arg("-c").arg(format!("filter.{driver}.{kind}=cat"));
+            }
+            command.arg("-c").arg(format!("filter.{driver}.process="));
+        }
+    }
+    let output = base_git_command(cwd)
+        .args(["config", "--get-regexp", r"^diff\..*\.(command|textconv)$"])
+        .output();
+    if let Ok(output) = output
+        && output.status.success()
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Some(key) = line.split_whitespace().next() else {
+                continue;
+            };
+            let parts: Vec<&str> = key.split('.').collect();
+            if parts.len() >= 3 && parts[0] == "diff" {
+                seen.insert(parts[1].to_owned());
+            }
+        }
+        for driver in seen {
+            command.arg("-c").arg(format!("diff.{driver}.command="));
+            command.arg("-c").arg(format!("diff.{driver}.textconv="));
+        }
+    }
+    command
 }
 
 fn sanitise_component(value: &str) -> String {
@@ -268,9 +389,12 @@ fn create_private_dir(path: &Path) -> PortResult<()> {
 }
 
 fn git_toplevel(base: &Path) -> PortResult<PathBuf> {
-    let output = git_output(base, &["rev-parse", "--show-toplevel"])?;
-    let text = String::from_utf8_lossy(&output).trim().to_owned();
-    if text.is_empty() {
+    let output = git_command(base)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|err| PortError::Io(format!("cannot run git: {err}")))?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() || text.is_empty() {
         return Err(PortError::Config(format!(
             "worktree isolation requires a git repository; `{}` is not inside one",
             base.display()
@@ -287,12 +411,8 @@ fn resolve_base(git_root: &Path, base: Option<&str>) -> PortResult<String> {
         ));
     }
     let spec = format!("{base}^{{commit}}");
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(git_root)
+    let output = git_command(git_root)
         .args([
-            "-c",
-            "core.fsmonitor=false",
             "rev-parse",
             "--verify",
             "--quiet",
@@ -316,11 +436,7 @@ fn resolve_base(git_root: &Path, base: Option<&str>) -> PortResult<String> {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> PortResult<()> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["-c", "core.fsmonitor=false", "-c", "core.pager=cat"])
-        .args(["-c", "core.quotepath=false", "--no-pager"])
+    let output = git_command(cwd)
         .args(args)
         .output()
         .map_err(|err| PortError::Io(format!("cannot run git: {err}")))?;
@@ -335,11 +451,7 @@ fn run_git(cwd: &Path, args: &[&str]) -> PortResult<()> {
 }
 
 fn git_output(cwd: &Path, args: &[&str]) -> PortResult<Vec<u8>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["-c", "core.fsmonitor=false", "-c", "core.pager=cat"])
-        .args(["-c", "core.quotepath=false", "--no-pager"])
+    let output = git_command(cwd)
         .args(args)
         .output()
         .map_err(|err| PortError::Io(format!("cannot run git: {err}")))?;
@@ -353,143 +465,176 @@ fn git_output(cwd: &Path, args: &[&str]) -> PortResult<Vec<u8>> {
     Ok(output.stdout)
 }
 
-/// Parse `git status --porcelain=v1 -z --no-renames`.
-fn git_changes(cwd: &Path) -> PortResult<Vec<(String, String)>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["-c", "core.fsmonitor=false", "-c", "core.quotepath=false"])
+/// Changes relative to the recorded isolation base, including commits the
+/// agent made inside the worktree plus untracked files.
+fn git_changes(cwd: &Path, base: &str) -> PortResult<Vec<(String, String)>> {
+    let prefix = git_prefix(cwd)?;
+    let mut changes = BTreeMap::new();
+    let output = git_command(cwd)
         .args([
-            "--no-pager",
-            "status",
-            "--porcelain=v1",
+            "diff",
+            "--name-status",
             "-z",
-            "--untracked-files=all",
             "--no-renames",
+            "--relative",
+            base,
             "--",
             ".",
         ])
         .output()
-        .map_err(|err| PortError::Io(format!("cannot run git status: {err}")))?;
+        .map_err(|err| PortError::Io(format!("cannot run git diff: {err}")))?;
     if !output.status.success() {
         return Err(PortError::Io(format!(
-            "git status failed: {}",
+            "git diff --name-status failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
-    let prefix = git_prefix(cwd)?;
-    let mut changes = Vec::new();
-    for record in output.stdout.split(|byte| *byte == 0) {
-        if record.len() < 4 {
-            continue;
-        }
-        let status = &record[..2];
-        let path = String::from_utf8_lossy(&record[3..]).into_owned();
-        let Some(path) = path.strip_prefix(&prefix) else {
-            continue;
+    let mut fields = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    while let Some(status) = fields.next() {
+        let Some(path) = fields.next() else {
+            break;
         };
-        let path = path.to_owned();
+        let path = String::from_utf8_lossy(path).into_owned();
+        let path = path.strip_prefix(&prefix).unwrap_or(&path).to_owned();
         if !safe_relative(&path) || is_internal_path(&path) {
             continue;
         }
-        let kind = match status {
-            b"??" | b"A " | b"AM" => "created",
-            b" D" | b"D " => "deleted",
+        let kind = match status.first().copied() {
+            Some(b'A') => "created",
+            Some(b'D') => "deleted",
             _ => "changed",
         };
-        changes.push((path, kind.to_owned()));
+        changes.insert(path, kind.to_owned());
     }
-    Ok(changes)
+
+    let output = git_command(cwd)
+        .args([
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            ".",
+        ])
+        .output()
+        .map_err(|err| PortError::Io(format!("cannot run git ls-files: {err}")))?;
+    if !output.status.success() {
+        return Err(PortError::Io(format!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    for field in output.stdout.split(|byte| *byte == 0) {
+        if field.is_empty() {
+            continue;
+        }
+        let path = String::from_utf8_lossy(field).into_owned();
+        let path = path.strip_prefix(&prefix).unwrap_or(&path).to_owned();
+        if safe_relative(&path) && !is_internal_path(&path) {
+            changes.entry(path).or_insert_with(|| "created".to_owned());
+        }
+    }
+    Ok(changes.into_iter().collect())
 }
 
-/// Build a patch with a private index so untracked files are included without
-/// touching the agent's worktree index. Textconv and external diff drivers are
-/// disabled: `.gitattributes` or repo config written by the agent must not run
-/// code in the trusted process.
-fn git_patch(cwd: &Path, budget: u64) -> PortResult<Option<(Vec<u8>, bool, u64)>> {
-    let index =
-        std::env::temp_dir().join(format!("ostinato-index-{}", uuid::Uuid::new_v4().simple()));
-    let empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-    let has_head = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+/// Build a patch against the isolation base without running repository clean
+/// filters. `git add` is deliberately avoided: an agent-written
+/// `.gitattributes` or `.git/config` filter must never run in the trusted
+/// process. Untracked files are diffed one by one with `--no-index`.
+fn git_patch(cwd: &Path, base: &str, budget: u64) -> PortResult<Option<(Vec<u8>, bool, u64)>> {
+    let mut patch = Vec::new();
+    let mut truncated = false;
+    let mut tracked_command = git_command(cwd);
+    tracked_command.args([
+        "diff",
+        "--binary",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--relative",
+        base,
+        "--",
+        ".",
+    ]);
+    let (tracked, tracked_truncated) = run_git_limited(&mut tracked_command, budget)?;
+    patch.extend_from_slice(&tracked);
+    if tracked_truncated {
+        patch.truncate(usize::try_from(budget).unwrap_or(0).min(patch.len()));
+        let original_size = u64::try_from(patch.len()).unwrap_or(u64::MAX);
+        return Ok(Some((patch, true, original_size)));
+    }
+
+    // Include untracked files without staging them. Skip very large files:
+    // they are still captured (truncated) as individual artifacts.
+    let untracked = git_command(cwd)
+        .args([
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            ".",
+        ])
         .output()
-        .is_ok_and(|output| output.status.success());
-    let base_tree = if has_head { "HEAD" } else { empty_tree };
-    let result = (|| {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(cwd)
-            .env("GIT_INDEX_FILE", &index)
-            .args(["-c", "core.fsmonitor=false", "-c", "core.quotepath=false"])
-            .args(["--no-pager", "read-tree", base_tree])
-            .output()
-            .map_err(|err| PortError::Io(format!("cannot run git read-tree: {err}")))?;
-        if !output.status.success() {
-            return Err(PortError::Io(format!(
-                "git read-tree failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
+        .map_err(|err| PortError::Io(format!("cannot run git ls-files: {err}")))?;
+    if untracked.status.success() {
+        for field in untracked.stdout.split(|byte| *byte == 0) {
+            if field.is_empty() {
+                continue;
+            }
+            if u64::try_from(patch.len()).unwrap_or(u64::MAX) >= budget {
+                truncated = true;
+                break;
+            }
+            let name = String::from_utf8_lossy(field).into_owned();
+            let path = cwd.join(&name);
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if !metadata.file_type().is_file() || metadata.len() > MAX_FILE_BYTES {
+                continue;
+            }
+            let output = git_command(cwd)
+                .args([
+                    "diff",
+                    "--no-index",
+                    "--binary",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--",
+                    "/dev/null",
+                    &name,
+                ])
+                .output()
+                .map_err(|err| PortError::Io(format!("cannot run git diff --no-index: {err}")))?;
+            // exit code 1 is the normal "files differ" result.
+            if output.status.code() == Some(1) || output.status.success() {
+                let remaining =
+                    budget.saturating_sub(u64::try_from(patch.len()).unwrap_or(u64::MAX));
+                if u64::try_from(output.stdout.len()).unwrap_or(u64::MAX) > remaining {
+                    let take = usize::try_from(remaining).unwrap_or(0);
+                    patch.extend_from_slice(&output.stdout[..take.min(output.stdout.len())]);
+                    truncated = true;
+                    break;
+                }
+                patch.extend_from_slice(&output.stdout);
+            }
         }
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(cwd)
-            .env("GIT_INDEX_FILE", &index)
-            .args(["-c", "core.fsmonitor=false", "-c", "core.quotepath=false"])
-            .args(["--no-pager", "add", "-A", "--", "."])
-            .output()
-            .map_err(|err| PortError::Io(format!("cannot run git add: {err}")))?;
-        if !output.status.success() {
-            return Err(PortError::Io(format!(
-                "git add failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(cwd)
-            .env("GIT_INDEX_FILE", &index)
-            .args(["-c", "core.fsmonitor=false", "-c", "core.quotepath=false"])
-            .args([
-                "--no-pager",
-                "-c",
-                "diff.external=",
-                "diff",
-                "--cached",
-                "--binary",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--relative",
-                base_tree,
-                "--",
-                ".",
-            ])
-            .output()
-            .map_err(|err| PortError::Io(format!("cannot run git diff: {err}")))?;
-        if !output.status.success() {
-            return Err(PortError::Io(format!(
-                "git diff failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        Ok(output.stdout)
-    })();
-    let _ = fs::remove_file(&index);
-    let bytes = result?;
-    if bytes.is_empty() {
+    }
+
+    if patch.is_empty() {
         return Ok(None);
     }
-    let original_size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    let (bytes, truncated) = if original_size > budget {
-        (
-            bytes[..usize::try_from(budget).unwrap_or(0).min(bytes.len())].to_vec(),
-            true,
-        )
-    } else {
-        (bytes, false)
-    };
-    Ok(Some((bytes, truncated, original_size)))
+    let original_size = u64::try_from(patch.len()).unwrap_or(u64::MAX);
+    if original_size > budget {
+        patch.truncate(usize::try_from(budget).unwrap_or(0).min(patch.len()));
+        truncated = true;
+    }
+    Ok(Some((patch, truncated, original_size)))
 }
 
 fn expand_pattern(cwd: &Path, pattern: &str) -> Result<Vec<PathBuf>, String> {
@@ -501,25 +646,42 @@ fn expand_pattern(cwd: &Path, pattern: &str) -> Result<Vec<PathBuf>, String> {
             "artifact glob `{pattern}` must be relative and must not contain `..`"
         ));
     }
-    let joined = cwd.join(pattern);
+    let compiled = glob::Pattern::new(pattern)
+        .map_err(|err| format!("invalid artifact glob `{pattern}`: {err}"))?;
     let options = glob::MatchOptions {
         case_sensitive: true,
-        require_literal_separator: false,
-        require_literal_leading_dot: false,
+        require_literal_separator: true,
+        require_literal_leading_dot: true,
     };
-    let entries = glob::glob_with(&joined.to_string_lossy(), options)
-        .map_err(|err| format!("invalid artifact glob `{pattern}`: {err}"))?;
     let mut paths = Vec::new();
-    for entry in entries {
-        match entry {
-            Ok(path) => {
-                if let Ok(metadata) = fs::symlink_metadata(&path)
-                    && metadata.file_type().is_file()
-                {
-                    paths.push(path);
-                }
-            }
-            Err(err) => return Err(format!("cannot expand artifact glob `{pattern}`: {err}")),
+    let mut visited = 0usize;
+    for entry in walkdir::WalkDir::new(cwd)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || entry
+                    .path()
+                    .strip_prefix(cwd)
+                    .map(|relative| !is_internal_path(&relative.to_string_lossy()))
+                    .unwrap_or(true)
+        })
+    {
+        visited += 1;
+        if visited > 100_000 {
+            return Err(format!(
+                "artifact glob `{pattern}` exceeded the traversal limit"
+            ));
+        }
+        let entry = entry.map_err(|err| format!("cannot walk artifacts: {err}"))?;
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        let Ok(relative) = entry.path().strip_prefix(cwd) else {
+            continue;
+        };
+        if compiled.matches_path_with(relative, options) {
+            paths.push(entry.into_path());
         }
     }
     paths.sort();
@@ -654,7 +816,7 @@ fn safe_relative(path: &str) -> bool {
 
 fn is_internal_path(path: &str) -> bool {
     path.split('/')
-        .any(|component| matches!(component, ".git" | ".ostinato"))
+        .any(|component| matches!(component, ".git" | ".ostinato" | "_isolation"))
 }
 
 /// Write an extracted artifact under `root` without following symlinks and
@@ -670,7 +832,7 @@ pub fn write_artifact(
     mode: Option<u32>,
     force: bool,
 ) -> Result<PathBuf, String> {
-    if !safe_relative(name) || is_internal_path(name) {
+    if !safe_relative(name) || (is_internal_path(name) && name != "_isolation/changes.patch") {
         return Err(format!("unsafe artifact path `{name}`"));
     }
     fs::create_dir_all(root)
@@ -692,13 +854,36 @@ pub fn write_artifact(
             "artifact `{name}` resolves outside the extraction directory"
         ));
     }
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true);
-    if !force {
-        options.create_new(true);
-    } else {
-        options.truncate(true);
+    if let Ok(metadata) = fs::symlink_metadata(&destination) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "artifact destination {} is a symbolic link",
+                destination.display()
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() > 1 {
+                return Err(format!(
+                    "artifact destination {} is hard-linked; refusing to overwrite it",
+                    destination.display()
+                ));
+            }
+        }
+        if !force {
+            return Err(format!(
+                "artifact destination {} already exists; pass --force to replace it",
+                destination.display()
+            ));
+        }
     }
+    let temp = parent.join(format!(
+        ".ostinato-extract-{}.tmp",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -707,11 +892,18 @@ pub fn write_artifact(
             .mode(mode.unwrap_or(0o600));
     }
     let mut file = options
-        .open(&destination)
-        .map_err(|err| format!("cannot write {}: {err}", destination.display()))?;
+        .open(&temp)
+        .map_err(|err| format!("cannot write {}: {err}", temp.display()))?;
     use std::io::Write;
-    file.write_all(content)
-        .map_err(|err| format!("cannot write {}: {err}", destination.display()))?;
+    if let Err(err) = file.write_all(content) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("cannot write {}: {err}", temp.display()));
+    }
+    drop(file);
+    if let Err(err) = fs::rename(&temp, &destination) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("cannot replace {}: {err}", destination.display()));
+    }
     Ok(destination)
 }
 

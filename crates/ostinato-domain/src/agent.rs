@@ -304,6 +304,8 @@ pub struct StoredArtifact {
     pub size: u64,
     pub stored_size: u64,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
     pub content: Vec<u8>,
 }
 

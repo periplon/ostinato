@@ -134,14 +134,14 @@ workflow: {
 | `ostinato graph <file> [--format dot\|json]` | Show the dependency graph (DOT) or materialised plan (JSON) |
 | `ostinato run <file> [-p k=v] [--agent-cmd CMD]` | Start a durable run |
 | `ostinato cancel <run>` | Cancel between groups |
-| `ostinato resume <run>` | Resume after failure or crash |
+| `ostinato resume <run> [--agent-cmd CMD]` | Resume after failure or crash |
 | `ostinato status <run>` | Run + step status |
 | `ostinato runs [--limit N]` | Recent runs |
 | `ostinato logs <run> [--follow]` | Audit event stream |
 | `ostinato audit verify <run>` | Verify the hash chain |
 | `ostinato trials <run> [--limit N]` | Attempt-level trial log |
 | `ostinato agents <run> [--step S] [--verify]` | Agent traces; `--verify` re-hashes traces and artifacts |
-| `ostinato artifacts <run> [--trace N] [--extract DIR] [--force]` | List or extract agent artifacts |
+| `ostinato artifacts <run> [--step S] [--trace N] [--round R] [--attempt A] [--extract DIR] [--force]` | List or extract agent artifacts |
 | `ostinato improve <run> --rounds N --agent-cmd CMD` | Recursive improvement proposals + child runs |
 | `ostinato metrics [--run <id>] [--format text\|prometheus\|json]` | Aggregated metrics |
 | `ostinato doctor` | CUE, store and agent diagnostics |

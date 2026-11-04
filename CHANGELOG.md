@@ -23,8 +23,12 @@ Named agent definitions, external agent CLIs, traces and isolation.
   unless `keep: true`.
 - `improve` agent calls are traced too; `doctor` reports provider paths.
 - Docs: `docs/AGENTS.md`, README/LANGUAGE updates and `examples/agents.cue`.
-- 386 tests (78 CLI E2E, 1 conformance, 242 language, 6 language agents, 3 language unit,
-  18 application, 19 domain, 6 store, 7 workspace, 6 adapters unit).
+- 393 tests (82 CLI E2E, 1 conformance, 242 language, 6 language agents, 3 language unit,
+  18 application, 19 domain, 6 store, 8 workspace, 8 adapters unit).
+- Security hardening from review: filter/hook-neutralised git capture, base-aware
+  patch/diff (sees agent commits), non-symlink-following bounded glob walk,
+  bounded patch reads, hardlink-safe extraction, arg prompt injection refusal,
+  partial output from escaped descendants, cross-checks for deleted trace rows.
 
 ## v0.22.3
 

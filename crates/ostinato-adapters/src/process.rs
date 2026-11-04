@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ostinato_application::{
     AgentOutcome, AgentRequest, AgentRunner, CommandExecutor, ExecOutcome, ExecRequest, PortError,
@@ -70,14 +71,8 @@ impl CommandExecutor for ProcessExecutor {
             .stderr
             .take()
             .ok_or_else(|| PortError::Executor("stderr pipe unavailable".to_owned()))?;
-        let (stdout_tx, stdout_rx) = mpsc::channel();
-        let (stderr_tx, stderr_rx) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = stdout_tx.send(read_limited(stdout));
-        });
-        thread::spawn(move || {
-            let _ = stderr_tx.send(read_limited(stderr));
-        });
+        let stdout_rx = spawn_reader(stdout);
+        let stderr_rx = spawn_reader(stderr);
 
         let status = match request.timeout {
             Some(timeout) => child.wait_timeout(timeout).map_err(|err| {
@@ -92,8 +87,8 @@ impl CommandExecutor for ProcessExecutor {
         // Reap descendants even on success: a background daemon that inherited
         // the pipes must not extend the step beyond its timeout.
         kill_group(&mut child);
-        let (stdout, _) = receive_reader(&stdout_rx);
-        let (stderr, _) = receive_reader(&stderr_rx);
+        let (stdout, _) = drain_reader(&stdout_rx);
+        let (stderr, _) = drain_reader(&stderr_rx);
         Ok(ExecOutcome {
             exit_code,
             stdout,
@@ -103,32 +98,60 @@ impl CommandExecutor for ProcessExecutor {
     }
 }
 
-fn read_limited(mut stream: impl Read) -> (Vec<u8>, bool) {
+fn spawn_reader(mut stream: impl Read + Send + 'static) -> Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut chunk = [0u8; 16 * 1024];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => {
+                    if sender.send(chunk[..read].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    receiver
+}
+
+fn drain_reader(receiver: &Receiver<Vec<u8>>) -> (String, bool) {
     let mut buffer = Vec::new();
-    let mut chunk = [0u8; 16 * 1024];
     let mut truncated = false;
+    let deadline = Instant::now() + Duration::from_millis(750);
     loop {
-        match stream.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(read) => {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            truncated = true;
+            break;
+        }
+        match receiver.recv_timeout(remaining) {
+            Ok(chunk) => {
                 if buffer.len() < MAX_CAPTURE_BYTES {
-                    let remaining = MAX_CAPTURE_BYTES - buffer.len();
-                    let take = read.min(remaining);
+                    let take = chunk.len().min(MAX_CAPTURE_BYTES - buffer.len());
                     buffer.extend_from_slice(&chunk[..take]);
-                    if take < read {
+                    if take < chunk.len() {
                         truncated = true;
                     }
                 } else {
                     truncated = true;
                 }
             }
-            Err(_) => break,
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                // A descendant kept the pipe open. Keep what was already read
+                // instead of discarding the agent's output.
+                truncated = true;
+                break;
+            }
         }
     }
     if truncated {
         buffer.extend_from_slice(b"\n[output truncated]");
     }
-    (buffer, truncated)
+    (String::from_utf8_lossy(&buffer).into_owned(), truncated)
 }
 
 #[cfg(unix)]
@@ -136,7 +159,12 @@ fn kill_group(child: &mut std::process::Child) {
     let pid = child.id();
     // Negative pid targets the process group created above. `kill` is used
     // instead of `unsafe` libc calls (the workspace forbids unsafe code).
-    let _ = Command::new("kill")
+    let kill = if Path::new("/bin/kill").exists() {
+        "/bin/kill"
+    } else {
+        "kill"
+    };
+    let _ = Command::new(kill)
         .args(["-KILL", &format!("-{pid}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -150,13 +178,6 @@ fn kill_group(child: &mut std::process::Child) {
 fn kill_group(child: &mut std::process::Child) {
     let _ = child.kill();
     let _ = child.wait();
-}
-
-fn receive_reader(receiver: &Receiver<(Vec<u8>, bool)>) -> (String, bool) {
-    match receiver.recv_timeout(Duration::from_millis(750)) {
-        Ok((bytes, truncated)) => (String::from_utf8_lossy(&bytes).into_owned(), truncated),
-        Err(_) => (String::new(), false),
-    }
 }
 
 #[derive(Debug)]
@@ -297,6 +318,11 @@ impl AgentRunner for CommandAgent {
         {
             last.clone_from(&prompt);
         }
+        if invocation.delivery == PromptDelivery::Arg && prompt.starts_with('-') {
+            return Err(PortError::Config(
+                "promptDelivery `arg` refuses a prompt that starts with `-`; it would be parsed as a CLI option (use stdin or a command wrapper)".to_owned(),
+            ));
+        }
         let stdin_sha256 = if invocation.delivery == PromptDelivery::Stdin {
             Some(sha256_hex(prompt.as_bytes()))
         } else {
@@ -386,14 +412,8 @@ impl AgentRunner for CommandAgent {
             .stderr
             .take()
             .ok_or_else(|| PortError::Agent("agent stderr pipe unavailable".to_owned()))?;
-        let (stdout_tx, stdout_rx) = mpsc::channel();
-        let (stderr_tx, stderr_rx) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = stdout_tx.send(read_limited(stdout));
-        });
-        thread::spawn(move || {
-            let _ = stderr_tx.send(read_limited(stderr));
-        });
+        let stdout_rx = spawn_reader(stdout);
+        let stderr_rx = spawn_reader(stderr);
 
         // Write stdin from a separate thread: an agent that writes output
         // before reading stdin must not deadlock before the timeout applies.
@@ -417,8 +437,8 @@ impl AgentRunner for CommandAgent {
         // timeout, so a timed-out agent still leaves its output in the trace.
         kill_group(&mut child);
         drop(stdin_writer);
-        let (stdout_text, stdout_truncated) = receive_reader(&stdout_rx);
-        let (stderr_text, stderr_truncated) = receive_reader(&stderr_rx);
+        let (stdout_text, stdout_truncated) = drain_reader(&stdout_rx);
+        let (stderr_text, stderr_truncated) = drain_reader(&stderr_rx);
         let (exit_code, signal, success) = match &status {
             Some(status) => {
                 let signal = exit_status_signal(status);
@@ -584,6 +604,15 @@ mod tests {
     }
 
     #[test]
+    fn arg_delivery_rejects_option_like_prompts() {
+        let agent = CommandAgent::default();
+        let mut request = request(AgentProvider::Codex);
+        request.prompt = "--help".to_owned();
+        let error = agent.run(&request).expect_err("option prompt");
+        assert!(error.to_string().contains("starts with `-`"), "{error}");
+    }
+
+    #[test]
     fn missing_command_provider_is_a_configuration_error() {
         let agent = CommandAgent::default();
         let error = agent
@@ -617,6 +646,25 @@ mod timeout_tests {
             outcome.stdout
         );
         assert!(outcome.error.expect("error").contains("timed out"));
+    }
+
+    #[test]
+    fn escaped_descendants_do_not_erase_partial_output() {
+        let agent = CommandAgent::default();
+        let mut request = request_for_timeout();
+        request.command = Some(vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "echo before-escape; setsid sleep 5 & sleep 5".to_owned(),
+        ]);
+        request.timeout = Some(Duration::from_millis(150));
+        let outcome = agent.run(&request).expect("run");
+        assert!(outcome.timed_out);
+        assert!(
+            outcome.stdout.contains("before-escape"),
+            "{:?}",
+            outcome.stdout
+        );
     }
 
     fn request_for_timeout() -> AgentRequest {

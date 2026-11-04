@@ -193,6 +193,10 @@ workflow: {name: "x", steps: {s: {kind: "agent", agent: {use: "a"}}}}"#,
             "prompt is required",
         ),
         (
+            r#"workflow: {name: "x", steps: {s: {kind: "agent", timeoutMs: 0, agent: {prompt: "x"}}}}"#,
+            "must be >= 1",
+        ),
+        (
             r#"workflow: {name: "x", steps: {s: {kind: "exec", agent: {prompt: "x"}, exec: {cmd: ["true"]}}}}"#,
             "only allowed when kind",
         ),

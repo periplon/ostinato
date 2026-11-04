@@ -10,7 +10,7 @@ use ostinato_adapters::{
     SystemClock, TracingTelemetry, UuidGen, init_tracing,
 };
 use ostinato_application::{
-    Engine, EngineDeps, EngineOptions, ImproveRequest, LoadRequest, SpecLoader, params_patch,
+    Engine, EngineDeps, EngineOptions, ImproveRequest, LoadRequest, SpecLoader, Store, params_patch,
 };
 use ostinato_domain::{RunStatus, audit, build_plan};
 
@@ -107,6 +107,7 @@ enum Command {
     /// Resume a failed or interrupted run from its durable checkpoint.
     Resume {
         run: String,
+        /// Agent command for `provider: "command"` steps (receives the prompt on stdin).
         #[arg(long, env = "OSTINATO_AGENT")]
         agent_cmd: Option<String>,
         #[arg(long)]
@@ -521,6 +522,9 @@ fn execute(cli: Cli) -> Result<ExitCode> {
         }
         Command::Agents { run, step, verify } => {
             let (_, store) = build_runtime(&cli, None, None)?;
+            if store.load_run(&run)?.is_none() {
+                bail!("run not found: {run}");
+            }
             let mut list_failed = false;
             let mut traces = match store.agent_traces(&run) {
                 Ok(traces) => traces,
@@ -535,15 +539,9 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                 traces.retain(|record| &record.trace.step == step);
             }
             let verifications = if verify {
-                let all = store.verify_agent_traces(&run)?;
-                let selected: Vec<_> = if step.is_some() && !list_failed {
-                    all.into_iter()
-                        .filter(|item| traces.iter().any(|record| record.id == item.trace_id))
-                        .collect()
-                } else {
-                    all
-                };
-                Some(selected)
+                // Always verify the full run: a --step filter must not hide
+                // tampering in another step.
+                Some(store.verify_agent_traces(&run)?)
             } else {
                 None
             };
@@ -571,17 +569,36 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     );
                 }
             } else {
-                println!(
-                    "{:<20} {:<5} {:<7} {:<10} {:<12} {:<6} {:<8} {:<9} TRACE",
-                    "STEP", "ROUND", "ATTEMPT", "PROVIDER", "MODEL", "EXIT", "DUR(ms)", "ARTIFACTS"
-                );
+                if !list_failed {
+                    println!(
+                        "{:<6} {:<20} {:<5} {:<7} {:<9} {:<10} {:<12} {:<6} {:<8} {:<9} TRACE",
+                        "ID",
+                        "STEP",
+                        "ROUND",
+                        "ATTEMPT",
+                        "STATUS",
+                        "PROVIDER",
+                        "MODEL",
+                        "EXIT",
+                        "DUR(ms)",
+                        "ARTIFACTS"
+                    );
+                }
                 for record in &traces {
                     let trace = &record.trace;
                     println!(
-                        "{:<20} {:<5} {:<7} {:<10} {:<12} {:<6} {:<8} {:<9} {}",
+                        "{:<6} {:<20} {:<5} {:<7} {:<9} {:<10} {:<12} {:<6} {:<8} {:<9} {}",
+                        record.id,
                         trace.step,
                         trace.round,
                         trace.attempt,
+                        if trace.success {
+                            "ok"
+                        } else if trace.timed_out {
+                            "timeout"
+                        } else {
+                            "failed"
+                        },
                         trace.provider,
                         trace.model.as_deref().unwrap_or("-"),
                         trace
@@ -592,6 +609,9 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                         trace.artifacts.len(),
                         record.trace_hash
                     );
+                }
+                if traces.is_empty() && !list_failed {
+                    eprintln!("no agent traces matched");
                 }
                 if let Some(verifications) = &verifications {
                     for item in verifications {
@@ -628,6 +648,9 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             force,
         } => {
             let (_, store) = build_runtime(&cli, None, None)?;
+            if store.load_run(&run)?.is_none() {
+                bail!("run not found: {run}");
+            }
             let traces = store.agent_traces(&run)?;
             let selected: Vec<&ostinato_domain::AgentTraceRecord> = traces
                 .iter()
@@ -662,13 +685,19 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                 }
                 let namespace = selected_ids.len() > 1;
                 for artifact in &artifacts {
+                    if artifact.kind == "deleted" {
+                        continue;
+                    }
                     let Some(record) = selected_ids.get(&artifact.trace_id) else {
                         continue;
                     };
                     let root = if namespace {
                         directory
                             .join(sanitize_path_component(&record.trace.step))
-                            .join(format!("r{}-a{}", record.trace.round, record.trace.attempt))
+                            .join(format!(
+                                "r{}-a{}-t{}",
+                                record.trace.round, record.trace.attempt, record.id
+                            ))
                     } else {
                         directory.clone()
                     };
@@ -724,12 +753,19 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                         record.map_or(0, |record| record.trace.round),
                         record.map_or(0, |record| record.trace.attempt),
                         artifact.kind,
-                        artifact.size,
-                        artifact.name
+                        if artifact.truncated {
+                            format!("{}*", artifact.size)
+                        } else {
+                            artifact.size.to_string()
+                        },
+                        display_safe(&artifact.name)
                     );
                 }
+                if artifacts.is_empty() {
+                    eprintln!("no artifacts matched");
+                }
                 for path in &extracted {
-                    println!("extracted {path}");
+                    println!("extracted {}", display_safe(path));
                 }
             }
             Ok(ExitCode::SUCCESS)
@@ -932,6 +968,18 @@ fn workflow_cwd(source: &str) -> Option<PathBuf> {
     path.parent()
         .filter(|path| !path.as_os_str().is_empty())
         .map(Path::to_path_buf)
+}
+
+fn display_safe(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_control() {
+            out.push_str(&format!("\\x{:02x}", u32::from(ch)));
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn sanitize_path_component(value: &str) -> String {

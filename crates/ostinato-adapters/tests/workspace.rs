@@ -52,7 +52,7 @@ fn declared_globs_are_sorted_and_deduplicated() {
                 "out/a.txt".to_owned(),
                 "out/**/*.txt".to_owned(),
             ],
-            include_git_changes: false,
+            base: None,
         })
         .expect("capture");
     let names: Vec<&str> = captured
@@ -76,10 +76,18 @@ fn symlinks_and_hardlinks_are_not_captured() {
         .capture(&CaptureRequest {
             cwd: directory.path().to_path_buf(),
             patterns: vec!["*.txt".to_owned()],
-            include_git_changes: false,
+            base: None,
         })
         .expect("capture");
     assert!(captured.artifacts.is_empty(), "{:?}", captured.artifacts);
+    assert!(
+        captured
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("symbolic links")),
+        "{:?}",
+        captured.warnings
+    );
     assert!(
         captured
             .warnings
@@ -106,6 +114,12 @@ fn extraction_rejects_traversal_and_symlinked_parents() {
     assert_eq!(std::fs::read_to_string(written).expect("read"), "content");
     assert!(write_artifact(&root, "safe/file.txt", b"other", None, false).is_err());
     write_artifact(&root, "safe/file.txt", b"other", None, true).expect("force");
+
+    let victim = directory.path().join("victim");
+    write(&victim, "SAFE");
+    std::fs::hard_link(&victim, root.join("hard.md")).expect("hardlink");
+    assert!(write_artifact(&root, "hard.md", b"overwrite", None, true).is_err());
+    assert_eq!(std::fs::read_to_string(&victim).expect("victim"), "SAFE");
 }
 
 #[test]
@@ -145,7 +159,7 @@ fn worktree_lifecycle_captures_tracked_and_untracked_changes() {
         .capture(&CaptureRequest {
             cwd: handle.dir.clone(),
             patterns: vec!["reports/*.md".to_owned()],
-            include_git_changes: true,
+            base: handle.base.clone(),
         })
         .expect("capture");
     let names: Vec<&str> = captured
@@ -156,6 +170,13 @@ fn worktree_lifecycle_captures_tracked_and_untracked_changes() {
     assert!(names.contains(&"tracked.txt"), "{names:?}");
     assert!(names.contains(&"created.txt"), "{names:?}");
     assert!(names.contains(&"reports/review.md"), "{names:?}");
+    assert!(
+        captured
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "reports/review.md" && artifact.kind == "declared"),
+        "declared globs must work inside a worktree under .ostinato: {names:?}"
+    );
     assert!(names.contains(&"_isolation/changes.patch"), "{names:?}");
     let patch = captured
         .artifacts
@@ -238,7 +259,7 @@ fn worktree_capture_is_relative_to_a_subdirectory_workflow() {
         .capture(&CaptureRequest {
             cwd: handle.dir.clone(),
             patterns: Vec::new(),
-            include_git_changes: true,
+            base: handle.base.clone(),
         })
         .expect("capture");
     let names: Vec<&str> = captured
@@ -260,5 +281,69 @@ fn worktree_capture_is_relative_to_a_subdirectory_workflow() {
     let patch = String::from_utf8_lossy(&patch.bytes);
     assert!(patch.contains("a/before.txt"), "{patch}");
     assert!(!patch.contains("a/sub/"), "{patch}");
+    workspace.finish(&handle).expect("finish");
+}
+
+#[test]
+fn worktree_capture_sees_agent_commits_against_the_recorded_base() {
+    let repo = git_repo();
+    let workspace = LocalWorkspace::default();
+    let handle = workspace
+        .prepare(&IsolationRequest {
+            run_id: "run-commit".to_owned(),
+            step: "step".to_owned(),
+            round: 0,
+            attempt: 0,
+            mode: IsolationMode::Worktree,
+            base: None,
+            keep: false,
+            base_dir: Some(repo.path().to_path_buf()),
+        })
+        .expect("prepare");
+    write(&handle.dir.join("committed.txt"), "agent commit\n");
+    let status = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&handle.dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "agent")
+        .env("GIT_AUTHOR_EMAIL", "agent@example.com")
+        .env("GIT_COMMITTER_NAME", "agent")
+        .env("GIT_COMMITTER_EMAIL", "agent@example.com")
+        .status()
+        .expect("git add");
+    assert!(status.success());
+    let status = Command::new("git")
+        .args(["commit", "-qm", "agent"])
+        .current_dir(&handle.dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "agent")
+        .env("GIT_AUTHOR_EMAIL", "agent@example.com")
+        .env("GIT_COMMITTER_NAME", "agent")
+        .env("GIT_COMMITTER_EMAIL", "agent@example.com")
+        .status()
+        .expect("git commit");
+    assert!(status.success());
+    let captured = workspace
+        .capture(&CaptureRequest {
+            cwd: handle.dir.clone(),
+            patterns: Vec::new(),
+            base: handle.base.clone(),
+        })
+        .expect("capture");
+    let names: Vec<&str> = captured
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.name.as_str())
+        .collect();
+    assert!(names.contains(&"committed.txt"), "{names:?}");
+    let patch = captured
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "patch")
+        .expect("patch");
+    assert!(
+        String::from_utf8_lossy(&patch.bytes).contains("committed.txt"),
+        "patch must include committed agent changes"
+    );
     workspace.finish(&handle).expect("finish");
 }

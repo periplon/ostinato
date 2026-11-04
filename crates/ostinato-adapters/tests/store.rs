@@ -337,6 +337,22 @@ fn agent_trace_and_artifact_tampering_are_detected() {
     store
         .record_agent_trace(&trace, &artifacts)
         .expect("re-record");
+    // Column tampering is caught even when the JSON/hash is intact.
+    connection
+        .execute(
+            "UPDATE agent_traces SET step = 'other' WHERE run_id = 'tamper-run'",
+            [],
+        )
+        .expect("tamper column");
+    let verified = store.verify_agent_traces("tamper-run").expect("verify");
+    assert!(
+        verified.iter().any(|item| item
+            .problems
+            .iter()
+            .any(|problem| problem.contains("columns"))),
+        "{verified:?}"
+    );
+
     connection
         .execute(
             "UPDATE agent_artifacts SET content = ?1 WHERE trace_id = (SELECT MAX(id) FROM agent_traces)",
