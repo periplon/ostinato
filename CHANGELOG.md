@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.21.3
+
+Tool-command cwd, defaults and hierarchy parity.
+
+- Tasks run in the package directory; relative `dir` values resolve against it
+  and absolute paths are honored.
+- Whole-field defaults concretize for `env`, `stdout`/`stderr` and
+  `mustSucceed` (in addition to argv/env values/dir/stdin).
+- Single-task commands (`command: c: exec.Run & {...}`), task groups and
+  commands referencing a task struct (`command: c: base`) run like `cue cmd`.
+- Spawn errors report chdir failures only for missing relative/absolute dirs;
+  otherwise `exec: ... not found` like cue.
+- 352 tests (67 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.21.2
 
 Tool-command parity corrections (second pass).

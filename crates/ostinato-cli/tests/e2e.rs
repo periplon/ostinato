@@ -3650,6 +3650,66 @@ command: mustfalsespawn: {run: exec.Run & {cmd: ["definitely-not-a-real-binary-x
 "#,
             false,
         ),
+        (
+            "single",
+            r#"
+package foo
+import "tool/exec"
+command: single: exec.Run & {cmd: ["echo", "DIRECT"]}
+"#,
+            false,
+        ),
+        (
+            "grp",
+            r#"
+package foo
+import "tool/exec"
+command: grp: {g: {run: exec.Run & {cmd: ["echo", "G"]}}}
+"#,
+            false,
+        ),
+        (
+            "ref",
+            r#"
+package foo
+import "tool/exec"
+base: {run: exec.Run & {cmd: ["echo", "BASE"]}}
+command: ref: base
+"#,
+            false,
+        ),
+        (
+            "envwhole",
+            r#"
+package foo
+import "tool/exec"
+command: envwhole: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "printf '<%s>' \"$FOO\""]
+		env: *{FOO: "bar"} | {[string]: string}
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "outdefault",
+            r#"
+package foo
+import "tool/exec"
+command: outdefault: {run: exec.Run & {cmd: ["sh", "-c", "echo O"], stdout: *null | string}}
+"#,
+            false,
+        ),
+        (
+            "mustdefault",
+            r#"
+package foo
+import "tool/exec"
+command: mustdefault: {run: exec.Run & {cmd: ["true"], mustSucceed: *true | bool}}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -3779,6 +3839,35 @@ command: tagged: {run: exec.Run & {cmd: ["echo", "x"]}}
         "tagged",
         directory.path().to_str().expect("path"),
     ]);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert_eq!(actual.stderr, expected.stderr);
+}
+
+#[test]
+fn tool_command_resolves_relative_dir_from_package() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let package = directory.path().join("pkg");
+    std::fs::create_dir_all(package.join("sub")).expect("subdir");
+    std::fs::write(package.join("sub/data.txt"), "relative-ok").expect("data");
+    write(
+        &package.join("rel_tool.cue"),
+        r#"
+package foo
+import "tool/exec"
+command: rel: {run: exec.Run & {cmd: ["cat", "sub/data.txt"], dir: *"sub" | string}}
+"#,
+    );
+    let expected = Command::new(&cue)
+        .args(["cmd", "rel"])
+        .current_dir(&package)
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&["cmd", "rel", package.to_str().expect("path")]);
     assert_eq!(actual.status.code(), expected.status.code());
     assert_eq!(actual.stdout, expected.stdout);
     assert_eq!(actual.stderr, expected.stderr);

@@ -1084,37 +1084,29 @@ pub fn run_tool_command(
         )));
     };
 
-    let task_items = command_task_items(&combined.items, command_name)?;
-    let mut ordered = Vec::new();
-    for item in task_items {
-        let StructItem::Field(field) = &item else {
-            continue;
-        };
-        let Label::Name(name, _) = &field.label else {
-            continue;
-        };
-        if field.optional || field.definition || name.starts_with('$') || name.starts_with('_') {
-            continue;
-        }
-        if tasks
-            .get(name)
-            .and_then(value_fields)
-            .is_some_and(|task| task.contains_key("$id"))
-        {
-            ordered.push((name.clone(), item.clone()));
-        }
+    let mut scheduled = Vec::new();
+    if tasks.contains_key("$id") {
+        scheduled.push((command_name.to_owned(), Vec::new(), tasks.clone()));
+    } else {
+        let task_items = command_task_items(&combined.items, command_name)?;
+        collect_schedule(tasks, Some(&task_items), &mut scheduled)?;
     }
-    if ordered.is_empty() {
+    if scheduled.is_empty() {
         return Err(ostinato_lang::LangError::Workflow(format!(
             "tool command `{command_name}` has no tasks"
         )));
     }
-
-    let task_names: std::collections::BTreeSet<String> =
-        ordered.iter().map(|(name, _)| name.clone()).collect();
-    for (name, item) in &ordered {
-        for dependency in after_names(item)? {
-            if !task_names.contains(&dependency) {
+    let mut task_names = std::collections::BTreeSet::new();
+    for (name, _, _) in &scheduled {
+        if !task_names.insert(name.clone()) {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "ambiguous tool task name `{name}`"
+            )));
+        }
+    }
+    for (name, dependencies, _) in &scheduled {
+        for dependency in dependencies {
+            if !task_names.contains(dependency) {
                 return Err(ostinato_lang::LangError::Workflow(format!(
                     "task `{name}` has unknown `$after` task `{dependency}`"
                 )));
@@ -1124,25 +1116,28 @@ pub fn run_tool_command(
 
     let mut done = std::collections::BTreeSet::new();
     let mut failed = std::collections::BTreeSet::new();
-    while done.len() < ordered.len() {
+    while done.len() < scheduled.len() {
         let mut progress = false;
-        for (name, item) in &ordered {
+        for (name, dependencies, task) in &scheduled {
             if done.contains(name) {
                 continue;
             }
-            if after_blocked(item, &failed)? {
+            if dependencies
+                .iter()
+                .any(|dependency| failed.contains(dependency))
+            {
                 done.insert(name.clone());
                 failed.insert(name.clone());
                 progress = true;
                 continue;
             }
-            if !after_done(item, &done, &failed)? {
+            if !dependencies
+                .iter()
+                .all(|dependency| done.contains(dependency))
+            {
                 continue;
             }
-            let Some(task) = tasks.get(name).and_then(value_fields) else {
-                continue;
-            };
-            match execute_tool_task(task)? {
+            match execute_tool_task(task, &source_dir)? {
                 ToolTaskOutcome::NotReady => {}
                 ToolTaskOutcome::Done => {
                     done.insert(name.clone());
@@ -1215,8 +1210,8 @@ fn command_task_items(
             if name != command_name {
                 continue;
             }
+            found = true;
             if let Expr::Struct(task_items, _) = &command_field.value {
-                found = true;
                 tasks.extend(task_items.iter().cloned());
             }
         }
@@ -1260,25 +1255,6 @@ fn after_names(item: &StructItem) -> Result<Vec<String>, ostinato_lang::LangErro
     Ok(names)
 }
 
-fn after_done(
-    item: &StructItem,
-    done: &std::collections::BTreeSet<String>,
-    failed: &std::collections::BTreeSet<String>,
-) -> Result<bool, ostinato_lang::LangError> {
-    let names = after_names(item)?;
-    Ok(names
-        .iter()
-        .all(|name| done.contains(name) && !failed.contains(name)))
-}
-
-fn after_blocked(
-    item: &StructItem,
-    failed: &std::collections::BTreeSet<String>,
-) -> Result<bool, ostinato_lang::LangError> {
-    let names = after_names(item)?;
-    Ok(names.iter().any(|name| failed.contains(name)))
-}
-
 fn collect_after_names(expr: &Expr, out: &mut Vec<String>) -> Result<(), ostinato_lang::LangError> {
     match expr {
         Expr::Ident(name, _) => {
@@ -1298,6 +1274,43 @@ fn collect_after_names(expr: &Expr, out: &mut Vec<String>) -> Result<(), ostinat
     }
 }
 
+fn collect_schedule(
+    map: &BTreeMap<String, Value>,
+    ast: Option<&[StructItem]>,
+    out: &mut Vec<(String, Vec<String>, BTreeMap<String, Value>)>,
+) -> Result<(), ostinato_lang::LangError> {
+    for (key, value) in map {
+        if key.starts_with('$') || key.starts_with('_') || key.starts_with('#') {
+            continue;
+        }
+        let Some(fields) = value_fields(value) else {
+            continue;
+        };
+        let item = ast.and_then(|items| field_item(items, key));
+        if fields.contains_key("$id") {
+            let dependencies = item.map(after_names).transpose()?.unwrap_or_default();
+            out.push((key.clone(), dependencies, fields.clone()));
+            continue;
+        }
+        let sub_ast = item.and_then(|item| match item {
+            StructItem::Field(field) => match &field.value {
+                Expr::Struct(items, _) => Some(items.as_slice()),
+                _ => None,
+            },
+            _ => None,
+        });
+        collect_schedule(fields, sub_ast, out)?;
+    }
+    Ok(())
+}
+
+fn field_item<'a>(items: &'a [StructItem], name: &str) -> Option<&'a StructItem> {
+    items.iter().find(|item| match item {
+        StructItem::Field(field) => matches!(&field.label, Label::Name(label, _) if label == name),
+        _ => false,
+    })
+}
+
 enum ToolTaskOutcome {
     NotReady,
     Done,
@@ -1308,7 +1321,7 @@ fn capture_flag(
     task: &BTreeMap<String, Value>,
     key: &str,
 ) -> Result<bool, ostinato_lang::LangError> {
-    match task.get(key) {
+    match task.get(key).map(Value::concretize) {
         None | Some(Value::Null) => Ok(false),
         Some(Value::String(_))
         | Some(Value::Bytes(_))
@@ -1348,6 +1361,7 @@ fn exec_failure(status: &std::process::ExitStatus) -> String {
 
 fn execute_tool_task(
     task: &BTreeMap<String, Value>,
+    package_dir: &Path,
 ) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
     let Some(Value::String(id)) = task.get("$id") else {
         return Err(ostinato_lang::LangError::Workflow(
@@ -1401,11 +1415,20 @@ fn execute_tool_task(
 
     let mut process = Command::new(&argv[0]);
     process.args(&argv[1..]);
+    process.current_dir(package_dir);
+    let mut resolved_dir = None;
     match task.get("dir").map(Value::concretize) {
         None => {}
         Some(Value::String(dir)) => {
             if !dir.is_empty() {
-                process.current_dir(dir);
+                let path = Path::new(dir);
+                let resolved = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    package_dir.join(path)
+                };
+                process.current_dir(&resolved);
+                resolved_dir = Some(resolved);
             }
         }
         Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
@@ -1416,7 +1439,7 @@ fn execute_tool_task(
             )));
         }
     }
-    match task.get("env") {
+    match task.get("env").map(Value::concretize) {
         None => {}
         Some(Value::Struct(env)) if env.is_empty() => {}
         Some(Value::Struct(env)) => {
@@ -1486,7 +1509,7 @@ fn execute_tool_task(
     } else {
         Stdio::inherit()
     });
-    let must_succeed = match task.get("mustSucceed") {
+    let must_succeed = match task.get("mustSucceed").map(Value::concretize) {
         None => true,
         Some(Value::Bool(value)) => *value,
         Some(Value::Type(_)) | Some(Value::Bottom) => return Ok(ToolTaskOutcome::NotReady),
@@ -1509,8 +1532,10 @@ fn execute_tool_task(
                 .collect::<Vec<_>>()
                 .join(" ");
             let detail = if err.kind() == std::io::ErrorKind::NotFound {
-                if let Some(Value::String(dir)) = task.get("dir").map(Value::concretize) {
-                    format!("chdir {dir}: no such file or directory")
+                if let Some(dir) = &resolved_dir
+                    && !dir.is_dir()
+                {
+                    format!("chdir {}: no such file or directory", dir.display())
                 } else {
                     format!("exec: \"{}\": executable file not found in $PATH", argv[0])
                 }
