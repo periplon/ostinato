@@ -18,7 +18,7 @@ params: {
 agents: {
 	reviewer: {
 		provider: "command"
-		command:  ["./examples/agents/fake-agent.sh"]
+		command:  ["./agents/fake-agent.sh"]
 		model:    "example-model"
 		system:   "You are a strict code reviewer. Return JSON."
 		isolation: {

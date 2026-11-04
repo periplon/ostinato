@@ -165,8 +165,12 @@ impl CommandAgent {
 
     fn invocation(&self, request: &AgentRequest) -> PortResult<Invocation> {
         let requested_delivery = request.prompt_delivery;
+        let provider_delivery = match request.provider {
+            AgentProvider::Codex | AgentProvider::Opencode => PromptDelivery::Arg,
+            AgentProvider::Command | AgentProvider::Claude => PromptDelivery::Stdin,
+        };
         let (mut argv, default_delivery) = if let Some(command) = &request.command {
-            (command.clone(), PromptDelivery::Stdin)
+            (command.clone(), provider_delivery)
         } else {
             match request.provider {
                 AgentProvider::Command => (
