@@ -1171,17 +1171,42 @@ pub fn run_tool_command(
             )
         })
     });
-    for path in &external_paths {
-        if let Some(leaf) = path.last() {
-            task_name_set.insert(leaf.clone());
-        }
-    }
-    // Package-level `$after` dependencies: task nodes declared outside
-    // `command.<name>` (top-level fields, definitions, nested containers) that
-    // command tasks schedule before themselves.
-    let mut external_after: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+    // A command task that aliases a package task (`r: prep`) makes direct
+    // package-root reads of that task non-concrete in CUE.
+    let command_claimed: std::collections::BTreeSet<Vec<String>> = {
+        let command_scopes: Vec<&[StructItem]> = vec![task_items.as_slice()];
+        let mut claimed = std::collections::BTreeSet::new();
+        collect_command_task_package_paths(
+            &Expr::Struct(task_items.clone(), Span::default()),
+            &command_scopes,
+            &combined.items,
+            &non_task_imports,
+            &mut claimed,
+        );
+        claimed
+    };
     {
-        let root_scopes: Vec<&[StructItem]> = vec![combined.items.as_slice()];
+        let order = package_read_order(
+            task_items.as_slice(),
+            &combined.items,
+            &non_task_imports,
+            &command_claimed,
+        );
+        external_paths.retain(|path| {
+            if !command_claimed.contains(path) {
+                return true;
+            }
+            match order.get(path) {
+                Some((Some(declaration), Some(read))) => read <= declaration,
+                _ => true,
+            }
+        });
+    }
+
+    // Package-level tasks reachable from command `$after` operands or package
+    // output reads (top-level fields, definitions, nested containers).
+    let mut package_tasks: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+    {
         let mut queue: std::collections::VecDeque<Vec<String>> = std::collections::VecDeque::new();
         {
             let command_scopes: Vec<&[StructItem]> = vec![task_items.as_slice()];
@@ -1198,55 +1223,61 @@ pub fn run_tool_command(
                 queue.push_back(path);
             }
         }
+        for path in &external_paths {
+            if is_package_root_path(path, &combined.items) {
+                queue.push_back(path.clone());
+            }
+        }
         let mut seen = std::collections::BTreeSet::new();
         while let Some(path) = queue.pop_front() {
-            let Some(leaf) = path.last().cloned() else {
-                continue;
-            };
-            if probe_scheduled
-                .iter()
-                .any(|(scheduled_name, _, _)| scheduled_name == &leaf)
-            {
-                continue;
-            }
-            if !seen.insert(leaf.clone()) {
+            let key = package_task_key(&path);
+            if !seen.insert(key.clone()) {
                 continue;
             }
             let Some(expr) = find_field_expr_at_path(&combined.items, &path) else {
                 continue;
             };
+            let scopes = scopes_for_path(&combined.items, &path);
+            let scope_items = scopes
+                .last()
+                .map_or(combined.items.as_slice(), |(items, _)| *items);
             if !is_task_expr(
                 expr,
-                &root_scopes,
+                &[scope_items],
                 &combined.items,
                 &mut std::collections::BTreeSet::new(),
                 &non_task_imports,
             ) {
                 continue;
             }
-            let mut dependencies = Vec::new();
             let mut dependency_paths = Vec::new();
-            collect_package_after_paths(
+            collect_package_task_after_paths(
                 expr,
-                &root_scopes,
+                &scopes,
                 &combined.items,
                 &non_task_imports,
                 true,
+                &mut std::collections::BTreeSet::new(),
                 &mut dependency_paths,
             )?;
+            let mut dependencies = Vec::new();
             for dependency_path in dependency_paths {
-                if let Some(name) = dependency_path.last()
-                    && !dependencies.contains(name)
-                {
-                    dependencies.push(name.clone());
+                let dependency = package_task_key(&dependency_path);
+                if !dependencies.contains(&dependency) {
+                    dependencies.push(dependency.clone());
                 }
                 queue.push_back(dependency_path);
             }
-            external_after.push((leaf, path, dependencies));
+            package_tasks.push((key, path, dependencies));
         }
     }
-    for (name, _, _) in &external_after {
-        task_name_set.insert(name.clone());
+    for path in external_paths
+        .iter()
+        .chain(package_tasks.iter().map(|(_, path, _)| path))
+    {
+        if let Some(leaf) = path.last() {
+            task_name_set.insert(leaf.clone());
+        }
     }
     let value = eval_file_with_imports_mode_allow_outputs(
         &combined,
@@ -1271,17 +1302,15 @@ pub fn run_tool_command(
             "tool command `{command_name}` has no tasks"
         )));
     }
-    let mut external_by_name: BTreeMap<String, Vec<String>> = external_paths
+    let mut external_by_key: BTreeMap<String, Vec<String>> = external_paths
         .iter()
-        .map(|path| (path.last().cloned().unwrap_or_default(), path.clone()))
+        .map(|path| (external_task_key(path, &combined.items), path.clone()))
         .collect();
-    for (name, path, _) in &external_after {
-        external_by_name
-            .entry(name.clone())
-            .or_insert_with(|| path.clone());
+    for (key, path, _) in &package_tasks {
+        external_by_key.insert(key.clone(), path.clone());
     }
     let mut external_scheduled: Vec<(String, Vec<String>, BTreeMap<String, Value>)> = Vec::new();
-    if !external_by_name.is_empty() {
+    if !external_by_key.is_empty() {
         let full = Some(eval_file_with_imports_mode_allow_outputs(
             &combined,
             &imports,
@@ -1290,25 +1319,25 @@ pub fn run_tool_command(
             &task_name_set,
         )?);
         let source = full.as_ref().unwrap_or(&value);
-        for (name, path) in &external_by_name {
+        for (key, path) in &external_by_key {
             if scheduled
                 .iter()
-                .any(|(scheduled_name, _, _)| scheduled_name == name)
+                .any(|(scheduled_name, _, _)| scheduled_name == key)
             {
                 continue;
             }
             let fields = value_find_path(source, path)
-                .or_else(|| value_find_named(source, name))
+                .or_else(|| path.last().and_then(|leaf| value_find_named(source, leaf)))
                 .and_then(value_fields);
             if let Some(fields) = fields
                 && fields.contains_key("$id")
             {
-                let dependencies = external_after
+                let dependencies = package_tasks
                     .iter()
-                    .find(|(after_name, _, _)| after_name == name)
+                    .find(|(task_key, _, _)| task_key == key)
                     .map(|(_, _, dependencies)| dependencies.clone())
                     .unwrap_or_default();
-                external_scheduled.push((name.clone(), dependencies, fields.clone()));
+                external_scheduled.push((key.clone(), dependencies, fields.clone()));
             }
         }
         let mut merged = external_scheduled.clone();
@@ -1373,7 +1402,7 @@ pub fn run_tool_command(
                 ToolTaskOutcome::Done { outputs } => {
                     done.insert(name.clone());
                     progress = true;
-                    let injected_ok = if let Some(path) = external_by_name.get(name) {
+                    let injected_ok = if let Some(path) = external_by_key.get(name) {
                         inject_named_outputs(
                             &mut combined.items,
                             command_name,
@@ -2746,6 +2775,11 @@ fn after_names(
     after_names_of(&field.value, root, scopes)
 }
 
+/// Internal schedule key for a task declared outside the command subtree.
+fn package_task_key(path: &[String]) -> String {
+    format!("@pkg:{}", path.join("/"))
+}
+
 fn after_names_of(
     expr: &Expr,
     root: &[StructItem],
@@ -2769,11 +2803,16 @@ fn after_names_of(
             &mut std::collections::BTreeSet::new(),
             &mut paths,
         )?;
-        for (path, _) in paths {
-            if let Some(name) = path.last()
-                && !names.contains(name)
+        for (path, root_bound) in paths {
+            let name = if root_bound {
+                Some(package_task_key(&path))
+            } else {
+                path.last().cloned()
+            };
+            if let Some(name) = name
+                && !names.contains(&name)
             {
-                names.push(name.clone());
+                names.push(name);
             }
         }
     }
@@ -2837,19 +2876,25 @@ fn resolve_after_path(
                         Label::Name(label, _) => label.clone(),
                         _ => return None,
                     };
-                    let mut value = &field.value;
-                    while let Expr::Paren(inner, _)
-                    | Expr::Default(inner, _)
-                    | Expr::Bound(_, inner, _) = value
-                    {
-                        value = inner;
-                    }
-                    if matches!(value, Expr::Ident(..) | Expr::Select(..) | Expr::Index(..))
-                        && let Some(alias) = resolve_after_path(value, scopes, root, visited)
-                    {
-                        Some(alias)
+                    if !(field.definition || root_bound) {
+                        // A command-local field is an independent task
+                        // instance; do not collapse it into its target.
+                        Some((vec![label], false))
                     } else {
-                        Some((vec![label], root_bound))
+                        let mut value = &field.value;
+                        while let Expr::Paren(inner, _)
+                        | Expr::Default(inner, _)
+                        | Expr::Bound(_, inner, _) = value
+                        {
+                            value = inner;
+                        }
+                        if matches!(value, Expr::Ident(..) | Expr::Select(..) | Expr::Index(..))
+                            && let Some(alias) = resolve_after_path(value, scopes, root, visited)
+                        {
+                            Some(alias)
+                        } else {
+                            Some((vec![label], root_bound))
+                        }
                     }
                 }
                 Some((root_bound, _)) => Some((vec![name.clone()], root_bound)),
@@ -2877,8 +2922,7 @@ fn resolve_after_path(
     }
 }
 
-/// Collect package-rooted `$after` paths declared by task values reachable
-/// from `expr`.
+/// Collect package-rooted `$after` paths from command task values.
 fn collect_package_after_paths(
     expr: &Expr,
     scopes: &[&[StructItem]],
@@ -2940,6 +2984,535 @@ fn collect_package_after_paths(
             collect_package_after_paths(inner, scopes, root, imports, in_task, out)
         }
         _ => Ok(()),
+    }
+}
+
+/// Struct scopes (with their container paths) enclosing a task path.
+fn scopes_for_path<'a>(
+    root: &'a [StructItem],
+    path: &[String],
+) -> Vec<(&'a [StructItem], Vec<String>)> {
+    let mut scopes: Vec<(&'a [StructItem], Vec<String>)> = vec![(root, Vec::new())];
+    for segment in path.iter().take(path.len().saturating_sub(1)) {
+        let Some((items, prefix)) = scopes.last() else {
+            break;
+        };
+        let Some(value) = items.iter().find_map(|item| match item {
+            StructItem::Field(field)
+                if matches!(&field.label, Label::Name(label, _) if label == segment) =>
+            {
+                Some(&field.value)
+            }
+            _ => None,
+        }) else {
+            break;
+        };
+        let mut next_prefix = prefix.clone();
+        next_prefix.push(segment.clone());
+        let Some(struct_items) = struct_items_of(value) else {
+            break;
+        };
+        scopes.push((struct_items, next_prefix));
+    }
+    scopes
+}
+
+fn struct_items_of(expr: &Expr) -> Option<&[StructItem]> {
+    match expr {
+        Expr::Struct(items, _) => Some(items),
+        Expr::Unify(left, right, _) => struct_items_of(left).or_else(|| struct_items_of(right)),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            struct_items_of(inner)
+        }
+        _ => None,
+    }
+}
+
+fn find_scoped_binding<'a>(
+    scopes: &'a [(&'a [StructItem], Vec<String>)],
+    name: &str,
+) -> Option<(&'a StructItem, &'a [String])> {
+    for (items, prefix) in scopes.iter().rev() {
+        if let Some(item) = items.iter().find(|item| binding_matches(item, name)) {
+            return Some((item, prefix));
+        }
+    }
+    None
+}
+
+fn find_scoped_value<'a>(
+    scopes: &'a [(&'a [StructItem], Vec<String>)],
+    name: &str,
+) -> Option<&'a Expr> {
+    match find_scoped_binding(scopes, name)?.0 {
+        StructItem::Field(field) => Some(&field.value),
+        StructItem::Let { value, .. } => Some(value),
+        _ => None,
+    }
+}
+
+/// Resolve a package-scope `$after` operand to its full container path.
+fn resolve_package_path(
+    expr: &Expr,
+    scopes: &[(&[StructItem], Vec<String>)],
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<Vec<String>> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return None;
+            }
+            let resolved = match find_scoped_binding(scopes, name) {
+                Some((item, prefix)) => {
+                    let label = name.clone();
+                    match item {
+                        StructItem::Let { value, .. } => {
+                            resolve_package_path(value, scopes, visited)
+                        }
+                        StructItem::Field(field) => {
+                            let mut value = &field.value;
+                            while let Expr::Paren(inner, _)
+                            | Expr::Default(inner, _)
+                            | Expr::Bound(_, inner, _) = value
+                            {
+                                value = inner;
+                            }
+                            if matches!(value, Expr::Ident(..) | Expr::Select(..) | Expr::Index(..))
+                                && let Some(alias) = resolve_package_path(value, scopes, visited)
+                            {
+                                Some(alias)
+                            } else {
+                                let mut path = prefix.to_vec();
+                                path.push(label);
+                                Some(path)
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+                None if name.starts_with('#') => Some(vec![name.clone()]),
+                None => None,
+            };
+            visited.remove(name);
+            resolved
+        }
+        Expr::Select(base, field, _, _) => {
+            let mut path = resolve_package_path(base, scopes, visited)?;
+            path.push(field.clone());
+            Some(path)
+        }
+        Expr::Index(base, index, _) => {
+            let segment = index_field_name(index)?;
+            let mut path = resolve_package_path(base, scopes, visited)?;
+            path.push(segment);
+            Some(path)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            resolve_package_path(inner, scopes, visited)
+        }
+        _ => None,
+    }
+}
+
+fn package_after_paths(
+    expr: &Expr,
+    scopes: &[(&[StructItem], Vec<String>)],
+    visited: &mut std::collections::BTreeSet<String>,
+    out: &mut Vec<Vec<String>>,
+) -> Result<(), ostinato_lang::LangError> {
+    match expr {
+        Expr::List(items, _) => {
+            for item in items {
+                package_after_paths(item, scopes, visited, out)?;
+            }
+            Ok(())
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            package_after_paths(inner, scopes, visited, out)
+        }
+        Expr::Ident(..) | Expr::Select(..) | Expr::Index(..) => {
+            if let Some(path) = resolve_package_path(expr, scopes, visited) {
+                out.push(path);
+            }
+            Ok(())
+        }
+        other => Err(ostinato_lang::LangError::Workflow(format!(
+            "unsupported $after expression: {other:?}"
+        ))),
+    }
+}
+
+/// Collect `$after` paths from a package task value, resolving references in
+/// the task's enclosing scopes and through inherited definitions.
+#[allow(clippy::too_many_arguments)]
+fn collect_package_task_after_paths(
+    expr: &Expr,
+    scopes: &[(&[StructItem], Vec<String>)],
+    root: &[StructItem],
+    imports: &ImportKinds,
+    in_task: bool,
+    visited: &mut std::collections::BTreeSet<String>,
+    out: &mut Vec<Vec<String>>,
+) -> Result<(), ostinato_lang::LangError> {
+    match expr {
+        Expr::Struct(items, _) => {
+            let scope_items = scopes.last().map_or(root, |(items, _)| *items);
+            for item in items {
+                let StructItem::Field(field) = item else {
+                    continue;
+                };
+                let Label::Name(label, _) = &field.label else {
+                    continue;
+                };
+                if label == "$after" {
+                    if in_task {
+                        package_after_paths(
+                            &field.value,
+                            scopes,
+                            &mut std::collections::BTreeSet::new(),
+                            out,
+                        )?;
+                    }
+                    continue;
+                }
+                let child_is_task = is_task_expr(
+                    &field.value,
+                    &[scope_items],
+                    root,
+                    &mut std::collections::BTreeSet::new(),
+                    imports,
+                );
+                collect_package_task_after_paths(
+                    &field.value,
+                    scopes,
+                    root,
+                    imports,
+                    child_is_task,
+                    visited,
+                    out,
+                )?;
+            }
+            Ok(())
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            collect_package_task_after_paths(left, scopes, root, imports, in_task, visited, out)?;
+            collect_package_task_after_paths(right, scopes, root, imports, in_task, visited, out)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            collect_package_task_after_paths(inner, scopes, root, imports, in_task, visited, out)
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return Ok(());
+            }
+            if let Some(value) = find_scoped_value(scopes, name) {
+                collect_package_task_after_paths(
+                    value, scopes, root, imports, in_task, visited, out,
+                )?;
+            }
+            visited.remove(name);
+            Ok(())
+        }
+        Expr::Select(..) | Expr::Index(..) => {
+            let scope_slices: Vec<&[StructItem]> = scopes.iter().map(|(items, _)| *items).collect();
+            let mut values = Vec::new();
+            resolve_after_values(
+                &scope_slices,
+                root,
+                expr,
+                &mut std::collections::BTreeSet::new(),
+                &mut values,
+            );
+            for value in values {
+                collect_package_task_after_paths(
+                    value, scopes, root, imports, in_task, visited, out,
+                )?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn package_read_order(
+    items: &[StructItem],
+    root: &[StructItem],
+    imports: &ImportKinds,
+    claimed: &std::collections::BTreeSet<Vec<String>>,
+) -> std::collections::BTreeMap<Vec<String>, (Option<usize>, Option<usize>)> {
+    let scopes: [&[StructItem]; 1] = [items];
+    let mut order: std::collections::BTreeMap<Vec<String>, (Option<usize>, Option<usize>)> =
+        std::collections::BTreeMap::new();
+    let mut counter = 0usize;
+    for item in items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        let index = counter;
+        counter += 1;
+        scan_package_declarations(
+            &field.value,
+            index,
+            &scopes,
+            root,
+            imports,
+            claimed,
+            &mut order,
+        );
+        scan_package_reads(
+            &field.value,
+            index,
+            &scopes,
+            root,
+            imports,
+            claimed,
+            &mut order,
+        );
+    }
+    order
+}
+
+fn scan_package_declarations(
+    expr: &Expr,
+    index: usize,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &ImportKinds,
+    claimed: &std::collections::BTreeSet<Vec<String>>,
+    order: &mut std::collections::BTreeMap<Vec<String>, (Option<usize>, Option<usize>)>,
+) {
+    if is_task_expr(
+        expr,
+        scopes,
+        root,
+        &mut std::collections::BTreeSet::new(),
+        imports,
+    ) && let Some((path, true)) =
+        resolve_after_path(expr, scopes, root, &mut std::collections::BTreeSet::new())
+        && claimed.contains(&path)
+    {
+        let entry = order.entry(path).or_insert((None, None));
+        entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
+    }
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                let StructItem::Field(field) = item else {
+                    continue;
+                };
+                if matches!(&field.label, Label::Name(name, _) if name.starts_with('$')) {
+                    continue;
+                }
+                scan_package_declarations(
+                    &field.value,
+                    index,
+                    scopes,
+                    root,
+                    imports,
+                    claimed,
+                    order,
+                );
+            }
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            scan_package_declarations(left, index, scopes, root, imports, claimed, order);
+            scan_package_declarations(right, index, scopes, root, imports, claimed, order);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            scan_package_declarations(inner, index, scopes, root, imports, claimed, order);
+        }
+        _ => {}
+    }
+}
+
+fn scan_package_reads(
+    expr: &Expr,
+    index: usize,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &ImportKinds,
+    claimed: &std::collections::BTreeSet<Vec<String>>,
+    order: &mut std::collections::BTreeMap<Vec<String>, (Option<usize>, Option<usize>)>,
+) {
+    match expr {
+        Expr::Select(base, field, _, _) => {
+            if matches!(field.as_str(), "stdout" | "success")
+                && let Some(path) = resolved_read_path(
+                    base,
+                    scopes,
+                    root,
+                    &mut std::collections::BTreeSet::new(),
+                    imports,
+                )
+                && claimed.contains(&path)
+            {
+                let entry = order.entry(path).or_insert((None, None));
+                entry.1 = Some(entry.1.map_or(index, |existing| existing.min(index)));
+            }
+            scan_package_reads(base, index, scopes, root, imports, claimed, order);
+        }
+        Expr::Struct(items, _) => {
+            let mut nested = scopes.to_vec();
+            nested.push(items);
+            for item in items {
+                match item {
+                    StructItem::Field(field) => {
+                        if field.definition
+                            || field.optional
+                            || matches!(&field.label, Label::Name(name, _) if !field.quoted && name.starts_with('_'))
+                        {
+                            continue;
+                        }
+                        scan_package_reads(
+                            &field.value,
+                            index,
+                            &nested,
+                            root,
+                            imports,
+                            claimed,
+                            order,
+                        );
+                    }
+                    StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                        scan_package_reads(value, index, &nested, root, imports, claimed, order);
+                    }
+                    StructItem::For { body, .. } | StructItem::If { body, .. } => {
+                        for body_item in body {
+                            if let StructItem::Field(field) = body_item {
+                                scan_package_reads(
+                                    &field.value,
+                                    index,
+                                    &nested,
+                                    root,
+                                    imports,
+                                    claimed,
+                                    order,
+                                );
+                            }
+                        }
+                    }
+                    StructItem::Ellipsis(_) => {}
+                }
+            }
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            scan_package_reads(left, index, scopes, root, imports, claimed, order);
+            scan_package_reads(right, index, scopes, root, imports, claimed, order);
+        }
+        Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Bound(_, inner, _)
+        | Expr::Unary(_, inner, _) => {
+            scan_package_reads(inner, index, scopes, root, imports, claimed, order);
+        }
+        Expr::Index(base, index_expr, _) => {
+            scan_package_reads(base, index, scopes, root, imports, claimed, order);
+            scan_package_reads(index_expr, index, scopes, root, imports, claimed, order);
+        }
+        Expr::Call(callee, arguments, _) => {
+            scan_package_reads(callee, index, scopes, root, imports, claimed, order);
+            for argument in arguments {
+                scan_package_reads(argument, index, scopes, root, imports, claimed, order);
+            }
+        }
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let ostinato_lang::ast::StrPart::Interp(inner) = part {
+                    scan_package_reads(inner, index, scopes, root, imports, claimed, order);
+                }
+            }
+        }
+        Expr::BytesInterp(parts, _) => {
+            for part in parts {
+                if let ostinato_lang::ast::BytePart::Interp(inner) = part {
+                    scan_package_reads(inner, index, scopes, root, imports, claimed, order);
+                }
+            }
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                scan_package_reads(item, index, scopes, root, imports, claimed, order);
+            }
+        }
+        Expr::OpenList(Some(inner), _) => {
+            scan_package_reads(inner, index, scopes, root, imports, claimed, order);
+        }
+        _ => {}
+    }
+}
+
+fn is_package_root_path(path: &[String], root: &[StructItem]) -> bool {
+    let Some(first) = path.first() else {
+        return false;
+    };
+    matches!(
+        local_binding_location(&[root], root, first),
+        Some((true, _))
+    )
+}
+
+fn external_task_key(path: &[String], root: &[StructItem]) -> String {
+    if is_package_root_path(path, root) {
+        package_task_key(path)
+    } else {
+        path.last().cloned().unwrap_or_default()
+    }
+}
+
+/// Package paths that command task fields alias (`r: prep`, `r: group.prep`).
+fn collect_command_task_package_paths(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &ImportKinds,
+    out: &mut std::collections::BTreeSet<Vec<String>>,
+) {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                let StructItem::Field(field) = item else {
+                    continue;
+                };
+                let Label::Name(label, _) = &field.label else {
+                    continue;
+                };
+                if label.starts_with('$')
+                    || field.definition
+                    || field.optional
+                    || (!field.quoted && label.starts_with('_'))
+                {
+                    continue;
+                }
+                let child_is_task = is_task_expr(
+                    &field.value,
+                    scopes,
+                    root,
+                    &mut std::collections::BTreeSet::new(),
+                    imports,
+                );
+                if child_is_task
+                    && let Some((path, true)) = resolve_after_path(
+                        &field.value,
+                        scopes,
+                        root,
+                        &mut std::collections::BTreeSet::new(),
+                    )
+                {
+                    out.insert(path);
+                }
+                collect_command_task_package_paths(&field.value, scopes, root, imports, out);
+            }
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            collect_command_task_package_paths(left, scopes, root, imports, out);
+            collect_command_task_package_paths(right, scopes, root, imports, out);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            collect_command_task_package_paths(inner, scopes, root, imports, out);
+        }
+        _ => {}
     }
 }
 

@@ -1,7 +1,7 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-b347d37
+1ff6f52
 
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                                    16a10c5 [main]
@@ -15,7 +15,7 @@ b347d37
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports     dda0eba (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps      fee7d72 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/order-scan              79704b8 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/package-after           b347d37 [feat/v0.36.0-package-after]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/package-after           1ff6f52 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/path-keyed-reads        6653528 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/root-alias-repeat       eb961ad (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let            aab750d [fix/v0.24.5-let-rejection-scope]
