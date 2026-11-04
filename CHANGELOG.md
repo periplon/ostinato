@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.28.0
+
+Nested task-output dependencies.
+
+- Output-dependency inference recognises selector chains ending in a
+  scheduled task (`\(a.producer.stdout)`, `\(a.b.producer.success)`) and
+  schedules the consumer after the producer, including tasks nested under
+  non-task fields and helpers that reference a sibling task output.
+- The evaluator's incomplete-output allowance follows the same nested shape,
+  so these interpolations resolve after injection instead of erroring.
+- Same-named concrete structs (e.g. `a: producer: {stdout: "concrete"}`)
+  remain concrete and are not treated as task references.
+- Added e2e differential cases and five tool-conformance cases (nested,
+  declaration order, deep nesting, `success`, concrete collision).
+- 434 tests (97 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.27.3
 
 Builtin-import selectors are concrete for injection gating.

@@ -57,6 +57,7 @@ workflow outside the Rust surface has a supported escape hatch.
   (`command: c: base`, `lib.base`/`lib["base"]` selectors, lets, unified bases,
   alias chains), let-rooted selectors (extension), helper fields/lets,
   `$after` ordering (including inherited from composed bases/definitions),
+  output-dependency inference for nested task paths (`\(a.producer.stdout)`),
   `@tag` injection and per-file unused-import rejection;
 - workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, `n_of`
   quorum joins, complex `expression` joins, branch conditions, default

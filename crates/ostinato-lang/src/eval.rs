@@ -1887,13 +1887,19 @@ impl<'a> Frame<'a> {
     ) -> bool {
         match expr {
             Expr::Select(base, field, _, _) => {
-                if matches!(field.as_str(), "stdout" | "success")
-                    && matches!(
-                        unwrap_interp_base(base),
-                        Expr::Ident(name, _) if allowed.contains(name)
-                    )
-                {
-                    return true;
+                if matches!(field.as_str(), "stdout" | "success") {
+                    match unwrap_interp_base(base) {
+                        Expr::Ident(name, _) if allowed.contains(name) => return true,
+                        nested => {
+                            // Nested task declarations (`a: producer: exec.Run`)
+                            // are scheduled under their leaf name.
+                            if selector_leaf_name(nested)
+                                .is_some_and(|leaf| allowed.contains(&leaf))
+                            {
+                                return true;
+                            }
+                        }
+                    }
                 }
                 self.expr_reaches_task_output(base, allowed, seen)
             }
@@ -3344,6 +3350,26 @@ fn merge_declaration(left: &Value, right: &Value, span: Span) -> Result<Value, L
             Ok(Value::Struct(merge_map(left_fields, right_fields, span)?))
         }
         _ => unify_values(left, right, span),
+    }
+}
+
+fn selector_leaf_name(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Select(_, field, _, _) => Some(field.clone()),
+        Expr::Index(_, index, _) => {
+            let Expr::Str(parts, _) = &**index else {
+                return None;
+            };
+            let mut text = String::new();
+            for part in parts {
+                match part {
+                    StrPart::Text(value) => text.push_str(value),
+                    StrPart::Interp(_) => return None,
+                }
+            }
+            Some(text)
+        }
+        _ => None,
     }
 }
 

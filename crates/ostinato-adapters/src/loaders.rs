@@ -2334,6 +2334,34 @@ fn is_task_selection<'a>(
     }
 }
 
+/// Leaf field name of a selector/index chain, e.g. `a.producer` -> `producer`.
+fn selector_leaf(base: &Expr) -> Option<String> {
+    match base {
+        Expr::Select(_, field, _, _) => Some(field.clone()),
+        Expr::Index(_, index, _) => index_field_name(index),
+        _ => None,
+    }
+}
+
+/// Whether a selector chain resolves to a tool task declaration.
+fn selector_resolves_to_task<'a>(
+    base: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+) -> bool {
+    resolve_local_value(scopes, root, base, &mut std::collections::BTreeSet::new()).is_some_and(
+        |value| {
+            is_task_expr(
+                value,
+                scopes,
+                root,
+                &mut std::collections::BTreeSet::new(),
+                &std::collections::BTreeSet::new(),
+            )
+        },
+    )
+}
+
 fn collect_output_refs<'a>(
     expr: &'a Expr,
     scopes: &mut Vec<&'a [StructItem]>,
@@ -2344,18 +2372,32 @@ fn collect_output_refs<'a>(
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success")
-                && let Expr::Ident(name, _) = unwrap_ref_base(base)
-                && names.contains(name)
-                && is_task_binding(
-                    scopes,
-                    root,
-                    name,
-                    &mut std::collections::BTreeSet::new(),
-                    &std::collections::BTreeSet::new(),
-                )
-            {
-                out.insert(name.clone());
+            if matches!(field.as_str(), "stdout" | "success") {
+                match unwrap_ref_base(base) {
+                    Expr::Ident(name, _) => {
+                        if names.contains(name)
+                            && is_task_binding(
+                                scopes,
+                                root,
+                                name,
+                                &mut std::collections::BTreeSet::new(),
+                                &std::collections::BTreeSet::new(),
+                            )
+                        {
+                            out.insert(name.clone());
+                        }
+                    }
+                    nested => {
+                        // Nested task declarations (`a: producer: exec.Run`)
+                        // are scheduled under their leaf name.
+                        if let Some(leaf) = selector_leaf(nested)
+                            && names.contains(&leaf)
+                            && selector_resolves_to_task(nested, scopes, root)
+                        {
+                            out.insert(leaf);
+                        }
+                    }
+                }
             }
             collect_output_refs(base, scopes, root, names, visited, out);
         }

@@ -6501,6 +6501,139 @@ command: chainedunify: second
 }
 
 #[test]
+fn tool_command_nested_task_outputs_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases = [
+        (
+            "nestedoutput",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: nestedoutput: {
+	a: producer: exec.Run & {cmd: ["sh", "-c", "printf abc"], stdout: string}
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+        ),
+        (
+            "nestedoutputorder",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: nestedoutputorder: {
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+	a: producer: exec.Run & {cmd: ["sh", "-c", "printf abc"], stdout: string}
+}
+"#,
+        ),
+        (
+            "nestedoutputdeep",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: nestedoutputdeep: {
+	a: b: producer: exec.Run & {cmd: ["sh", "-c", "printf abc"], stdout: string}
+	q: cli.Print & {text: "R=\(a.b.producer.stdout)"}
+}
+"#,
+        ),
+        (
+            "nestedoutputsuccess",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: nestedoutputsuccess: {
+	a: producer: exec.Run & {cmd: ["false"], success: bool, mustSucceed: false}
+	q: cli.Print & {text: "ok=\(a.producer.success)"}
+}
+"#,
+        ),
+        (
+            "nestedoutputtwo",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: nestedoutputtwo: {
+	a: p1: exec.Run & {cmd: ["sh", "-c", "printf A"], stdout: string}
+	b: p2: exec.Run & {cmd: ["sh", "-c", "printf B"], stdout: string}
+	q: cli.Print & {text: "R=\(a.p1.stdout)-\(b.p2.stdout)"}
+}
+"#,
+        ),
+        (
+            "nestedoutputhelper",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: nestedoutputhelper: {
+	a: {
+		producer: exec.Run & {cmd: ["sh", "-c", "printf abc"], stdout: string}
+		msg: producer.stdout
+	}
+	q: cli.Print & {text: "R=\(a.msg)"}
+}
+"#,
+        ),
+        (
+            "nestedoutputconcrete",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: nestedoutputconcrete: {
+	a: producer: {stdout: "concrete"}
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+	z: t: exec.Run & {cmd: ["true"]}
+}
+"#,
+        ),
+    ];
+    for (name, source) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        write(&cue_dir.path().join("fixture_tool.cue"), source);
+        write(&rust_dir.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert_eq!(actual.stderr, expected.stderr, "{name}");
+    }
+}
+
+#[test]
 fn tool_command_selector_commands_match_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");
