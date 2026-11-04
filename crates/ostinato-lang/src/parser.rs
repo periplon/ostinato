@@ -968,42 +968,13 @@ fn parse_str_parts(raw: &str, span: Span) -> Result<Vec<StrPart>, LangError> {
                 parts.push(StrPart::Text(std::mem::take(&mut text)));
             }
             let start = index + 2;
-            let mut depth = 1usize;
-            let mut end = start;
-            let mut in_string = false;
-            let mut escaped = false;
-            while end < chars.len() {
-                let current = chars[end];
-                if in_string {
-                    if escaped {
-                        escaped = false;
-                    } else if current == '\\' {
-                        escaped = true;
-                    } else if current == '"' {
-                        in_string = false;
-                    }
-                } else {
-                    match current {
-                        '"' => in_string = true,
-                        '(' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                end += 1;
-            }
-            if depth != 0 {
+            let Some(end) = crate::lexer::interpolation_end(&chars, start) else {
                 return Err(LangError::parse(
                     span.line,
                     span.col,
                     "unterminated interpolation",
                 ));
-            }
+            };
             let inner: String = chars[start..end].iter().collect();
             let expr = parse_expr_fragment(&inner)?;
             parts.push(StrPart::Interp(expr));

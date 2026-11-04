@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.19.1
+
+Nested-interpolation scanner parity.
+
+- Single-line string interpolation and the parser's string-part splitter reuse
+  the recursive scanner, so nested bytes/strings containing `"`, `)` or `(` no
+  longer truncate the interpolation.
+- 344 tests (61 CLI E2E, 1 conformance, 240 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.19.0
 
 Nested multiline literals inside interpolation.
