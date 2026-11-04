@@ -138,7 +138,13 @@ section 24-agents-extract "$BIN" --db "$WORK/agents.sqlite" artifacts "$AGENTS_R
 section 25-agents-audit "$BIN" --db "$WORK/agents.sqlite" audit verify "$AGENTS_RUN"
 {
   echo "### git status --porcelain (checkout must stay clean)"
-  git -C "$ROOT" status --porcelain
+  git -C "$ROOT" status --porcelain -- . \
+    ':(exclude)evidence' \
+    ':(exclude)docs/EVIDENCE.md' \
+    ':(exclude)docs/GATEWAYS.md'
+  echo
+  echo "### HEAD"
+  git -C "$ROOT" rev-parse --short HEAD
   echo
   echo "### git worktree list"
   git -C "$ROOT" worktree list

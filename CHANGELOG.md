@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.24.2
+
+Reproducible worktree evidence.
+
+- `scripts/evidence.sh` scopes the checkout status snapshot to tracked
+  changes outside generated evidence, the user-local `docs/GATEWAYS.md` and
+  `docs/EVIDENCE.md`, and records the checked-out commit.
+- Regenerated the evidence bundle on a clean tree so
+  `evidence/26-agents-worktree.txt` no longer captures a mid-rebase state.
+- 427 tests (93 CLI E2E, 1 conformance, 245 language, 6 language agents,
+  3 language unit, 22 application, 9 analysis, 0 domain unit, 22 domain,
+  10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.24.1
 
 Referenced-command scheduling and transitive helper interpolation.
