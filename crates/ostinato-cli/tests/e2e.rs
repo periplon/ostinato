@@ -3882,6 +3882,55 @@ command: interpfirst: {
 "#,
             false,
         ),
+        (
+            "defaultstdout",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: defaultstdout: {
+	p: cli.Print & {text: "ok=\(run.stdout)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: *"x" | string}
+}
+"#,
+            false,
+        ),
+        (
+            "defaultsuccess",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: defaultsuccess: {
+	p: cli.Print & {text: "ok=\(run.success)"}
+	run: exec.Run & {cmd: ["true"], success: *false | bool}
+}
+"#,
+            false,
+        ),
+        (
+            "b",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: a: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'AAA'"], stdout: string}
+	p: cli.Print & {text: "\(run.stdout)"}
+}
+command: b: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'BBB'"], stdout: string}
+	p: cli.Print & {text: "\(run.stdout)"}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -4232,6 +4281,22 @@ command: badprint: {
 "#,
             true,
         ),
+        (
+            "nontaskinterp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/file"
+)
+command: nontaskinterp: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	x: string
+	p: cli.Print & {$after: write, text: "v=\(x)" & "v=abc"}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, file_task) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -4373,6 +4438,21 @@ import (
 command: interpfile: {
 	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc\n'"], stdout: string}
 	w: file.Create & {filename: "out.txt", contents: "pre-\(run.stdout)post"}
+}
+"#,
+            Some("out.txt"),
+        ),
+        (
+            "defaultcapfile",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: defaultcapfile: {
+	w: file.Create & {filename: "out.txt", contents: "pre-\(run.stdout)post"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: *"x" | string}
 }
 "#,
             Some("out.txt"),

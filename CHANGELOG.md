@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.23.1
+
+Interpolation scoping and inferred output dependencies.
+
+- Allow-incomplete evaluation is scoped to interpolations that actually reference scheduled task `stdout`/`success`; other incomplete interpolations still error before any task runs.
+- Output references infer task dependencies, so consumers never run before a producer with defaulted capture fields (`stdout: *"x" | string`, `success: *false | bool`).
+- Output injection is scoped to the selected `command.<name>` subtree, fixing same-named tasks in other commands.
+- Documented derived-expression limit; added e2e coverage for all cases.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.23.0
 
 Interpolation over captured tool outputs.
