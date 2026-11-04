@@ -1068,29 +1068,11 @@ pub fn run_tool_command(
     }
 
     let value = eval_file_with_imports_mode(&combined, &imports, &injected, false)?;
-    let Some(root) = value_fields(&value) else {
-        return Err(ostinato_lang::LangError::Workflow(
-            "tool package did not evaluate to a struct".to_owned(),
-        ));
-    };
-    let Some(command) = root.get("command").and_then(value_fields) else {
-        return Err(ostinato_lang::LangError::Workflow(
-            "no `command` field in tool files".to_owned(),
-        ));
-    };
-    let Some(tasks) = command.get(command_name).and_then(value_fields) else {
-        return Err(ostinato_lang::LangError::Workflow(format!(
-            "unknown tool command `{command_name}`"
-        )));
-    };
+    let mut tasks = extract_command_tasks(&value, command_name)?;
 
     let mut scheduled = Vec::new();
-    if tasks.contains_key("$id") {
-        scheduled.push((command_name.to_owned(), Vec::new(), tasks.clone()));
-    } else {
-        let task_items = command_task_items(&combined.items, command_name)?;
-        collect_schedule(tasks, Some(&task_items), &mut scheduled)?;
-    }
+    let task_items = command_task_items(&combined.items, command_name)?;
+    collect_schedule(&tasks, Some(&task_items), &mut scheduled)?;
     if scheduled.is_empty() {
         return Err(ostinato_lang::LangError::Workflow(format!(
             "tool command `{command_name}` has no tasks"
@@ -1114,11 +1096,16 @@ pub fn run_tool_command(
         }
     }
 
+    let mut flat: BTreeMap<String, BTreeMap<String, Value>> = scheduled
+        .iter()
+        .map(|(name, _, task)| (name.clone(), task.clone()))
+        .collect();
     let mut done = std::collections::BTreeSet::new();
     let mut failed = std::collections::BTreeSet::new();
     while done.len() < scheduled.len() {
         let mut progress = false;
-        for (name, dependencies, task) in &scheduled {
+        let mut updated = false;
+        for (name, dependencies, _) in &scheduled {
             if done.contains(name) {
                 continue;
             }
@@ -1137,11 +1124,30 @@ pub fn run_tool_command(
             {
                 continue;
             }
+            let Some(task) = flat.get(name) else {
+                continue;
+            };
             match execute_tool_task(task, &source_dir)? {
                 ToolTaskOutcome::NotReady => {}
-                ToolTaskOutcome::Done => {
+                ToolTaskOutcome::Done { outputs } => {
                     done.insert(name.clone());
                     progress = true;
+                    if !outputs.is_empty()
+                        && inject_task_outputs(&mut combined.items, name, &outputs)
+                    {
+                        let value =
+                            eval_file_with_imports_mode(&combined, &imports, &injected, false)?;
+                        tasks = extract_command_tasks(&value, command_name)?;
+                        let mut rescheduled = Vec::new();
+                        collect_schedule(&tasks, Some(&task_items), &mut rescheduled)?;
+                        flat = rescheduled
+                            .iter()
+                            .map(|(name, _, task)| (name.clone(), task.clone()))
+                            .collect();
+                        scheduled = rescheduled;
+                        updated = true;
+                        break;
+                    }
                 }
                 ToolTaskOutcome::Failed => {
                     done.insert(name.clone());
@@ -1149,6 +1155,9 @@ pub fn run_tool_command(
                     progress = true;
                 }
             }
+        }
+        if updated {
+            continue;
         }
         if !progress {
             return Err(ostinato_lang::LangError::Workflow(
@@ -1168,16 +1177,33 @@ fn value_fields(value: &Value) -> Option<&BTreeMap<String, Value>> {
 }
 
 fn tool_module(path: &str) -> Option<Value> {
-    let (package, task) = match path {
-        "tool/exec" => ("tool/exec.Run", "Run"),
-        "tool/cli" => ("tool/cli.Print", "Print"),
-        "tool/file" => ("tool/file.Append", "Append"),
-        _ => return None,
-    };
     let mut exports = BTreeMap::new();
-    let mut marker = BTreeMap::new();
-    marker.insert("$id".to_owned(), Value::String(package.to_owned()));
-    exports.insert(task.to_owned(), Value::Struct(marker));
+    let marker = |id: &str| {
+        let mut fields = BTreeMap::new();
+        fields.insert("$id".to_owned(), Value::String(id.to_owned()));
+        Value::Struct(fields)
+    };
+    match path {
+        "tool/exec" => {
+            let mut run = match marker("tool/exec.Run") {
+                Value::Struct(fields) => fields,
+                _ => unreachable!(),
+            };
+            run.insert(
+                "success".to_owned(),
+                Value::Type(ostinato_lang::TypeKind::Bool),
+            );
+            exports.insert("Run".to_owned(), Value::Struct(run));
+        }
+        "tool/cli" => {
+            exports.insert("Print".to_owned(), marker("tool/cli.Print"));
+        }
+        "tool/file" => {
+            exports.insert("Append".to_owned(), marker("tool/file.Append"));
+            exports.insert("Create".to_owned(), marker("tool/file.Create"));
+        }
+        _ => return None,
+    }
     Some(Value::Struct(exports))
 }
 
@@ -1313,32 +1339,38 @@ fn field_item<'a>(items: &'a [StructItem], name: &str) -> Option<&'a StructItem>
 
 enum ToolTaskOutcome {
     NotReady,
-    Done,
+    Done { outputs: Vec<(String, Value)> },
     Failed,
 }
 
-fn capture_flag(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureKind {
+    None,
+    String,
+    Other,
+}
+
+fn capture_kind(
     task: &BTreeMap<String, Value>,
     key: &str,
-    capture_non_null_default: bool,
-) -> Result<bool, ostinato_lang::LangError> {
+) -> Result<CaptureKind, ostinato_lang::LangError> {
     match task.get(key) {
-        None | Some(Value::Null) => Ok(false),
-        Some(Value::String(_))
-        | Some(Value::Bytes(_))
-        | Some(Value::Type(_))
-        | Some(Value::Bottom) => Ok(true),
+        None | Some(Value::Null) => Ok(CaptureKind::None),
+        Some(Value::String(_)) => Ok(CaptureKind::String),
+        Some(Value::Bytes(_)) => Ok(CaptureKind::Other),
+        Some(Value::Type(ostinato_lang::TypeKind::String)) => Ok(CaptureKind::String),
+        Some(Value::Type(_)) | Some(Value::Bottom) => Ok(CaptureKind::Other),
         Some(Value::Disjunction(alternatives, defaults)) => {
             let default = (defaults.len() == 1)
                 .then(|| defaults[0])
                 .and_then(|index| alternatives.get(index))
                 .cloned();
             match default {
-                Some(Value::Null) => Ok(false),
-                Some(Value::String(_) | Value::Bytes(_)) if capture_non_null_default => Ok(true),
-                _ => Err(ostinato_lang::LangError::Workflow(format!(
-                    "invalid {key}: non-concrete value"
-                ))),
+                Some(Value::Null) => Ok(CaptureKind::None),
+                Some(Value::String(_)) | Some(Value::Type(ostinato_lang::TypeKind::String)) => {
+                    Ok(CaptureKind::String)
+                }
+                _ => Ok(CaptureKind::Other),
             }
         }
         Some(other) => Err(ostinato_lang::LangError::Workflow(format!(
@@ -1384,6 +1416,14 @@ fn spawn_detail(err: &std::io::Error, executable: &str) -> String {
     }
 }
 
+fn io_detail(err: &std::io::Error) -> String {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => "no such file or directory".to_owned(),
+        std::io::ErrorKind::PermissionDenied => "permission denied".to_owned(),
+        _ => err.to_string(),
+    }
+}
+
 fn exec_failure(status: &std::process::ExitStatus) -> String {
     if let Some(code) = status.code() {
         return format!("exit status {code}");
@@ -1409,6 +1449,138 @@ fn exec_failure(status: &std::process::ExitStatus) -> String {
     "terminated by signal".to_owned()
 }
 
+fn output_expr(value: &Value) -> Option<Expr> {
+    match value {
+        Value::String(text) => Some(Expr::Str(
+            vec![ostinato_lang::ast::StrPart::Text(text.clone())],
+            Span::default(),
+        )),
+        Value::Bool(value) => Some(Expr::Bool(*value, Span::default())),
+        _ => None,
+    }
+}
+
+fn inject_into_struct(expr: &mut Expr, field: &str, value: &Expr) -> bool {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                let StructItem::Field(existing) = item else {
+                    continue;
+                };
+                if matches!(&existing.label, Label::Name(name, _) if name == field) {
+                    existing.value = Expr::Unify(
+                        Box::new(existing.value.clone()),
+                        Box::new(value.clone()),
+                        Span::default(),
+                    );
+                    return true;
+                }
+            }
+            false
+        }
+        Expr::Unify(left, right, _) => {
+            inject_into_struct(left, field, value) || inject_into_struct(right, field, value)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => inject_into_struct(inner, field, value),
+        _ => false,
+    }
+}
+
+fn inject_task_outputs(
+    items: &mut [StructItem],
+    task_name: &str,
+    outputs: &[(String, Value)],
+) -> bool {
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                if matches!(&field.label, Label::Name(name, _) if name == task_name) {
+                    let mut injected = false;
+                    for (name, value) in outputs {
+                        if let Some(expr) = output_expr(value)
+                            && inject_into_struct(&mut field.value, name, &expr)
+                        {
+                            injected = true;
+                        }
+                    }
+                    if injected {
+                        return true;
+                    }
+                }
+                if inject_task_outputs_in_expr(&mut field.value, task_name, outputs) {
+                    return true;
+                }
+            }
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                if inject_task_outputs_in_expr(value, task_name, outputs) {
+                    return true;
+                }
+            }
+            StructItem::For { source, body, .. } => {
+                if inject_task_outputs_in_expr(source, task_name, outputs)
+                    || inject_task_outputs(body, task_name, outputs)
+                {
+                    return true;
+                }
+            }
+            StructItem::If { cond, body, .. } => {
+                if inject_task_outputs_in_expr(cond, task_name, outputs)
+                    || inject_task_outputs(body, task_name, outputs)
+                {
+                    return true;
+                }
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+    false
+}
+
+fn inject_task_outputs_in_expr(
+    expr: &mut Expr,
+    task_name: &str,
+    outputs: &[(String, Value)],
+) -> bool {
+    match expr {
+        Expr::Struct(items, _) => inject_task_outputs(items, task_name, outputs),
+        Expr::Unify(left, right, _) => {
+            inject_task_outputs_in_expr(left, task_name, outputs)
+                || inject_task_outputs_in_expr(right, task_name, outputs)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+            inject_task_outputs_in_expr(inner, task_name, outputs)
+        }
+        _ => false,
+    }
+}
+
+fn extract_command_tasks(
+    value: &Value,
+    command_name: &str,
+) -> Result<BTreeMap<String, Value>, ostinato_lang::LangError> {
+    let Some(root) = value_fields(value) else {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool package did not evaluate to a struct".to_owned(),
+        ));
+    };
+    let Some(command) = root.get("command").and_then(value_fields) else {
+        return Err(ostinato_lang::LangError::Workflow(
+            "no `command` field in tool files".to_owned(),
+        ));
+    };
+    let Some(tasks) = command.get(command_name).and_then(value_fields) else {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "unknown tool command `{command_name}`"
+        )));
+    };
+    if tasks.contains_key("$id") {
+        let mut wrapped = BTreeMap::new();
+        wrapped.insert(command_name.to_owned(), Value::Struct(tasks.clone()));
+        return Ok(wrapped);
+    }
+    Ok(tasks.clone())
+}
+
 fn execute_tool_task(
     task: &BTreeMap<String, Value>,
     package_dir: &Path,
@@ -1418,11 +1590,107 @@ fn execute_tool_task(
             "tool task is missing a `$id`; use a tool package task such as `exec.Run`".to_owned(),
         ));
     };
-    if id != "tool/exec.Run" {
-        return Err(ostinato_lang::LangError::Workflow(format!(
-            "tool task `{id}` is not implemented; only tool/exec.Run is supported"
-        )));
+    match id.as_str() {
+        "tool/exec.Run" => execute_exec(task, package_dir),
+        "tool/cli.Print" => execute_print(task),
+        "tool/file.Append" => execute_file(task, package_dir, false),
+        "tool/file.Create" => execute_file(task, package_dir, true),
+        other => Err(ostinato_lang::LangError::Workflow(format!(
+            "tool task `{other}` is not implemented"
+        ))),
     }
+}
+
+fn execute_print(
+    task: &BTreeMap<String, Value>,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let text = match task.get("text") {
+        Some(Value::String(text)) => text,
+        Some(Value::Bytes(_)) => {
+            return Err(ostinato_lang::LangError::Workflow(
+                "invalid string argument: non-concrete value".to_owned(),
+            ));
+        }
+        Some(Value::Type(_)) | Some(Value::Bottom) | None => return Ok(ToolTaskOutcome::NotReady),
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/cli.Print `text` must be a string, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    let mut stdout = std::io::stdout();
+    stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.write_all(b"\n"))
+        .and_then(|()| stdout.flush())
+        .map_err(|err| {
+            ostinato_lang::LangError::Workflow(format!("tool/cli.Print failed: {err}"))
+        })?;
+    Ok(ToolTaskOutcome::Done {
+        outputs: Vec::new(),
+    })
+}
+
+fn execute_file(
+    task: &BTreeMap<String, Value>,
+    package_dir: &Path,
+    truncate: bool,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let filename = match task.get("filename").map(Value::concretize) {
+        Some(Value::String(filename)) => filename.clone(),
+        Some(Value::Type(_)) | Some(Value::Bottom) | None => return Ok(ToolTaskOutcome::NotReady),
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/file task `filename` must be a string, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    let contents = match task.get("contents").map(Value::concretize) {
+        Some(Value::String(text)) => text.clone().into_bytes(),
+        Some(Value::Bytes(bytes)) => bytes.clone(),
+        Some(Value::Type(_)) | Some(Value::Bottom) | None => return Ok(ToolTaskOutcome::NotReady),
+        Some(other) => {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "tool/file task `contents` must be a string or bytes, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    let path = Path::new(&filename);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        package_dir.join(path)
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true);
+    if truncate {
+        options.truncate(true);
+    } else {
+        options.append(true);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("task failed: open {filename}: {}", io_detail(&err));
+            return Ok(ToolTaskOutcome::Failed);
+        }
+    };
+    if let Err(err) = file.write_all(&contents) {
+        eprintln!("task failed: write {filename}: {}", io_detail(&err));
+        return Ok(ToolTaskOutcome::Failed);
+    }
+    Ok(ToolTaskOutcome::Done {
+        outputs: Vec::new(),
+    })
+}
+
+fn execute_exec(
+    task: &BTreeMap<String, Value>,
+    package_dir: &Path,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
     let Some(cmd) = task.get("cmd") else {
         return Err(ostinato_lang::LangError::Workflow(
             "tool/exec.Run task is missing `cmd`".to_owned(),
@@ -1563,8 +1831,20 @@ fn execute_tool_task(
         }
     };
 
-    let capture_stdout = capture_flag(task, "stdout", false)?;
-    let capture_stderr = capture_flag(task, "stderr", true)?;
+    let capture_stdout = capture_kind(task, "stdout")?;
+    let capture_stderr = capture_kind(task, "stderr")?;
+    if capture_stdout == CaptureKind::Other {
+        return Err(ostinato_lang::LangError::Workflow(
+            "invalid stdout: conflicting values bytes and string".to_owned(),
+        ));
+    }
+    if capture_stderr == CaptureKind::Other {
+        return Err(ostinato_lang::LangError::Workflow(
+            "invalid stderr: conflicting values bytes and string".to_owned(),
+        ));
+    }
+    let capture_stdout = capture_stdout == CaptureKind::String;
+    let capture_stderr = capture_stderr == CaptureKind::String;
     process.stdin(if stdin.is_some() {
         Stdio::piped()
     } else {
@@ -1608,7 +1888,9 @@ fn execute_tool_task(
         Ok(child) => child,
         Err(err) => {
             if !must_succeed {
-                return Ok(ToolTaskOutcome::Done);
+                return Ok(ToolTaskOutcome::Done {
+                    outputs: Vec::new(),
+                });
             }
             let printable = argv
                 .iter()
@@ -1648,17 +1930,16 @@ fn execute_tool_task(
             }
         })
     });
-    let status = if capture_stdout || capture_stderr {
-        child
-            .wait_with_output()
-            .map_err(|err| {
-                ostinato_lang::LangError::Workflow(format!("tool/exec.Run wait failed: {err}"))
-            })?
-            .status
-    } else {
-        child.wait().map_err(|err| {
+    let (status, output) = if capture_stdout || capture_stderr {
+        let output = child.wait_with_output().map_err(|err| {
             ostinato_lang::LangError::Workflow(format!("tool/exec.Run wait failed: {err}"))
-        })?
+        })?;
+        (output.status, Some(output))
+    } else {
+        let status = child.wait().map_err(|err| {
+            ostinato_lang::LangError::Workflow(format!("tool/exec.Run wait failed: {err}"))
+        })?;
+        (status, None)
     };
     if let Some(writer) = writer {
         let _ = writer.join();
@@ -1675,7 +1956,17 @@ fn execute_tool_task(
         );
         return Ok(ToolTaskOutcome::Failed);
     }
-    Ok(ToolTaskOutcome::Done)
+    let mut outputs = Vec::new();
+    if let Some(output) = &output
+        && capture_stdout
+    {
+        outputs.push((
+            "stdout".to_owned(),
+            Value::String(String::from_utf8_lossy(&output.stdout).into_owned()),
+        ));
+    }
+    outputs.push(("success".to_owned(), Value::Bool(status.success())));
+    Ok(ToolTaskOutcome::Done { outputs })
 }
 
 #[cfg(test)]

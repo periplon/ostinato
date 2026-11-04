@@ -3737,6 +3737,36 @@ command: stderrdefault: {run: exec.Run & {cmd: ["sh", "-c", "echo hi"], stderr: 
 "#,
             false,
         ),
+        (
+            "cap",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: cap: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc\n'"], stdout: string}
+	print: cli.Print & {text: run.stdout}
+}
+"#,
+            false,
+        ),
+        (
+            "printfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: printfirst: {
+	print: cli.Print & {text: run.stdout}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -4012,5 +4042,70 @@ command: relbin: {run: exec.Run & {cmd: ["./prog"], dir: "sub"}}
         assert_eq!(actual.status.code(), expected.status.code(), "{name}");
         assert_eq!(actual.stdout, expected.stdout, "{name}");
         assert_eq!(actual.stderr, expected.stderr, "{name}");
+    }
+}
+
+#[test]
+fn tool_command_print_and_file_tasks_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases = [
+        (
+            "append",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: append: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'line1\\n'"], stdout: string}
+	write: file.Append & {$after: run, filename: "out.txt", contents: run.stdout}
+}
+"#,
+            Some("out.txt"),
+        ),
+        (
+            "create",
+            r#"
+package foo
+import "tool/file"
+command: create: {write: file.Create & {filename: "created.txt", contents: "c"}}
+"#,
+            Some("created.txt"),
+        ),
+        (
+            "missing",
+            r#"
+package foo
+import "tool/file"
+command: missing: {write: file.Append & {filename: "sub/out.txt", contents: "x"}}
+"#,
+            None,
+        ),
+    ];
+    for (name, source, artifact) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        write(&cue_dir.path().join("fixture_tool.cue"), source);
+        write(&rust_dir.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert_eq!(actual.stderr, expected.stderr, "{name}");
+        if let Some(artifact) = artifact {
+            assert_eq!(
+                std::fs::read(cue_dir.path().join(artifact)).expect("cue artifact"),
+                std::fs::read(rust_dir.path().join(artifact)).expect("rust artifact"),
+                "{name}: file contents differ"
+            );
+        }
     }
 }
