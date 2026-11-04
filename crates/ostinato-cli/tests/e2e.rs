@@ -7448,9 +7448,105 @@ import (
 	"tool/cli"
 	"tool/exec"
 )
-prep: exec.Run & {cmd: ["sh", "-c", "printf P"], stdout: string}
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
 command: afteroutputselector: {
-	a: exec.Run & {$after: prep.stdout, cmd: ["sh", "-c", "printf A"], stdout: string}
+	a: exec.Run & {$after: prep.stdout, cmd: ["sh", "-c", "printf A >> order.txt"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aftertaskmissing",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
+command: aftertaskmissing: {
+	a: exec.Run & {$after: prep.missing, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aftergroupstdout",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+group: {prep: exec.Run & {cmd: ["sh", "-c", "printf G >> order.txt"], stdout: string}}
+command: aftergroupstdout: {
+	a: exec.Run & {$after: group.prep.stdout, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "afterlocalstdout",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: afterlocalstdout: {
+	local: exec.Run & {cmd: ["sh", "-c", "printf L >> order.txt"], stdout: string}
+	a: exec.Run & {$after: local.stdout, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "afterlettask",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let y = 5
+command: afterlettask: {
+	a: exec.Run & {$after: y, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterletselect",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let g = {x: 1}
+command: afterletselect: {
+	a: exec.Run & {$after: g.x, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "aftermathpi",
+            r#"
+package foo
+import (
+	"math"
+	"tool/cli"
+	"tool/exec"
+)
+command: aftermathpi: {
+	a: exec.Run & {$after: math.Pi, cmd: ["sh", "-c", "printf A"], stdout: string}
 	q: cli.Print & {text: "R=\(a.stdout)"}
 }
 "#,

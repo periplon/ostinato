@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.37.1
+
+Non-task `$after` operand corrections.
+
+- `$after: task.field` schedules the task that owns the field, matching CUE:
+  `$after: prep.stdout` runs `prep` first, and container/definition prefixes
+  (`group.prep.stdout`, `#G.prep.stdout`) schedule their task. Missing members
+  of a task (`prep.missing`) behave the same.
+- `$after` operands rooted at a `let` or an import are kept for the
+  evaluator's use checks, so `$after: y`/`math.Pi` no longer produce
+  unreferenced-let or unused-import errors; they still add no dependency.
+- Undefined roots continue to fail evaluation like CUE.
+- Documented the remaining alias-target plain-field read limitation in
+  `docs/SCOPE.md`.
+- Added e2e and conformance coverage for task-field selectors, lets, imports
+  and package-level non-task operands.
+
+- 443 tests (106 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.37.0
 
 Nested package alias ordering and non-task `$after` operands.
