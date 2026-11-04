@@ -74,6 +74,8 @@ pub struct Field {
     pub definition: bool,
     pub alias: Option<String>,
     pub quoted: bool,
+    /// Set when the label came from a bytes literal: the decoded rune count.
+    pub bytes_label_runes: Option<usize>,
     pub attributes: Vec<Attribute>,
     pub span: Span,
 }

@@ -352,6 +352,7 @@ impl Parser {
                     None
                 };
                 let quoted = matches!(self.peek_tok(), Tok::Str(_) | Tok::Bytes(_));
+                let bytes_label_runes = self.bytes_label_runes();
                 let definition = matches!(
                     self.peek_tok(),
                     Tok::Ident(name) if name.starts_with('#')
@@ -371,6 +372,7 @@ impl Parser {
                     definition,
                     alias,
                     quoted,
+                    bytes_label_runes,
                     attributes,
                     span,
                 })))
@@ -407,6 +409,20 @@ impl Parser {
         };
         self.expect(&Tok::RBracket, "`]`")?;
         Ok(Some(pattern))
+    }
+
+    fn bytes_label_runes(&self) -> Option<usize> {
+        let Tok::Bytes(parts) = self.peek_tok() else {
+            return None;
+        };
+        let mut bytes = Vec::new();
+        for part in parts {
+            match part {
+                LexBytePart::Text(value) => bytes.extend_from_slice(value),
+                LexBytePart::Interp(_) => return None,
+            }
+        }
+        Some(String::from_utf8_lossy(&bytes).chars().count())
     }
 
     fn parse_label(&mut self) -> Result<Label, LangError> {
@@ -591,6 +607,7 @@ impl Parser {
         if nested {
             let span = self.span();
             let quoted = matches!(self.peek_tok(), Tok::Str(_) | Tok::Bytes(_));
+            let bytes_label_runes = self.bytes_label_runes();
             let definition = matches!(
                 self.peek_tok(),
                 Tok::Ident(name) if name.starts_with('#')
@@ -612,6 +629,7 @@ impl Parser {
                     definition,
                     alias,
                     quoted,
+                    bytes_label_runes,
                     attributes,
                     span,
                 })],

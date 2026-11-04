@@ -3310,3 +3310,72 @@ workflow: {{
             .success()
     );
 }
+
+#[test]
+fn tag_placement_violations_match_both_evaluators() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let cases = [
+        (
+            "multi-bytes.cue",
+            r#"
+package demo
+params: {x: {'ab': string | *"v" @tag(ab)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "in-list.cue",
+            r#"
+package demo
+params: {l: [{a: string | *"v" @tag(a)}]}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "in-listcomp.cue",
+            r#"
+package demo
+params: {l: [for i in [1] {a: string | *"v" @tag(a)}]}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+    ];
+    for (name, body) in cases {
+        let workflow = directory.path().join(name);
+        write(&workflow, body);
+        let db_rust = directory.path().join(format!("{name}.rust.sqlite"));
+        let rust = ost(&[
+            "--db",
+            db_rust.to_str().expect("db"),
+            "--json",
+            "validate",
+            workflow.to_str().expect("workflow"),
+        ]);
+        assert!(
+            !rust.status.success(),
+            "rust must reject {name}: {}",
+            String::from_utf8_lossy(&rust.stdout)
+        );
+        let db_cue = directory.path().join(format!("{name}.cue.sqlite"));
+        let oracle = ost(&[
+            "--db",
+            db_cue.to_str().expect("db"),
+            "--cue",
+            &cue,
+            "--evaluator",
+            "cue",
+            "--json",
+            "validate",
+            workflow.to_str().expect("workflow"),
+        ]);
+        assert!(
+            !oracle.status.success(),
+            "cue must reject {name}: {}",
+            String::from_utf8_lossy(&oracle.stdout)
+        );
+    }
+}

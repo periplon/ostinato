@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.20.2
+
+`@tag` placement parity.
+
+- `@tag` is rejected on fields that live inside lists (including open lists,
+  list comprehensions, nested structs and definitions in list elements) and on
+  multi-rune bytes-literal labels, matching CUE. Identifier/quoted/
+  single-rune bytes labels, definitions, nested structs and a tag on the field
+  holding a list remain allowed.
+- Validation runs in both the loader tag scan and the Rust evaluator entry
+  points; conformance/language/CLI regressions added.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.20.1
 
 Bytes-label comprehension parsing and identity documentation.
