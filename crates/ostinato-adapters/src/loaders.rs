@@ -1098,8 +1098,7 @@ pub fn run_tool_command(
         }
     }
     ostinato_lang::assign_field_ids(&mut combined);
-    let import_aliases: std::collections::BTreeSet<String> = imports.keys().cloned().collect();
-    sanitize_after_fields(&mut combined.items, &import_aliases, &non_task_imports);
+    sanitize_after_fields(&mut combined.items, &non_task_imports);
     let tags = ostinato_lang::parameter_tags(&combined)?;
     let injected = BTreeMap::new();
     for (key, raw) in overrides {
@@ -2961,16 +2960,12 @@ fn resolve_after_path(
 /// Drop `$after` operands that are defined but not tasks, matching CUE's
 /// "ignore non-task references" behaviour while keeping undefined references
 /// so evaluation still reports them.
-fn sanitize_after_fields(
-    items: &mut [StructItem],
-    import_aliases: &std::collections::BTreeSet<String>,
-    imports: &ImportKinds,
-) {
+fn sanitize_after_fields(items: &mut [StructItem], imports: &ImportKinds) {
     let mut plan: std::collections::BTreeMap<usize, Expr> = std::collections::BTreeMap::new();
     {
         let root: &[StructItem] = items;
         let mut scopes: Vec<&[StructItem]> = Vec::new();
-        plan_after_fields(items, root, import_aliases, imports, &mut scopes, &mut plan);
+        plan_after_fields(items, root, imports, &mut scopes, &mut plan);
     }
     apply_after_plan(items, &plan);
 }
@@ -2978,7 +2973,6 @@ fn sanitize_after_fields(
 fn plan_after_fields<'a>(
     items: &'a [StructItem],
     root: &'a [StructItem],
-    import_aliases: &std::collections::BTreeSet<String>,
     imports: &ImportKinds,
     scopes: &mut Vec<&'a [StructItem]>,
     plan: &mut std::collections::BTreeMap<usize, Expr>,
@@ -2988,26 +2982,25 @@ fn plan_after_fields<'a>(
         match item {
             StructItem::Field(field) => {
                 if matches!(&field.label, Label::Name(name, _) if name == "$after") {
-                    let kept =
-                        filter_after_operands(&field.value, scopes, root, import_aliases, imports);
+                    let kept = filter_after_operands(&field.value, scopes, root, imports);
                     plan.insert(field.id, Expr::List(kept, field.value.span()));
                 } else {
-                    plan_after_expr(&field.value, root, import_aliases, imports, scopes, plan);
+                    plan_after_expr(&field.value, root, imports, scopes, plan);
                 }
             }
             StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                plan_after_expr(value, root, import_aliases, imports, scopes, plan);
+                plan_after_expr(value, root, imports, scopes, plan);
             }
             StructItem::For { source, body, .. } => {
-                plan_after_expr(source, root, import_aliases, imports, scopes, plan);
+                plan_after_expr(source, root, imports, scopes, plan);
                 for body_item in body {
-                    plan_after_item(body_item, root, import_aliases, imports, scopes, plan);
+                    plan_after_item(body_item, root, imports, scopes, plan);
                 }
             }
             StructItem::If { cond, body, .. } => {
-                plan_after_expr(cond, root, import_aliases, imports, scopes, plan);
+                plan_after_expr(cond, root, imports, scopes, plan);
                 for body_item in body {
-                    plan_after_item(body_item, root, import_aliases, imports, scopes, plan);
+                    plan_after_item(body_item, root, imports, scopes, plan);
                 }
             }
             StructItem::Ellipsis(_) => {}
@@ -3019,7 +3012,6 @@ fn plan_after_fields<'a>(
 fn plan_after_item<'a>(
     item: &'a StructItem,
     root: &'a [StructItem],
-    import_aliases: &std::collections::BTreeSet<String>,
     imports: &ImportKinds,
     scopes: &mut Vec<&'a [StructItem]>,
     plan: &mut std::collections::BTreeMap<usize, Expr>,
@@ -3027,15 +3019,14 @@ fn plan_after_item<'a>(
     match item {
         StructItem::Field(field) => {
             if matches!(&field.label, Label::Name(name, _) if name == "$after") {
-                let kept =
-                    filter_after_operands(&field.value, scopes, root, import_aliases, imports);
+                let kept = filter_after_operands(&field.value, scopes, root, imports);
                 plan.insert(field.id, Expr::List(kept, field.value.span()));
             } else {
-                plan_after_expr(&field.value, root, import_aliases, imports, scopes, plan);
+                plan_after_expr(&field.value, root, imports, scopes, plan);
             }
         }
         StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-            plan_after_expr(value, root, import_aliases, imports, scopes, plan);
+            plan_after_expr(value, root, imports, scopes, plan);
         }
         _ => {}
     }
@@ -3044,44 +3035,43 @@ fn plan_after_item<'a>(
 fn plan_after_expr<'a>(
     expr: &'a Expr,
     root: &'a [StructItem],
-    import_aliases: &std::collections::BTreeSet<String>,
     imports: &ImportKinds,
     scopes: &mut Vec<&'a [StructItem]>,
     plan: &mut std::collections::BTreeMap<usize, Expr>,
 ) {
     match expr {
         Expr::Struct(items, _) => {
-            plan_after_fields(items, root, import_aliases, imports, scopes, plan);
+            plan_after_fields(items, root, imports, scopes, plan);
         }
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            plan_after_expr(left, root, import_aliases, imports, scopes, plan);
-            plan_after_expr(right, root, import_aliases, imports, scopes, plan);
+            plan_after_expr(left, root, imports, scopes, plan);
+            plan_after_expr(right, root, imports, scopes, plan);
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
         | Expr::Unary(_, inner, _) => {
-            plan_after_expr(inner, root, import_aliases, imports, scopes, plan);
+            plan_after_expr(inner, root, imports, scopes, plan);
         }
         Expr::Index(base, index, _) => {
-            plan_after_expr(base, root, import_aliases, imports, scopes, plan);
-            plan_after_expr(index, root, import_aliases, imports, scopes, plan);
+            plan_after_expr(base, root, imports, scopes, plan);
+            plan_after_expr(index, root, imports, scopes, plan);
         }
         Expr::Call(callee, arguments, _) => {
-            plan_after_expr(callee, root, import_aliases, imports, scopes, plan);
+            plan_after_expr(callee, root, imports, scopes, plan);
             for argument in arguments {
-                plan_after_expr(argument, root, import_aliases, imports, scopes, plan);
+                plan_after_expr(argument, root, imports, scopes, plan);
             }
         }
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
             for item in items {
-                plan_after_expr(item, root, import_aliases, imports, scopes, plan);
+                plan_after_expr(item, root, imports, scopes, plan);
             }
         }
         Expr::OpenList(Some(inner), _) => {
-            plan_after_expr(inner, root, import_aliases, imports, scopes, plan);
+            plan_after_expr(inner, root, imports, scopes, plan);
         }
         _ => {}
     }
@@ -3091,19 +3081,34 @@ fn filter_after_operands(
     expr: &Expr,
     scopes: &[&[StructItem]],
     root: &[StructItem],
-    import_aliases: &std::collections::BTreeSet<String>,
     imports: &ImportKinds,
 ) -> Vec<Expr> {
     match expr {
         Expr::List(items, _) => items
             .iter()
-            .flat_map(|item| filter_after_operands(item, scopes, root, import_aliases, imports))
+            .flat_map(|item| filter_after_operands(item, scopes, root, imports))
             .collect(),
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            filter_after_operands(inner, scopes, root, import_aliases, imports)
+            filter_after_operands(inner, scopes, root, imports)
         }
-        Expr::Ident(..) | Expr::Select(..) | Expr::Index(..) => {
-            if keep_after_operand(expr, scopes, root, import_aliases, imports) {
+        Expr::Select(..) | Expr::Index(..) => {
+            if let Some(prefix) = after_task_prefix(expr, scopes, root, imports) {
+                vec![prefix]
+            } else if keep_after_reference(expr, scopes, root) {
+                vec![expr.clone()]
+            } else {
+                Vec::new()
+            }
+        }
+        Expr::Ident(..) => {
+            if is_task_expr(
+                expr,
+                scopes,
+                root,
+                &mut std::collections::BTreeSet::new(),
+                imports,
+            ) || keep_after_reference(expr, scopes, root)
+            {
                 vec![expr.clone()]
             } else {
                 Vec::new()
@@ -3113,109 +3118,61 @@ fn filter_after_operands(
     }
 }
 
-fn keep_after_operand(
+/// Longest base of a selector that resolves to a task.
+///
+/// CUE schedules the task that owns the selected field, so `$after:
+/// prep.stdout` means "after prep", and `$after: group.prep.stdout` means
+/// "after group.prep".
+fn after_task_prefix(
     expr: &Expr,
     scopes: &[&[StructItem]],
     root: &[StructItem],
-    import_aliases: &std::collections::BTreeSet<String>,
     imports: &ImportKinds,
-) -> bool {
-    let is_task = || {
-        is_task_expr(
-            expr,
-            scopes,
-            root,
-            &mut std::collections::BTreeSet::new(),
-            imports,
-        )
-    };
+) -> Option<Expr> {
     match expr {
-        Expr::Ident(name, _) => {
-            if is_task() {
-                return true;
-            }
-            // defined but non-task references are ignored; undefined ones stay
-            // so evaluation reports them like CUE.
-            local_binding_location(scopes, root, name).is_none() && !import_aliases.contains(name)
-        }
-        Expr::Select(base, field, _, _) => {
-            match resolve_local_value(scopes, root, base, &mut std::collections::BTreeSet::new()) {
-                Some(base_value) => select_field_value(
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+            if let Some(value) =
+                resolve_local_value(scopes, root, expr, &mut std::collections::BTreeSet::new())
+                && is_task_expr(
+                    value,
                     scopes,
                     root,
-                    base_value,
-                    field,
                     &mut std::collections::BTreeSet::new(),
+                    imports,
                 )
-                .is_some_and(|value| {
-                    is_task_expr(
-                        value,
-                        scopes,
-                        root,
-                        &mut std::collections::BTreeSet::new(),
-                        imports,
-                    )
-                }),
-                None => keep_import_or_undefined(expr, scopes, root, import_aliases, &is_task),
+            {
+                return Some(expr.clone());
             }
-        }
-        Expr::Index(base, index, _) => {
-            match resolve_local_value(scopes, root, base, &mut std::collections::BTreeSet::new()) {
-                Some(base_value) => {
-                    let key = index_field_name(index).or_else(|| {
-                        resolve_string_value(
-                            scopes,
-                            root,
-                            index,
-                            &mut std::collections::BTreeSet::new(),
-                        )
-                    });
-                    let Some(key) = key else {
-                        return false;
-                    };
-                    let selected = if let Expr::List(items, _) = base_value {
-                        key.parse::<usize>()
-                            .ok()
-                            .and_then(|position| items.get(position))
-                    } else {
-                        select_field_value(
-                            scopes,
-                            root,
-                            base_value,
-                            &key,
-                            &mut std::collections::BTreeSet::new(),
-                        )
-                    };
-                    selected.is_some_and(|value| {
-                        is_task_expr(
-                            value,
-                            scopes,
-                            root,
-                            &mut std::collections::BTreeSet::new(),
-                            imports,
-                        )
-                    })
-                }
-                None => keep_import_or_undefined(expr, scopes, root, import_aliases, &is_task),
+            if let Some(value) =
+                resolve_local_value(scopes, root, base, &mut std::collections::BTreeSet::new())
+                && is_task_expr(
+                    value,
+                    scopes,
+                    root,
+                    &mut std::collections::BTreeSet::new(),
+                    imports,
+                )
+            {
+                return Some((**base).clone());
             }
+            after_task_prefix(base, scopes, root, imports)
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            keep_after_operand(inner, scopes, root, import_aliases, imports)
+            after_task_prefix(inner, scopes, root, imports)
         }
-        _ => false,
+        _ => None,
     }
 }
 
-fn keep_import_or_undefined(
-    expr: &Expr,
-    scopes: &[&[StructItem]],
-    root: &[StructItem],
-    import_aliases: &std::collections::BTreeSet<String>,
-    is_task: &impl Fn() -> bool,
-) -> bool {
+/// Keep references that must remain visible to the evaluator even though they
+/// are not tasks: lets and imports keep their "used" status, and undefined
+/// roots still produce CUE's reference error.
+fn keep_after_reference(expr: &Expr, scopes: &[&[StructItem]], root: &[StructItem]) -> bool {
     match selector_root_ident(expr) {
-        Some(name) if import_aliases.contains(name) => is_task(),
-        Some(name) => local_binding_location(scopes, root, name).is_none(),
+        Some(name) => !matches!(
+            local_binding_location(scopes, root, name),
+            Some((_, StructItem::Field(_)))
+        ),
         None => false,
     }
 }
