@@ -6330,6 +6330,13 @@ two: #D & {a: 5, b: 7}
 optional: #F & {n: 4}
 string_value: #E & {s: "b"}
 direct: {x: int | *1, y: x + 1} & {x: 3}
+#G: {a: {b: int | *1, c: b + 1}, d: a.c + 1}
+nested: #G & {a: {b: 5}}
+#L: {l: [{b: int | *1, c: b + 1}], d: l[0].c + 1}
+list_nested: #L & {l: [{b: 5}]}
+#AB: 1
+#S: {n: *1 | int, ref: #AB, label: "x#S", total: n + 1}
+substring: #S & {n: 3}
 "#;
     let file = ostinato_lang::parse(source).expect("parse default narrowing");
     let value = ostinato_lang::eval_file(&file).expect("eval default narrowing");
@@ -6343,6 +6350,11 @@ direct: {x: int | *1, y: x + 1} & {x: 3}
     assert_eq!(json["optional"]["y"], 5);
     assert_eq!(json["string_value"]["y"], "xb");
     assert_eq!(json["direct"]["y"], 4);
+    assert_eq!(json["nested"]["a"]["c"], 6);
+    assert_eq!(json["nested"]["d"], 7);
+    assert_eq!(json["list_nested"]["l"][0]["c"], 6);
+    assert_eq!(json["list_nested"]["d"], 7);
+    assert_eq!(json["substring"]["total"], 4);
 
     let definition_chain = "package demo\n#A: {n: *1 | int, y: n + 1}\n#B: #A & {n: 4}\nx: #B\n";
     let file = ostinato_lang::parse(definition_chain).expect("parse definition chain");
@@ -6350,4 +6362,14 @@ direct: {x: int | *1, y: x + 1} & {x: 3}
         ostinato_lang::eval_file(&file).is_err(),
         "narrowing through a definition-valued definition remains a documented limit"
     );
+
+    let recursive = "package demo\n#Node: {n: *1 | int, total: n + 1, children?: [...#Node]}\nx: #Node & {n: 3, children: [{n: 5}]}\n";
+    let file = ostinato_lang::parse(recursive).expect("parse recursive narrowing");
+    let value = ostinato_lang::eval_file(&file).expect("eval recursive narrowing");
+    let json = value.to_json().expect("json");
+    assert_eq!(
+        json["x"]["total"], 2,
+        "recursive narrowing remains documented"
+    );
+    assert_eq!(json["x"]["children"][0]["total"], 2);
 }

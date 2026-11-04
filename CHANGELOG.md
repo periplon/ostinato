@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.18.1
+
+Default-narrowing review corrections.
+
+- Nested struct and list elements with defaulted fields inject narrowed values
+  recursively, recomputing their dependent fields and outer dependents.
+- The self-reference guard matches actual identifiers, so definition names in
+  strings or longer identifiers no longer disable narrowing.
+- Recursive-definition narrowing remains a documented SCOPE limit; CUE oracle
+  references are back to v0.17.1 while the product stays v0.18.1.
+- 343 tests (61 CLI E2E, 1 conformance, 239 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.18.0
 
 Default narrowing with dependent-field recomputation.

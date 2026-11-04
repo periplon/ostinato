@@ -2,14 +2,14 @@
 
 ## The contract
 
-Ostinato v0.18.0 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.18.1 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
                        ▲
                        │  conformance tests compare
                        ▼
-              official CUE v0.18.0 CLI
+              official CUE v0.17.1 CLI
 ```
 
 This is a deliberate scope decision: the required semantics are implemented and tested in Rust; the reference implementation is retained to prove equivalence and to provide an escape hatch when a workflow uses an unimplemented CUE feature.
@@ -61,7 +61,7 @@ cue export .:<package> --out json -e workflow -e params [-t key=value ...]
 
 - Package-level export: split packages and sibling conflicts behave exactly as CUE.
 - Only `workflow` and `params` are exported.
-- CUE **>= v0.18.0** is required for the oracle; CI installs and pins v0.18.0.
+- CUE **>= v0.17.1** is required for the oracle; CI installs and pins v0.17.1.
 - There is no silent fallback. The default is `rust`; the oracle is explicit.
 
 ## Conformance suite
@@ -94,15 +94,15 @@ or:
 ./scripts/conformance.sh
 ```
 
-CI installs CUE v0.18.0 and runs this suite. The evidence bundle records the result.
+CI installs CUE v0.17.1 and runs this suite. The evidence bundle records the result.
 
 ## Version policy
 
 | Component | Requirement |
 |---|---|
 | Rust evaluator (default) | none beyond the Ostinato binary |
-| CUE oracle / conformance | CUE **>= v0.18.0**, tested with v0.18.0 |
-| CI | installs v0.18.0 from the official release with a pinned SHA-256 |
+| CUE oracle / conformance | CUE **>= v0.17.1**, tested with v0.17.1 |
+| CI | installs v0.17.1 from the official release with a pinned SHA-256 |
 
 `ostinato doctor` reports both the default evaluator and the detected oracle, or that the oracle is unavailable.
 

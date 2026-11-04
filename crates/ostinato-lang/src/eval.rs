@@ -2037,8 +2037,51 @@ impl<'a> Frame<'a> {
                         continue;
                     }
                     if required_narrowable {
-                        let declared = close_nested(&child.eval_field_key(&key, span)?);
-                        let unified = unify_values(&declared, &value, span)?;
+                        let unified = if let Value::List(elements) = &value {
+                            let exprs = child
+                                .fields
+                                .borrow()
+                                .get(&key)
+                                .map(|definition| definition.exprs.clone())
+                                .unwrap_or_default();
+                            let mut resolved = Vec::with_capacity(elements.len());
+                            for element in elements {
+                                if let Some(nested) = concrete_fields(element) {
+                                    *child.next_injections.borrow_mut() = Some(nested);
+                                }
+                                let mut declared = Value::Bottom;
+                                for (index, expr) in exprs.iter().enumerate() {
+                                    let part = eval_expr(expr, &child)?;
+                                    declared = if index == 0 {
+                                        part
+                                    } else {
+                                        unify_values(&declared, &part, span)?
+                                    };
+                                }
+                                child.next_injections.borrow_mut().take();
+                                let constrained = unify_values(
+                                    &close_nested(&declared),
+                                    &Value::List(vec![element.clone()]),
+                                    span,
+                                )?;
+                                let Value::List(mut one) = constrained else {
+                                    return Err(LangError::conflict(
+                                        span.line,
+                                        span.col,
+                                        "list constraint did not produce a list",
+                                    ));
+                                };
+                                resolved.push(one.remove(0));
+                            }
+                            Value::List(resolved)
+                        } else {
+                            if let Some(nested) = concrete_fields(&value) {
+                                *child.next_injections.borrow_mut() = Some(nested);
+                            }
+                            let declared = close_nested(&child.eval_field_key(&key, span)?);
+                            child.next_injections.borrow_mut().take();
+                            unify_values(&declared, &value, span)?
+                        };
                         child.values.borrow_mut().insert(key.clone(), unified);
                         child.materialized.borrow_mut().insert(key.clone());
                         child
@@ -2816,7 +2859,11 @@ fn definition_needs_narrowing(
                 .get(&key)
                 .map(|definition| definition.exprs.clone())
                 .unwrap_or_default();
-            if exprs.iter().any(|expr| format!("{expr:?}").contains(name)) {
+            let marker = format!("Ident(\"{name}\"");
+            if exprs
+                .iter()
+                .any(|expr| format!("{expr:?}").contains(&marker))
+            {
                 return false;
             }
             return exprs.iter().any(|expr| expr_narrows_key(expr, injections));
@@ -2882,6 +2929,21 @@ fn contains_default(expr: &Expr) -> bool {
             contains_default(left) || contains_default(right)
         }
         Expr::Paren(inner, _) => contains_default(inner),
+        Expr::Struct(items, _) => items.iter().any(|item| match item {
+            StructItem::Field(field) => contains_default(&field.value),
+            StructItem::If { body, .. } | StructItem::For { body, .. } => {
+                body.iter().any(|item| match item {
+                    StructItem::Field(field) => contains_default(&field.value),
+                    _ => false,
+                })
+            }
+            _ => false,
+        }),
+        Expr::List(items, _) => items.iter().any(contains_default),
+        Expr::OpenList(Some(inner), _) => contains_default(inner),
+        Expr::OpenListPrefix(prefix, tail, _) => {
+            prefix.iter().any(contains_default) || tail.as_deref().is_some_and(contains_default)
+        }
         _ => false,
     }
 }
