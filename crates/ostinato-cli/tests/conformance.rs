@@ -182,3 +182,66 @@ fn rust_matches_official_cue_on_the_conformance_corpus() {
     compare(&cue, &root.join("versioned").join("main.cue"), &[]);
     compare(&cue, &root.join("module").join("complex.cue"), &[]);
 }
+
+#[test]
+fn rust_and_official_cue_reject_invalid_corpus() {
+    let Some(cue) = cue_bin().expect("explicit CUE_BIN must be usable") else {
+        eprintln!("skipping: official CUE >= 0.17.1 not installed and CUE_BIN is unset");
+        return;
+    };
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("conformance")
+        .join("invalid");
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&root)
+        .expect("read invalid cases")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "cue"))
+        .collect();
+    entries.sort();
+    assert!(!entries.is_empty());
+    let scope = tempfile::tempdir().expect("tempdir");
+    for (index, path) in entries.iter().enumerate() {
+        let rust_db = scope.path().join(format!("rust-{index}.sqlite"));
+        let rust = Command::new(bin())
+            .args([
+                "--db",
+                rust_db.to_str().expect("db"),
+                "--evaluator",
+                "rust",
+                "--json",
+                "validate",
+                path.to_str().expect("path"),
+            ])
+            .output()
+            .expect("run rust validate");
+        assert!(
+            !rust.status.success(),
+            "rust accepted invalid case {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&rust.stdout)
+        );
+        let cue_db = scope.path().join(format!("cue-{index}.sqlite"));
+        let oracle = Command::new(bin())
+            .args([
+                "--db",
+                cue_db.to_str().expect("db"),
+                "--evaluator",
+                "cue",
+                "--cue",
+                &cue,
+                "--json",
+                "validate",
+                path.to_str().expect("path"),
+            ])
+            .output()
+            .expect("run cue validate");
+        assert!(
+            !oracle.status.success(),
+            "cue accepted invalid case {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&oracle.stdout)
+        );
+    }
+}

@@ -6766,3 +6766,120 @@ command: letindexconst: group.inner
         );
     }
 }
+
+#[test]
+fn unused_imports_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let fixtures = [
+        ("unused", "package p\nimport \"strings\"\nx: 1\n", false),
+        (
+            "unused-alias",
+            "package p\nimport s \"strings\"\nx: 1\n",
+            false,
+        ),
+        (
+            "used",
+            "package p\nimport \"strings\"\nx: strings.ToUpper(\"a\")\n",
+            true,
+        ),
+        (
+            "used-alias",
+            "package p\nimport s \"strings\"\nx: s.ToUpper(\"a\")\n",
+            true,
+        ),
+        (
+            "hidden-use",
+            "package p\nimport \"strings\"\n_x: strings.ToUpper(\"a\")\ny: 1\n",
+            true,
+        ),
+        (
+            "definition-use",
+            "package p\nimport \"strings\"\n#D: strings.ToUpper(\"a\")\ny: 1\n",
+            true,
+        ),
+        (
+            "interpolation-use",
+            "package p\nimport \"strings\"\nx: \"\\(strings.ToUpper(\"a\"))\"\n",
+            true,
+        ),
+        (
+            "nested-shadow",
+            "package p\nimport \"strings\"\nx: {strings: 1, y: strings}\n",
+            false,
+        ),
+        (
+            "for-shadow",
+            "package p\nimport \"strings\"\nx: [for strings in [1] {strings}]\n",
+            false,
+        ),
+        ("blank", "package p\nimport _ \"strings\"\nx: 1\n", false),
+    ];
+    for (name, body, used) in fixtures {
+        let directory = tempfile::tempdir().expect("tempdir");
+        write(
+            &directory.path().join("a.cue"),
+            &format!("{body}\nworkflow: {{name: \"{name}\", steps: {{s: {{kind: \"noop\"}}}}}}\n"),
+        );
+        let expected = Command::new(&cue)
+            .arg("export")
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue export");
+        let actual = ost(&[
+            "--db",
+            directory.path().join("db.sqlite").to_str().expect("db"),
+            "--json",
+            "validate",
+            directory.path().to_str().expect("path"),
+        ]);
+        assert_eq!(
+            actual.status.success(),
+            used,
+            "{name}: rust success mismatch; stderr: {}",
+            String::from_utf8_lossy(&actual.stderr)
+        );
+        assert_eq!(
+            expected.status.success(),
+            used,
+            "{name}: cue success mismatch"
+        );
+    }
+
+    let tool_cases = [
+        (
+            "tool-unused",
+            "package p\nimport (\n\t\"tool/exec\"\n\t\"strings\"\n)\ncommand: c: {run: exec.Run & {cmd: [\"true\"]}}\n",
+            false,
+        ),
+        (
+            "tool-used",
+            "package p\nimport (\n\t\"tool/exec\"\n\t\"strings\"\n)\ncommand: c: {run: exec.Run & {cmd: [\"true\"], env: X: strings.ToUpper(\"a\")}}\n",
+            true,
+        ),
+    ];
+    for (name, body, used) in tool_cases {
+        let directory = tempfile::tempdir().expect("tempdir");
+        write(&directory.path().join("a_tool.cue"), body);
+        let expected = Command::new(&cue)
+            .args(["cmd", "c"])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", "c", directory.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.success(),
+            used,
+            "{name}: rust success mismatch; stderr: {}",
+            String::from_utf8_lossy(&actual.stderr)
+        );
+        assert_eq!(
+            expected.status.success(),
+            used,
+            "{name}: cue success mismatch"
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+    }
+}

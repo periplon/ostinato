@@ -1,8 +1,8 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.iaYqLYp3Ah/gateway-nof.sqlite status f17f30e1-a4cc-4939-a287-1293bce8c8b9
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-imports/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.cAH7ADh7cs/gateway-nof.sqlite status acfd3f11-4dc2-4e31-b96b-f139b9d80382
 
-run=f17f30e1-a4cc-4939-a287-1293bce8c8b9 workflow=quorum status=succeeded resumeIndex=5
-source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244/examples/gateway_nof.cue
-created=2026-11-04T10:03:08.606Z updated=2026-11-04T10:03:08.609Z
+run=acfd3f11-4dc2-4e31-b96b-f139b9d80382 workflow=quorum status=succeeded resumeIndex=5
+source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/unused-imports/examples/gateway_nof.cue
+created=2026-11-04T10:22:10.732Z updated=2026-11-04T10:22:10.734Z
 STEP                     STATUS     VISITS ATTEMPTS
 alice                    succeeded  1      1       
 approve                  succeeded  1      0       
