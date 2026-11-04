@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.31.1
+
+Root module output-read parity.
+
+- `let`-over-field reads of package-root fields that merely alias a bare
+  local-module task (`base: lib.run; let t = base`) now reject like CUE's
+  deadlock instead of scheduling the task; alias and chained-lets forms are
+  covered, while composed root values (`lib.run & {...}`) still inject.
+- Corrected the v0.31.0 description to root inline fields and command-local
+  module fields; added e2e cases for the rejected and composed forms.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.31.0
 
 Let-over-field and definition output reads.
