@@ -1249,6 +1249,7 @@ pub fn run_tool_command(
         }
     }
 
+    let tool_work_dir = std::env::current_dir().unwrap_or_else(|_| source_dir.clone());
     let mut flat: BTreeMap<String, BTreeMap<String, Value>> = scheduled
         .iter()
         .map(|(name, _, task)| (name.clone(), task.clone()))
@@ -1282,7 +1283,7 @@ pub fn run_tool_command(
             let Some(task) = flat.get(name) else {
                 continue;
             };
-            match execute_tool_task(task, &source_dir)? {
+            match execute_tool_task(task, &tool_work_dir)? {
                 ToolTaskOutcome::NotReady(reason) => last_reason = Some(reason.to_owned()),
                 ToolTaskOutcome::Done { outputs } => {
                     done.insert(name.clone());
