@@ -8084,6 +8084,76 @@ command: aliastaskinputreadfirst: {
             Some("order.txt"),
         ),
         (
+            "aliasplantaskinputafter",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliasplantaskinputafter: {
+	r: prep
+	t: cli.Print & {text: "R=\(prep.stdout)"}
+	q: "\(prep.stdout)"
+}
+"#,
+            None,
+        ),
+        (
+            "aliasplantaskinputbetween",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliasplantaskinputbetween: {
+	r: prep
+	q: "\(prep.stdout)"
+	t: cli.Print & {text: "R=\(prep.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "plantaskinputfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: plantaskinputfirst: {
+	t: cli.Print & {text: "R=\(prep.stdout)"}
+	q: "\(prep.stdout)"
+	r: prep
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "nestedaliasplantask",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: nestedaliasplantask: {
+	x: {
+		r: prep
+		t: cli.Print & {text: "R=\(prep.stdout)"}
+		q: "\(prep.stdout)"
+	}
+}
+"#,
+            None,
+        ),
+        (
             "aliascontainerplain",
             r#"
 package foo

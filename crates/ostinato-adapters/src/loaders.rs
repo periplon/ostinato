@@ -1204,27 +1204,39 @@ pub fn run_tool_command(
     };
     let command_claimed: std::collections::BTreeSet<Vec<String>> =
         command_aliases.values().cloned().collect();
+    let order = package_read_order(
+        task_items.as_slice(),
+        &combined.items,
+        &non_task_imports,
+        &command_claimed,
+    );
+    // A declaration-first task-input read keeps the target non-concrete in
+    // CUE, even when a later plain read could be satisfied by the alias
+    // instance; plain reads must not materialise the target in that case.
+    let declaration_first_targets: std::collections::BTreeSet<Vec<String>> = order
+        .iter()
+        .filter_map(
+            |(path, (declaration, _, task_read))| match (declaration, task_read) {
+                (Some(declaration), Some(read)) if read > declaration => Some(path.clone()),
+                _ => None,
+            },
+        )
+        .collect();
+    plain_read_paths.retain(|path| !declaration_first_targets.contains(path));
     let plain_alias_targets: std::collections::BTreeSet<Vec<String>> = command_claimed
         .intersection(&plain_read_paths)
         .cloned()
         .collect();
-    {
-        let order = package_read_order(
-            task_items.as_slice(),
-            &combined.items,
-            &non_task_imports,
-            &command_claimed,
-        );
-        external_paths.retain(|path| {
-            if !command_claimed.contains(path) {
-                return true;
-            }
-            match order.get(path) {
-                Some((Some(declaration), Some(read))) => read <= declaration,
-                _ => true,
-            }
-        });
-    }
+    external_paths.retain(|path| {
+        if !command_claimed.contains(path) {
+            return true;
+        }
+        match order.get(path) {
+            Some((Some(declaration), _, Some(read))) => read <= declaration,
+            Some((Some(declaration), Some(read), None)) => read <= declaration,
+            _ => true,
+        }
+    });
 
     // Package-level tasks reachable from command `$after` operands or package
     // output reads (top-level fields, definitions, nested containers).
@@ -3911,15 +3923,17 @@ fn collect_package_task_after_paths(
     }
 }
 
+type PackageReadOrder =
+    std::collections::BTreeMap<Vec<String>, (Option<usize>, Option<usize>, Option<usize>)>;
+
 fn package_read_order(
     items: &[StructItem],
     root: &[StructItem],
     imports: &ImportKinds,
     claimed: &std::collections::BTreeSet<Vec<String>>,
-) -> std::collections::BTreeMap<Vec<String>, (Option<usize>, Option<usize>)> {
+) -> PackageReadOrder {
     let scopes: [&[StructItem]; 1] = [items];
-    let mut order: std::collections::BTreeMap<Vec<String>, (Option<usize>, Option<usize>)> =
-        std::collections::BTreeMap::new();
+    let mut order = PackageReadOrder::new();
     let mut counter = 0usize;
     for item in items {
         let StructItem::Field(field) = item else {
@@ -3930,10 +3944,18 @@ fn package_read_order(
         let visible = !(field.definition
             || field.optional
             || matches!(&field.label, Label::Name(name, _) if !field.quoted && name.starts_with('_')));
+        let child_in_task = is_task_expr(
+            &field.value,
+            &scopes,
+            root,
+            &mut std::collections::BTreeSet::new(),
+            imports,
+        );
         scan_package_order_expr(
             &field.value,
             true,
             visible,
+            child_in_task,
             index,
             &scopes,
             root,
@@ -3947,17 +3969,22 @@ fn package_read_order(
     order
 }
 
+/// Record package alias declarations, plain output reads and task-input output
+/// reads in command source order. Task-input reads matter because CUE keeps a
+/// declaration-first task-input read non-concrete even when a later plain read
+/// could be satisfied by the alias instance.
 #[allow(clippy::too_many_arguments)]
 fn scan_package_order_expr(
     expr: &Expr,
     allow_read: bool,
     allow_decl: bool,
+    in_task: bool,
     index: usize,
     scopes: &[&[StructItem]],
     root: &[StructItem],
     imports: &ImportKinds,
     claimed: &std::collections::BTreeSet<Vec<String>>,
-    order: &mut std::collections::BTreeMap<Vec<String>, (Option<usize>, Option<usize>)>,
+    order: &mut PackageReadOrder,
     counter: &mut usize,
     visited: &mut std::collections::BTreeSet<String>,
 ) {
@@ -3974,8 +4001,9 @@ fn scan_package_order_expr(
                     )
                     && claimed.contains(&path)
                 {
-                    let entry = order.entry(path).or_insert((None, None));
-                    entry.1 = Some(entry.1.map_or(index, |existing| existing.min(index)));
+                    let entry = order.entry(path).or_insert((None, None, None));
+                    let slot = if in_task { &mut entry.2 } else { &mut entry.1 };
+                    *slot = Some(slot.map_or(index, |existing| existing.min(index)));
                 }
             } else {
                 record_package_declaration(
@@ -3983,13 +4011,14 @@ fn scan_package_order_expr(
                 );
                 if allow_read && let Some(value) = selected_alias_value(expr, scopes, root) {
                     scan_package_order_expr(
-                        value, true, false, index, scopes, root, imports, claimed, order, counter,
-                        visited,
+                        value, true, false, in_task, index, scopes, root, imports, claimed, order,
+                        counter, visited,
                     );
                 }
             }
             scan_package_order_expr(
-                base, false, false, index, scopes, root, imports, claimed, order, counter, visited,
+                base, false, false, in_task, index, scopes, root, imports, claimed, order, counter,
+                visited,
             );
         }
         Expr::Ident(name, _) => {
@@ -4008,8 +4037,8 @@ fn scan_package_order_expr(
                     ) =>
                 {
                     scan_package_order_expr(
-                        value, allow_read, allow_decl, index, scopes, root, imports, claimed,
-                        order, counter, visited,
+                        value, allow_read, allow_decl, in_task, index, scopes, root, imports,
+                        claimed, order, counter, visited,
                     );
                 }
                 _ => {
@@ -4026,12 +4055,13 @@ fn scan_package_order_expr(
             );
             if allow_read && let Some(value) = selected_alias_value(expr, scopes, root) {
                 scan_package_order_expr(
-                    value, true, false, index, scopes, root, imports, claimed, order, counter,
-                    visited,
+                    value, true, false, in_task, index, scopes, root, imports, claimed, order,
+                    counter, visited,
                 );
             }
             scan_package_order_expr(
-                base, false, false, index, scopes, root, imports, claimed, order, counter, visited,
+                base, false, false, in_task, index, scopes, root, imports, claimed, order, counter,
+                visited,
             );
         }
         Expr::Struct(items, _) => {
@@ -4046,10 +4076,19 @@ fn scan_package_order_expr(
                 let visible = !(field.definition
                     || field.optional
                     || matches!(&field.label, Label::Name(name, _) if !field.quoted && name.starts_with('_')));
+                let child_in_task = in_task
+                    || is_task_expr(
+                        &field.value,
+                        &nested,
+                        root,
+                        &mut std::collections::BTreeSet::new(),
+                        imports,
+                    );
                 scan_package_order_expr(
                     &field.value,
                     true,
                     visible,
+                    child_in_task,
                     field_index,
                     &nested,
                     root,
@@ -4065,39 +4104,39 @@ fn scan_package_order_expr(
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
             scan_package_order_expr(
-                left, allow_read, allow_decl, index, scopes, root, imports, claimed, order,
-                counter, visited,
+                left, allow_read, allow_decl, in_task, index, scopes, root, imports, claimed,
+                order, counter, visited,
             );
             scan_package_order_expr(
-                right, allow_read, allow_decl, index, scopes, root, imports, claimed, order,
-                counter, visited,
+                right, allow_read, allow_decl, in_task, index, scopes, root, imports, claimed,
+                order, counter, visited,
             );
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
         | Expr::Unary(_, inner, _) => scan_package_order_expr(
-            inner, allow_read, allow_decl, index, scopes, root, imports, claimed, order, counter,
-            visited,
+            inner, allow_read, allow_decl, in_task, index, scopes, root, imports, claimed, order,
+            counter, visited,
         ),
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
             for item in items {
                 scan_package_order_expr(
-                    item, allow_read, allow_decl, index, scopes, root, imports, claimed, order,
-                    counter, visited,
+                    item, allow_read, allow_decl, in_task, index, scopes, root, imports, claimed,
+                    order, counter, visited,
                 );
             }
         }
         Expr::OpenList(Some(inner), _) => scan_package_order_expr(
-            inner, allow_read, allow_decl, index, scopes, root, imports, claimed, order, counter,
-            visited,
+            inner, allow_read, allow_decl, in_task, index, scopes, root, imports, claimed, order,
+            counter, visited,
         ),
         Expr::Str(parts, _) => {
             for part in parts {
                 if let ostinato_lang::ast::StrPart::Interp(inner) = part {
                     scan_package_order_expr(
-                        inner, true, true, index, scopes, root, imports, claimed, order, counter,
-                        visited,
+                        inner, true, true, in_task, index, scopes, root, imports, claimed, order,
+                        counter, visited,
                     );
                 }
             }
@@ -4106,21 +4145,21 @@ fn scan_package_order_expr(
             for part in parts {
                 if let ostinato_lang::ast::BytePart::Interp(inner) = part {
                     scan_package_order_expr(
-                        inner, true, true, index, scopes, root, imports, claimed, order, counter,
-                        visited,
+                        inner, true, true, in_task, index, scopes, root, imports, claimed, order,
+                        counter, visited,
                     );
                 }
             }
         }
         Expr::Call(callee, arguments, _) => {
             scan_package_order_expr(
-                callee, allow_read, allow_decl, index, scopes, root, imports, claimed, order,
-                counter, visited,
+                callee, allow_read, allow_decl, in_task, index, scopes, root, imports, claimed,
+                order, counter, visited,
             );
             for argument in arguments {
                 scan_package_order_expr(
-                    argument, allow_read, allow_decl, index, scopes, root, imports, claimed, order,
-                    counter, visited,
+                    argument, allow_read, allow_decl, in_task, index, scopes, root, imports,
+                    claimed, order, counter, visited,
                 );
             }
         }
@@ -4137,7 +4176,7 @@ fn record_package_declaration(
     root: &[StructItem],
     imports: &ImportKinds,
     claimed: &std::collections::BTreeSet<Vec<String>>,
-    order: &mut std::collections::BTreeMap<Vec<String>, (Option<usize>, Option<usize>)>,
+    order: &mut PackageReadOrder,
 ) {
     if !allow_decl {
         return;
@@ -4152,7 +4191,7 @@ fn record_package_declaration(
         resolve_after_path(expr, scopes, root, &mut std::collections::BTreeSet::new())
         && claimed.contains(&path)
     {
-        let entry = order.entry(path).or_insert((None, None));
+        let entry = order.entry(path).or_insert((None, None, None));
         entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
     }
 }
