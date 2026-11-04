@@ -1,6 +1,6 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-let2/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.oTpZVR4COv/agents.sqlite run examples/agents.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-let2/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.T3O4NNqFpO/agents.sqlite run examples/agents.cue
 
-run=a2a57b87-0e78-4cc8-8860-3afc24b5672f workflow=agents status=succeeded durationMs=439
+run=cbd2b431-10c1-4c06-9a6f-ed111af7a8c2 workflow=agents status=succeeded durationMs=551
 STEP                     STATUS     VISITS ATTEMPTS
 report                   succeeded  1      1       
 review                   succeeded  1      1       
