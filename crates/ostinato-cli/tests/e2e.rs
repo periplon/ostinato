@@ -3427,3 +3427,145 @@ workflow: {name: "t", steps: {s: {kind: "noop"}}}
         );
     }
 }
+
+#[test]
+fn tool_commands_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let fixtures = [
+        (
+            "hello",
+            r#"
+package foo
+import "tool/exec"
+city: "Amsterdam"
+who: *"World" | string @tag(who)
+command: hello: {
+	print: exec.Run & {
+		cmd: "echo Hello \(who)! Welcome to \(city)."
+	}
+}
+"#,
+            true,
+        ),
+        (
+            "argv",
+            r#"
+package foo
+import "tool/exec"
+command: argv: {
+	run: exec.Run & {cmd: ["printf", "%s-%s", "a", "b"]}
+}
+"#,
+            false,
+        ),
+        (
+            "env",
+            r#"
+package foo
+import "tool/exec"
+command: env: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "printf '%s' \"$FOO\""]
+		env: FOO: "bar"
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "fail",
+            r#"
+package foo
+import "tool/exec"
+command: fail: {
+	run: exec.Run & {cmd: ["sh", "-c", "echo bad >&2; exit 3"]}
+}
+"#,
+            false,
+        ),
+        (
+            "after",
+            r#"
+package foo
+import "tool/exec"
+command: after: {
+	one: exec.Run & {cmd: ["sh", "-c", "echo one"]}
+	two: exec.Run & {
+		$after: one
+		cmd: ["sh", "-c", "echo two"]
+	}
+}
+"#,
+            false,
+        ),
+    ];
+    for (name, source, injected) in fixtures {
+        let directory = tempfile::tempdir().expect("tempdir");
+        write(&directory.path().join("fixture_tool.cue"), source);
+        let cue_args = if injected {
+            vec!["cmd", "-t", "who=Jan", name]
+        } else {
+            vec!["cmd", name]
+        };
+        let expected = Command::new(&cue)
+            .args(&cue_args)
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let mut rust_args = vec!["cmd"];
+        if injected {
+            rust_args.extend(["-p", "who=Jan"]);
+        }
+        rust_args.push(name);
+        rust_args.push(directory.path().to_str().expect("path"));
+        let actual = ost(&rust_args);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: exit codes differ; rust stderr: {}",
+            String::from_utf8_lossy(&actual.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+        assert_eq!(actual.stderr, expected.stderr, "{name}: stderr differs");
+    }
+}
+
+#[test]
+fn tool_files_stay_excluded_from_normal_workflow_loading() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("workflow.cue"),
+        r#"
+package demo
+workflow: {name: "plain", steps: {s: {kind: "noop"}}}
+"#,
+    );
+    write(
+        &directory.path().join("ignored_tool.cue"),
+        r#"
+package demo
+command: nope: {run: {cmd: ["false"]}}
+"#,
+    );
+    let db = directory.path().join("db.sqlite");
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        directory
+            .path()
+            .join("workflow.cue")
+            .to_str()
+            .expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json(&output)["workflow"]["name"], "plain");
+}

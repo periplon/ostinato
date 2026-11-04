@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.21.0
+
+CUE tool commands (`_tool.cue`).
+
+- New `ostinato cmd <name> <path>` runs `command: <name>:` tasks declared in
+  `_tool.cue` files with `tool/exec.Run`: `cmd` string/argv, `env`, `dir`,
+  `stdin`, `stdout`/`stderr` capture fields, `$after` ordering and `@tag`
+  injection, matching `cue cmd` stdout/stderr/exit behavior.
+- Workflow loading still excludes `_tool.cue` files.
+- Other tool packages, tasks consuming other task outputs, `$usage`/`$short`/
+  `$long`, multi-instance inputs and `@cmd` attributes remain documented
+  limits.
+- 349 tests (64 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.20.6
 
 Attribute attachment and list-comprehension parity.

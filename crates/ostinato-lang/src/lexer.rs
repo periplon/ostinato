@@ -69,7 +69,7 @@ pub enum Tok {
 
 impl Tok {
     fn is_ident_start(c: char) -> bool {
-        c.is_alphabetic() || c == '_' || c == '#'
+        c.is_alphabetic() || c == '_' || c == '#' || c == '$'
     }
 
     fn is_ident_continue(c: char) -> bool {
@@ -219,9 +219,10 @@ impl Lexer {
                 }
                 c if Tok::is_ident_start(c) => {
                     let mut ident = String::new();
-                    if self.peek() == Some('#') {
-                        ident.push('#');
-                        self.bump();
+                    if matches!(self.peek(), Some('#') | Some('$'))
+                        && let Some(prefix) = self.bump()
+                    {
+                        ident.push(prefix);
                     }
                     while let Some(c) = self.peek() {
                         if Tok::is_ident_continue(c) {
