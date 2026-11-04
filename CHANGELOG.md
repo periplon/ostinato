@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.21.4
+
+Tool-command default-conflict and spawn diagnostics.
+
+- Conflicting whole-field defaults (`mustSucceed: *false | bool`, `stdin: *"y" | null`, concrete stdout conflicts) are rejected without executing the command, like `cue cmd`.
+- Spawn errors distinguish missing binaries, missing relative dirs (raw path in the message), and non-directory `dir` values.
+- Tool files are documented as `*_tool.cue` (a literal `_tool.cue` is excluded by underscore rules in both tools).
+- Package-scoped `$after` scheduling outside the command subtree is documented as a limit.
+- 354 tests (69 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.21.3
 
 Tool-command cwd, defaults and hierarchy parity.
@@ -49,8 +61,8 @@ Tool-command review corrections.
 CUE tool commands (`_tool.cue`).
 
 - New `ostinato cmd <name> <path>` runs `command: <name>:` tasks declared in
-  `_tool.cue` files with `tool/exec.Run`.
-- Workflow loading still excludes `_tool.cue` files.
+  `*_tool.cue` files with `tool/exec.Run`.
+- Workflow loading still excludes `*_tool.cue` files.
 - Other tool packages, tasks consuming other task outputs, `$usage`/`$short`/
   `$long`, multi-instance inputs and `@cmd` attributes remain documented
   limits.

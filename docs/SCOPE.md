@@ -49,7 +49,7 @@ workflow outside the Rust surface has a supported escape hatch.
 - constraint-based parameter overrides for split/definition-backed params and
   dependent params;
 - CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files) for workflow loading;
-- CUE tool commands via `ostinato cmd <name> <path>`: `_tool.cue` `command:`
+- CUE tool commands via `ostinato cmd <name> <path>`: `*_tool.cue` `command:`
   tasks using `tool/exec.Run` with `cmd`, `env`, `dir`, `stdin`, capture
   fields, `$after` ordering and `@tag` injection;
 - workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, branch
@@ -75,7 +75,8 @@ workflow outside the Rust surface has a supported escape hatch.
 | Dependent fields after a generated declaration merge | `#P: {env: string, greeting: "hello \(env)"}` plus `if true {#P: {env: "prod"}}` does not recompute `greeting`; declared declaration order or the oracle |
 | Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |
 | Bare references to comprehension-generated fields | `x: {if true {b: 1}, a: b}` is accepted although CUE requires `x.b`; use an explicit field or selector |
-| Tool packages beyond `tool/exec.Run` | `ostinato cmd` runs `_tool.cue` `command:` tasks (single task, task groups, referenced task structs) with `tool/exec.Run` (`cmd` string/argv, defaulted/environment values, `env` map/list (non-empty replaces, empty inherits), package-relative `dir`, `stdin`, `stdout`/`stderr` capture, `mustSucceed`, `$after`, `@tag`); `tool/cli`/`tool/file`/other task packages, tasks consuming other task outputs, `$usage`/`$short`/`$long`, multi-instance inputs and `@cmd` attributes remain unimplemented |
+| Package-scoped `$after` / task nodes outside `command.<name>` | `$after` dependencies are resolved within the command subtree; top-level task nodes referenced only from a command are not scheduled. Use the oracle |
+| Tool packages beyond `tool/exec.Run` | `ostinato cmd` runs `*_tool.cue` `command:` tasks (single task, task groups, referenced task structs) with `tool/exec.Run` (`cmd` string/argv, defaulted/environment values, `env` map/list (non-empty replaces, empty inherits), package-relative `dir`, `stdin`, `stdout`/`stderr` capture, `mustSucceed`, `$after`, `@tag`); `tool/cli`/`tool/file`/other task packages, tasks consuming other task outputs, `$usage`/`$short`/`$long`, multi-instance inputs and `@cmd` attributes remain unimplemented |
 | `let` cycles mediated by fields (`let X = f, f: X`) | Direct and indirect `let` cycles are rejected; a cycle routed through a field is reported as an error rather than solved as an incomplete value. Use the oracle for that shape |
 | Arbitrary CUE packages with package-level patterns | Oracle territory |
 
