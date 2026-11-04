@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.38.2
+
+Composed alias targets in command ordering.
+
+- Command alias detection resolves unified values (`r: prep & {stdout: string}`,
+  `r: {stdout: string} & prep`, and container/definition variants), so the
+  declaration-first task-input suppression introduced in v0.38.1 also applies
+  to composed aliases: mixed plain/task-input reads reject with no side
+  effects, and composed definition aliases no longer execute before rejecting.
+- Read-first task-input shapes still accept and execute like CUE.
+- Added e2e coverage for composed package, container and definition targets.
+
+- 444 tests (107 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.38.1
 
 Alias plain reads and task-input ordering.

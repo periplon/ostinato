@@ -8154,6 +8154,90 @@ command: nestedaliasplantask: {
             None,
         ),
         (
+            "composedaliastaskplain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: composedaliastaskplain: {
+	r: prep & {stdout: string}
+	t: cli.Print & {text: "R=\(prep.stdout)"}
+	q: "\(prep.stdout)"
+}
+"#,
+            None,
+        ),
+        (
+            "composedaliasreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: composedaliasreadfirst: {
+	q: "\(prep.stdout)"
+	r: prep & {stdout: string}
+	t: cli.Print & {text: "R=\(prep.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "composedaliastaskfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: composedaliastaskfirst: {
+	t: cli.Print & {text: "R=\(prep.stdout)"}
+	r: prep & {stdout: string}
+	q: "\(prep.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "composedcontainertaskplain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+group: {prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}}
+command: composedcontainertaskplain: {
+	r: group.prep & {stdout: string}
+	t: cli.Print & {text: "R=\(group.prep.stdout)"}
+	q: "\(group.prep.stdout)"
+}
+"#,
+            None,
+        ),
+        (
+            "composeddefinitiontaskplain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+#G: {prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}}
+command: composeddefinitiontaskplain: {
+	r: #G.prep & {stdout: string}
+	t: cli.Print & {text: "R=\(#G.prep.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
             "aliascontainerplain",
             r#"
 package foo

@@ -3039,6 +3039,8 @@ fn resolve_after_path(
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             resolve_after_path(inner, scopes, root, visited)
         }
+        Expr::Unify(left, right, _) => resolve_after_path(left, scopes, root, visited)
+            .or_else(|| resolve_after_path(right, scopes, root, visited)),
         _ => None,
     }
 }
