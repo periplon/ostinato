@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.18.2
+
+Fixed/list nested narrowing corrections.
+
+- Fixed-length list constraints check arity and unify declared elements
+  element-wise; list-of-list defaults inject narrowed fields recursively.
+- A shadowing nested definition with the same name remains a documented
+  narrowing limit.
+- 343 tests (61 CLI E2E, 1 conformance, 239 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.18.1
 
 Default-narrowing review corrections.

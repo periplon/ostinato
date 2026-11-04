@@ -2037,49 +2037,16 @@ impl<'a> Frame<'a> {
                         continue;
                     }
                     if required_narrowable {
-                        let unified = if let Value::List(elements) = &value {
-                            let exprs = child
-                                .fields
-                                .borrow()
-                                .get(&key)
-                                .map(|definition| definition.exprs.clone())
-                                .unwrap_or_default();
-                            let mut resolved = Vec::with_capacity(elements.len());
-                            for element in elements {
-                                if let Some(nested) = concrete_fields(element) {
-                                    *child.next_injections.borrow_mut() = Some(nested);
-                                }
-                                let mut declared = Value::Bottom;
-                                for (index, expr) in exprs.iter().enumerate() {
-                                    let part = eval_expr(expr, &child)?;
-                                    declared = if index == 0 {
-                                        part
-                                    } else {
-                                        unify_values(&declared, &part, span)?
-                                    };
-                                }
-                                child.next_injections.borrow_mut().take();
-                                let constrained = unify_values(
-                                    &close_nested(&declared),
-                                    &Value::List(vec![element.clone()]),
-                                    span,
-                                )?;
-                                let Value::List(mut one) = constrained else {
-                                    return Err(LangError::conflict(
-                                        span.line,
-                                        span.col,
-                                        "list constraint did not produce a list",
-                                    ));
-                                };
-                                resolved.push(one.remove(0));
-                            }
-                            Value::List(resolved)
+                        let exprs = child
+                            .fields
+                            .borrow()
+                            .get(&key)
+                            .map(|definition| definition.exprs.clone())
+                            .unwrap_or_default();
+                        let unified = if exprs.len() == 1 {
+                            eval_narrowed_declaration(&child, &exprs[0], &value, span)?
                         } else {
-                            if let Some(nested) = concrete_fields(&value) {
-                                *child.next_injections.borrow_mut() = Some(nested);
-                            }
                             let declared = close_nested(&child.eval_field_key(&key, span)?);
-                            child.next_injections.borrow_mut().take();
                             unify_values(&declared, &value, span)?
                         };
                         child.values.borrow_mut().insert(key.clone(), unified);
@@ -2920,6 +2887,71 @@ fn try_definition_unify(
         return Ok(None);
     };
     unify_values(&defined, &value, span).map(Some)
+}
+
+fn eval_narrowed_declaration(
+    frame: &Frame<'_>,
+    expr: &Expr,
+    value: &Value,
+    span: Span,
+) -> Result<Value, LangError> {
+    let expr = strip_expr_parens(expr);
+    match (expr, value) {
+        (Expr::List(items, _), Value::List(values)) => {
+            if items.len() != values.len() {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "cannot unify lists of different lengths",
+                ));
+            }
+            let mut out = Vec::with_capacity(values.len());
+            for (item, value) in items.iter().zip(values) {
+                out.push(eval_narrowed_declaration(frame, item, value, span)?);
+            }
+            Ok(Value::List(out))
+        }
+        (Expr::OpenList(element, _), Value::List(values)) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(match element {
+                    Some(element) => eval_narrowed_declaration(frame, element, value, span)?,
+                    None => value.clone(),
+                });
+            }
+            Ok(Value::List(out))
+        }
+        (Expr::OpenListPrefix(prefix, tail, _), Value::List(values)) => {
+            if prefix.len() > values.len() {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "list prefix is longer than the concrete list",
+                ));
+            }
+            let mut out = Vec::with_capacity(values.len());
+            for (index, value) in values.iter().enumerate() {
+                let expected = prefix.get(index).or(tail.as_deref());
+                out.push(match expected {
+                    Some(expected) => eval_narrowed_declaration(frame, expected, value, span)?,
+                    None => value.clone(),
+                });
+            }
+            Ok(Value::List(out))
+        }
+        (Expr::Struct(_, _), value) => {
+            if let Some(nested) = concrete_fields(value) {
+                *frame.next_injections.borrow_mut() = Some(nested);
+            }
+            let declared = eval_expr(expr, frame)?;
+            frame.next_injections.borrow_mut().take();
+            unify_values(&close_nested(&declared), value, span)
+        }
+        _ => {
+            let declared = eval_expr(expr, frame)?;
+            unify_values(&close_nested(&declared), value, span)
+        }
+    }
 }
 
 fn contains_default(expr: &Expr) -> bool {
