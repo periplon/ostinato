@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.31.2
+
+Aggregate root module declarations.
+
+- Package-root task fields with multiple declarations are classified across
+  all declarations: a bare module alias combined with a composed or struct
+  declaration schedules and injects like CUE, while bare+bare still rejects.
+- Covers duplicate declarations, alias duplicates and definition-composed
+  variants; added e2e cases for composed, struct and bare+bare forms.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.31.1
 
 Root module output-read parity.

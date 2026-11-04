@@ -6891,6 +6891,57 @@ command: readrootmodulecomposed: {
             true,
         ),
         (
+            "readrootmodulecomposeddecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+base: lib.run & {stdout: string}
+command: readrootmodulecomposeddecl: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "readrootmodulestructdecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+base: {stdout: string}
+command: readrootmodulestructdecl: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "readrootmodulebaretwice",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+base: lib.run
+command: readrootmodulebaretwice: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
             "readrootfield",
             r#"
 package foo
