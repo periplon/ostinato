@@ -7652,6 +7652,121 @@ command: aftermathpimissing: {
             None,
         ),
         (
+            "afterselfletmissing",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let a = a
+command: afterselfletmissing: {
+	run: exec.Run & {$after: a.missing, cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterfieldconcretemissing",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+x: 5
+command: afterfieldconcretemissing: {
+	a: exec.Run & {$after: x.missing, cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterfieldstructmissing",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+x: {y: 1}
+command: afterfieldstructmissing: {
+	a: exec.Run & {$after: x.missing, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterfieldstructconcretemissing",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+x: {y: 1}
+command: afterfieldstructconcretemissing: {
+	a: exec.Run & {$after: x.y.missing, cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterdefmissing",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+#G: {inner: {x: 1}}
+command: afterdefmissing: {
+	a: exec.Run & {$after: #G.inner.missing, cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterletimportmissing",
+            r#"
+package foo
+import (
+	"math"
+	"tool/cli"
+	"tool/exec"
+)
+let g = math
+command: afterletimportmissing: {
+	a: exec.Run & {$after: g.missing, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "afteraliasimportmissing",
+            r#"
+package foo
+import (
+	"math"
+	"tool/cli"
+	"tool/exec"
+)
+alias: math
+pi: alias.Pi
+command: afteraliasimportmissing: {
+	a: exec.Run & {$after: alias.missing, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
             "afterundefinedident",
             r#"
 package foo

@@ -1,8 +1,8 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nestedorder/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.cTBZNHToaG/db.sqlite status 210688b8-186e-4b9a-b51f-ef9eddb9fef7
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nestedorder/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.L7SZSfaduw/db.sqlite status e9c5dd5d-0e77-4919-b13c-6fb939d2972a
 
-run=210688b8-186e-4b9a-b51f-ef9eddb9fef7 workflow=cycle status=succeeded resumeIndex=11
+run=e9c5dd5d-0e77-4919-b13c-6fb939d2972a workflow=cycle status=succeeded resumeIndex=11
 source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after/examples/cycle.cue
-created=2026-11-04T20:45:39.159Z updated=2026-11-04T20:45:39.246Z
+created=2026-11-04T20:58:41.415Z updated=2026-11-04T20:58:41.502Z
 STEP                     STATUS     VISITS ATTEMPTS ROUND 
 refine                   succeeded  3      1        2     
 review                   succeeded  3      1        2     

@@ -3160,7 +3160,30 @@ fn classify_after_selector(
         return AfterSelector::KeepFull;
     };
     match local_binding_location(scopes, root, root_name) {
-        Some((_, StructItem::Field(_))) => AfterSelector::Drop,
+        Some((_, StructItem::Field(field))) => {
+            if field.definition {
+                return AfterSelector::KeepFull;
+            }
+            let mut current = &field.value;
+            for segment in rest {
+                if let Some(next) = select_field_value(
+                    scopes,
+                    root,
+                    current,
+                    segment,
+                    &mut std::collections::BTreeSet::new(),
+                ) {
+                    current = next;
+                } else {
+                    return if ast_is_structish(current, scopes, root, imported_values) {
+                        AfterSelector::Drop
+                    } else {
+                        AfterSelector::KeepFull
+                    };
+                }
+            }
+            AfterSelector::Drop
+        }
         Some((_, StructItem::Let { value, .. })) => {
             let mut current = value;
             for segment in rest {
@@ -3173,7 +3196,7 @@ fn classify_after_selector(
                 ) {
                     current = next;
                 } else {
-                    return if ast_is_structish(current, scopes, root) {
+                    return if ast_is_structish(current, scopes, root, imported_values) {
                         AfterSelector::KeepRoot(root_name.clone())
                     } else {
                         AfterSelector::KeepFull
@@ -3217,16 +3240,76 @@ fn value_field<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
     }
 }
 
-fn ast_is_structish(expr: &Expr, scopes: &[&[StructItem]], root: &[StructItem]) -> bool {
+fn is_struct_value(value: &Value) -> bool {
+    matches!(value, Value::Struct(_) | Value::Definition { .. })
+}
+
+fn ast_is_structish(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imported_values: &BTreeMap<String, Value>,
+) -> bool {
+    ast_is_structish_inner(
+        expr,
+        scopes,
+        root,
+        imported_values,
+        &mut std::collections::BTreeSet::new(),
+    )
+}
+
+fn ast_is_structish_inner(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imported_values: &BTreeMap<String, Value>,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> bool {
     match expr {
-        Expr::Struct(..)
-        | Expr::Unify(..)
-        | Expr::Paren(..)
-        | Expr::Default(..)
-        | Expr::Bound(..) => true,
-        Expr::Ident(..) => {
-            resolve_local_value(scopes, root, expr, &mut std::collections::BTreeSet::new())
-                .is_some_and(|value| ast_is_structish(value, scopes, root))
+        Expr::Struct(..) | Expr::Paren(..) | Expr::Default(..) | Expr::Bound(..) => true,
+        Expr::Unify(left, right, _) => {
+            ast_is_structish_inner(left, scopes, root, imported_values, visited)
+                || ast_is_structish_inner(right, scopes, root, imported_values, visited)
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return false;
+            }
+            let result = match local_binding_location(scopes, root, name) {
+                Some((_, StructItem::Field(field))) => {
+                    ast_is_structish_inner(&field.value, scopes, root, imported_values, visited)
+                }
+                Some((_, StructItem::Let { value, .. })) => {
+                    ast_is_structish_inner(value, scopes, root, imported_values, visited)
+                }
+                _ => imported_values.get(name).is_some_and(is_struct_value),
+            };
+            visited.remove(name);
+            result
+        }
+        Expr::Select(..) | Expr::Index(..) => {
+            if let Some(value) =
+                resolve_local_value(scopes, root, expr, &mut std::collections::BTreeSet::new())
+            {
+                return ast_is_structish_inner(value, scopes, root, imported_values, visited);
+            }
+            let Some(path) = selector_names(expr, None) else {
+                return false;
+            };
+            let Some((root_name, rest)) = path.split_first() else {
+                return false;
+            };
+            let Some(mut value) = imported_values.get(root_name) else {
+                return false;
+            };
+            for segment in rest {
+                match value_field(value, segment) {
+                    Some(next) => value = next,
+                    None => return false,
+                }
+            }
+            is_struct_value(value)
         }
         _ => false,
     }
