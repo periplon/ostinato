@@ -3376,6 +3376,14 @@ workflow: {name: "t", steps: {s: {kind: "noop"}}}
 "#,
         ),
         (
+            "same-line-prefix.cue",
+            r#"
+package demo
+params: {@tag(x) a: string | *"v"}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
             "combined-hex.cue",
             r#"
 package demo
