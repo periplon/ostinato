@@ -59,7 +59,8 @@ workflow outside the Rust surface has a supported escape hatch.
   `$after` ordering (including inherited from composed bases/definitions),
   output-dependency inference for nested task paths (`\(a.producer.stdout)`),
   output reads through `let`-over-field chains (root inline and command-local
-  fields) and definitions (`\(t.stdout)`, `\(#base.stdout)`),
+  fields), definitions and definition containers/aliases
+  (`\(t.stdout)`, `\(#base.stdout)`, `\(#G.run.stdout)`, `\(#a.stdout)`),
   tasks exported by local modules (`lib.run`, nested `lib.tasks.r1`, `lib.group.run`),
   `@tag` injection and per-file unused-import rejection;
 - workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, `n_of`

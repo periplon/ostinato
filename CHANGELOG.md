@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.32.0
+
+Definition container and alias output reads.
+
+- Definition containers and aliases referenced directly in commands now
+  schedule and inject their underlying task: `#G: {run: lib.run};
+  \(#G.run.stdout)` (module/inline, nested groups, command scope) and
+  `#a: #b; #b: lib.run; \(#a.stdout)` (including alias chains).
+- Alias definitions used as task declarations inject like CUE, while direct
+  task definitions and container task references stay non-concrete.
+- External task discovery now evaluates definitions and searches nested
+  definition values.
+- Added e2e cases and two conformance cases.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.31.5
 
 Release-notes correction for v0.31.4.
