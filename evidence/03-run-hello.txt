@@ -1,6 +1,6 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-alias/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.hSK2thH4qa/db.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/hello.cue -p name=Ostinato
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-alias/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.XSuvqzCrj4/db.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/hello.cue -p name=Ostinato
 
-run=fffd4fcb-b3a4-432c-a5f9-c24553eb4445 workflow=hello status=succeeded durationMs=10
+run=70cd2afc-af07-43c1-a751-6b1123d03dbe workflow=hello status=succeeded durationMs=11
 STEP                     STATUS     VISITS ATTEMPTS
 audit                    succeeded  1      1       
 greet                    succeeded  1      1       

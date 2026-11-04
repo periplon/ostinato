@@ -1,7 +1,7 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-alias/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.hSK2thH4qa/gateway.sqlite trials e8b27366-9aca-4953-a0a7-fd8b51b1b0d2
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-alias/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.XSuvqzCrj4/gateway.sqlite trials 513000e1-8fdb-4126-ad75-008dd58e3779
 
 STEP                 ROUND ATTEMPT STATUS   SCORE      DUR(ms)  ERROR
-test                 0     0      succeeded 0.950      5        
+test                 0     0      succeeded 0.950      4        
 deployFast           0     0      succeeded 1.000      4        
 notify               0     0      succeeded 1.000      4        
 
