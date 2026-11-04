@@ -12,6 +12,15 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.30.0
+
+- Let-bound task values receive injected outputs (`let t = exec.Run`/
+  `let t = lib.run`), including outer scope and composed values; plain field
+  references and repeated bare let tasks keep CUE behaviour.
+- 438 tests (101 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.29.4
 
 - Composed module task values are unique injection sources; bare selectors

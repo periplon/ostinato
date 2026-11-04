@@ -6686,6 +6686,163 @@ command: c: {
 }
 
 #[test]
+fn tool_command_let_task_outputs_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"package lib
+
+import e "tool/exec"
+
+run: e.Run & {cmd: ["sh", "-c", "printf abc"], stdout: string}
+"#;
+    let cases = [
+        (
+            "letinline",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: letinline: {
+	let t = exec.Run & {cmd: ["sh", "-c", "printf INL"], stdout: string}
+	a: producer: t
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "letmodule",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: letmodule: {
+	let t = lib.run
+	a: producer: t
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "letouter",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let t = exec.Run & {cmd: ["sh", "-c", "printf OUT"], stdout: string}
+command: letouter: {
+	a: producer: t
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "letcomposed",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: letcomposed: {
+	let t = exec.Run & {cmd: ["sh", "-c", "printf C"], stdout: string}
+	a: producer: t & {stdout: string}
+	q: cli.Print & {text: "R=\(a.producer.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "letsuccess",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: letsuccess: {
+	let t = exec.Run & {cmd: ["false"], success: bool, mustSucceed: false}
+	a: producer: t
+	q: cli.Print & {text: "ok=\(a.producer.success)"}
+}
+"#,
+            true,
+        ),
+        (
+            "lettwice",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: lettwice: {
+	let t = lib.run
+	a: p1: t
+	b: p2: t
+	q: cli.Print & {text: "R=\(a.p1.stdout)-\(b.p2.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "letfieldref",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf B"], stdout: string}
+command: letfieldref: {
+	run: base
+	q: cli.Print & {text: "R=\(run.stdout)"}
+}
+"#,
+            false,
+        ),
+    ];
+    for (name, source, success) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+            std::fs::create_dir_all(directory.join("lib")).expect("lib");
+            write(&directory.join("cue.mod/module.cue"), module);
+            write(&directory.join("lib/lib.cue"), library);
+            write(&directory.join("x_tool.cue"), source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        if success {
+            assert_eq!(actual.stderr, expected.stderr, "{name}");
+        }
+    }
+}
+
+#[test]
 fn tool_command_module_task_exports_match_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");
