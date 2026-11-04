@@ -1789,13 +1789,13 @@ fn resolved_path<'a>(
             name.starts_with('#').then(|| vec![name.clone()])
         }
         Expr::Select(base, field, _, _) => {
-            let mut path = resolved_path(base, scopes, root, visited, true)?;
+            let mut path = resolved_path(base, scopes, root, visited, allow_field)?;
             path.push(field.clone());
             Some(path)
         }
         Expr::Index(base, index, _) => {
             let segment = index_field_name(index)?;
-            let mut path = resolved_path(base, scopes, root, visited, true)?;
+            let mut path = resolved_path(base, scopes, root, visited, allow_field)?;
             path.push(segment);
             Some(path)
         }
@@ -1808,6 +1808,65 @@ fn resolved_path<'a>(
 
 fn path_key(path: &[String]) -> String {
     format!("def:{}", path.join("/"))
+}
+
+fn resolved_definition_alias_path<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<Vec<String>> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return None;
+            }
+            if let Some((_, item)) = local_binding_location(scopes, root, name) {
+                return match item {
+                    StructItem::Let { value, .. } => {
+                        resolved_definition_alias_path(value, scopes, root, visited)
+                    }
+                    StructItem::Field(field) if field.definition => match &field.label {
+                        Label::Name(label, _) => Some(vec![label.clone()]),
+                        _ => None,
+                    },
+                    StructItem::Field(field) => {
+                        let path = resolved_read_path(&field.value, scopes, root, visited)?;
+                        path.first()
+                            .is_some_and(|segment| segment.starts_with('#'))
+                            .then_some(path)
+                    }
+                    _ => None,
+                };
+            }
+            name.starts_with('#').then(|| vec![name.clone()])
+        }
+        Expr::Select(base, field, _, _) => {
+            let mut path = resolved_definition_alias_path(base, scopes, root, visited)?;
+            path.push(field.clone());
+            Some(path)
+        }
+        Expr::Index(base, index, _) => {
+            let segment = index_field_name(index)?;
+            let mut path = resolved_definition_alias_path(base, scopes, root, visited)?;
+            path.push(segment);
+            Some(path)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            resolved_definition_alias_path(inner, scopes, root, visited)
+        }
+        _ => None,
+    }
+}
+
+fn resolved_read_path<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<Vec<String>> {
+    resolved_definition_alias_path(expr, scopes, root, &mut std::collections::BTreeSet::new())
+        .or_else(|| resolved_path(expr, scopes, root, visited, false))
 }
 
 fn canonical_definition_path(root: &[StructItem], path: &[String]) -> Vec<String> {
@@ -1965,13 +2024,8 @@ fn collect_output_task_paths<'a>(
     match expr {
         Expr::Select(base, field, _, _) => {
             if matches!(field.as_str(), "stdout" | "success")
-                && let Some(path) = resolved_path(
-                    base,
-                    scopes,
-                    root,
-                    &mut std::collections::BTreeSet::new(),
-                    false,
-                )
+                && let Some(path) =
+                    resolved_read_path(base, scopes, root, &mut std::collections::BTreeSet::new())
             {
                 out.insert(path);
             }
@@ -4321,6 +4375,24 @@ fn selected_alias_value<'a>(
     }
 }
 
+fn definition_declaration_key(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &ImportKinds,
+) -> Option<String> {
+    if let Some(key) = task_value_key(expr, scopes, root, imports)
+        && key.starts_with("def:")
+    {
+        return Some(key);
+    }
+    let path = resolved_read_path(expr, scopes, root, &mut std::collections::BTreeSet::new())?;
+    let path = canonical_definition_path(root, &path);
+    path.first()
+        .is_some_and(|segment| segment.starts_with('#'))
+        .then(|| path_key(&path))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn scan_order_expr(
     expr: &Expr,
@@ -4338,12 +4410,11 @@ fn scan_order_expr(
         Expr::Select(base, field, _, _) => {
             if matches!(field.as_str(), "stdout" | "success") {
                 if allow_read
-                    && let Some(path) = resolved_path(
+                    && let Some(path) = resolved_read_path(
                         base,
                         scopes,
                         root,
                         &mut std::collections::BTreeSet::new(),
-                        false,
                     )
                 {
                     let path = canonical_definition_path(root, &path);
@@ -4354,8 +4425,7 @@ fn scan_order_expr(
                 }
             } else {
                 if allow_decl
-                    && let Some(key) = task_value_key(expr, scopes, root, imports)
-                    && key.starts_with("def:")
+                    && let Some(key) = definition_declaration_key(expr, scopes, root, imports)
                 {
                     let entry = info.entry(key).or_insert((None, None));
                     entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
@@ -4400,9 +4470,7 @@ fn scan_order_expr(
             visited.remove(name);
         }
         Expr::Index(base, _, _) => {
-            if allow_decl
-                && let Some(key) = task_value_key(expr, scopes, root, imports)
-                && key.starts_with("def:")
+            if allow_decl && let Some(key) = definition_declaration_key(expr, scopes, root, imports)
             {
                 let entry = info.entry(key).or_insert((None, None));
                 entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));

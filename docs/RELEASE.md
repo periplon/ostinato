@@ -12,7 +12,7 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
-## v0.34.0
+## v0.34.1\n\n- Alias-container reads resolve only definition-rooted aliases; order-aware\n  suppression uses canonical paths; concrete/let containers stay non-concrete.\n- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,\n  6 language agents, 3 language unit, 22 application, 9 analysis,\n  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).\n\n## v0.34.0
 
 - Field aliases to definition containers read/inject like CUE; repeated
   root alias declarations covered.

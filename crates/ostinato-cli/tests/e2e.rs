@@ -7386,6 +7386,86 @@ command: defaliastwiceread: {
             true,
         ),
         (
+            "defaliascontainerdeclread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+r: #G
+command: defaliascontainerdeclread: {
+	a: p1: r.run
+	q: cli.Print & {text: "R=\(r.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defaliascontainerreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+r: #G
+command: defaliascontainerreadfirst: {
+	q: cli.Print & {text: "R=\(r.run.stdout)"}
+	a: p1: r.run
+}
+"#,
+            true,
+        ),
+        (
+            "defconcretestructread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+r: {run: lib.run}
+command: defconcretestructread: {
+	q: cli.Print & {text: "R=\(r.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defletcontainerread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+let G = {run: lib.run}
+r: G
+command: defletcontainerread: {
+	q: cli.Print & {text: "R=\(r.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defrootnestedread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+root: p1: lib.run
+command: defrootnestedread: {
+	q: cli.Print & {text: "R=\(root.p1.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
             "readrootmodule",
             r#"
 package foo
