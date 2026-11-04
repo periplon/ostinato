@@ -10442,6 +10442,123 @@ command: modulealiasindex: {
             true,
         ),
         (
+            "modulealiasrootfield",
+            r#"
+package foo
+import "example.com/k/lib"
+prep: lib.run
+command: modulealiasrootfield: {
+	r: prep
+	q: "\(prep.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiasrootcontainer",
+            r#"
+package foo
+import "example.com/k/lib"
+prep: {inner: lib.run}
+command: modulealiasrootcontainer: {
+	r: prep.inner
+	q: "\(prep.inner.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiasrootlet",
+            r#"
+package foo
+import "example.com/k/lib"
+let l = lib.run
+prep: l
+command: modulealiasrootlet: {
+	r: prep
+	q: "\(prep.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiasrootmixed",
+            r#"
+package foo
+import "example.com/k/lib"
+prep: lib.run
+command: modulealiasrootmixed: {
+	r: prep
+	q: "\(r.stdout)-\(prep.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiastaskinputplain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: modulealiastaskinputplain: {
+	r: lib.run
+	t: cli.Print & {text: "R=\(lib.run.stdout)"}
+	q: "\(lib.run.stdout)"
+}
+"#,
+            false,
+        ),
+        (
+            "modulealiastaskinputgroup",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: modulealiastaskinputgroup: {
+	r: lib.group.run
+	t: cli.Print & {text: "R=\(lib.group.run.stdout)"}
+	q: "\(lib.group.run.stdout)"
+}
+"#,
+            false,
+        ),
+        (
+            "modulealiastaskinputdef",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: modulealiastaskinputdef: {
+	r: lib.#def
+	t: cli.Print & {text: "R=\(lib.#def.stdout)"}
+	q: "\(lib.#def.stdout)"
+}
+"#,
+            false,
+        ),
+        (
+            "modulealiastaskinputindex",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: modulealiastaskinputindex: {
+	r: lib["run"]
+	t: cli.Print & {text: "R=\(lib.run.stdout)"}
+	q: "\(lib.run.stdout)"
+}
+"#,
+            false,
+        ),
+        (
             "modulealiassuccess",
             r#"
 package foo

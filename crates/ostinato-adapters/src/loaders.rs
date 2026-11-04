@@ -1174,6 +1174,43 @@ pub fn run_tool_command(
                 .is_some_and(|fields| fields.contains_key("$id"))
         })
     });
+    // CUE rejects direct module task-output reads inside task inputs; fail
+    // before evaluation so no task executes.
+    let module_backed = |path: &[String]| {
+        if path.first().is_some_and(|root| imports.contains_key(root)) {
+            return true;
+        }
+        let Some(first) = path.first() else {
+            return false;
+        };
+        match local_binding_location(&[combined.items.as_slice()], &combined.items, first) {
+            Some((true, StructItem::Field(field))) if field.definition => return false,
+            Some((true, _)) => {}
+            _ => return false,
+        }
+        // Composing the field with a struct literal makes CUE schedule the
+        // instance instead of deadlocking on a bare module reference.
+        if root_field_composed(&combined.items, first) {
+            return false;
+        }
+        find_field_expr_at_path_in_root(&combined.items, path, &combined.items).is_some_and(
+            |value| {
+                module_task_path_scoped(
+                    value,
+                    &[combined.items.as_slice()],
+                    &combined.items,
+                    &imports,
+                    &mut std::collections::BTreeSet::new(),
+                )
+                .is_some()
+            },
+        )
+    };
+    if external_paths.iter().any(|path| module_backed(path)) {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool task inputs cannot read module task outputs".to_owned(),
+        ));
+    }
     external_paths.retain(|path| {
         let Some(leaf) = path.last() else {
             return false;
@@ -1199,8 +1236,9 @@ pub fn run_tool_command(
             )
         })
     });
-    // Command task fields that alias a package task (`r: prep`).
-    let command_aliases: std::collections::BTreeMap<String, Vec<String>> = {
+    // Command task fields that alias a package or module task (`r: prep`,
+    // `r: lib.run`).
+    let command_aliases: std::collections::BTreeMap<String, CommandAliasTarget> = {
         let command_scopes: Vec<&[StructItem]> = vec![task_items.as_slice()];
         let mut aliases = std::collections::BTreeMap::new();
         collect_command_task_package_paths(
@@ -1213,8 +1251,11 @@ pub fn run_tool_command(
         );
         aliases
     };
-    let command_claimed: std::collections::BTreeSet<Vec<String>> =
-        command_aliases.values().cloned().collect();
+    let command_claimed: std::collections::BTreeSet<Vec<String>> = command_aliases
+        .values()
+        .flat_map(|target| target.module.iter().chain(target.local.iter()))
+        .cloned()
+        .collect();
     let order = package_read_order(
         task_items.as_slice(),
         &combined.items,
@@ -1278,7 +1319,10 @@ pub fn run_tool_command(
         }
         // A command alias runs the target task instance, so the target is not
         // scheduled again; only its own `$after` prerequisites are.
-        for (task_name, path) in &command_aliases {
+        for (task_name, target) in &command_aliases {
+            let Some(path) = &target.local else {
+                continue;
+            };
             let Some(expr) = find_field_expr_at_path(&combined.items, path) else {
                 continue;
             };
@@ -1497,21 +1541,26 @@ pub fn run_tool_command(
                             &non_task_imports,
                         )
                     };
-                    if let Some(target_path) = command_aliases.get(name)
-                        && plain_alias_targets.contains(target_path)
-                    {
-                        let target_name = target_path.last().cloned().unwrap_or_default();
-                        if inject_named_outputs(
-                            &mut combined.items,
-                            command_name,
-                            &target_name,
-                            target_path,
-                            &outputs,
-                            &non_task_imports,
-                        ) {
-                            injected_ok = true;
+                    if let Some(target) = command_aliases.get(name) {
+                        if let Some(local) = &target.local
+                            && plain_alias_targets.contains(local)
+                        {
+                            let target_name = local.last().cloned().unwrap_or_default();
+                            if inject_named_outputs(
+                                &mut combined.items,
+                                command_name,
+                                &target_name,
+                                local,
+                                &outputs,
+                                &non_task_imports,
+                            ) {
+                                injected_ok = true;
+                            }
                         }
-                        if inject_module_outputs(&mut imports, target_path, &outputs) {
+                        if let Some(module) = &target.module
+                            && plain_alias_targets.contains(module)
+                            && inject_module_outputs(&mut imports, module, &outputs)
+                        {
                             injected_ok = true;
                         }
                     }
@@ -2346,15 +2395,17 @@ fn collect_output_task_paths<'a>(
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success")
-                && let Some(path) = resolved_read_path(
+            if matches!(field.as_str(), "stdout" | "success") {
+                let local_path = resolved_read_path(
                     base,
                     scopes,
                     root,
                     &mut std::collections::BTreeSet::new(),
                     imports,
                 )
-                .or_else(|| {
+                .filter(|path| find_field_expr_at_path(root, path).is_some())
+                .or_else(|| local_read_path(base, scopes, root, module_values));
+                let module_path = if local_path.is_none() {
                     module_task_path_scoped(
                         base,
                         scopes,
@@ -2362,12 +2413,23 @@ fn collect_output_task_paths<'a>(
                         module_values,
                         &mut std::collections::BTreeSet::new(),
                     )
-                })
-            {
-                if in_task {
-                    out.insert(path);
                 } else {
-                    plain.insert(path);
+                    None
+                };
+                if let Some(path) = local_path {
+                    if in_task {
+                        out.insert(path);
+                    } else {
+                        plain.insert(path);
+                    }
+                } else if let Some(path) = module_path {
+                    // Command-local task instances are scheduled on their own;
+                    // reads through them behave like plain reads for injection.
+                    if in_task && !command_local_task_read(base, scopes, root, imports) {
+                        out.insert(path);
+                    } else {
+                        plain.insert(path);
+                    }
                 }
             }
             collect_output_task_paths(
@@ -4454,47 +4516,162 @@ fn external_task_key(path: &[String], root: &[StructItem]) -> String {
 /// `r: aux & prep` must resolve to `prep` (the task), not to the first
 /// resolvable non-task operand, so declaration/read ordering treats it like
 /// `r: prep`.
-fn resolve_command_alias_path(
+#[derive(Clone, Default)]
+struct CommandAliasTarget {
+    module: Option<Vec<String>>,
+    local: Option<Vec<String>>,
+}
+
+fn resolve_command_alias_target(
     expr: &Expr,
     scopes: &[&[StructItem]],
     root: &[StructItem],
     imports: &ImportKinds,
     module_values: &BTreeMap<String, Value>,
-) -> Option<Vec<String>> {
+) -> Option<CommandAliasTarget> {
     match expr {
         Expr::Unify(left, right, _) => {
-            resolve_command_alias_path(left, scopes, root, imports, module_values)
-                .or_else(|| resolve_command_alias_path(right, scopes, root, imports, module_values))
+            let left = resolve_command_alias_target(left, scopes, root, imports, module_values);
+            let right = resolve_command_alias_target(right, scopes, root, imports, module_values);
+            match (left, right) {
+                (Some(mut left), Some(right)) => {
+                    if left.module.is_none() {
+                        left.module = right.module;
+                    }
+                    if left.local.is_none() {
+                        left.local = right.local;
+                    }
+                    Some(left)
+                }
+                (left, right) => left.or(right),
+            }
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            resolve_command_alias_path(inner, scopes, root, imports, module_values)
+            resolve_command_alias_target(inner, scopes, root, imports, module_values)
         }
         _ => {
-            if let Some((path, true)) =
-                resolve_after_path(expr, scopes, root, &mut std::collections::BTreeSet::new())
-                && let Some(value) = find_field_expr_at_path(root, &path)
-                && is_task_expr(
-                    value,
-                    scopes,
-                    root,
-                    &mut std::collections::BTreeSet::new(),
-                    imports,
-                )
-            {
-                return Some(path);
-            }
-            module_task_path_scoped(
+            let local = local_alias_path(expr, scopes, root, imports);
+            let module = module_task_path_scoped(
                 expr,
                 scopes,
                 root,
                 module_values,
                 &mut std::collections::BTreeSet::new(),
-            )
+            );
+            if local.is_none() && module.is_none() {
+                return None;
+            }
+            Some(CommandAliasTarget { module, local })
         }
     }
 }
 
+/// Read through a command-local (non-root) task instance.
+fn command_local_task_read(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &ImportKinds,
+) -> bool {
+    let Some(first) = selector_root_ident(expr) else {
+        return false;
+    };
+    matches!(
+        local_binding_location(scopes, root, first),
+        Some((false, _))
+    ) && is_task_expr(
+        expr,
+        scopes,
+        root,
+        &mut std::collections::BTreeSet::new(),
+        imports,
+    )
+}
+
+/// Local field path of a read base whose value is module-backed.
+fn local_read_path(
+    expr: &Expr,
+    _scopes: &[&[StructItem]],
+    root: &[StructItem],
+    module_values: &BTreeMap<String, Value>,
+) -> Option<Vec<String>> {
+    let path = selector_names(expr, None)?;
+    if path
+        .first()
+        .is_some_and(|segment| module_values.contains_key(segment))
+    {
+        return None;
+    }
+    find_field_expr_at_path(root, &path).map(|_| path)
+}
+
+/// Package-root field path of a command alias target.
+fn local_alias_path(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &ImportKinds,
+) -> Option<Vec<String>> {
+    let path = selector_names(expr, None)?;
+    let first = path.first()?;
+    if !matches!(local_binding_location(scopes, root, first), Some((true, _))) {
+        return None;
+    }
+    let value = find_field_expr_at_path(root, &path)?;
+    is_task_expr(
+        value,
+        scopes,
+        root,
+        &mut std::collections::BTreeSet::new(),
+        imports,
+    )
+    .then_some(path)
+}
+
 /// Like [`module_task_path`], following local `let`/field bindings first.
+fn root_field_composed(items: &[StructItem], name: &str) -> bool {
+    let declarations: Vec<&Expr> = items
+        .iter()
+        .filter_map(|item| match item {
+            StructItem::Field(field)
+                if matches!(&field.label, Label::Name(label, _) if label == name) =>
+            {
+                Some(&field.value)
+            }
+            _ => None,
+        })
+        .collect();
+    declarations
+        .iter()
+        .any(|value| expr_composed_with_struct(value))
+        || (declarations.len() > 1 && declarations.iter().any(|value| expr_has_struct(value)))
+}
+
+/// A unified value that includes a struct literal, e.g.
+/// `lib.run & {stdout: string}` or `{stdout: string} & lib.run`.
+fn expr_composed_with_struct(expr: &Expr) -> bool {
+    match expr {
+        Expr::Unify(left, right, _) => expr_has_struct(left) || expr_has_struct(right),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            expr_composed_with_struct(inner)
+        }
+        _ => false,
+    }
+}
+
+fn expr_has_struct(expr: &Expr) -> bool {
+    match expr {
+        Expr::Struct(..) => true,
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            expr_has_struct(left) || expr_has_struct(right)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            expr_has_struct(inner)
+        }
+        _ => false,
+    }
+}
+
 fn module_task_path_scoped(
     expr: &Expr,
     scopes: &[&[StructItem]],
@@ -4521,6 +4698,17 @@ fn module_task_path_scoped(
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             module_task_path_scoped(inner, scopes, root, module_values, visited)
+        }
+        Expr::Select(..) | Expr::Index(..) => {
+            if let Some((path, true)) =
+                resolve_after_path(expr, scopes, root, &mut std::collections::BTreeSet::new())
+                && let Some(value) = find_field_expr_at_path(root, &path)
+                && let Some(module) =
+                    module_task_path_scoped(value, scopes, root, module_values, visited)
+            {
+                return Some(module);
+            }
+            module_task_path(expr, module_values)
         }
         _ => module_task_path(expr, module_values),
     }
@@ -4553,7 +4741,7 @@ fn collect_command_task_package_paths(
     root: &[StructItem],
     imports: &ImportKinds,
     module_values: &BTreeMap<String, Value>,
-    out: &mut std::collections::BTreeMap<String, Vec<String>>,
+    out: &mut std::collections::BTreeMap<String, CommandAliasTarget>,
 ) {
     match expr {
         Expr::Struct(items, _) => {
@@ -4579,7 +4767,7 @@ fn collect_command_task_package_paths(
                     imports,
                 );
                 if child_is_task
-                    && let Some(path) = resolve_command_alias_path(
+                    && let Some(target) = resolve_command_alias_target(
                         &field.value,
                         scopes,
                         root,
@@ -4587,7 +4775,7 @@ fn collect_command_task_package_paths(
                         module_values,
                     )
                 {
-                    out.entry(label.clone()).or_insert(path);
+                    out.entry(label.clone()).or_insert(target);
                 }
                 collect_command_task_package_paths(
                     &field.value,
