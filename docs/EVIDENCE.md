@@ -923,7 +923,7 @@ exit=0
 ````text
 ### ostinato run examples/agents.cue
 
-run=c7b743d7-d360-42c0-886d-49abe82603fe workflow=agents status=succeeded durationMs=322
+run=93c83ac2-91d5-466e-a893-3a3c142affe5 workflow=agents status=succeeded durationMs=390
 STEP                     STATUS     VISITS ATTEMPTS
 report                   succeeded  1      1
 review                   succeeded  1      1
@@ -935,7 +935,7 @@ exit=0
 ### ostinato agents <run>
 
 ID     STEP                 ROUND ATTEMPT STATUS    PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
-1      review               0     0       ok        command    example-model 0      312      2         4fbebebef2ed1dad6e9413128bbab45106fe486b54f1ceeae1bc4208d80fc84b
+1      review               0     0       ok        command    example-model 0      380      2         252e1aa0be0779784fd659abc2e9dd3f5aabfd79644b7912941c2229a242f7d4
 
 exit=0
 ````
@@ -944,7 +944,7 @@ exit=0
 ### ostinato agents <run> --verify
 
 ID     STEP                 ROUND ATTEMPT STATUS    PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
-1      review               0     0       ok        command    example-model 0      312      2         4fbebebef2ed1dad6e9413128bbab45106fe486b54f1ceeae1bc4208d80fc84b
+1      review               0     0       ok        command    example-model 0      380      2         252e1aa0be0779784fd659abc2e9dd3f5aabfd79644b7912941c2229a242f7d4
 OK trace=1 step=review attempt=0
 
 exit=0
@@ -960,8 +960,8 @@ exit=0
       "kind": "patch",
       "name": "_isolation/changes.patch",
       "round": 0,
-      "sha256": "718ec5ee966967a9e800973ea754a3635e21503ac94166331500ba6a4512a8dd",
-      "size": 361,
+      "sha256": "ee8459b07182fdbc0f789c415ac9bf2936c8f4fed550c02b4746f6cc8aa82475",
+      "size": 334,
       "step": "review",
       "storedSize": 361,
       "traceId": 1,
@@ -981,7 +981,7 @@ exit=0
     }
   ],
   "extracted": [],
-  "run": "c7b743d7-d360-42c0-886d-49abe82603fe"
+  "run": "93c83ac2-91d5-466e-a893-3a3c142affe5"
 }
 
 exit=0
@@ -1002,7 +1002,7 @@ exit=0
 ````text
 ### ostinato audit verify <run>
 
-OK run=c7b743d7-d360-42c0-886d-49abe82603fe events=8 head=83fcef117c35ade0ae1c79aed9dbb88907919d35d579d0163f1f0234fdae41f8
+OK run=93c83ac2-91d5-466e-a893-3a3c142affe5 events=8 head=fe8ef4893473800d0a31799dbcb220832cd7eb42d82d673a7568f2106d8dbb26
 
 exit=0
 ````

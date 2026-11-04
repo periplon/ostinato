@@ -1,6 +1,6 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.QklnV1iYIE/gateway.sqlite --cue cue run examples/gateway.cue
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Z7AUIGLSpC/gateway.sqlite --cue cue run examples/gateway.cue
 
-run=0b03d29e-e303-402b-82d2-62df3b6dadc8 workflow=release-decision status=succeeded durationMs=21
+run=4e1fe9b4-ca27-4b0a-8dd6-e0e77ba3f50f workflow=release-decision status=succeeded durationMs=19
 STEP                     STATUS     VISITS ATTEMPTS
 deployFast               succeeded  1      1
 deploySlow               skipped    0      0

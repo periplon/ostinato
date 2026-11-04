@@ -1,8 +1,8 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.QklnV1iYIE/resume.sqlite trials b43ed990-6ffb-4d18-9936-260c8023f02e
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Z7AUIGLSpC/resume.sqlite trials 2d1e0828-a7ef-467d-a7f4-abfbcf04d324
 
 STEP                 ROUND ATTEMPT STATUS   SCORE      DUR(ms)  ERROR
 a                    0     0      succeeded 1.000      5
 b                    0     0      failed   0.000      5        command exited with 7:
-b                    0     0      succeeded 1.000      5
+b                    0     0      succeeded 1.000      6
 
 exit=0
