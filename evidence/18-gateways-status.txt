@@ -1,8 +1,8 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-moddef/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Dak8WvU5yU/gateway.sqlite status 5a932a57-1e7b-467a-8256-9eba8fde9e3a
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-2hop/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.K79pLW0au4/gateway.sqlite status 8a636946-ae1c-43de-871c-e5957249b64f
 
-run=5a932a57-1e7b-467a-8256-9eba8fde9e3a workflow=release-decision status=succeeded resumeIndex=6
-source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-definition-alias/examples/gateway.cue
-created=2026-11-04T23:27:45.458Z updated=2026-11-04T23:27:45.476Z
+run=8a636946-ae1c-43de-871c-e5957249b64f workflow=release-decision status=succeeded resumeIndex=6
+source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/second-hop-aliases/examples/gateway.cue
+created=2026-11-04T23:41:29.141Z updated=2026-11-04T23:41:29.159Z
 STEP                     STATUS     VISITS ATTEMPTS
 deployFast               succeeded  1      1       
 deploySlow               skipped    0      0       
