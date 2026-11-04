@@ -3791,6 +3791,40 @@ command: stdinpending: {
 "#,
             false,
         ),
+        (
+            "envlistpending",
+            r#"
+package foo
+import "tool/exec"
+command: envlistpending: {
+	a: exec.Run & {cmd: ["sh", "-c", "printf '%s' \"$FOO\""], env: [z.stdout]}
+	z: exec.Run & {cmd: ["sh", "-c", "printf 'FOO=bar'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "cmddisj",
+            r#"
+package foo
+import "tool/exec"
+command: cmddisj: {
+	a: exec.Run & {$after: z, cmd: [z.stdout | "echo"]}
+	z: exec.Run & {cmd: ["sh", "-c", "printf echo"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "envdef",
+            r#"
+package foo
+import "tool/exec"
+#E: {FOO: "bar"}
+command: envdef: {run: exec.Run & {cmd: ["sh", "-c", "printf '%s' \"$FOO\""], env: #E}}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -3968,6 +4002,7 @@ package foo
 import "tool/exec"
 command: mustfalse: {run: exec.Run & {cmd: ["sh", "-c", "echo RAN"], mustSucceed: *false | bool}}
 "#,
+            false,
         ),
         (
             "stdinconflict",
@@ -3976,6 +4011,7 @@ package foo
 import "tool/exec"
 command: stdinconflict: {run: exec.Run & {cmd: ["cat"], stdin: *"y" | null}}
 "#,
+            false,
         ),
         (
             "stdoutconflict",
@@ -3984,6 +4020,7 @@ package foo
 import "tool/exec"
 command: stdoutconflict: {run: exec.Run & {cmd: ["sh", "-c", "echo O"], stdout: *"x" | null}}
 "#,
+            false,
         ),
         (
             "baddir",
@@ -3998,6 +4035,7 @@ command: baddir: {
 	run: exec.Run & {$after: print, cmd: ["echo", "R"], dir: 5}
 }
 "#,
+            false,
         ),
         (
             "baddir-d",
@@ -4014,9 +4052,131 @@ command: baddir-d: {
 	run: exec.Run & {$after: [print, write], cmd: ["sh", "-c", "echo RAN"], dir: 5 | 6}
 }
 "#,
+            true,
+        ),
+        (
+            "badenv",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"tool/file"
+)
+command: badenv: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["sh", "-c", "echo RAN"], env: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badenvvalue",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badenvvalue: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["sh", "-c", "echo RAN"], env: {FOO: 5 | 6}}
+}
+"#,
+            true,
+        ),
+        (
+            "badenvlist",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badenvlist: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["sh", "-c", "echo RAN"], env: [5 | 6]}
+}
+"#,
+            true,
+        ),
+        (
+            "badstdin",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badstdin: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["cat"], stdin: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badmust",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badmust: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: ["true"], mustSucceed: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badcmd",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badcmd: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: 5 | 6}
+}
+"#,
+            true,
+        ),
+        (
+            "badcmdlist",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"tool/file"
+)
+command: badcmdlist: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: write, cmd: [5 | 6]}
+}
+"#,
+            true,
+        ),
+        (
+            "badprint",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/file"
+)
+command: badprint: {
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	p: cli.Print & {$after: write, text: 5 | 6}
+}
+"#,
+            true,
         ),
     ];
-    for (name, source) in fixtures {
+    for (name, source, file_task) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
         write(&directory.path().join("fixture_tool.cue"), source);
         let expected = Command::new(&cue)
@@ -4027,6 +4187,12 @@ command: baddir-d: {
         let actual = ost(&["cmd", name, directory.path().to_str().expect("path")]);
         assert_eq!(actual.status.code(), expected.status.code(), "{name}");
         assert_eq!(actual.stdout, expected.stdout, "{name}");
+        if file_task {
+            assert!(
+                !directory.path().join("side.txt").exists(),
+                "{name}: sibling file task ran"
+            );
+        }
     }
 }
 

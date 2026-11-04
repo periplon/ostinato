@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.22.4
+
+Tool env definitions and reproducible evidence.
+
+- `env` accepts definition-valued maps (`env: #E`), including defaulted and pending-output definitions, matching cue.
+- `scripts/evidence.sh` uses the actual `CARGO_TARGET_DIR` binary and guards that its version matches the workspace, so evidence cannot be generated from a stale build.
+- Expanded tool E2E coverage for pending env lists, cmd disjunctions, env definitions, and all-invalid disjunction side effects (sibling file absence asserted).
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.22.3
 
 Pending-output and disjunction tool inputs.

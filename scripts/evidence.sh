@@ -13,8 +13,15 @@ if ! "$CUE_BIN" version >/dev/null 2>&1; then
   exit 1
 fi
 
-BIN="$ROOT/target/debug/ostinato"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+BIN="$TARGET_DIR/debug/ostinato"
 cargo build -q -p ostinato
+EXPECTED_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)"
+ACTUAL_VERSION="$("$BIN" --version | awk '{print $2}')"
+if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+  echo "built binary version $ACTUAL_VERSION does not match workspace $EXPECTED_VERSION" >&2
+  exit 1
+fi
 
 rm -rf evidence
 mkdir -p evidence

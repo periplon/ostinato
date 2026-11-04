@@ -1673,7 +1673,11 @@ fn validate_task_inputs(
                     && !has_compatible(value, |value| {
                         matches!(
                             value,
-                            Value::Struct(_) | Value::List(_) | Value::Type(_) | Value::Bottom
+                            Value::Struct(_)
+                                | Value::Definition { .. }
+                                | Value::List(_)
+                                | Value::Type(_)
+                                | Value::Bottom
                         )
                     })
                 {
@@ -1686,7 +1690,7 @@ fn validate_task_inputs(
                     | Some(Value::Type(_))
                     | Some(Value::Bottom)
                     | Some(Value::Disjunction(..)) => {}
-                    Some(Value::Struct(env)) => {
+                    Some(Value::Struct(env)) | Some(Value::Definition { fields: env, .. }) => {
                         for value in env.values() {
                             if !has_compatible(value, |value| {
                                 matches!(value, Value::String(_) | Value::Type(_) | Value::Bottom)
@@ -2001,7 +2005,7 @@ fn execute_exec(
     match task.get("env").map(Value::concretize) {
         None => {}
         Some(Value::Struct(env)) if env.is_empty() => {}
-        Some(Value::Struct(env)) => {
+        Some(Value::Struct(env)) | Some(Value::Definition { fields: env, .. }) => {
             process.env_clear();
             for (key, value) in env {
                 match value.concretize() {
