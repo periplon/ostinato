@@ -93,6 +93,15 @@ enum Command {
         #[arg(long, env = "OSTINATO_AGENT")]
         agent_cmd: Option<String>,
     },
+    /// Run a CUE tool command declared in `_tool.cue` files.
+    Cmd {
+        /// Tool command name (`command: <name>`).
+        name: String,
+        /// Package file or directory.
+        path: PathBuf,
+        #[arg(short = 'p', long = "param")]
+        params: Vec<String>,
+    },
     /// Mark a run as cancelled (observed between groups).
     Cancel { run: String },
     /// Resume a failed or interrupted run from its durable checkpoint.
@@ -258,6 +267,10 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             let report = engine.start(&loaded)?;
             print_report(&report, json)?;
             Ok(exit_for_status(report.status))
+        }
+        Command::Cmd { name, path, params } => {
+            let code = ostinato_adapters::run_tool_command(&path, &name, &parse_params(&params)?)?;
+            Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
         }
         Command::Cancel { run } => {
             let (engine, _) = build_runtime(&cli, None, None)?;

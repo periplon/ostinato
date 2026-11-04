@@ -48,7 +48,10 @@ workflow outside the Rust surface has a supported escape hatch.
   and interpolated) and global `len`;
 - constraint-based parameter overrides for split/definition-backed params and
   dependent params;
-- CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files);
+- CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files) for workflow loading;
+- CUE tool commands via `ostinato cmd <name> <path>`: `_tool.cue` `command:`
+  tasks using `tool/exec.Run` with `cmd`, `env`, `dir`, `stdin`, capture
+  fields, `$after` ordering and `@tag` injection;
 - workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, branch
   conditions, default branches, dead-path elimination and `stepStatus` routing
   (v1 rejects gateways combined with cycles and implicit joins).
@@ -72,7 +75,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Dependent fields after a generated declaration merge | `#P: {env: string, greeting: "hello \(env)"}` plus `if true {#P: {env: "prod"}}` does not recompute `greeting`; declared declaration order or the oracle |
 | Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |
 | Bare references to comprehension-generated fields | `x: {if true {b: 1}, a: b}` is accepted although CUE requires `x.b`; use an explicit field or selector |
-| Tool packages (`tool/...`, `@cmd` tool commands) | Ostinato has its own workflow engine; `_tool.cue` files stay excluded by build semantics and tool commands are not run |
+| Tool packages beyond `tool/exec.Run` | `ostinato cmd` runs `_tool.cue` `command:` tasks with `tool/exec.Run` (`cmd` string/argv, `env`, `dir`, `stdin`, capture fields, `$after`, `@tag`); `tool/cli`, `tool/file`, other tool packages, tasks consuming other task outputs, `$usage`/`$short`/`$long`, multi-instance inputs and `@cmd` attributes remain unimplemented |
 | `let` cycles mediated by fields (`let X = f, f: X`) | Direct and indirect `let` cycles are rejected; a cycle routed through a field is reported as an error rather than solved as an incomplete value. Use the oracle for that shape |
 | Arbitrary CUE packages with package-level patterns | Oracle territory |
 
