@@ -6337,6 +6337,10 @@ list_nested: #L & {l: [{b: 5}]}
 #AB: 1
 #S: {n: *1 | int, ref: #AB, label: "x#S", total: n + 1}
 substring: #S & {n: 3}
+#Pair: {l: [{b: int | *1, c: b + 1}, {b: int | *1, c: b + 1}]}
+pair: #Pair & {l: [{b: 5}, {b: 6}]}
+#LL: {l: [[{b: int | *1, c: b + 1}]], d: l[0][0].c + 1}
+nested_list: #LL & {l: [[{b: 5}]]}
 "#;
     let file = ostinato_lang::parse(source).expect("parse default narrowing");
     let value = ostinato_lang::eval_file(&file).expect("eval default narrowing");
@@ -6355,6 +6359,31 @@ substring: #S & {n: 3}
     assert_eq!(json["list_nested"]["l"][0]["c"], 6);
     assert_eq!(json["list_nested"]["d"], 7);
     assert_eq!(json["substring"]["total"], 4);
+    assert_eq!(json["pair"]["l"][0]["c"], 6);
+    assert_eq!(json["pair"]["l"][1]["c"], 7);
+    assert_eq!(json["nested_list"]["l"][0][0]["c"], 6);
+    assert_eq!(json["nested_list"]["d"], 7);
+
+    for source in [
+        "package demo\n#L2: {l: [{b: int | *1, c: b + 1}]}\nx: #L2 & {l: [{b: 5}, {b: 6}]}\n",
+        "package demo\n#L2: {l: [{b: int | *1, c: b + 1}]}\nx: #L2 & {l: []}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse fixed-list arity");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "fixed-list arity must conflict: {source:?}"
+        );
+    }
+
+    let shadow =
+        "package demo\n#A: {n: *1 | int, y: n + 1, inner: {#A: 5, v: #A}}\na: #A & {n: 3}\n";
+    let file = ostinato_lang::parse(shadow).expect("parse shadowing narrowing");
+    let value = ostinato_lang::eval_file(&file).expect("eval shadowing narrowing");
+    let json = value.to_json().expect("json");
+    assert_eq!(
+        json["a"]["y"], 2,
+        "shadowing nested definition narrowing remains documented"
+    );
 
     let definition_chain = "package demo\n#A: {n: *1 | int, y: n + 1}\n#B: #A & {n: 4}\nx: #B\n";
     let file = ostinato_lang::parse(definition_chain).expect("parse definition chain");
