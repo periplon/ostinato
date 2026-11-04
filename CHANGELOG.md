@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.27.2
+
+Semantic task-identity gating for injection.
+
+- Injection candidates are precomputed from semantic task declarations
+  (tool selectors, aliases, `$id`-bearing structs) and matched by field id
+  instead of by name alone. Concrete fields sharing a scheduled task's name—
+  including values that reference siblings (`{stdout: "concrete", note: base}`)
+  or defaults (`{stdout: *"concrete" | string, note: base}`)—no longer absorb
+  injected outputs.
+- Added e2e and conformance parity cases for those shapes next to the earlier
+  concrete-collision cases.
+- 433 tests (96 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.27.1
 
 Task-safe output injection.
