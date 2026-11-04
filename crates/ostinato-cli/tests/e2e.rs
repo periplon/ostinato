@@ -4010,6 +4010,87 @@ command: paren: {
 "#,
             false,
         ),
+        (
+            "helperinterp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helperinterp: {
+	msg: run.stdout
+	p: cli.Print & {text: "x=\(msg)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "helperletinterp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helperletinterp: {
+	let msg = run.stdout
+	p: cli.Print & {text: "x=\(msg)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "helperchaininterp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helperchaininterp: {
+	a: "v=\(run.stdout)"
+	b: a
+	p: cli.Print & {text: "x=\(b)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "helpernestedinterp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helpernestedinterp: {
+	cfg: {msg: run.stdout}
+	p: cli.Print & {text: "x=\(cfg.msg)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "helpersuccessinterp",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helpersuccessinterp: {
+	ok: run.success
+	p: cli.Print & {text: "ok=\(ok)"}
+	run: exec.Run & {cmd: ["false"], mustSucceed: false, success: bool}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -5374,4 +5455,108 @@ workflow: {{
         "stderr: {}",
         String::from_utf8_lossy(&verified.stderr)
     );
+}
+
+#[test]
+fn tool_command_referenced_and_unified_commands_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases = [
+        (
+            "unifyafter",
+            r#"
+package foo
+import "tool/exec"
+base: {
+	a: exec.Run & {$after: z, cmd: ["sh", "-c", "cat data.txt"]}
+	z: exec.Run & {cmd: ["sh", "-c", "printf fresh > data.txt"]}
+}
+command: unifyafter: base & {extra: 1}
+"#,
+            Some(("data.txt", "stale")),
+            None,
+        ),
+        (
+            "letbaseafter",
+            r#"
+package foo
+import "tool/exec"
+let base = {
+	a: exec.Run & {$after: z, cmd: ["sh", "-c", "cat data.txt"]}
+	z: exec.Run & {cmd: ["sh", "-c", "printf fresh > data.txt"]}
+}
+command: letbaseafter: base
+"#,
+            Some(("data.txt", "stale")),
+            None,
+        ),
+        (
+            "twobases",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"tool/file"
+)
+base1: {
+	run1: exec.Run & {cmd: ["sh", "-c", "printf 'AAA'"], stdout: string}
+	p1: cli.Print & {text: "1=\(run1.stdout)"}
+}
+base2: {
+	run2: exec.Run & {cmd: ["sh", "-c", "printf 'BBB'"], stdout: string}
+	w2: file.Create & {filename: "out2.txt", contents: "2=\(run2.stdout)"}
+}
+command: twobases: base1 & base2
+"#,
+            None,
+            Some("out2.txt"),
+        ),
+        (
+            "chainedunify",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+first: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+second: first & {extra: 2}
+command: chainedunify: second
+"#,
+            None,
+            None,
+        ),
+    ];
+    for (name, source, seed, artifact) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        write(&cue_dir.path().join("fixture_tool.cue"), source);
+        write(&rust_dir.path().join("fixture_tool.cue"), source);
+        if let Some((file, contents)) = seed {
+            write(&cue_dir.path().join(file), contents);
+            write(&rust_dir.path().join(file), contents);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert_eq!(actual.stderr, expected.stderr, "{name}");
+        if let Some(artifact) = artifact {
+            assert_eq!(
+                std::fs::read(cue_dir.path().join(artifact)).expect("cue artifact"),
+                std::fs::read(rust_dir.path().join(artifact)).expect("rust artifact"),
+                "{name}: file contents differ"
+            );
+        }
+    }
 }

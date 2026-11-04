@@ -1,8 +1,8 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Z7AUIGLSpC/db.sqlite run examples/retry.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/db.sqlite run examples/retry.cue
 
-run=016203de-5563-4476-b5fd-1c809682f87d workflow=retry status=succeeded durationMs=316
+run=771b6fa6-efde-458c-98d6-131d8ca77397 workflow=retry status=succeeded durationMs=319
 STEP                     STATUS     VISITS ATTEMPTS
-flaky                    succeeded  1      3
-setup                    succeeded  1      1
+flaky                    succeeded  1      3       
+setup                    succeeded  1      1       
 
 exit=0

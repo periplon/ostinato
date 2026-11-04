@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.24.1
+
+Referenced-command scheduling and transitive helper interpolation.
+
+- Command values that unify references (`command: c: base & {...}`), chain
+  references and `let`-bound bases now schedule all tasks, honour `$after`
+  and receive output injection for every referenced declaration.
+- Interpolation scoping follows helper fields, `let` bindings, chains and
+  nested selectors (including bytes and `success`) to decide whether a
+  pending task output may remain incomplete, so `\(msg)` works when `msg`
+  resolves to `run.stdout`.
+- 394 tests (83 CLI E2E, 1 conformance, 242 language, 6 language agents,
+  3 language unit, 18 application, 19 domain, 6 store, 8 workspace,
+  8 adapters unit).
+
+
 ## v0.24.0
 
 Named agent definitions, external agent CLIs, traces and isolation.
