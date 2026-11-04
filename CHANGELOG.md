@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.18.4
+
+Narrowing declaration-closedness and list-arity corrections.
+
+- Multi/composed field declarations now combine with `unify_values` before the
+  single final close/unify, so closed declarations still reject undeclared
+  fields (`#X: {o: {b: int | *1}, o: #D}` with `#D: {d: 6}` rejects `b`/`c`)
+  while open declarations and narrowed dependents recompute.
+- Fixed-length and open-prefix list declarations restore CUE arity checks, so
+  short/long concrete lists conflict instead of being silently accepted.
+- 343 tests (61 CLI E2E, 1 conformance, 239 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.18.3
 
 Multi-declaration and composed narrowing corrections.

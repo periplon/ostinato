@@ -2049,7 +2049,7 @@ impl<'a> Frame<'a> {
                             merged = if index == 0 {
                                 part
                             } else {
-                                merge_declaration(&merged, &part, span)?
+                                unify_values(&merged, &part, span)?
                             };
                         }
                         let unified = unify_values(&close_nested(&merged), &value, span)?;
@@ -2907,14 +2907,21 @@ fn eval_declaration_part(
             }
             let declared = eval_expr(expr, frame)?;
             frame.next_injections.borrow_mut().take();
-            Ok(close_nested(&declared))
+            Ok(declared)
         }
         (Expr::Unify(left, right, _), value) => {
             let left = eval_declaration_part(frame, left, value, span)?;
             let right = eval_declaration_part(frame, right, value, span)?;
-            merge_declaration(&left, &right, span)
+            unify_values(&left, &right, span)
         }
-        (Expr::List(items, _), Value::List(values)) if items.len() == values.len() => {
+        (Expr::List(items, _), Value::List(values)) => {
+            if items.len() != values.len() {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "cannot unify lists of different lengths",
+                ));
+            }
             let mut out = Vec::with_capacity(values.len());
             for (item, value) in items.iter().zip(values) {
                 out.push(eval_declaration_part(frame, item, value, span)?);
@@ -2932,6 +2939,13 @@ fn eval_declaration_part(
             Ok(Value::List(out))
         }
         (Expr::OpenListPrefix(prefix, tail, _), Value::List(values)) => {
+            if prefix.len() > values.len() {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "list prefix is longer than the concrete list",
+                ));
+            }
             let mut out = Vec::with_capacity(values.len());
             for (index, value) in values.iter().enumerate() {
                 let expected = prefix.get(index).or(tail.as_deref());
