@@ -6514,6 +6514,7 @@ k
 #D: {'k'?: int}
 typed: #D & {'k': 5}
 invalid_utf8: {'\xff': 6}
+escaped: {'\x6b': 7}
 "#;
     let file = ostinato_lang::parse(source).expect("parse bytes labels");
     let value = ostinato_lang::eval_file(&file).expect("eval bytes labels");
@@ -6524,6 +6525,33 @@ invalid_utf8: {'\xff': 6}
     assert_eq!(json["multiline"]["k"], 4);
     assert_eq!(json["typed"]["k"], 5);
     assert_eq!(json["invalid_utf8"]["�"], 6);
+    assert_eq!(json["escaped"]["k"], 7);
+
+    let comprehensions = r#"
+package demo
+list_comp: [for i in [1, 2] {'k': i}]
+list_comp_if: [for i in [1] if true {'k': i}]
+list_comp_optional: [for i in [1] {'k'?: int}]
+list_comp_def: [for i in [1] {'#D': i}]
+list_comp_multiline: [for i in [1] {
+	'k': i
+}]
+struct_comp: {for i in [1] {'k': i}}
+"#;
+    let file = ostinato_lang::parse(comprehensions).expect("parse bytes-label comprehensions");
+    let value = ostinato_lang::eval_file(&file).expect("eval bytes-label comprehensions");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["list_comp"][0]["k"], 1);
+    assert_eq!(json["list_comp"][1]["k"], 2);
+    assert_eq!(json["list_comp_if"][0]["k"], 1);
+    assert_eq!(json["list_comp_multiline"][0]["k"], 1);
+    assert_eq!(json["struct_comp"]["k"], 1);
+
+    // Documented limit: non-UTF-8 label bytes decode lossily to U+FFFD.
+    let lossy = "package demo\nx: {'\\xff': 1}\ny: x[\"�\"]\n";
+    let file = ostinato_lang::parse(lossy).expect("parse lossy label identity");
+    let value = ostinato_lang::eval_file(&file).expect("eval lossy label identity");
+    assert_eq!(value.to_json().expect("json")["y"], 1);
 
     let selection = r#"
 package demo

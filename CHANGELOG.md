@@ -1,12 +1,26 @@
 # Changelog
 
+## v0.20.1
+
+Bytes-label comprehension parsing and identity documentation.
+
+- List/struct comprehension bodies starting with a bytes label parse correctly
+  (including `if`, optional, definition and multiline bodies); list-comp
+  bodies may start on the line after `{`.
+- Non-UTF-8 bytes-label identity (lossy U+FFFD decoding) is documented as a
+  SCOPE limit and pinned by tests; escaped labels and comprehension labels are
+  covered in the conformance corpus.
+- 345 tests (61 CLI E2E, 1 conformance, 241 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.20.0
 
 Bytes-literal field labels.
 
 - Field labels written as single-line, multiline or escaped bytes literals
   decode to string labels and share identity with quoted string labels,
-  including dot/index selection, definitions, optionals and non-UTF-8 bytes.
+  including dot/index selection, definitions and optionals; non-UTF-8 label identity is decoded lossily and documented in SCOPE.
 - Interpolated bytes labels are rejected like CUE.
 - 345 tests (61 CLI E2E, 1 conformance, 241 language, 3 language unit,
   18 application, 17 domain, 3 store, 1 adapters unit).

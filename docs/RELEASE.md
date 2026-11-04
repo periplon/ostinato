@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.20.1
+
+- Bytes-label comprehension bodies (incl. multiline) and documented lossy
+  non-UTF-8 label identity.
+- 345 tests (61 CLI E2E, 1 conformance, 241 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.20.0
 
 - Bytes-literal field labels decode to string labels with string-label
