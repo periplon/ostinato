@@ -1,13 +1,13 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/gateway-nof.sqlite status 91620149-a454-4d03-a9f6-5d388b5b5cc1
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.x7qOy2izUH/gateway-nof.sqlite status f5991e2e-c18c-4526-8e79-425cdfb6c43e
 
-run=91620149-a454-4d03-a9f6-5d388b5b5cc1 workflow=quorum status=succeeded resumeIndex=5
-source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/examples/gateway_nof.cue
-created=2026-11-04T07:34:49.444Z updated=2026-11-04T07:34:49.447Z
+run=f5991e2e-c18c-4526-8e79-425cdfb6c43e workflow=quorum status=succeeded resumeIndex=5
+source=/Users/joanmarc/dailywork/jmca/ostinato/examples/gateway_nof.cue
+created=2026-11-04T07:44:31.194Z updated=2026-11-04T07:44:31.196Z
 STEP                     STATUS     VISITS ATTEMPTS
-alice                    succeeded  1      1
-approve                  succeeded  1      0
-bob                      succeeded  1      1
-carol                    succeeded  1      1
-release                  succeeded  1      1
+alice                    succeeded  1      1       
+approve                  succeeded  1      0       
+bob                      succeeded  1      1       
+carol                    succeeded  1      1       
+release                  succeeded  1      1       
 
 exit=0
