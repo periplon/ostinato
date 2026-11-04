@@ -3227,11 +3227,20 @@ fn merge_declaration(left: &Value, right: &Value, span: Span) -> Result<Value, L
     }
 }
 
+fn unwrap_interp_base(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            unwrap_interp_base(inner)
+        }
+        other => other,
+    }
+}
+
 fn expr_references_task_output(expr: &Expr, allowed: &HashSet<String>) -> bool {
     match expr {
         Expr::Select(base, field, _, _) => {
             if matches!(field.as_str(), "stdout" | "success")
-                && matches!(&**base, Expr::Ident(name, _) if allowed.contains(name))
+                && matches!(unwrap_interp_base(base), Expr::Ident(name, _) if allowed.contains(name))
             {
                 return true;
             }

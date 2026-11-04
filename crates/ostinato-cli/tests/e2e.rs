@@ -3931,6 +3931,85 @@ command: b: {
 "#,
             false,
         ),
+        (
+            "ref",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+command: ref: base
+"#,
+            false,
+        ),
+        (
+            "refunify",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+command: refunify: base & {extra: 1}
+"#,
+            false,
+        ),
+        (
+            "helper",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helper: {
+	msg: "v=\(run.stdout)"
+	p: cli.Print & {text: msg}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "helperlet",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: helperlet: {
+	let msg = "v=\(run.stdout)"
+	p: cli.Print & {text: msg}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "paren",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: paren: {
+	p: cli.Print & {text: "v=\((run).stdout)"}
+	run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");

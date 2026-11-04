@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.23.2
+
+Tool-command reference, helper and parenthesis parity.
+
+- Referenced commands (`command: c: base`, including `base & {...}` and chained
+  references) resolve for task scheduling, `$after` and output injection.
+- Output references through command-local helper fields and `let` bindings
+  infer producer dependencies transitively, so consumers no longer read
+  defaulted capture values or fail to make progress.
+- Parenthesised/defaulted selectors such as `\((run).stdout)` are recognised
+  by both interpolation scoping and dependency inference.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.23.1
 
 Interpolation scoping and inferred output dependencies.
