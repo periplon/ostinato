@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.37.0
+
+Nested package alias ordering and non-task `$after` operands.
+
+- Package alias declaration/read ordering is now per scope: nested containers
+  keep their own source order, so `x: {r: prep; _y: prep.stdout}` executes
+  once while `x: {r: prep; q: \(prep.stdout)}` stays non-concrete, matching
+  CUE at any nesting depth.
+- Non-task `$after` operands are ignored like CUE: concrete fields, scalars,
+  strings, struct selectors, task-output selectors and missing members of
+  defined structs no longer error or create unknown dependencies. Undefined
+  roots still fail evaluation, and mixed lists keep their task entries.
+- Added differential e2e cases (nested ordering and non-task operands) and
+  three conformance cases.
+
+- 443 tests (106 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.36.3
 
 Hidden and optional reads in package alias ordering.
