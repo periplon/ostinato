@@ -1138,6 +1138,8 @@ pub fn run_tool_command(
     // (e.g. `let t = base` or `#base`) are scheduled too.
     let mut external_paths: std::collections::BTreeSet<Vec<String>> =
         std::collections::BTreeSet::new();
+    let mut plain_read_paths: std::collections::BTreeSet<Vec<String>> =
+        std::collections::BTreeSet::new();
     {
         let mut scopes = Vec::new();
         collect_output_task_paths(
@@ -1145,10 +1147,23 @@ pub fn run_tool_command(
             &mut scopes,
             &combined.items,
             &mut external_paths,
+            &mut plain_read_paths,
+            false,
             &mut std::collections::BTreeSet::new(),
             &non_task_imports,
         );
     }
+    plain_read_paths.retain(|path| {
+        find_field_expr_at_path(&combined.items, path).is_some_and(|value| {
+            is_task_expr(
+                value,
+                &[combined.items.as_slice()],
+                &combined.items,
+                &mut std::collections::BTreeSet::new(),
+                &non_task_imports,
+            )
+        })
+    });
     external_paths.retain(|path| {
         let Some(leaf) = path.last() else {
             return false;
@@ -1189,6 +1204,10 @@ pub fn run_tool_command(
     };
     let command_claimed: std::collections::BTreeSet<Vec<String>> =
         command_aliases.values().cloned().collect();
+    let plain_alias_targets: std::collections::BTreeSet<Vec<String>> = command_claimed
+        .intersection(&plain_read_paths)
+        .cloned()
+        .collect();
     {
         let order = package_read_order(
             task_items.as_slice(),
@@ -1306,6 +1325,7 @@ pub fn run_tool_command(
     }
     for path in external_paths
         .iter()
+        .chain(plain_read_paths.iter())
         .chain(package_tasks.iter().map(|(_, path, _)| path))
     {
         if let Some(leaf) = path.last() {
@@ -1436,7 +1456,7 @@ pub fn run_tool_command(
                 ToolTaskOutcome::Done { outputs } => {
                     done.insert(name.clone());
                     progress = true;
-                    let injected_ok = if let Some(path) = external_by_key.get(name) {
+                    let mut injected_ok = if let Some(path) = external_by_key.get(name) {
                         inject_named_outputs(
                             &mut combined.items,
                             command_name,
@@ -1454,6 +1474,21 @@ pub fn run_tool_command(
                             &non_task_imports,
                         )
                     };
+                    if let Some(target_path) = command_aliases.get(name)
+                        && plain_alias_targets.contains(target_path)
+                    {
+                        let target_name = target_path.last().cloned().unwrap_or_default();
+                        if inject_named_outputs(
+                            &mut combined.items,
+                            command_name,
+                            &target_name,
+                            target_path,
+                            &outputs,
+                            &non_task_imports,
+                        ) {
+                            injected_ok = true;
+                        }
+                    }
                     if !outputs.is_empty() && injected_ok {
                         let value = eval_file_with_imports_mode_allow_outputs(
                             &combined,
@@ -2271,11 +2306,14 @@ fn root_bare_module_task(items: &[StructItem], name: &str, imports: &ImportKinds
 }
 
 /// Definition-rooted paths of task values whose outputs the command reads.
+#[allow(clippy::too_many_arguments)]
 fn collect_output_task_paths<'a>(
     expr: &'a Expr,
     scopes: &mut Vec<&'a [StructItem]>,
     root: &'a [StructItem],
     out: &mut std::collections::BTreeSet<Vec<String>>,
+    plain: &mut std::collections::BTreeSet<Vec<String>>,
+    in_task: bool,
     visited: &mut std::collections::BTreeSet<String>,
     imports: &ImportKinds,
 ) {
@@ -2290,9 +2328,13 @@ fn collect_output_task_paths<'a>(
                     imports,
                 )
             {
-                out.insert(path);
+                if in_task {
+                    out.insert(path);
+                } else {
+                    plain.insert(path);
+                }
             }
-            collect_output_task_paths(base, scopes, root, out, visited, imports);
+            collect_output_task_paths(base, scopes, root, out, plain, in_task, visited, imports);
         }
         Expr::Ident(name, _) => {
             if !visited.insert(name.clone()) {
@@ -2301,7 +2343,9 @@ fn collect_output_task_paths<'a>(
             if let Some(item) = local_binding(scopes, root, name) {
                 match item {
                     StructItem::Let { value, .. } => {
-                        collect_output_task_paths(value, scopes, root, out, visited, imports);
+                        collect_output_task_paths(
+                            value, scopes, root, out, plain, in_task, visited, imports,
+                        );
                     }
                     StructItem::Field(field) if !field.definition => {
                         collect_output_task_paths(
@@ -2309,6 +2353,8 @@ fn collect_output_task_paths<'a>(
                             scopes,
                             root,
                             out,
+                            plain,
+                            in_task,
                             visited,
                             imports,
                         );
@@ -2323,20 +2369,34 @@ fn collect_output_task_paths<'a>(
             for item in items {
                 match item {
                     StructItem::Field(field) => {
+                        let child_in_task = in_task
+                            || is_task_expr(
+                                &field.value,
+                                scopes,
+                                root,
+                                &mut std::collections::BTreeSet::new(),
+                                imports,
+                            );
                         collect_output_task_paths(
                             &field.value,
                             scopes,
                             root,
                             out,
+                            plain,
+                            child_in_task,
                             visited,
                             imports,
                         );
                     }
                     StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                        collect_output_task_paths(value, scopes, root, out, visited, imports);
+                        collect_output_task_paths(
+                            value, scopes, root, out, plain, in_task, visited, imports,
+                        );
                     }
                     StructItem::For { source, body, .. } => {
-                        collect_output_task_paths(source, scopes, root, out, visited, imports);
+                        collect_output_task_paths(
+                            source, scopes, root, out, plain, in_task, visited, imports,
+                        );
                         for body_item in body {
                             if let StructItem::Field(field) = body_item {
                                 collect_output_task_paths(
@@ -2344,6 +2404,8 @@ fn collect_output_task_paths<'a>(
                                     scopes,
                                     root,
                                     out,
+                                    plain,
+                                    in_task,
                                     visited,
                                     imports,
                                 );
@@ -2351,7 +2413,9 @@ fn collect_output_task_paths<'a>(
                         }
                     }
                     StructItem::If { cond, body, .. } => {
-                        collect_output_task_paths(cond, scopes, root, out, visited, imports);
+                        collect_output_task_paths(
+                            cond, scopes, root, out, plain, in_task, visited, imports,
+                        );
                         for body_item in body {
                             if let StructItem::Field(field) = body_item {
                                 collect_output_task_paths(
@@ -2359,6 +2423,8 @@ fn collect_output_task_paths<'a>(
                                     scopes,
                                     root,
                                     out,
+                                    plain,
+                                    in_task,
                                     visited,
                                     imports,
                                 );
@@ -2373,46 +2439,54 @@ fn collect_output_task_paths<'a>(
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            collect_output_task_paths(left, scopes, root, out, visited, imports);
-            collect_output_task_paths(right, scopes, root, out, visited, imports);
+            collect_output_task_paths(left, scopes, root, out, plain, in_task, visited, imports);
+            collect_output_task_paths(right, scopes, root, out, plain, in_task, visited, imports);
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
         | Expr::Unary(_, inner, _) => {
-            collect_output_task_paths(inner, scopes, root, out, visited, imports)
+            collect_output_task_paths(inner, scopes, root, out, plain, in_task, visited, imports)
         }
         Expr::Index(base, index, _) => {
-            collect_output_task_paths(base, scopes, root, out, visited, imports);
-            collect_output_task_paths(index, scopes, root, out, visited, imports);
+            collect_output_task_paths(base, scopes, root, out, plain, in_task, visited, imports);
+            collect_output_task_paths(index, scopes, root, out, plain, in_task, visited, imports);
         }
         Expr::Call(callee, arguments, _) => {
-            collect_output_task_paths(callee, scopes, root, out, visited, imports);
+            collect_output_task_paths(callee, scopes, root, out, plain, in_task, visited, imports);
             for argument in arguments {
-                collect_output_task_paths(argument, scopes, root, out, visited, imports);
+                collect_output_task_paths(
+                    argument, scopes, root, out, plain, in_task, visited, imports,
+                );
             }
         }
         Expr::Str(parts, _) => {
             for part in parts {
                 if let ostinato_lang::ast::StrPart::Interp(inner) = part {
-                    collect_output_task_paths(inner, scopes, root, out, visited, imports);
+                    collect_output_task_paths(
+                        inner, scopes, root, out, plain, in_task, visited, imports,
+                    );
                 }
             }
         }
         Expr::BytesInterp(parts, _) => {
             for part in parts {
                 if let ostinato_lang::ast::BytePart::Interp(inner) = part {
-                    collect_output_task_paths(inner, scopes, root, out, visited, imports);
+                    collect_output_task_paths(
+                        inner, scopes, root, out, plain, in_task, visited, imports,
+                    );
                 }
             }
         }
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
             for item in items {
-                collect_output_task_paths(item, scopes, root, out, visited, imports);
+                collect_output_task_paths(
+                    item, scopes, root, out, plain, in_task, visited, imports,
+                );
             }
         }
         Expr::OpenList(Some(inner), _) => {
-            collect_output_task_paths(inner, scopes, root, out, visited, imports)
+            collect_output_task_paths(inner, scopes, root, out, plain, in_task, visited, imports)
         }
         _ => {}
     }

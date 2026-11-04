@@ -65,7 +65,9 @@ workflow outside the Rust surface has a supported escape hatch.
   output-dependency inference for nested task paths (`\(a.producer.stdout)`),
   output reads through `let`-over-field chains (root inline and command-local
   fields), package-root inline task reads (`\(prep.stdout)`,
-  `\(root.p1.stdout)`), definitions and definition containers/aliases
+  `\(root.p1.stdout)`), alias-target plain-field reads (`r: prep`,
+  `q: "\(prep.stdout)"`, hidden/optional reads and container targets), and
+  definitions and definition containers/aliases
   (`\(t.stdout)`, `\(#base.stdout)`, `\(#G.run.stdout)`, `\(#a.stdout)`),
   with definition-rooted path identity so duplicate leaf names, field aliases
   to definition containers (`r: #G; \(r.run.stdout)`) and container
@@ -101,7 +103,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Dependent fields after a generated declaration merge | `#P: {env: string, greeting: "hello \(env)"}` plus `if true {#P: {env: "prod"}}` does not recompute `greeting`; declared declaration order or the oracle |
 | Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |
 | Bare references to comprehension-generated fields | `x: {if true {b: 1}, a: b}` is accepted although CUE requires `x.b`; use an explicit field or selector |
-| Plain-field output reads through a command alias target | `r: prep` followed by `q: "\(prep.stdout)"` (or a hidden field) is accepted by CUE via the alias instance; Ostinato suppresses the duplicate package instance and leaves the plain field non-concrete (read-first runs the package task twice). Task-input reads keep CUE's declaration/read-order behaviour |
+| Plain-field output reads through a module-task alias | `r: lib.run` followed by `q: "\(lib.run.stdout)"` is accepted by CUE (the alias instance materialises the module task output); Ostinato leaves the plain field non-concrete. Package-root, container and definition alias targets are supported |
 | Derived expressions over pending task outputs | `len(run.stdout)`, string/number operations or comparisons on a pending output are not evaluated as incomplete; use a direct field reference/interpolation (`\(run.stdout)`) |
 | Tool packages beyond `tool/exec.Run`/`tool/cli.Print`/`tool/file.Append`/`Create` | `ostinato cmd` runs `*_tool.cue` tasks with those packages, `stdout`/`success` injection, `$after` and `@tag`; `tool/os`/`tool/http`/other task packages, `stderr` output injection, tasks consuming non-stdout outputs, `$usage`/`$short`/`$long`, multi-instance inputs and `@cmd` attributes remain unimplemented |
 | `let` cycles mediated by fields (`let X = f, f: X`) | Direct and indirect `let` cycles are rejected; a cycle routed through a field is reported as an error rather than solved as an incomplete value. Use the oracle for that shape |

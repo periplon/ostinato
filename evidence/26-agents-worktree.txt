@@ -1,19 +1,20 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-ef8a9d1
+5f3675c
 
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                                    16a10c5 [main]
 /Users/joanmarc/dailywork/jmca/ostinato-gateways                           668e12f [feat/gateways]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions       cb3a2ae [feat/agent-definitions]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/alias-target-reads      5f3675c [feat/v0.38.0-alias-target-reads]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/definition-nested-reads c6e8f7b (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan           99e7541 [feat/gateways-r0-r4]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-def-output-refs     fabd011 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection           e071d4e (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection      2f4178f (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports     dda0eba (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after      ef8a9d1 [fix/v0.37.4-after-import-members]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after      747bce6 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps      fee7d72 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/order-scan              79704b8 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/package-after           628424d (detached HEAD)

@@ -8006,6 +8006,243 @@ command: pkgduplicatechain: {
 }
 
 #[test]
+fn tool_command_alias_target_plain_reads_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases: &[(&str, &str, Option<&str>)] = &[
+        (
+            "aliasplaindecl",
+            r#"
+package foo
+import "tool/exec"
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliasplaindecl: {
+	r: prep
+	q: "\(prep.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aliasplainreadfirst",
+            r#"
+package foo
+import "tool/exec"
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliasplainreadfirst: {
+	q: "\(prep.stdout)"
+	r: prep
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aliasplainhidden",
+            r#"
+package foo
+import "tool/exec"
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliasplainhidden: {
+	r: prep
+	_q: "\(prep.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aliastaskinputdecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliastaskinputdecl: {
+	r: prep
+	q: cli.Print & {text: "R=\(prep.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "aliastaskinputreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliastaskinputreadfirst: {
+	q: cli.Print & {text: "R=\(prep.stdout)"}
+	r: prep
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aliascontainerplain",
+            r#"
+package foo
+import "tool/exec"
+group: {prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}}
+command: aliascontainerplain: {
+	r: group.prep
+	q: "\(group.prep.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "plainnoalias",
+            r#"
+package foo
+import "tool/exec"
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: plainnoalias: {
+	a: exec.Run & {cmd: ["true"]}
+	q: "\(prep.stdout)"
+}
+"#,
+            None,
+        ),
+        (
+            "aliastwoplain",
+            r#"
+package foo
+import "tool/exec"
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliastwoplain: {
+	r1: prep
+	r2: prep
+	q: "\(prep.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aliasafterplain",
+            r#"
+package foo
+import "tool/exec"
+base: exec.Run & {cmd: ["sh", "-c", "printf B >> order.txt"]}
+prep: exec.Run & {$after: base, cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliasafterplain: {
+	r: prep
+	q: "\(prep.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aliasnestedplain",
+            r#"
+package foo
+import "tool/exec"
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliasnestedplain: {
+	x: {
+		r: prep
+		q: "\(prep.stdout)"
+	}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aliasplaincomposed",
+            r#"
+package foo
+import "tool/exec"
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliasplaincomposed: {
+	r: prep & {stdout: string}
+	q: "\(prep.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aliasplaindefinition",
+            r#"
+package foo
+import "tool/exec"
+#prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: aliasplaindefinition: {
+	r: #prep
+	q: "\(#prep.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aliasplainlocal",
+            r#"
+package foo
+import "tool/exec"
+command: aliasplainlocal: {
+	local: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+	r: local
+	q: "\(local.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aliasplainsuccess",
+            r#"
+package foo
+import "tool/exec"
+prep: exec.Run & {cmd: ["false"], mustSucceed: false, success: bool}
+command: aliasplainsuccess: {
+	r: prep
+	q: "\(prep.success)"
+}
+"#,
+            None,
+        ),
+    ];
+    for (name, source, artifact) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        write(&cue_dir.path().join("fixture_tool.cue"), source);
+        write(&rust_dir.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        if let Some(artifact) = artifact {
+            assert_eq!(
+                std::fs::read(cue_dir.path().join(artifact)).ok(),
+                std::fs::read(rust_dir.path().join(artifact)).ok(),
+                "{name}: artifact {artifact} differs"
+            );
+        } else {
+            assert!(
+                !cue_dir.path().join("order.txt").exists(),
+                "{name}: cue side effect"
+            );
+            assert!(
+                !rust_dir.path().join("order.txt").exists(),
+                "{name}: rust side effect"
+            );
+        }
+    }
+}
+
+#[test]
 fn tool_command_let_and_definition_output_reads_match_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");

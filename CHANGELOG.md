@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.38.0
+
+Alias-target plain-field output reads.
+
+- A command alias to a package task (`r: prep`) now materialises the alias
+  instance for plain-field reads, so `q: "\(prep.stdout)"` (and hidden or
+  optional reads) resolves and executes the task exactly once like CUE,
+  regardless of declaration/read order, with container, composed and
+  definition alias targets.
+- Alias outputs are injected only for targets that also have a plain-field
+  read, preserving the declaration/read-order behaviour of task-input reads
+  and the existing let/definition alias cases.
+- Module-task aliases (`r: lib.run` with a plain read) remain documented as a
+  narrow divergence.
+- Added a differential e2e test (14 shapes) and six conformance cases.
+
+- 444 tests (107 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.37.4
 
 Import-backed `$after` member classification.

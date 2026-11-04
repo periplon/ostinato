@@ -12,6 +12,15 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.38.0
+
+- Alias-target plain-field output reads (`r: prep; q: "\(prep.stdout)"`,
+  hidden/optional reads, container/composed/definition targets) execute once
+  and resolve like CUE; module-task aliases remain a documented limit.
+- 444 tests (107 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.37.4
 
 - Import/module-backed `$after` selectors classify concrete members as
