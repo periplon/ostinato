@@ -1,14 +1,14 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.97xNrYfWJ5/gateway.sqlite status c3ab6bcf-f629-46cc-94a2-59acabb4a783
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.QklnV1iYIE/gateway.sqlite status 0b03d29e-e303-402b-82d2-62df3b6dadc8
 
-run=c3ab6bcf-f629-46cc-94a2-59acabb4a783 workflow=release-decision status=succeeded resumeIndex=6
+run=0b03d29e-e303-402b-82d2-62df3b6dadc8 workflow=release-decision status=succeeded resumeIndex=6
 source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/examples/gateway.cue
-created=2026-11-04T07:00:34.859Z updated=2026-11-04T07:00:34.878Z
+created=2026-11-04T07:01:16.862Z updated=2026-11-04T07:01:16.884Z
 STEP                     STATUS     VISITS ATTEMPTS
-deployFast               succeeded  1      1       
-deploySlow               skipped    0      0       
-merge                    succeeded  1      0       
-notify                   succeeded  1      1       
-route                    succeeded  1      0       
-test                     succeeded  1      1       
+deployFast               succeeded  1      1
+deploySlow               skipped    0      0
+merge                    succeeded  1      0
+notify                   succeeded  1      1
+route                    succeeded  1      0
+test                     succeeded  1      1
 
 exit=0

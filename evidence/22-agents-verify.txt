@@ -1,7 +1,7 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.97xNrYfWJ5/agents.sqlite agents 9e6ffaad-ed2b-4373-a017-73f583d9c433 --verify
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.QklnV1iYIE/agents.sqlite agents c7b743d7-d360-42c0-886d-49abe82603fe --verify
 
 ID     STEP                 ROUND ATTEMPT STATUS    PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
-1      review               0     0       ok        command    example-model 0      262      2         fbc10c313c7126e25cb6956875dc5085b811018cbc25dd24c66a5fdb230d5072
+1      review               0     0       ok        command    example-model 0      312      2         4fbebebef2ed1dad6e9413128bbab45106fe486b54f1ceeae1bc4208d80fc84b
 OK trace=1 step=review attempt=0
 
 exit=0

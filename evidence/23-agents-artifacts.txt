@@ -1,4 +1,4 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.97xNrYfWJ5/agents.sqlite --json artifacts 9e6ffaad-ed2b-4373-a017-73f583d9c433
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.QklnV1iYIE/agents.sqlite --json artifacts c7b743d7-d360-42c0-886d-49abe82603fe
 
 {
   "artifacts": [
@@ -28,7 +28,7 @@
     }
   ],
   "extracted": [],
-  "run": "9e6ffaad-ed2b-4373-a017-73f583d9c433"
+  "run": "c7b743d7-d360-42c0-886d-49abe82603fe"
 }
 
 exit=0

@@ -1,4 +1,6 @@
 ### git status --porcelain (checkout must stay clean)
+ M crates/ostinato-adapters/src/workspace.rs
+ M docs/AGENTS.md
  M evidence/01-quality.txt
  M evidence/02-validate-rust.txt
  M evidence/02b-validate-oracle.txt
@@ -38,5 +40,5 @@
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                              690b7ec [main]
 /Users/joanmarc/dailywork/jmca/ostinato-gateways                     668e12f [feat/gateways]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions 2c1843c [feat/agent-definitions]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions 8a37e2a [feat/agent-definitions]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan     7b778bb [feat/gateways-r0-r4]

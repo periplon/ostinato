@@ -926,7 +926,7 @@ exit=0
 ````text
 ### ostinato run examples/agents.cue
 
-run=9e6ffaad-ed2b-4373-a017-73f583d9c433 workflow=agents status=succeeded durationMs=169
+run=c7b743d7-d360-42c0-886d-49abe82603fe workflow=agents status=succeeded durationMs=322
 STEP                     STATUS     VISITS ATTEMPTS
 report                   succeeded  1      1
 review                   succeeded  1      1
@@ -938,7 +938,7 @@ exit=0
 ### ostinato agents <run>
 
 ID     STEP                 ROUND ATTEMPT STATUS    PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
-1      review               0     0       ok        command    example-model 0      262      2         fbc10c313c7126e25cb6956875dc5085b811018cbc25dd24c66a5fdb230d5072
+1      review               0     0       ok        command    example-model 0      312      2         4fbebebef2ed1dad6e9413128bbab45106fe486b54f1ceeae1bc4208d80fc84b
 
 exit=0
 ````
@@ -947,7 +947,7 @@ exit=0
 ### ostinato agents <run> --verify
 
 ID     STEP                 ROUND ATTEMPT STATUS    PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
-1      review               0     0       ok        command    example-model 0      262      2         fbc10c313c7126e25cb6956875dc5085b811018cbc25dd24c66a5fdb230d5072
+1      review               0     0       ok        command    example-model 0      312      2         4fbebebef2ed1dad6e9413128bbab45106fe486b54f1ceeae1bc4208d80fc84b
 OK trace=1 step=review attempt=0
 
 exit=0
@@ -984,7 +984,7 @@ exit=0
     }
   ],
   "extracted": [],
-  "run": "9e6ffaad-ed2b-4373-a017-73f583d9c433"
+  "run": "c7b743d7-d360-42c0-886d-49abe82603fe"
 }
 
 exit=0
@@ -1005,7 +1005,7 @@ exit=0
 ````text
 ### ostinato audit verify <run>
 
-OK run=9e6ffaad-ed2b-4373-a017-73f583d9c433 events=8 head=ffed3d0c94775fee49f28090c09309a2a94194fe3e5ea37716081d41688d1750
+OK run=c7b743d7-d360-42c0-886d-49abe82603fe events=8 head=83fcef117c35ade0ae1c79aed9dbb88907919d35d579d0163f1f0234fdae41f8
 
 exit=0
 ````

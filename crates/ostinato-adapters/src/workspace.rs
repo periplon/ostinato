@@ -325,9 +325,10 @@ fn git_command(cwd: &Path) -> Command {
             let Some(key) = line.split_whitespace().next() else {
                 continue;
             };
-            let parts: Vec<&str> = key.split('.').collect();
-            if parts.len() >= 3 && parts[0] == "filter" {
-                seen.insert(parts[1].to_owned());
+            if let Some(rest) = key.strip_prefix("filter.")
+                && let Some((driver, _)) = rest.rsplit_once('.')
+            {
+                seen.insert(driver.to_owned());
             }
         }
         for driver in seen {
@@ -348,9 +349,10 @@ fn git_command(cwd: &Path) -> Command {
             let Some(key) = line.split_whitespace().next() else {
                 continue;
             };
-            let parts: Vec<&str> = key.split('.').collect();
-            if parts.len() >= 3 && parts[0] == "diff" {
-                seen.insert(parts[1].to_owned());
+            if let Some(rest) = key.strip_prefix("diff.")
+                && let Some((driver, _)) = rest.rsplit_once('.')
+            {
+                seen.insert(driver.to_owned());
             }
         }
         for driver in seen {

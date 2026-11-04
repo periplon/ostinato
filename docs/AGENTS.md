@@ -127,9 +127,10 @@ The following names are rejected in `agents.*.env` and step-level
 `OSTINATO_AGENT`, `OSTINATO_AGENT_NAME`, `OSTINATO_STEP`,
 `OSTINATO_RUN_ID`, `OSTINATO_MODEL` and `OSTINATO_PROVIDER`.
 
-The engine also removes that same inherited-variable set from the agent
-process, so a parent shell cannot inject `LD_PRELOAD`, `GIT_CONFIG_GLOBAL`
-and friends. Other inherited variables (including tokens such as
+The engine also removes the inherited unsafe list from the agent process
+(the list above minus the reserved `OSTINATO_*` names, which are set
+explicitly), so a parent shell cannot inject `LD_PRELOAD`,
+`GIT_CONFIG_GLOBAL` and friends. Other inherited variables (including tokens such as
 `GITHUB_TOKEN`) are passed through, like `exec` steps. The list is a fixed
 denylist, not a wildcard over `GIT_*`/`DYLD_*`/`OSTINATO_*`.
 

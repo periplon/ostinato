@@ -1,8 +1,8 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.97xNrYfWJ5/gateway.sqlite trials c3ab6bcf-f629-46cc-94a2-59acabb4a783
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.QklnV1iYIE/gateway.sqlite trials 0b03d29e-e303-402b-82d2-62df3b6dadc8
 
 STEP                 ROUND ATTEMPT STATUS   SCORE      DUR(ms)  ERROR
-test                 0     0      succeeded 0.950      5        
-deployFast           0     0      succeeded 1.000      4        
-notify               0     0      succeeded 1.000      4        
+test                 0     0      succeeded 0.950      5
+deployFast           0     0      succeeded 1.000      5
+notify               0     0      succeeded 1.000      5
 
 exit=0
