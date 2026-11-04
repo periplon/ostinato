@@ -1,54 +1,10 @@
 ### git status --porcelain (checkout must stay clean)
-UU CHANGELOG.md
-UU Cargo.lock
-UU Cargo.toml
-UU README.md
-M  crates/ostinato-adapters/src/loaders.rs
-UU crates/ostinato-cli/tests/e2e.rs
-M  crates/ostinato-lang/src/eval.rs
-UU docs/COMPLIANCE.md
-UU docs/EVIDENCE.md
-UU docs/RELEASE.md
-M  docs/SCOPE.md
-UU evidence/00-environment.txt
-UU evidence/01-quality.txt
-UU evidence/02-validate-rust.txt
-UU evidence/02b-validate-oracle.txt
-UU evidence/02c-conformance.txt
-UU evidence/03-run-hello.txt
-UU evidence/04-run-retry.txt
-UU evidence/05-run-cycle.txt
-UU evidence/06-status.txt
-UU evidence/07-logs.txt
-UU evidence/08-trials.txt
-UU evidence/09-audit.txt
-UU evidence/10-metrics.txt
-UU evidence/11-resume-fail.txt
-UU evidence/12-resume-ok.txt
-UU evidence/13-resume-trials.txt
-UU evidence/14-agentic.txt
-UU evidence/15-improve.txt
-UU evidence/16-children.txt
-UU evidence/17-tamper.txt
-UU evidence/18-gateways-audit.txt
-UU evidence/18-gateways-logs.txt
-UU evidence/18-gateways-metrics.txt
-UU evidence/18-gateways-run.txt
-UU evidence/18-gateways-status.txt
-UU evidence/18-gateways-trials.txt
- M evidence/19-agents-validate.txt
- M evidence/20-agents-run.txt
- M evidence/21-agents-traces.txt
- M evidence/22-agents-verify.txt
- M evidence/23-agents-artifacts.txt
- M evidence/24-agents-extract.txt
- M evidence/25-agents-audit.txt
- M evidence/26-agents-worktree.txt
- D evidence/27-agents-doctor.txt
- D evidence/28-agents-tamper.txt
+
+### HEAD
+1aea819
 
 ### git worktree list
-/Users/joanmarc/dailywork/jmca/ostinato                              adf9344 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato                              1aea819 [fix/v0.24.2-evidence]
 /Users/joanmarc/dailywork/jmca/ostinato-gateways                     668e12f [feat/gateways]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions cb3a2ae [feat/agent-definitions]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan     2411d13 [feat/gateways-r0-r4]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan     99e7541 [feat/gateways-r0-r4]

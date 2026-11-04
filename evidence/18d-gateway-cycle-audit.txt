@@ -1,5 +1,5 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/gateway-cycle.sqlite audit verify 1719d44b-46d5-4e74-8d7a-92194d8ff264
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.x7qOy2izUH/gateway-cycle.sqlite audit verify 7f99b474-0c62-4dbb-b2ef-22bf673f9016
 
-OK run=1719d44b-46d5-4e74-8d7a-92194d8ff264 events=26 head=ecde4dc6a33dab6f6daad1b49fd7324df54b73857bea1d0882d46ea6471a4ea2
+OK run=7f99b474-0c62-4dbb-b2ef-22bf673f9016 events=26 head=a4e8ff40fdba88dc9600295f1931d480e63701324b6aed257f73ffef645af92d
 
 exit=0

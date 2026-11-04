@@ -1,11 +1,11 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/db.sqlite status 987a42a1-5185-4964-9a55-85db072997a0
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.x7qOy2izUH/db.sqlite status 7c849995-fa38-42a7-b849-e25633661618
 
-run=987a42a1-5185-4964-9a55-85db072997a0 workflow=cycle status=succeeded resumeIndex=11
+run=7c849995-fa38-42a7-b849-e25633661618 workflow=cycle status=succeeded resumeIndex=11
 source=/Users/joanmarc/dailywork/jmca/ostinato/examples/cycle.cue
-created=2026-11-04T07:33:04.323Z updated=2026-11-04T07:33:04.415Z
-STEP                     STATUS     VISITS ATTEMPTS
-refine                   succeeded  3      1       
-review                   succeeded  3      1       
-setup                    succeeded  1      1       
+created=2026-11-04T07:44:30.713Z updated=2026-11-04T07:44:30.801Z
+STEP                     STATUS     VISITS ATTEMPTS ROUND 
+refine                   succeeded  3      1        2     
+review                   succeeded  3      1        2     
+setup                    succeeded  1      1        0     
 
 exit=0
