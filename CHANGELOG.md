@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.33.2
+
+Use-site order resolution for definition reads.
+
+- The definition declaration/read order scan resolves `let` and field aliases
+  at their use site (cycle-guarded) and no longer counts binding declarations
+  or bare output-read fields as demand sites.
+- Source order uses a shared counter incremented for every visited field,
+  including nested structs.
+- Hidden, optional and definition fields are skipped in order scans.
+- Added differential e2e cases for alias/let use sites, nested declarations
+  and hidden/optional/definition fields.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.33.1
 
 Ordered definition suppression and alias paths.

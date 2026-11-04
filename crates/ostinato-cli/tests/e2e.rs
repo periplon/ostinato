@@ -7134,6 +7134,140 @@ command: defcontaineraliasdecl: {
             false,
         ),
         (
+            "defletreadafter",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defletreadafter: {
+	let s = #G.run.stdout
+	a: p1: #G.run
+	q: cli.Print & {text: "R=\(s)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defletreadbefore",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defletreadbefore: {
+	let s = #G.run.stdout
+	q: cli.Print & {text: "R=\(s)"}
+	a: p1: #G.run
+}
+"#,
+            true,
+        ),
+        (
+            "defaliasreadafter",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defaliasreadafter: {
+	r: #G.run.stdout
+	a: p1: #G.run
+	q: cli.Print & {text: "R=\(r)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defaliasreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defaliasreadfirst: {
+	r: #G.run.stdout
+	q: cli.Print & {text: "R=\(r)"}
+	a: p1: #G.run
+}
+"#,
+            true,
+        ),
+        (
+            "defnestedorder",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defnestedorder: {
+	a: {
+		p: #G.run
+		q: cli.Print & {text: "R=\(#G.run.stdout)"}
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "defhiddendecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defhiddendecl: {
+	_x: #G.run
+	q: cli.Print & {text: "R=\(#G.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defoptionaldecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defoptionaldecl: {
+	x?: #G.run
+	q: cli.Print & {text: "R=\(#G.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defnesteddefdecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defnesteddefdecl: {
+	#D: {p: #G.run}
+	q: cli.Print & {text: "R=\(#G.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
             "readrootmodule",
             r#"
 package foo
