@@ -2508,14 +2508,111 @@ fn add_output_dependencies(
     }
 }
 
+fn struct_has_task_id(expr: &Expr) -> bool {
+    match expr {
+        Expr::Struct(items, _) => items.iter().any(|item| {
+            matches!(
+                item,
+                StructItem::Field(field)
+                    if matches!(&field.label, Label::Name(name, _) if name == "$id")
+            )
+        }),
+        Expr::Unify(left, right, _) => struct_has_task_id(left) || struct_has_task_id(right),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            struct_has_task_id(inner)
+        }
+        _ => false,
+    }
+}
+
+fn collect_task_decl_ids_items<'a>(
+    items: &'a [StructItem],
+    root: &'a [StructItem],
+    scopes: &mut Vec<&'a [StructItem]>,
+    out: &mut std::collections::BTreeSet<usize>,
+) {
+    scopes.push(items);
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                if struct_has_task_id(&field.value)
+                    || is_task_expr(
+                        &field.value,
+                        scopes,
+                        root,
+                        &mut std::collections::BTreeSet::new(),
+                    )
+                {
+                    out.insert(field.id);
+                }
+                collect_task_decl_ids_expr(&field.value, root, scopes, out);
+            }
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                collect_task_decl_ids_expr(value, root, scopes, out);
+            }
+            StructItem::For { source, body, .. } => {
+                collect_task_decl_ids_expr(source, root, scopes, out);
+                collect_task_decl_ids_items(body, root, scopes, out);
+            }
+            StructItem::If { cond, body, .. } => {
+                collect_task_decl_ids_expr(cond, root, scopes, out);
+                collect_task_decl_ids_items(body, root, scopes, out);
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+    scopes.pop();
+}
+
+fn collect_task_decl_ids_expr<'a>(
+    expr: &'a Expr,
+    root: &'a [StructItem],
+    scopes: &mut Vec<&'a [StructItem]>,
+    out: &mut std::collections::BTreeSet<usize>,
+) {
+    match expr {
+        Expr::Struct(items, _) => collect_task_decl_ids_items(items, root, scopes, out),
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            collect_task_decl_ids_expr(left, root, scopes, out);
+            collect_task_decl_ids_expr(right, root, scopes, out);
+        }
+        Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Bound(_, inner, _)
+        | Expr::Unary(_, inner, _) => {
+            collect_task_decl_ids_expr(inner, root, scopes, out);
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                collect_task_decl_ids_expr(item, root, scopes, out);
+            }
+        }
+        Expr::OpenList(Some(inner), _) => collect_task_decl_ids_expr(inner, root, scopes, out),
+        _ => {}
+    }
+}
+
+fn collect_task_decl_ids(
+    items: &[StructItem],
+    root: &[StructItem],
+) -> std::collections::BTreeSet<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut scopes = Vec::new();
+    collect_task_decl_ids_items(items, root, &mut scopes, &mut out);
+    out
+}
+
 fn inject_path_expr(
     expr: &mut Expr,
     path: &[String],
     task_name: &str,
     outputs: &[(String, Value)],
+    task_decls: &std::collections::BTreeSet<usize>,
 ) -> bool {
     let Some((first, rest)) = path.split_first() else {
-        return inject_task_outputs_in_expr(expr, task_name, outputs);
+        return inject_task_outputs_in_expr(expr, task_name, outputs, task_decls);
     };
     match expr {
         Expr::Struct(items, _) => {
@@ -2533,17 +2630,17 @@ fn inject_path_expr(
                     _ => None,
                 };
                 if let Some(value) = value {
-                    return inject_path_expr(value, rest, task_name, outputs);
+                    return inject_path_expr(value, rest, task_name, outputs, task_decls);
                 }
             }
             false
         }
         Expr::Unify(left, right, _) => {
-            inject_path_expr(left, path, task_name, outputs)
-                || inject_path_expr(right, path, task_name, outputs)
+            inject_path_expr(left, path, task_name, outputs, task_decls)
+                || inject_path_expr(right, path, task_name, outputs, task_decls)
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            inject_path_expr(inner, path, task_name, outputs)
+            inject_path_expr(inner, path, task_name, outputs, task_decls)
         }
         _ => false,
     }
@@ -2554,6 +2651,7 @@ fn inject_into_path(
     path: &[String],
     task_name: &str,
     outputs: &[(String, Value)],
+    task_decls: &std::collections::BTreeSet<usize>,
 ) -> bool {
     let Some((first, rest)) = path.split_first() else {
         return false;
@@ -2573,9 +2671,9 @@ fn inject_into_path(
         };
         if let Some(value) = value {
             if rest.is_empty() {
-                return inject_task_outputs_in_expr(value, task_name, outputs);
+                return inject_task_outputs_in_expr(value, task_name, outputs, task_decls);
             }
-            return inject_path_expr(value, rest, task_name, outputs);
+            return inject_path_expr(value, rest, task_name, outputs, task_decls);
         }
     }
     false
@@ -2587,6 +2685,7 @@ fn inject_command_outputs(
     task_name: &str,
     outputs: &[(String, Value)],
 ) -> bool {
+    let task_decls = collect_task_decl_ids(items, items);
     // Collect referenced declarations before taking a mutable borrow.
     let mut targets: Vec<Vec<String>> = Vec::new();
     for item in items.iter() {
@@ -2630,14 +2729,19 @@ fn inject_command_outputs(
             if !matches!(&command_field.label, Label::Name(name, _) if name == command_name) {
                 continue;
             }
-            if inject_task_outputs_in_expr(&mut command_field.value, task_name, outputs) {
+            if inject_task_outputs_in_expr(
+                &mut command_field.value,
+                task_name,
+                outputs,
+                &task_decls,
+            ) {
                 injected = true;
             }
         }
     }
     // Inject into referenced declarations (`command: c: base`, selectors, lets).
     for target in targets {
-        if inject_into_path(items, &target, task_name, outputs) {
+        if inject_into_path(items, &target, task_name, outputs, &task_decls) {
             injected = true;
         }
     }
@@ -2700,66 +2804,39 @@ fn inject_task_outputs_value(expr: &mut Expr, outputs: &[(String, Value)]) -> bo
     }
 }
 
-fn expr_is_task_decl(expr: &Expr) -> bool {
-    match expr {
-        Expr::Select(..) | Expr::Index(..) | Expr::Ident(..) => true,
-        Expr::Unify(left, right, _) => expr_is_task_decl(left) || expr_is_task_decl(right),
-        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            expr_is_task_decl(inner)
-        }
-        Expr::Struct(items, _) => items.iter().any(item_is_task_decl),
-        _ => false,
-    }
-}
-
-fn item_is_task_decl(item: &StructItem) -> bool {
-    match item {
-        StructItem::Field(field) => {
-            matches!(&field.label, Label::Name(name, _) if name == "$id")
-                || expr_is_task_decl(&field.value)
-        }
-        StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-            expr_is_task_decl(value)
-        }
-        StructItem::For { body, .. } | StructItem::If { body, .. } => {
-            body.iter().any(item_is_task_decl)
-        }
-        StructItem::Ellipsis(_) => false,
-    }
-}
-
 fn inject_task_outputs(
     items: &mut [StructItem],
     task_name: &str,
     outputs: &[(String, Value)],
+    task_decls: &std::collections::BTreeSet<usize>,
 ) -> bool {
     for item in items {
         match item {
             StructItem::Field(field) => {
                 let is_task = matches!(&field.label, Label::Name(name, _) if name == task_name)
-                    && expr_is_task_decl(&field.value);
+                    && task_decls.contains(&field.id);
                 if is_task && inject_task_outputs_value(&mut field.value, outputs) {
                     return true;
                 }
-                if inject_task_outputs_in_expr(&mut field.value, task_name, outputs) {
+                if inject_task_outputs_in_expr(&mut field.value, task_name, outputs, task_decls) {
                     return true;
                 }
             }
             StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                if inject_task_outputs_in_expr(value, task_name, outputs) {
+                if inject_task_outputs_in_expr(value, task_name, outputs, task_decls) {
                     return true;
                 }
             }
             StructItem::For { source, body, .. } => {
-                if inject_task_outputs_in_expr(source, task_name, outputs)
-                    || inject_task_outputs(body, task_name, outputs)
+                if inject_task_outputs_in_expr(source, task_name, outputs, task_decls)
+                    || inject_task_outputs(body, task_name, outputs, task_decls)
                 {
                     return true;
                 }
             }
             StructItem::If { cond, body, .. } => {
-                if inject_task_outputs_in_expr(cond, task_name, outputs)
-                    || inject_task_outputs(body, task_name, outputs)
+                if inject_task_outputs_in_expr(cond, task_name, outputs, task_decls)
+                    || inject_task_outputs(body, task_name, outputs, task_decls)
                 {
                     return true;
                 }
@@ -2774,15 +2851,16 @@ fn inject_task_outputs_in_expr(
     expr: &mut Expr,
     task_name: &str,
     outputs: &[(String, Value)],
+    task_decls: &std::collections::BTreeSet<usize>,
 ) -> bool {
     match expr {
-        Expr::Struct(items, _) => inject_task_outputs(items, task_name, outputs),
+        Expr::Struct(items, _) => inject_task_outputs(items, task_name, outputs, task_decls),
         Expr::Unify(left, right, _) => {
-            inject_task_outputs_in_expr(left, task_name, outputs)
-                || inject_task_outputs_in_expr(right, task_name, outputs)
+            inject_task_outputs_in_expr(left, task_name, outputs, task_decls)
+                || inject_task_outputs_in_expr(right, task_name, outputs, task_decls)
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-            inject_task_outputs_in_expr(inner, task_name, outputs)
+            inject_task_outputs_in_expr(inner, task_name, outputs, task_decls)
         }
         _ => false,
     }
