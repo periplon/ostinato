@@ -80,6 +80,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Unused imports | CUE rejects unused imports; Ostinato accepts them (the package still evaluates) |
 | Output injection into base/definition-composed tasks | `run: exec.Run & #B` / `run: exec.Run & base` do not receive injected `stdout`/`success`; write the task struct literally |
 | Relative tool-task paths | `dir` and file-task `filename` resolve against the package directory, not the invocation cwd as `cue cmd` does |
+| Derived expressions over pending task outputs | `len(run.stdout)`, string/number operations or comparisons on a pending output are not evaluated as incomplete; use a direct field reference/interpolation (`\(run.stdout)`) |
 | Package-scoped `$after` / task nodes outside `command.<name>` | `$after` dependencies are resolved within the command subtree; top-level task nodes referenced only from a command are not scheduled. Use the oracle |
 | Tool packages beyond `tool/exec.Run`/`tool/cli.Print`/`tool/file.Append`/`Create` | `ostinato cmd` runs `*_tool.cue` tasks with those packages, `stdout`/`success` injection, `$after` and `@tag`; `tool/os`/`tool/http`/other task packages, `stderr` output injection, tasks consuming non-stdout outputs, `$usage`/`$short`/`$long`, multi-instance inputs and `@cmd` attributes remain unimplemented |
 | `let` cycles mediated by fields (`let X = f, f: X`) | Direct and indirect `let` cycles are rejected; a cycle routed through a field is reported as an error rather than solved as an incomplete value. Use the oracle for that shape |

@@ -565,7 +565,13 @@ pub fn eval_file_with_imports_mode(
     overrides: &BTreeMap<String, Value>,
     include_definitions: bool,
 ) -> Result<Value, LangError> {
-    eval_file_with_imports_mode_inner(file, imports, overrides, include_definitions, false)
+    eval_file_with_imports_mode_inner(
+        file,
+        imports,
+        overrides,
+        include_definitions,
+        IncompleteMode::Forbid,
+    )
 }
 
 /// Like [`eval_file_with_imports_mode`], but non-concrete interpolations become
@@ -582,7 +588,35 @@ pub fn eval_file_with_imports_mode_allow_incomplete(
     overrides: &BTreeMap<String, Value>,
     include_definitions: bool,
 ) -> Result<Value, LangError> {
-    eval_file_with_imports_mode_inner(file, imports, overrides, include_definitions, true)
+    eval_file_with_imports_mode_inner(
+        file,
+        imports,
+        overrides,
+        include_definitions,
+        IncompleteMode::AllowAll,
+    )
+}
+
+/// Like [`eval_file_with_imports_mode`], but only interpolations that reference
+/// the given task outputs may remain incomplete.
+///
+/// # Errors
+/// Returns an evaluation error for invalid imports, tags or other incomplete
+/// interpolations.
+pub fn eval_file_with_imports_mode_allow_outputs(
+    file: &File,
+    imports: &BTreeMap<String, Value>,
+    overrides: &BTreeMap<String, Value>,
+    include_definitions: bool,
+    outputs: &HashSet<String>,
+) -> Result<Value, LangError> {
+    eval_file_with_imports_mode_inner(
+        file,
+        imports,
+        overrides,
+        include_definitions,
+        IncompleteMode::AllowOnly(outputs.clone()),
+    )
 }
 
 fn eval_file_with_imports_mode_inner(
@@ -590,7 +624,7 @@ fn eval_file_with_imports_mode_inner(
     imports: &BTreeMap<String, Value>,
     overrides: &BTreeMap<String, Value>,
     include_definitions: bool,
-    allow_incomplete: bool,
+    incomplete_mode: IncompleteMode,
 ) -> Result<Value, LangError> {
     stacker::grow(512 * 1024 * 1024, || {
         crate::attributes::validate_tag_placement(file)?;
@@ -601,7 +635,7 @@ fn eval_file_with_imports_mode_inner(
             vars.insert(name.clone(), value.clone());
         }
         let frame = Frame::from_static(&file.items, None, vars)?;
-        frame.allow_incomplete.set(allow_incomplete);
+        *frame.incomplete_mode.borrow_mut() = incomplete_mode;
         for (key, value) in overrides {
             frame
                 .overrides
@@ -639,7 +673,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         next_injections: RefCell::new(None),
         generated_definitions: RefCell::new(BTreeMap::new()),
         skip_cache: Cell::new(false),
-        allow_incomplete: Cell::new(false),
+        incomplete_mode: RefCell::new(IncompleteMode::Forbid),
     };
     if let Json::Object(map) = context {
         let mut values = BTreeMap::new();
@@ -679,6 +713,14 @@ fn json_to_value(value: &Json) -> Option<Value> {
                 .collect(),
         ),
     })
+}
+
+#[derive(Clone, Default)]
+enum IncompleteMode {
+    #[default]
+    Forbid,
+    AllowAll,
+    AllowOnly(HashSet<String>),
 }
 
 #[derive(Clone)]
@@ -764,7 +806,7 @@ struct Frame<'a> {
     next_injections: RefCell<Option<BTreeMap<String, Value>>>,
     generated_definitions: RefCell<BTreeMap<String, Value>>,
     skip_cache: Cell<bool>,
-    allow_incomplete: Cell<bool>,
+    incomplete_mode: RefCell<IncompleteMode>,
 }
 
 impl<'a> Frame<'a> {
@@ -809,7 +851,9 @@ impl<'a> Frame<'a> {
             next_injections: RefCell::new(None),
             generated_definitions: RefCell::new(BTreeMap::new()),
             skip_cache: Cell::new(false),
-            allow_incomplete: Cell::new(parent.is_some_and(|parent| parent.allow_incomplete.get())),
+            incomplete_mode: RefCell::new(parent.map_or_else(IncompleteMode::default, |parent| {
+                parent.incomplete_mode.borrow().clone()
+            })),
         };
 
         // Pass 1: static fields and lazy let bindings.
@@ -1819,6 +1863,14 @@ impl<'a> Frame<'a> {
         let value = result?;
         context.values.borrow_mut().insert(cache_key, value.clone());
         Ok(value)
+    }
+
+    fn allows_incomplete(&self, expr: &Expr) -> bool {
+        match &*self.incomplete_mode.borrow() {
+            IncompleteMode::Forbid => false,
+            IncompleteMode::AllowAll => true,
+            IncompleteMode::AllowOnly(allowed) => expr_references_task_output(expr, allowed),
+        }
     }
 
     fn eval_field_key(&self, key: &str, span: Span) -> Result<Value, LangError> {
@@ -3175,6 +3227,49 @@ fn merge_declaration(left: &Value, right: &Value, span: Span) -> Result<Value, L
     }
 }
 
+fn expr_references_task_output(expr: &Expr, allowed: &HashSet<String>) -> bool {
+    match expr {
+        Expr::Select(base, field, _, _) => {
+            if matches!(field.as_str(), "stdout" | "success")
+                && matches!(&**base, Expr::Ident(name, _) if allowed.contains(name))
+            {
+                return true;
+            }
+            expr_references_task_output(base, allowed)
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            expr_references_task_output(left, allowed)
+                || expr_references_task_output(right, allowed)
+        }
+        Expr::Bound(_, inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Paren(inner, _)
+        | Expr::Unary(_, inner, _) => expr_references_task_output(inner, allowed),
+        Expr::Index(base, index, _) => {
+            expr_references_task_output(base, allowed)
+                || expr_references_task_output(index, allowed)
+        }
+        Expr::Call(callee, arguments, _) => {
+            expr_references_task_output(callee, allowed)
+                || arguments
+                    .iter()
+                    .any(|argument| expr_references_task_output(argument, allowed))
+        }
+        Expr::Str(parts, _) => parts.iter().any(|part| match part {
+            StrPart::Interp(inner) => expr_references_task_output(inner, allowed),
+            StrPart::Text(_) => false,
+        }),
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => items
+            .iter()
+            .any(|item| expr_references_task_output(item, allowed)),
+        Expr::OpenList(Some(inner), _) => expr_references_task_output(inner, allowed),
+        Expr::ListComp { body, .. } => expr_references_task_output(body, allowed),
+        _ => false,
+    }
+}
+
 fn select_value(value: &Value, field: &str, quoted: bool, span: Span) -> Result<Value, LangError> {
     let missing = || {
         LangError::eval(
@@ -3288,7 +3383,7 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         let value = eval_expr(expr, frame)?;
                         let concrete = value.concretize();
                         if concrete.to_json().is_none() {
-                            if frame.allow_incomplete.get() {
+                            if frame.allows_incomplete(expr) {
                                 return Ok(Value::Type(TypeKind::Bytes));
                             }
                             return Err(LangError::eval(
@@ -3325,7 +3420,7 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         let value = eval_expr(expr, frame)?;
                         let concrete = value.concretize();
                         if concrete.to_json().is_none() {
-                            if frame.allow_incomplete.get() {
+                            if frame.allows_incomplete(expr) {
                                 return Ok(Value::Type(TypeKind::String));
                             }
                             return Err(LangError::eval(

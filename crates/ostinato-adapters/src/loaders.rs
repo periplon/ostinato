@@ -8,7 +8,8 @@ use ostinato_application::{LoadRequest, LoadedWorkflow, PortError, PortResult, S
 use ostinato_lang::ast::{Expr, Label, Span, StructItem};
 use ostinato_lang::{
     Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode,
-    eval_file_with_imports_mode_allow_incomplete, parse, rename_file_locals,
+    eval_file_with_imports_mode_allow_incomplete, eval_file_with_imports_mode_allow_outputs, parse,
+    rename_file_locals,
 };
 use serde_json::{Value as Json, json};
 
@@ -1067,12 +1068,26 @@ pub fn run_tool_command(
         }
     }
 
-    let value =
+    let task_items = command_task_items(&combined.items, command_name)?;
+    let probe =
         eval_file_with_imports_mode_allow_incomplete(&combined, &imports, &injected, false)?;
+    let probe_tasks = extract_command_tasks(&probe, command_name)?;
+    let mut probe_scheduled = Vec::new();
+    collect_schedule(&probe_tasks, Some(&task_items), &mut probe_scheduled)?;
+    let task_name_set: std::collections::HashSet<String> = probe_scheduled
+        .iter()
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    let value = eval_file_with_imports_mode_allow_outputs(
+        &combined,
+        &imports,
+        &injected,
+        false,
+        &task_name_set,
+    )?;
     let mut tasks = extract_command_tasks(&value, command_name)?;
 
     let mut scheduled = Vec::new();
-    let task_items = command_task_items(&combined.items, command_name)?;
     collect_schedule(&tasks, Some(&task_items), &mut scheduled)?;
     if scheduled.is_empty() {
         return Err(ostinato_lang::LangError::Workflow(format!(
@@ -1087,6 +1102,7 @@ pub fn run_tool_command(
             )));
         }
     }
+    add_output_dependencies(&combined.items, &mut scheduled);
     for (name, dependencies, _) in &scheduled {
         for dependency in dependencies {
             if !task_names.contains(dependency) {
@@ -1136,18 +1152,24 @@ pub fn run_tool_command(
                     done.insert(name.clone());
                     progress = true;
                     if !outputs.is_empty()
-                        && inject_task_outputs(&mut combined.items, name, &outputs)
+                        && inject_command_outputs(&mut combined.items, command_name, name, &outputs)
                     {
-                        let value = eval_file_with_imports_mode_allow_incomplete(
-                            &combined, &imports, &injected, false,
+                        let value = eval_file_with_imports_mode_allow_outputs(
+                            &combined,
+                            &imports,
+                            &injected,
+                            false,
+                            &task_name_set,
                         )?;
                         tasks = extract_command_tasks(&value, command_name)?;
                         let mut rescheduled = Vec::new();
                         collect_schedule(&tasks, Some(&task_items), &mut rescheduled)?;
+                        add_output_dependencies(&combined.items, &mut rescheduled);
                         flat = rescheduled
                             .iter()
                             .map(|(name, _, task)| (name.clone(), task.clone()))
                             .collect();
+                        validate_task_inputs(&flat)?;
                         scheduled = rescheduled;
                         updated = true;
                         break;
@@ -1491,6 +1513,218 @@ fn inject_into_struct(expr: &mut Expr, field: &str, value: &Expr) -> bool {
         Expr::Paren(inner, _) | Expr::Default(inner, _) => inject_into_struct(inner, field, value),
         _ => false,
     }
+}
+
+fn collect_output_refs(
+    expr: &Expr,
+    names: &std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match expr {
+        Expr::Select(base, field, _, _) => {
+            if matches!(field.as_str(), "stdout" | "success")
+                && let Expr::Ident(name, _) = &**base
+                && names.contains(name)
+            {
+                out.insert(name.clone());
+            }
+            collect_output_refs(base, names, out);
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            collect_output_refs(left, names, out);
+            collect_output_refs(right, names, out);
+        }
+        Expr::Bound(_, inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Paren(inner, _)
+        | Expr::Unary(_, inner, _) => collect_output_refs(inner, names, out),
+        Expr::Index(base, index, _) => {
+            collect_output_refs(base, names, out);
+            collect_output_refs(index, names, out);
+        }
+        Expr::Call(callee, arguments, _) => {
+            collect_output_refs(callee, names, out);
+            for argument in arguments {
+                collect_output_refs(argument, names, out);
+            }
+        }
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let ostinato_lang::ast::StrPart::Interp(inner) = part {
+                    collect_output_refs(inner, names, out);
+                }
+            }
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                collect_output_refs(item, names, out);
+            }
+        }
+        Expr::OpenList(Some(inner), _) => collect_output_refs(inner, names, out),
+        Expr::Struct(items, _) => {
+            for item in items {
+                match item {
+                    StructItem::Field(field) => collect_output_refs(&field.value, names, out),
+                    StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                        collect_output_refs(value, names, out);
+                    }
+                    StructItem::For { source, body, .. } => {
+                        collect_output_refs(source, names, out);
+                        collect_output_refs_items(body, names, out);
+                    }
+                    StructItem::If { cond, body, .. } => {
+                        collect_output_refs(cond, names, out);
+                        collect_output_refs_items(body, names, out);
+                    }
+                    StructItem::Ellipsis(_) => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_output_refs_items(
+    items: &[StructItem],
+    names: &std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    for item in items {
+        match item {
+            StructItem::Field(field) => collect_output_refs(&field.value, names, out),
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                collect_output_refs(value, names, out);
+            }
+            StructItem::For { source, body, .. } => {
+                collect_output_refs(source, names, out);
+                collect_output_refs_items(body, names, out);
+            }
+            StructItem::If { cond, body, .. } => {
+                collect_output_refs(cond, names, out);
+                collect_output_refs_items(body, names, out);
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+}
+
+fn collect_refs_for_task(
+    items: &[StructItem],
+    task_name: &str,
+    names: &std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                if matches!(&field.label, Label::Name(name, _) if name == task_name) {
+                    collect_output_refs(&field.value, names, out);
+                }
+                collect_refs_for_task_expr(&field.value, task_name, names, out);
+            }
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                collect_refs_for_task_expr(value, task_name, names, out);
+            }
+            StructItem::For { source, body, .. } => {
+                collect_refs_for_task_expr(source, task_name, names, out);
+                collect_refs_for_task(body, task_name, names, out);
+            }
+            StructItem::If { cond, body, .. } => {
+                collect_refs_for_task_expr(cond, task_name, names, out);
+                collect_refs_for_task(body, task_name, names, out);
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+}
+
+fn collect_refs_for_task_expr(
+    expr: &Expr,
+    task_name: &str,
+    names: &std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    if let Expr::Struct(items, _) = expr {
+        collect_refs_for_task(items, task_name, names, out);
+    }
+    match expr {
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            collect_refs_for_task_expr(left, task_name, names, out);
+            collect_refs_for_task_expr(right, task_name, names, out);
+        }
+        Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Bound(_, inner, _)
+        | Expr::Unary(_, inner, _) => {
+            collect_refs_for_task_expr(inner, task_name, names, out);
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                collect_refs_for_task_expr(item, task_name, names, out);
+            }
+        }
+        Expr::OpenList(Some(inner), _) => collect_refs_for_task_expr(inner, task_name, names, out),
+        _ => {}
+    }
+}
+
+fn add_output_dependencies(
+    items: &[StructItem],
+    scheduled: &mut [(String, Vec<String>, BTreeMap<String, Value>)],
+) {
+    let names: std::collections::BTreeSet<String> =
+        scheduled.iter().map(|(name, _, _)| name.clone()).collect();
+    let mut refs: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+    for (name, _, _) in scheduled.iter() {
+        let mut found = std::collections::BTreeSet::new();
+        collect_refs_for_task(items, name, &names, &mut found);
+        refs.insert(name.clone(), found);
+    }
+    for (name, dependencies, _) in scheduled.iter_mut() {
+        if let Some(found) = refs.get(name) {
+            for dependency in found {
+                if dependency != name && !dependencies.contains(dependency) {
+                    dependencies.push(dependency.clone());
+                }
+            }
+        }
+    }
+}
+
+fn inject_command_outputs(
+    items: &mut [StructItem],
+    command_name: &str,
+    task_name: &str,
+    outputs: &[(String, Value)],
+) -> bool {
+    let mut injected = false;
+    for item in items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        if !matches!(&field.label, Label::Name(name, _) if name == "command") {
+            continue;
+        }
+        let Expr::Struct(command_items, _) = &mut field.value else {
+            continue;
+        };
+        for command_item in command_items {
+            let StructItem::Field(command_field) = command_item else {
+                continue;
+            };
+            if !matches!(&command_field.label, Label::Name(name, _) if name == command_name) {
+                continue;
+            }
+            if inject_task_outputs_in_expr(&mut command_field.value, task_name, outputs) {
+                injected = true;
+            }
+        }
+    }
+    injected
 }
 
 fn inject_task_outputs(

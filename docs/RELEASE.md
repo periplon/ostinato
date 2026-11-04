@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.23.1
+
+- Scoped incomplete interpolation, inferred output dependencies, selected-command
+  injection and derived-expression limit.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.23.0
 
 - Interpolation over captured tool outputs via allow-incomplete evaluation
