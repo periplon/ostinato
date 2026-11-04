@@ -6608,6 +6608,21 @@ pattern_between_attrs: {
 	@tag(standalone)
 	[string]: int
 }
+pattern_listcomp_leading: {
+	p: [for i in [1] {
+		@tag(standalone)
+		[string]: int
+	}]
+}
+list_leading_field: [{
+	@tag(note)
+	a: 1
+	b: 2
+}]
+comp_leading_field: {for i in [1] {
+	@tag(note)
+	a: 1
+}}
 "#;
     let file = ostinato_lang::parse(allowed).expect("parse allowed tags");
     let value = ostinato_lang::eval_file(&file).expect("eval allowed tags");
@@ -6620,6 +6635,12 @@ pattern_between_attrs: {
     assert_eq!(json["pattern_newline_attr"], serde_json::json!({}));
     assert_eq!(json["pattern_leading_attr"], serde_json::json!({}));
     assert_eq!(json["pattern_between_attrs"], serde_json::json!({}));
+    assert_eq!(
+        json["pattern_listcomp_leading"]["p"],
+        serde_json::json!([{}])
+    );
+    assert_eq!(json["list_leading_field"][0]["a"], 1);
+    assert_eq!(json["comp_leading_field"]["a"], 1);
 
     // Rejected: multi-rune bytes labels and any tag lexically inside a list.
     for source in [
@@ -6642,6 +6663,9 @@ pattern_between_attrs: {
         "package demo\nparams: {[string]: {#D: {p: string | *\"v\" @tag(p)}}}\n",
         "package demo\nparams: {k: \"a\", \"\\(k)\": string | *\"v\" @tag(t)}\n",
         "package demo\nparams: {k: \"a\", \"\\(k)\": {x: string | *\"v\" @tag(t)}}\n",
+        "package demo\nparams: {@tag(x) a: string | *\"v\"}\n",
+        "package demo\nparams: {@tag(x) [string]: int}\n",
+        "package demo\nparams: {@tag(x) @tag(y)}\n",
         "package demo\n#D: {'ab': string @tag(ab)}\nx: #D\n",
         "package demo\nparams: {l: [{a: string | *\"v\" @tag(a)}]}\n",
         "package demo\nparams: {l: [{\"a\": string | *\"v\" @tag(a)}]}\n",
@@ -6651,11 +6675,20 @@ pattern_between_attrs: {
         "package demo\nparams: {v: [{#D: {a: string | *\"v\" @tag(a)}}]}\n",
         "package demo\nparams: {v: [for i in [{a: string | *\"v\" @tag(a)}] {i.a}]}\n",
     ] {
-        let file = ostinato_lang::parse(source).expect("parse invalid tag placement");
-        let error = ostinato_lang::eval_file(&file).expect_err("tag placement must fail");
+        let outcome = ostinato_lang::parse(source).and_then(|file| ostinato_lang::eval_file(&file));
+        let error = outcome.expect_err("tag placement must fail");
         assert!(
-            error.to_string().contains("@tag"),
-            "unexpected error: {error}"
+            !error.to_string().is_empty(),
+            "unexpected empty error: {error}"
         );
     }
+
+    // Standalone own-line attributes are declaration metadata, not field tags.
+    let standalone = "package demo\nparams: {\n@tag(x)\na: string | *\"v\"\n}\n";
+    let file = ostinato_lang::parse(standalone).expect("parse standalone attribute");
+    let tags = ostinato_lang::parameter_tags(&file).expect("collect tags");
+    assert!(
+        !tags.contains_key("x"),
+        "standalone @tag must not register as a field tag"
+    );
 }

@@ -279,9 +279,17 @@ impl Parser {
     }
 
     fn parse_struct_item_impl(&mut self) -> Result<Option<StructItem>, LangError> {
-        let mut attributes = Vec::new();
+        let mut _declaration_attributes = Vec::new();
         while matches!(self.peek_tok(), Tok::At) {
-            attributes.push(self.parse_attribute()?);
+            let attribute = self.parse_attribute()?;
+            let separated = matches!(
+                self.peek_tok(),
+                Tok::Newline | Tok::Comma | Tok::RBrace | Tok::Eof
+            );
+            if !separated && self.peek().line == attribute.span.line {
+                return Err(self.error("missing ',' in struct literal"));
+            }
+            _declaration_attributes.push(attribute);
             self.skip_newlines();
         }
         if matches!(self.peek_tok(), Tok::RBrace | Tok::Eof) {
@@ -367,6 +375,7 @@ impl Parser {
                 let optional = self.eat(&Tok::Question);
                 self.expect(&Tok::Colon, "`:`")?;
                 let value = self.parse_field_value()?;
+                let mut attributes = Vec::new();
                 while matches!(self.peek_tok(), Tok::At) {
                     attributes.push(self.parse_attribute()?);
                 }
@@ -550,7 +559,7 @@ impl Parser {
 
     fn starts_struct_item(&self) -> bool {
         match self.peek_tok() {
-            Tok::Let | Tok::For | Tok::If | Tok::Ellipsis => true,
+            Tok::Let | Tok::For | Tok::If | Tok::Ellipsis | Tok::At => true,
             Tok::LBracket => self.bracket_closes_a_label(),
             Tok::Ident(_) | Tok::Str(_) | Tok::Bytes(..) => matches!(
                 self.tokens.get(self.pos + 1).map(|token| &token.tok),

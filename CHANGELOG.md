@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.20.6
+
+Attribute attachment and list-comprehension parity.
+
+- List-comprehension bodies may start with a standalone attribute and/or a
+  leading pattern.
+- Own-line attributes before a field or pattern are declaration metadata, not
+  field tags (so they do not trip placement rules and do not register `@tag`);
+  same-line attribute prefixes (`@tag(x) a: ...`) are parse errors like CUE.
+- Added language and CLI regressions.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.20.5
 
 Standalone pattern attributes.
