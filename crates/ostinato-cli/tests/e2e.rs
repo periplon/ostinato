@@ -7877,7 +7877,7 @@ import (
 	"tool/exec"
 )
 prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"]}
-other: exec.Run & {cmd: ["sh", "-c", "printf O >> order.txt"]}
+other: exec.Run & {$after: prep, cmd: ["sh", "-c", "printf O >> order.txt"]}
 command: aftercomposedlist: {
 	a: exec.Run & {$after: [prep & {stdout: string}, other], cmd: ["sh", "-c", "printf A >> order.txt"]}
 	q: cli.Print & {text: "ok"}
