@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.37.3
+
+`$after` selector classification corrections.
+
+- The struct-detection walk is cycle-safe, so self-referential lets
+  (`let a = a`) with `$after: a.missing` exit cleanly like CUE instead of
+  overflowing the stack.
+- Field-root selectors are classified by their value: missing members of a
+  struct field are ignored, missing members of a concrete field
+  (`x: 5; $after: x.missing`), concrete sub-values
+  (`x: {y: 1}; $after: x.y.missing`) and definitions (`#G.inner.missing`)
+  still fail like CUE.
+- Let-bound import/module selectors (`let g = math`, `let cfg = lib.cfg`)
+  resolve through the import table, so missing members are ignored instead of
+  producing field-not-found errors.
+- Added e2e and conformance coverage for the crash, field-root and
+  let-bound-import shapes.
+
+- 443 tests (106 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.37.2
 
 `$after` selector member handling.
