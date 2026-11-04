@@ -1,8 +1,8 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Oo9ARw94K3/agents.sqlite run examples/agents.cue
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.qa0uuWpsTT/agents.sqlite run examples/agents.cue
 
-run=e4380af8-aab2-4cfc-b6bc-30c15a1b9ed7 workflow=agents status=succeeded durationMs=207
+run=a7b3713e-debf-4b84-80f8-6ebad1abdb96 workflow=agents status=succeeded durationMs=414
 STEP                     STATUS     VISITS ATTEMPTS
-report                   succeeded  1      1
-review                   succeeded  1      1
+report                   succeeded  1      1       
+review                   succeeded  1      1       
 
 exit=0

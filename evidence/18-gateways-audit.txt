@@ -1,5 +1,5 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Oo9ARw94K3/gateway.sqlite audit verify 3fa76d49-94db-4d87-9c0d-85833b6233cb
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.qa0uuWpsTT/gateway.sqlite audit verify b6188940-e4e9-43ef-8bf0-abc194a3742a
 
-OK run=3fa76d49-94db-4d87-9c0d-85833b6233cb events=14 head=dc237af6373ac78b7e278c515445ee50eb01dce51cb247d1d4e0574a7e94bdd5
+OK run=b6188940-e4e9-43ef-8bf0-abc194a3742a events=14 head=e3719064681b7330a82f84a0cf46ccfd4eda2fa1db3318f89715f1276ccab333
 
 exit=0

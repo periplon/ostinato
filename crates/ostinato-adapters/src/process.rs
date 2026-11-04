@@ -296,7 +296,9 @@ impl CommandAgent {
 }
 
 fn is_shell_command(argv: &[String]) -> bool {
-    argv.len() == 3 && argv[0] == "sh" && argv[1] == "-c"
+    argv.len() == 3
+        && argv[1] == "-c"
+        && matches!(argv[0].as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh")
 }
 
 impl Default for CommandAgent {

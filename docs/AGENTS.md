@@ -76,6 +76,8 @@ review: {
 ## Precedence
 
 1. A step's `agent.command` **or** the referenced definition's `command`.
+   A definition command therefore wins over a step-level `provider` override;
+   override `command` too if you need to change the invocation.
 2. The resolved `provider` template (`claude`, `codex`, `opencode`).
 3. `--agent-cmd` / `OSTINATO_AGENT` (only when the provider is `command`).
 4. Otherwise the step fails with a configuration error.
@@ -264,6 +266,9 @@ documented defaults. This is the debugging surface for merge precedence.
   name `improve`; they do not use worktree isolation or artifact globs.
 - A package that previously used an unrelated top-level `agents` field now
   gets load-time validation.
+- The agent runs in its own process group; timeout/cancel kills that group.
+  A descendant that calls `setsid` (or otherwise escapes the group) can outlive
+  the step. Partial output already read is retained in the trace.
 - Prompts, argv and stdout are stored in plaintext in SQLite. Do not put
   secrets in prompts; use environment variables and remember their values are
   hashed, not stored, in traces (the workflow spec still stores configured

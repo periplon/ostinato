@@ -1,9 +1,9 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Oo9ARw94K3/agent.sqlite --cue cue run examples/agentic.cue --agent-cmd /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/examples/agent.sh
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.qa0uuWpsTT/agent.sqlite --cue cue run examples/agentic.cue --agent-cmd /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/examples/agent.sh
 
-run=3d8d26f2-977a-4aa1-833c-2164ad987bff workflow=agentic status=succeeded durationMs=37
+run=867a2152-3829-4ce3-840e-1149aae0e766 workflow=agentic status=succeeded durationMs=33
 STEP                     STATUS     VISITS ATTEMPTS
-assess                   succeeded  1      1
-improve                  succeeded  1      1
-report                   succeeded  1      1
+assess                   succeeded  1      1       
+improve                  succeeded  1      1       
+report                   succeeded  1      1       
 
 exit=0

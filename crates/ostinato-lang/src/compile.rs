@@ -1031,7 +1031,9 @@ fn parse_command(value: &Value, path: &str) -> Result<(Vec<String>, bool), LangE
 }
 
 fn is_shell_argv(argv: &[String]) -> bool {
-    argv.len() == 3 && argv[0] == "sh" && argv[1] == "-c"
+    argv.len() == 3
+        && argv[1] == "-c"
+        && matches!(argv[0].as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh")
 }
 
 fn validate_command_delivery(

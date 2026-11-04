@@ -1927,14 +1927,33 @@ fn extract_score_from_text(text: &str) -> Option<f64> {
 }
 
 fn transcript_score(text: &str) -> Option<f64> {
-    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        if let Ok(value) = serde_json::from_str::<Json>(line)
-            && let Some(score) = find_score(&value)
-        {
+    let values: Vec<Json> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_str::<Json>(line).ok())
+        .collect();
+    // Prefer a top-level score on any event, then the terminal event, then a
+    // recursive search (e.g. a JSON document encoded inside a string field).
+    for value in &values {
+        if let Some(score) = top_score(value) {
             return Some(score);
         }
     }
-    None
+    if let Some(last) = values.last()
+        && let Some(score) = find_score(last)
+    {
+        return Some(score);
+    }
+    values.iter().find_map(find_score)
+}
+
+fn top_score(value: &Json) -> Option<f64> {
+    value
+        .get("score")
+        .or_else(|| value.get("confidence"))
+        .and_then(Json::as_f64)
+        .map(|score| score.clamp(0.0, 1.0))
 }
 
 fn find_score(value: &Json) -> Option<f64> {
