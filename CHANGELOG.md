@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.34.2
+
+Nested field-path definition reads.
+
+- Nested struct/field reads to definition tasks (`r: {run: #G.run};
+  \(r.run.stdout)`, `n: r: #G; \(n.r.run.stdout)`) schedule and inject like
+  CUE, while concrete struct containers stay non-concrete.
+- Declaration keys resolve the selector base and append the field, so
+  declaration-first alias reads still reject.
+- Restored the v0.34.1 release-notes/changelog formatting.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+## v0.34.1
+
+Alias-container read ordering.
+
+- Alias-container reads resolve only definition-rooted aliases; order-aware
+  suppression uses canonical paths; concrete/let containers stay non-concrete.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.34.0
 
 Definition container field aliases and repeated aliases.
