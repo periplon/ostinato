@@ -3196,6 +3196,17 @@ fn filter_after_operands(
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             filter_after_operands(inner, scopes, root, imports, imported_values)
         }
+        Expr::Unify(left, right, _) => {
+            let mut kept = filter_after_operands(left, scopes, root, imports, imported_values);
+            kept.extend(filter_after_operands(
+                right,
+                scopes,
+                root,
+                imports,
+                imported_values,
+            ));
+            kept
+        }
         Expr::Select(..) | Expr::Index(..) => {
             if let Some(prefix) = after_task_prefix(expr, scopes, root, imports) {
                 return vec![prefix];
@@ -4216,6 +4227,43 @@ fn external_task_key(path: &[String], root: &[StructItem]) -> String {
     }
 }
 
+/// Resolve a command alias target, preferring unified operands that are
+/// themselves tasks.
+///
+/// `r: aux & prep` must resolve to `prep` (the task), not to the first
+/// resolvable non-task operand, so declaration/read ordering treats it like
+/// `r: prep`.
+fn resolve_command_alias_path(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &ImportKinds,
+) -> Option<Vec<String>> {
+    match expr {
+        Expr::Unify(left, right, _) => resolve_command_alias_path(left, scopes, root, imports)
+            .or_else(|| resolve_command_alias_path(right, scopes, root, imports)),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            resolve_command_alias_path(inner, scopes, root, imports)
+        }
+        _ => {
+            let (path, true) =
+                resolve_after_path(expr, scopes, root, &mut std::collections::BTreeSet::new())?
+            else {
+                return None;
+            };
+            let value = find_field_expr_at_path(root, &path)?;
+            is_task_expr(
+                value,
+                scopes,
+                root,
+                &mut std::collections::BTreeSet::new(),
+                imports,
+            )
+            .then_some(path)
+        }
+    }
+}
+
 /// Package paths that command task fields alias (`r: prep`, `r: group.prep`),
 /// keyed by the command task name.
 fn collect_command_task_package_paths(
@@ -4249,12 +4297,8 @@ fn collect_command_task_package_paths(
                     imports,
                 );
                 if child_is_task
-                    && let Some((path, true)) = resolve_after_path(
-                        &field.value,
-                        scopes,
-                        root,
-                        &mut std::collections::BTreeSet::new(),
-                    )
+                    && let Some(path) =
+                        resolve_command_alias_path(&field.value, scopes, root, imports)
                 {
                     out.entry(label.clone()).or_insert(path);
                 }

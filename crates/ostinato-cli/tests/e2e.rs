@@ -7820,6 +7820,72 @@ command: afteraliasimportconcrete: {
             None,
         ),
         (
+            "aftercomposed",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"]}
+command: aftercomposed: {
+	a: exec.Run & {$after: prep & {stdout: string}, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "afterauxcomposed",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+aux: {stdout: string}
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"]}
+command: afterauxcomposed: {
+	a: exec.Run & {$after: aux & prep, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aftercomposeddef",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+#prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"]}
+command: aftercomposeddef: {
+	a: exec.Run & {$after: #prep & {stdout: string}, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "aftercomposedlist",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"]}
+other: exec.Run & {cmd: ["sh", "-c", "printf O >> order.txt"]}
+command: aftercomposedlist: {
+	a: exec.Run & {$after: [prep & {stdout: string}, other], cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
             "afterundefinedident",
             r#"
 package foo
@@ -8233,6 +8299,74 @@ import (
 command: composeddefinitiontaskplain: {
 	r: #G.prep & {stdout: string}
 	t: cli.Print & {text: "R=\(#G.prep.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "auxfirstaliastask",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+aux: {stdout: string}
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: auxfirstaliastask: {
+	r: aux & prep
+	t: cli.Print & {text: "R=\(prep.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "auxfirstaliasplain",
+            r#"
+package foo
+import "tool/exec"
+aux: {stdout: string}
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: auxfirstaliasplain: {
+	r: aux & prep
+	q: "\(prep.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "auxfirstaliasreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+aux: {stdout: string}
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: auxfirstaliasreadfirst: {
+	t: cli.Print & {text: "R=\(prep.stdout)"}
+	r: aux & prep
+	q: "\(prep.stdout)"
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "groupauxfirstalias",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+group: {
+	aux: {stdout: string}
+	prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+}
+command: groupauxfirstalias: {
+	r: group.aux & group.prep
+	t: cli.Print & {text: "R=\(group.prep.stdout)"}
 }
 "#,
             None,

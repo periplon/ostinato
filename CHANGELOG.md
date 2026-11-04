@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.38.3
+
+Unified alias targets and composed `$after` operands.
+
+- Command alias resolution now prefers the task operand of a unified value,
+  so `r: aux & prep` (including container and three-way variants) is treated
+  as aliasing `prep`; declaration-first task-input reads reject with no side
+  effects and read-first shapes execute twice exactly like CUE.
+- Composed `$after` operands keep their task operands: `$after: prep & {stdout:
+  string}`, `$after: aux & prep`, definition variants and list forms now
+  schedule the prerequisite task instead of only the consumer.
+- Added e2e and conformance coverage for the unified alias and composed
+  `$after` shapes.
+
+- 444 tests (107 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.38.2
 
 Composed alias targets in command ordering.
