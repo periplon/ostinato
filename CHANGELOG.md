@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.20.5
+
+Standalone pattern attributes.
+
+- Only same-line attributes after a pattern value attach to the pattern; a
+  standalone `@tag` on the line before (or between) patterns belongs to the
+  enclosing declaration and remains accepted, matching CUE line sensitivity.
+- Added leading/between-pattern regressions.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.20.4
 
 Pattern-value `@tag` rejection.
