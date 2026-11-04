@@ -1,7 +1,7 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-a2d3f54
+413308e
 
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                                    16a10c5 [main]
@@ -23,7 +23,7 @@ a2d3f54
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/package-after           628424d (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/path-keyed-reads        6653528 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/root-alias-repeat       eb961ad (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/second-hop-aliases      a2d3f54 [feat/v0.41.0-second-hop-aliases]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/second-hop-aliases      413308e (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let            aab750d [fix/v0.24.5-let-rejection-scope]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/stderr-injection        cea92a7 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/unused-imports          698ef6d (detached HEAD)
