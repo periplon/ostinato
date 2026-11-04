@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.39.3
+
+Module alias shadowing scope correction.
+
+- Command-local shadowing only suppresses package-root module fields when the
+  same name also exists at package root. Command-local aliases to root
+  containers (`r: base` where `base: {inner: lib.run}`) now resolve task-input
+  and plain reads again, matching CUE.
+- Added e2e coverage for container and deep-container alias task inputs.
+
+- 445 tests (108 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.39.2
 
 Command-local shadowing of module-backed root fields.

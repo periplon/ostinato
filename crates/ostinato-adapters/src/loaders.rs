@@ -2411,12 +2411,9 @@ fn collect_output_task_paths<'a>(
                 )
                 .filter(|path| {
                     find_field_expr_at_path(root, path).is_some()
-                        && path.first().is_none_or(|first| {
-                            !matches!(
-                                local_binding_location(scopes, root, first),
-                                Some((false, _))
-                            )
-                        })
+                        && path
+                            .first()
+                            .is_none_or(|first| !command_local_shadows_root(scopes, root, first))
                 })
                 .or_else(|| local_read_path(base, scopes, root, module_values));
                 let module_path = if local_path.is_none() {
@@ -4602,6 +4599,15 @@ fn command_local_task_read(
     )
 }
 
+/// A command-local non-definition field shadows a package-root field.
+fn command_local_shadows_root(scopes: &[&[StructItem]], root: &[StructItem], name: &str) -> bool {
+    matches!(local_binding_location(&[root], root, name), Some((true, _)))
+        && matches!(
+            local_binding_location(scopes, root, name),
+            Some((false, StructItem::Field(field))) if !field.definition
+        )
+}
+
 /// Local field path of a read base whose value is module-backed.
 fn local_read_path(
     expr: &Expr,
@@ -4616,10 +4622,7 @@ fn local_read_path(
     }
     // A command-local field shadows a package-root field of the same name.
     // Definitions stay resolvable because their output reads are injectable.
-    if matches!(
-        local_binding_location(scopes, root, first),
-        Some((false, StructItem::Field(field))) if !field.definition
-    ) {
+    if command_local_shadows_root(scopes, root, first) {
         return None;
     }
     find_field_expr_at_path(root, &path).map(|_| path)

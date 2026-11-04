@@ -10559,6 +10559,38 @@ command: modulealiastaskinputindex: {
             false,
         ),
         (
+            "modulealiasrootcontainertaskinput",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: {inner: lib.run}
+command: modulealiasrootcontainertaskinput: {
+	r: base
+	t: cli.Print & {text: "R=\(r.inner.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiasdeepcontainertaskinput",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: {inner: {run: lib.run}}
+command: modulealiasdeepcontainertaskinput: {
+	r: base
+	t: cli.Print & {text: "R=\(r.inner.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
             "moduleshadowfield",
             r#"
 package foo
