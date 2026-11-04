@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.34.0
+
+Definition container field aliases and repeated aliases.
+
+- Selector bases resolve through field aliases, so a root field that aliases
+  a definition container (`r: #G; \(r.run.stdout)`) schedules and injects
+  like CUE; declaring a task through that path remains non-concrete.
+- Reconfirmed and covered repeated root definition aliases
+  (`#a: #b; x: p1: #a; y: p2: #a`), which inject like CUE.
+- Added e2e and conformance cases.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.33.3
 
 Definition order scan labels and selector aliases.

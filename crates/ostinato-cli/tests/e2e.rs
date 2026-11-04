@@ -7335,6 +7335,57 @@ command: defselectoraliasfirst: {
             true,
         ),
         (
+            "defcontainerfieldalias",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+r: #G
+command: defcontainerfieldalias: {
+	q: cli.Print & {text: "R=\(r.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defcontainerfieldaliasdecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+r: #G
+command: defcontainerfieldaliasdecl: {
+	a: p1: r.run
+	q: cli.Print & {text: "R=\(a.p1.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defaliastwiceread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#a: #b
+#b: lib.run
+command: defaliastwiceread: {
+	x: p1: #a
+	y: p2: #a
+	q: cli.Print & {text: "R=\(x.p1.stdout)-\(y.p2.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
             "readrootmodule",
             r#"
 package foo

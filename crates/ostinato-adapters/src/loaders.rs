@@ -1789,13 +1789,13 @@ fn resolved_path<'a>(
             name.starts_with('#').then(|| vec![name.clone()])
         }
         Expr::Select(base, field, _, _) => {
-            let mut path = resolved_path(base, scopes, root, visited, allow_field)?;
+            let mut path = resolved_path(base, scopes, root, visited, true)?;
             path.push(field.clone());
             Some(path)
         }
         Expr::Index(base, index, _) => {
             let segment = index_field_name(index)?;
-            let mut path = resolved_path(base, scopes, root, visited, allow_field)?;
+            let mut path = resolved_path(base, scopes, root, visited, true)?;
             path.push(segment);
             Some(path)
         }
