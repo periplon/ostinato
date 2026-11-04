@@ -6578,3 +6578,50 @@ index: x["k"]
         "bytes labels cannot interpolate"
     );
 }
+
+#[test]
+fn tag_placement_rules_match_cue() {
+    // Allowed: identifier/quoted labels, single-rune bytes labels, definitions,
+    // nested structs, and a tag on the field that holds a list.
+    let allowed = r#"
+package demo
+ident: string | *"i" @tag(ident)
+quoted: string | *"q" @tag(quoted)
+single: {'a': string | *"s" @tag(single)}
+single_unicode: {'日': string | *"u" @tag(unicode)}
+single_invalid: {'\xff': string | *"v" @tag(invalid)}
+empty: {'': string | *"e" @tag(empty)}
+#D: {a: string @tag(def_field)}
+def_value: #D & {a: "d"}
+nested: {a: string | *"n" @tag(nested_field)}
+list_holder: [{a: string | *"l"}] @tag(list_holder)
+"#;
+    let file = ostinato_lang::parse(allowed).expect("parse allowed tags");
+    let value = ostinato_lang::eval_file(&file).expect("eval allowed tags");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["ident"], "i");
+    assert_eq!(json["single"]["a"], "s");
+    assert_eq!(json["def_value"]["a"], "d");
+
+    // Rejected: multi-rune bytes labels and any tag lexically inside a list.
+    for source in [
+        "package demo\nparams: {x: {'ab': string | *\"v\" @tag(ab)}}\n",
+        "package demo\nparams: {x: {'日本': string | *\"v\" @tag(v)}}\n",
+        "package demo\nparams: {x: {'\\xff\\xff': string | *\"v\" @tag(v)}}\n",
+        "package demo\n#D: {'ab': string @tag(ab)}\nx: #D\n",
+        "package demo\nparams: {l: [{a: string | *\"v\" @tag(a)}]}\n",
+        "package demo\nparams: {l: [{\"a\": string | *\"v\" @tag(a)}]}\n",
+        "package demo\nparams: {l: [...{a: string | *\"v\" @tag(a)}]}\n",
+        "package demo\nparams: {l: [for i in [1] {a: string | *\"v\" @tag(a)}]}\n",
+        "package demo\nparams: {l: [{outer: {a: string | *\"v\" @tag(a)}}]}\n",
+        "package demo\nparams: {v: [{#D: {a: string | *\"v\" @tag(a)}}]}\n",
+        "package demo\nparams: {v: [for i in [{a: string | *\"v\" @tag(a)}] {i.a}]}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse invalid tag placement");
+        let error = ostinato_lang::eval_file(&file).expect_err("tag placement must fail");
+        assert!(
+            error.to_string().contains("@tag"),
+            "unexpected error: {error}"
+        );
+    }
+}

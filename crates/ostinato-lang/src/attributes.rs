@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{CompClause, Expr, File, Label, StrPart, StructItem};
+use crate::ast::{BytePart, CompClause, Expr, File, Label, StrPart, StructItem};
 use crate::error::LangError;
 
 /// Injection type declared by `@tag(...,type=...)`.
@@ -628,6 +628,7 @@ pub fn parameter_tags(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, Lan
 }
 
 fn parameter_tags_impl(file: &File) -> Result<BTreeMap<String, Vec<TagInfo>>, LangError> {
+    validate_tag_placement(file)?;
     let mut definitions: DefinitionMap = BTreeMap::new();
     let mut definition_aliases: BTreeMap<String, String> = BTreeMap::new();
     for (index, item) in file.items.iter().enumerate() {
@@ -798,5 +799,118 @@ fn assign_expr_impl(expr: &mut Expr, next: &mut usize) {
         | Expr::Bytes(_, _)
         | Expr::Ident(_, _)
         | Expr::OpenList(None, _) => {}
+    }
+}
+
+/// Validate CUE's `@tag` placement rules.
+///
+/// CUE rejects `@tag` on fields that live inside lists and on field labels
+/// written as bytes literals longer than one rune.
+///
+/// # Errors
+/// Returns an evaluation error for a disallowed `@tag`.
+pub fn validate_tag_placement(file: &File) -> Result<(), LangError> {
+    stacker::grow(512 * 1024 * 1024, || validate_tag_items(&file.items, false))
+}
+
+fn validate_tag_items(items: &[StructItem], in_list: bool) -> Result<(), LangError> {
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                if let Some(attribute) = field.attributes.iter().find(|a| a.name == "tag") {
+                    if in_list {
+                        return Err(LangError::eval(
+                            attribute.span.line,
+                            attribute.span.col,
+                            "@tag is not allowed within lists",
+                        ));
+                    }
+                    if field.bytes_label_runes.is_some_and(|runes| runes > 1) {
+                        return Err(LangError::eval(
+                            attribute.span.line,
+                            attribute.span.col,
+                            "@tag is not allowed on a multi-rune bytes label",
+                        ));
+                    }
+                }
+                validate_tag_expr(&field.value, in_list)?;
+            }
+            StructItem::Pattern { value, .. } => validate_tag_expr(value, in_list)?,
+            StructItem::Let { value, .. } => validate_tag_expr(value, in_list)?,
+            StructItem::For { source, body, .. } => {
+                validate_tag_expr(source, in_list)?;
+                validate_tag_items(body, in_list)?;
+            }
+            StructItem::If { cond, body, .. } => {
+                validate_tag_expr(cond, in_list)?;
+                validate_tag_items(body, in_list)?;
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_tag_expr(expr: &Expr, in_list: bool) -> Result<(), LangError> {
+    match expr {
+        Expr::Struct(items, _) => validate_tag_items(items, in_list),
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                validate_tag_expr(item, true)?;
+            }
+            Ok(())
+        }
+        Expr::OpenList(Some(inner), _) => validate_tag_expr(inner, true),
+        Expr::OpenList(None, _) => Ok(()),
+        Expr::ListComp { clauses, body, .. } => {
+            for clause in clauses {
+                match clause {
+                    CompClause::For { source, .. } => validate_tag_expr(source, true)?,
+                    CompClause::If { cond, .. } => validate_tag_expr(cond, true)?,
+                }
+            }
+            validate_tag_expr(body, true)
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            validate_tag_expr(left, in_list)?;
+            validate_tag_expr(right, in_list)
+        }
+        Expr::Binary(_, left, right, _) => {
+            validate_tag_expr(left, in_list)?;
+            validate_tag_expr(right, in_list)
+        }
+        Expr::Bound(_, inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Paren(inner, _)
+        | Expr::Unary(_, inner, _) => validate_tag_expr(inner, in_list),
+        Expr::Select(base, _, _, _) => validate_tag_expr(base, in_list),
+        Expr::Index(base, index, _) => {
+            validate_tag_expr(base, in_list)?;
+            validate_tag_expr(index, in_list)
+        }
+        Expr::Call(callee, arguments, _) => {
+            validate_tag_expr(callee, in_list)?;
+            for argument in arguments {
+                validate_tag_expr(argument, in_list)?;
+            }
+            Ok(())
+        }
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let StrPart::Interp(inner) = part {
+                    validate_tag_expr(inner, in_list)?;
+                }
+            }
+            Ok(())
+        }
+        Expr::BytesInterp(parts, _) => {
+            for part in parts {
+                if let BytePart::Interp(inner) = part {
+                    validate_tag_expr(inner, in_list)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }

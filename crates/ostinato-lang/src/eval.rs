@@ -496,6 +496,7 @@ impl Value {
 /// conflicting values and non-concrete disjunctions.
 pub fn eval_file(file: &File) -> Result<Value, LangError> {
     stacker::grow(512 * 1024 * 1024, || {
+        crate::attributes::validate_tag_placement(file)?;
         crate::scope::validate_aliases(&file.items, &[])?;
         let frame = Frame::new(&file.items, None, HashMap::new())?;
         frame.ensure_params_context();
@@ -521,6 +522,7 @@ pub fn eval_file_with_overrides(
     overrides: &BTreeMap<String, Value>,
 ) -> Result<Value, LangError> {
     stacker::grow(512 * 1024 * 1024, || {
+        crate::attributes::validate_tag_placement(file)?;
         crate::scope::validate_aliases(&file.items, &[])?;
         let frame = Frame::from_static(&file.items, None, HashMap::new())?;
         for (key, value) in overrides {
@@ -564,6 +566,7 @@ pub fn eval_file_with_imports_mode(
     include_definitions: bool,
 ) -> Result<Value, LangError> {
     stacker::grow(512 * 1024 * 1024, || {
+        crate::attributes::validate_tag_placement(file)?;
         let import_aliases: Vec<String> = imports.keys().cloned().collect();
         crate::scope::validate_aliases(&file.items, &import_aliases)?;
         let mut vars = HashMap::new();
