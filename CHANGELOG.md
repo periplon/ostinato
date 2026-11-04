@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.31.5
+
+Release-notes correction for v0.31.4.
+
+- Restore the v0.31.4 `docs/RELEASE.md` section as real Markdown instead of a
+  single escaped line, and add the missing `CHANGELOG` entry.
+- No behaviour change; 439 tests (102 CLI E2E, 2 conformance, 1 tool
+  conformance, 246 language, 6 language agents, 3 language unit,
+  22 application, 9 analysis, 0 domain unit, 22 domain, 10 store,
+  8 workspace, 8 adapters unit).
+
+## v0.31.4
+
+Composed selectors and disjunctions for root reads.
+
+- Disjunction, list and local selector/index composition injects for root
+  module reads; selectors resolving to bare module tasks still reject.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.31.3
 
 Unification classification for root module reads.
