@@ -61,8 +61,9 @@ workflow outside the Rust surface has a supported escape hatch.
   output reads through `let`-over-field chains (root inline and command-local
   fields), definitions and definition containers/aliases
   (`\(t.stdout)`, `\(#base.stdout)`, `\(#G.run.stdout)`, `\(#a.stdout)`),
-  with definition-rooted path identity so duplicate leaf names and
-  container declaration/read pairs follow CUE,
+  with definition-rooted path identity so duplicate leaf names, field aliases
+  to definition containers (`r: #G; \(r.run.stdout)`) and container
+  declaration/read pairs follow CUE,
   tasks exported by local modules (`lib.run`, nested `lib.tasks.r1`, `lib.group.run`),
   `@tag` injection and per-file unused-import rejection;
 - workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, `n_of`
