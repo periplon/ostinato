@@ -1,18 +1,19 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-5a7f69f
+287f960
 
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                                    16a10c5 [main]
 /Users/joanmarc/dailywork/jmca/ostinato-gateways                           668e12f [feat/gateways]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions       cb3a2ae [feat/agent-definitions]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/alias-target-reads      5a7f69f [fix/v0.38.4-after-list-order]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/alias-target-reads      75f9f27 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/definition-nested-reads c6e8f7b (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan           99e7541 [feat/gateways-r0-r4]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-def-output-refs     fabd011 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection           e071d4e (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection      2f4178f (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-alias-reads      287f960 [feat/v0.39.0-module-alias-reads]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports     dda0eba (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after      747bce6 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps      fee7d72 (detached HEAD)

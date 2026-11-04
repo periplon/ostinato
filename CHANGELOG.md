@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.39.0
+
+Module-task alias plain-field output reads.
+
+- A command alias to a module task (`r: lib.run`, `r: lib["run"]`,
+  `r: lib.group.run`, `r: lib.#def`, `let t = lib.run; r: t`) now
+  materialises the module task instance for plain-field reads
+  (`q: "\(lib.run.stdout)"`, hidden/optional reads), executing exactly once
+  like CUE. Inline instances (`a: lib.run`) and two aliases behave like CUE
+  (one and two executions respectively).
+- Module-task output injection updates the imported package value, so reads
+  through the import, a let, or the inline command field all become concrete.
+- Plain module reads without a scheduling alias stay non-concrete without
+  error, matching CUE, and task-input reads keep CUE's rejection.
+- Removed the module-task alias plain-read limit from `docs/SCOPE.md`.
+- Added a 13-shape differential e2e test and six conformance cases.
+
+- 445 tests (108 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.38.4
 
 Deterministic composed-`$after` list test.

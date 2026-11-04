@@ -8517,11 +8517,18 @@ command: aliasplainsuccess: {
                 std::fs::read(rust_dir.path().join(artifact)).ok(),
                 "{name}: artifact {artifact} differs"
             );
-        } else {
+        } else if expected.status.success() {
             assert!(
                 !cue_dir.path().join("order.txt").exists(),
                 "{name}: cue side effect"
             );
+            assert!(
+                !rust_dir.path().join("order.txt").exists(),
+                "{name}: rust side effect"
+            );
+        } else {
+            // CUE may or may not leave side effects behind when evaluation
+            // rejects; only our own non-execution is deterministic.
             assert!(
                 !rust_dir.path().join("order.txt").exists(),
                 "{name}: rust side effect"
@@ -10304,6 +10311,232 @@ command: moduletwoparen: (base)
         assert!(!expected.status.success(), "{name}: cue must reject");
         assert_eq!(actual.status.code(), expected.status.code(), "{name}");
         assert_eq!(actual.stdout, expected.stdout, "{name}");
+    }
+}
+
+#[test]
+fn tool_command_module_alias_plain_reads_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"package lib
+
+import e "tool/exec"
+
+run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+fail: e.Run & {cmd: ["false"], mustSucceed: false, success: bool}
+group: {run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}}
+#def: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+"#;
+    let cases: &[(&str, &str, bool)] = &[
+        (
+            "modulealiasplain",
+            r#"
+package foo
+import "example.com/k/lib"
+command: modulealiasplain: {
+	r: lib.run
+	q: "\(lib.run.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiasplainreadfirst",
+            r#"
+package foo
+import "example.com/k/lib"
+command: modulealiasplainreadfirst: {
+	q: "\(lib.run.stdout)"
+	r: lib.run
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiashidden",
+            r#"
+package foo
+import "example.com/k/lib"
+command: modulealiashidden: {
+	r: lib.run
+	_q: "\(lib.run.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiastwo",
+            r#"
+package foo
+import "example.com/k/lib"
+command: modulealiastwo: {
+	r1: lib.run
+	r2: lib.run
+	q: "\(lib.run.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiasinline",
+            r#"
+package foo
+import "example.com/k/lib"
+command: modulealiasinline: {
+	a: lib.run
+	q: "\(lib.run.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiaslet",
+            r#"
+package foo
+import "example.com/k/lib"
+let t = lib.run
+command: modulealiaslet: {
+	r: t
+	q: "\(t.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiasgroup",
+            r#"
+package foo
+import "example.com/k/lib"
+command: modulealiasgroup: {
+	r: lib.group.run
+	q: "\(lib.group.run.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiasdef",
+            r#"
+package foo
+import "example.com/k/lib"
+command: modulealiasdef: {
+	r: lib.#def
+	q: "\(lib.#def.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiasindex",
+            r#"
+package foo
+import "example.com/k/lib"
+command: modulealiasindex: {
+	r: lib["run"]
+	q: "\(lib.run.stdout)"
+}
+"#,
+            true,
+        ),
+        (
+            "modulealiassuccess",
+            r#"
+package foo
+import "example.com/k/lib"
+command: modulealiassuccess: {
+	r: lib.fail
+	q: "\(lib.fail.success)"
+}
+"#,
+            false,
+        ),
+        (
+            "moduleplainnoalias",
+            r#"
+package foo
+import (
+	"tool/exec"
+	"example.com/k/lib"
+)
+command: moduleplainnoalias: {
+	a: exec.Run & {cmd: ["true"]}
+	q: "\(lib.run.stdout)"
+}
+"#,
+            false,
+        ),
+        (
+            "modulealiastaskinputdecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: modulealiastaskinputdecl: {
+	r: lib.run
+	q: cli.Print & {text: "R=\(lib.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "modulealiastaskinputreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: modulealiastaskinputreadfirst: {
+	q: cli.Print & {text: "R=\(lib.run.stdout)"}
+	r: lib.run
+}
+"#,
+            false,
+        ),
+    ];
+    for (name, source, expects_run) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+            std::fs::create_dir_all(directory.join("lib")).expect("lib");
+            write(&directory.join("cue.mod/module.cue"), module);
+            write(&directory.join("lib/lib.cue"), library);
+            write(&directory.join("x_tool.cue"), source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        if expected.status.success() {
+            assert_eq!(actual.stderr, expected.stderr, "{name}");
+        }
+        if expected.status.success() {
+            assert_eq!(
+                std::fs::read(cue_dir.path().join("order.txt")).ok(),
+                std::fs::read(rust_dir.path().join("order.txt")).ok(),
+                "{name}: order.txt differs"
+            );
+        }
+        assert_eq!(
+            rust_dir.path().join("order.txt").exists(),
+            *expects_run,
+            "{name}: expected run={expects_run}"
+        );
     }
 }
 
