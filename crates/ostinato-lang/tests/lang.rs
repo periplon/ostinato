@@ -6282,3 +6282,32 @@ pattern: opt_pattern & {b: 2}
         );
     }
 }
+
+#[test]
+fn optional_fields_do_not_leak_through_unification_and_vars_shadow() {
+    for source in [
+        "package demo\nx?: {a: int}\ny: x & {a: 1}\n",
+        "package demo\n_x?: {a: int}\ny: _x & {a: 1}\n",
+        "package demo\n#D: {x?: {a: int}, y: x & {a: 1}}\nz: #D\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse optional unification");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "optional fields must not be referenceable through &: {source:?}"
+        );
+    }
+
+    let source = r#"
+package demo
+base: {a: 1}
+list: [for base in [{a: 2}] {base & {b: 3}}]
+struct_comp: {for base in [{a: 2}] {v: base & {b: 3}}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse comprehension shadowing");
+    let value = ostinato_lang::eval_file(&file).expect("eval comprehension shadowing");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["list"][0]["a"], 2);
+    assert_eq!(json["list"][0]["b"], 3);
+    assert_eq!(json["struct_comp"]["v"]["a"], 2);
+    assert_eq!(json["struct_comp"]["v"]["b"], 3);
+}

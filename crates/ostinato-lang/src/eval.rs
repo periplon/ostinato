@@ -2701,7 +2701,21 @@ fn eval_definition_named(
 ) -> Result<Option<Value>, LangError> {
     let mut cursor = Some(frame);
     while let Some(current) = cursor {
+        if current.vars.borrow().contains_key(name)
+            || current.lets.borrow().contains_key(name)
+            || current.aliases.borrow().contains_key(name)
+        {
+            return Ok(None);
+        }
         if let Some(key) = current.any_field_key(name) {
+            let optional = current
+                .fields
+                .borrow()
+                .get(&key)
+                .is_some_and(|definition| definition.optional);
+            if optional && !current.optional_is_materialized(&key) {
+                return Ok(None);
+            }
             return current.eval_field_key(&key, span).map(Some);
         }
         cursor = current.parent;
@@ -2717,7 +2731,21 @@ fn eval_definition_with_injections(
 ) -> Result<Option<Value>, LangError> {
     let mut cursor = Some(frame);
     while let Some(current) = cursor {
+        if current.vars.borrow().contains_key(name)
+            || current.lets.borrow().contains_key(name)
+            || current.aliases.borrow().contains_key(name)
+        {
+            return Ok(None);
+        }
         if let Some(key) = current.any_field_key(name) {
+            let optional = current
+                .fields
+                .borrow()
+                .get(&key)
+                .is_some_and(|definition| definition.optional);
+            if optional && !current.optional_is_materialized(&key) {
+                return Ok(None);
+            }
             current.values.borrow_mut().remove(&key);
             let previous = current.next_injections.replace(Some(injections));
             let previous_cache = current.skip_cache.replace(true);
