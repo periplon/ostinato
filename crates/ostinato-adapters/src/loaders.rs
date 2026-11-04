@@ -1997,6 +1997,38 @@ fn local_definition_scopes<'a>(
         .or_else(|| find_definition(root, name))
 }
 
+fn is_task_binding<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    name: &str,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    if !visited.insert(name.to_owned()) {
+        return false;
+    }
+    local_definition_scopes(scopes, root, name)
+        .is_some_and(|value| is_task_expr(value, scopes, root, visited))
+}
+
+fn is_task_expr<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    visited: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    match expr {
+        Expr::Select(..) => true,
+        Expr::Unify(left, right, _) => {
+            is_task_expr(left, scopes, root, visited) || is_task_expr(right, scopes, root, visited)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            is_task_expr(inner, scopes, root, visited)
+        }
+        Expr::Ident(name, _) => is_task_binding(scopes, root, name, visited),
+        _ => false,
+    }
+}
+
 fn collect_output_refs<'a>(
     expr: &'a Expr,
     scopes: &mut Vec<&'a [StructItem]>,
@@ -2010,6 +2042,7 @@ fn collect_output_refs<'a>(
             if matches!(field.as_str(), "stdout" | "success")
                 && let Expr::Ident(name, _) = unwrap_ref_base(base)
                 && names.contains(name)
+                && is_task_binding(scopes, root, name, &mut std::collections::BTreeSet::new())
             {
                 out.insert(name.clone());
             }
