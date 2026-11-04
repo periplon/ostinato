@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.30.2
+
+Task reference identity corrections.
+
+- References injected at their declaration (command-subtree fields and
+  definitions) are no longer treated as shared import sources, so
+  command-scoped field bindings inject once/twice like CUE.
+- Definition-valued module tasks (`#base: lib.run; a: p1: #base`) are no
+  longer injected, matching CUE's non-concrete behaviour.
+- Added e2e cases for command-scoped fields and definition references, plus
+  a conformance case.
+- 438 tests (101 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.30.1
 
 Let-task identity corrections.
