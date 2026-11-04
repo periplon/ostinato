@@ -7186,6 +7186,108 @@ command: pkgaliasreaddef: {
             Some("order.txt"),
         ),
         (
+            "pkgnestedhiddenread",
+            r#"
+package foo
+import (
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
+command: pkgnestedhiddenread: {
+	x: {
+		r: prep
+		_y: prep.stdout
+	}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgnestedvisibledecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
+command: pkgnestedvisibledecl: {
+	x: {
+		r: prep
+		q: cli.Print & {text: "R=\(prep.stdout)"}
+	}
+}
+"#,
+            None,
+        ),
+        (
+            "pkgnestedreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
+command: pkgnestedreadfirst: {
+	x: {
+		q: cli.Print & {text: "R=\(prep.stdout)"}
+		r: prep
+	}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgdeepnestedhidden",
+            r#"
+package foo
+import (
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
+command: pkgdeepnestedhidden: {
+	x: {
+		y: {
+			r: prep
+			_z: prep.stdout
+		}
+	}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgouternestedhidden",
+            r#"
+package foo
+import (
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
+command: pkgouternestedhidden: {
+	r: prep
+	x: {_y: prep.stdout}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgnestedouterhidden",
+            r#"
+package foo
+import (
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"], stdout: string}
+command: pkgnestedouterhidden: {
+	x: {r: prep}
+	_y: prep.stdout
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
             "pkgunknownafter",
             r#"
 package foo
@@ -7232,6 +7334,199 @@ command: pkgunknownafter: {
         if *name == "pkgunreferenced" {
             assert!(!cue_dir.path().join("unused.txt").exists());
             assert!(!rust_dir.path().join("unused.txt").exists());
+        }
+    }
+}
+
+#[test]
+fn tool_command_nontask_after_operands_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases: &[(&str, &str, Option<&str>)] = &[
+        (
+            "afternontaskfield",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+x: 5
+command: afternontaskfield: {
+	a: exec.Run & {$after: x, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterint",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: afterint: {
+	a: exec.Run & {$after: 3, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterstring",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: afterstring: {
+	a: exec.Run & {$after: "prep", cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "afternestedconcrete",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+group: {x: 1}
+command: afternestedconcrete: {
+	a: exec.Run & {$after: group.x, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "aftermissingnested",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+group: {x: 1}
+command: aftermissingnested: {
+	a: exec.Run & {$after: group.missing, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "aftermixed",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+x: 5
+prep: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt"]}
+command: aftermixed: {
+	a: exec.Run & {$after: [prep, x], cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "afteroutputselector",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P"], stdout: string}
+command: afteroutputselector: {
+	a: exec.Run & {$after: prep.stdout, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterundefinedident",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: afterundefinedident: {
+	a: exec.Run & {$after: missing, cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterundefinedselect",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: afterundefinedselect: {
+	a: exec.Run & {$after: nope.x, cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+        (
+            "aftermixedmissing",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["true"]}
+command: aftermixedmissing: {
+	a: exec.Run & {$after: [prep, missing], cmd: ["true"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            None,
+        ),
+    ];
+    for (name, source, artifact) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        write(&cue_dir.path().join("fixture_tool.cue"), source);
+        write(&rust_dir.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        if let Some(artifact) = artifact {
+            assert_eq!(
+                std::fs::read(cue_dir.path().join(artifact)).ok(),
+                std::fs::read(rust_dir.path().join(artifact)).ok(),
+                "{name}: artifact {artifact} differs"
+            );
         }
     }
 }
