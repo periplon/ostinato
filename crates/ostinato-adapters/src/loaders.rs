@@ -2700,6 +2700,34 @@ fn inject_task_outputs_value(expr: &mut Expr, outputs: &[(String, Value)]) -> bo
     }
 }
 
+fn expr_is_task_decl(expr: &Expr) -> bool {
+    match expr {
+        Expr::Select(..) | Expr::Index(..) | Expr::Ident(..) => true,
+        Expr::Unify(left, right, _) => expr_is_task_decl(left) || expr_is_task_decl(right),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            expr_is_task_decl(inner)
+        }
+        Expr::Struct(items, _) => items.iter().any(item_is_task_decl),
+        _ => false,
+    }
+}
+
+fn item_is_task_decl(item: &StructItem) -> bool {
+    match item {
+        StructItem::Field(field) => {
+            matches!(&field.label, Label::Name(name, _) if name == "$id")
+                || expr_is_task_decl(&field.value)
+        }
+        StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+            expr_is_task_decl(value)
+        }
+        StructItem::For { body, .. } | StructItem::If { body, .. } => {
+            body.iter().any(item_is_task_decl)
+        }
+        StructItem::Ellipsis(_) => false,
+    }
+}
+
 fn inject_task_outputs(
     items: &mut [StructItem],
     task_name: &str,
@@ -2708,9 +2736,9 @@ fn inject_task_outputs(
     for item in items {
         match item {
             StructItem::Field(field) => {
-                if matches!(&field.label, Label::Name(name, _) if name == task_name)
-                    && inject_task_outputs_value(&mut field.value, outputs)
-                {
+                let is_task = matches!(&field.label, Label::Name(name, _) if name == task_name)
+                    && expr_is_task_decl(&field.value);
+                if is_task && inject_task_outputs_value(&mut field.value, outputs) {
                     return true;
                 }
                 if inject_task_outputs_in_expr(&mut field.value, task_name, outputs) {

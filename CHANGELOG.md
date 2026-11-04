@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.27.1
+
+Task-safe output injection.
+
+- Injection now targets only fields whose value is an actual task declaration
+  (tool selector, alias or `$id`), not any field sharing the scheduled task's
+  name. Unrelated concrete fields are left untouched, including defaults.
+- Added conformance and e2e regressions for concrete-field/task name
+  collisions in let-rooted selectors (plain and defaulted values).
+- 433 tests (96 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.27.0
 
 Let-selector output-injection extension.
