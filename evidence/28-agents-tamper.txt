@@ -1,9 +1,9 @@
-### agents 4ee8cacd-8fea-4e41-9e48-4c21c80e72ec --verify
+### agents 475c8eae-d719-4538-80bd-386372a4370a --verify
 warning: cannot list traces: store error: agent trace 1 is not valid JSON: missing field `run_id` at line 1 column 17
 TRACE FAILED trace=1 step=review attempt=0: trace hash does not match the stored trace JSON; trace JSON is invalid: missing field `run_id` at line 1 column 17
 exit=1
 
-### audit verify 4ee8cacd-8fea-4e41-9e48-4c21c80e72ec
-AUDIT FAILED run=4ee8cacd-8fea-4e41-9e48-4c21c80e72ec: trace 1 (step=review attempt=0): trace hash does not match the stored trace JSON; trace JSON is invalid: missing field `run_id` at line 1 column 17
+### audit verify 475c8eae-d719-4538-80bd-386372a4370a
+AUDIT FAILED run=475c8eae-d719-4538-80bd-386372a4370a: trace 1 (step=review attempt=0): trace hash does not match the stored trace JSON; trace JSON is invalid: missing field `run_id` at line 1 column 17
 exit=1
 

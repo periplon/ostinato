@@ -110,6 +110,34 @@ fn tool_commands_match_cue_on_the_conformance_corpus() {
             .args(["cmd", &command, rust_dir.to_str().expect("path")])
             .output()
             .expect("run ostinato cmd");
+
+        if case_dir.join("extension").exists() {
+            // Documented Ostinato extension: CUE rejects the fixture while
+            // Ostinato injects the let-rooted task outputs.
+            let expected_stdout =
+                std::fs::read(case_dir.join("ostinato_stdout")).expect("extension stdout");
+            assert!(!expected.status.success(), "{name}: cue must reject");
+            assert!(
+                actual.status.success(),
+                "{name}: ostinato extension failed: {}",
+                String::from_utf8_lossy(&actual.stderr)
+            );
+            assert_eq!(actual.stdout, expected_stdout, "{name}: stdout differs");
+            if let Ok(artifacts) = std::fs::read_to_string(case_dir.join("artifacts")) {
+                for artifact in artifacts
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                {
+                    assert!(
+                        rust_dir.join(artifact).exists(),
+                        "{name}: {artifact} missing"
+                    );
+                }
+            }
+            continue;
+        }
+
         assert_eq!(
             actual.status.code(),
             expected.status.code(),

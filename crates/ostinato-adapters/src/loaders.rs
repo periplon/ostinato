@@ -1130,29 +1130,6 @@ pub fn run_tool_command(
         }
     }
     add_output_dependencies(&combined.items, &mut scheduled);
-    if let Some(command_value) = command_value(&combined.items, command_name) {
-        let all_names: std::collections::BTreeSet<String> =
-            scheduled.iter().map(|(name, _, _)| name.clone()).collect();
-        let mut operands = Vec::new();
-        collect_let_selector_operands(&combined.items, command_value, &mut operands);
-        for operand in operands {
-            let mut resolved = Vec::new();
-            resolve_command_items(
-                &combined.items,
-                operand,
-                &mut std::collections::BTreeSet::new(),
-                &mut resolved,
-            );
-            if scheduled
-                .iter()
-                .any(|(name, _, _)| task_has_output_refs(&resolved, name, &all_names))
-            {
-                return Err(ostinato_lang::LangError::Workflow(
-                    "tool command selector cannot receive task outputs through a `let`".to_owned(),
-                ));
-            }
-        }
-    }
     for (name, dependencies, _) in &scheduled {
         for dependency in dependencies {
             if !task_names.contains(dependency) {
@@ -1348,70 +1325,6 @@ fn index_field_name(expr: &Expr) -> Option<String> {
         }
     }
     Some(text)
-}
-
-fn is_let_name(items: &[StructItem], name: &str) -> bool {
-    items
-        .iter()
-        .any(|item| matches!(item, StructItem::Let { name: let_name, .. } if let_name == name))
-}
-
-fn field_definition<'a>(items: &'a [StructItem], name: &str) -> Option<&'a Expr> {
-    items.iter().find_map(|item| match item {
-        StructItem::Field(field) => match &field.label {
-            Label::Name(label, _) if label == name => Some(&field.value),
-            _ => None,
-        },
-        _ => None,
-    })
-}
-
-/// Whether a selector's root declaration is a file-scoped `let`.
-fn selector_root_is_let(
-    items: &[StructItem],
-    expr: &Expr,
-    visited: &mut std::collections::BTreeSet<String>,
-) -> bool {
-    match expr {
-        Expr::Ident(name, _) => {
-            if !visited.insert(name.clone()) {
-                return false;
-            }
-            if is_let_name(items, name) {
-                return true;
-            }
-            field_definition(items, name)
-                .is_some_and(|value| selector_root_is_let(items, value, visited))
-        }
-        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
-            selector_root_is_let(items, base, visited)
-        }
-        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            selector_root_is_let(items, inner, visited)
-        }
-        _ => false,
-    }
-}
-
-/// Whether a command value is a selector whose root is a `let`.
-fn command_value_is_let_selector(
-    items: &[StructItem],
-    expr: &Expr,
-    visited: &mut std::collections::BTreeSet<String>,
-) -> bool {
-    match expr {
-        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
-            selector_root_is_let(items, base, visited)
-        }
-        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            command_value_is_let_selector(items, inner, visited)
-        }
-        Expr::Unify(left, right, _) => {
-            command_value_is_let_selector(items, left, visited)
-                || command_value_is_let_selector(items, right, visited)
-        }
-        _ => false,
-    }
 }
 
 /// Turn an identifier/selector expression into the field path it denotes.
@@ -1694,9 +1607,6 @@ fn command_targets(
             }
         }
         Expr::Select(..) | Expr::Index(..) => {
-            if selector_root_is_let(items, expr, &mut std::collections::BTreeSet::new()) {
-                return;
-            }
             if let Some(path) = selector_path(items, expr, &mut std::collections::BTreeSet::new()) {
                 for (target, _) in resolve_path_candidates(items, &path) {
                     push_target(out, target);
@@ -2572,61 +2482,6 @@ fn collect_refs_for_task_expr<'a>(
         }
         _ => {}
     }
-}
-
-fn collect_let_selector_operands<'a>(
-    items: &[StructItem],
-    expr: &'a Expr,
-    out: &mut Vec<&'a Expr>,
-) {
-    match expr {
-        Expr::Unify(left, right, _) => {
-            collect_let_selector_operands(items, left, out);
-            collect_let_selector_operands(items, right, out);
-        }
-        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            collect_let_selector_operands(items, inner, out);
-        }
-        _ => {
-            if command_value_is_let_selector(items, expr, &mut std::collections::BTreeSet::new()) {
-                out.push(expr);
-            }
-        }
-    }
-}
-
-fn command_value<'a>(items: &'a [StructItem], command_name: &str) -> Option<&'a Expr> {
-    for item in items {
-        let StructItem::Field(field) = item else {
-            continue;
-        };
-        if !matches!(&field.label, Label::Name(name, _) if name == "command") {
-            continue;
-        }
-        let Expr::Struct(command_items, _) = &field.value else {
-            continue;
-        };
-        for command_item in command_items {
-            let StructItem::Field(command_field) = command_item else {
-                continue;
-            };
-            if matches!(&command_field.label, Label::Name(name, _) if name == command_name) {
-                return Some(&command_field.value);
-            }
-        }
-    }
-    None
-}
-
-fn task_has_output_refs(
-    items: &[StructItem],
-    name: &str,
-    names: &std::collections::BTreeSet<String>,
-) -> bool {
-    let mut refs = std::collections::BTreeSet::new();
-    let mut scopes = Vec::new();
-    collect_refs_for_task(items, name, items, names, &mut scopes, &mut refs);
-    !refs.is_empty()
 }
 
 fn add_output_dependencies(
