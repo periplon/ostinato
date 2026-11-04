@@ -1,6 +1,6 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.kXFP96iQgZ/resume.sqlite resume ea7421dd-9902-4385-9f47-9daca238e880
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.J3jSTHVw8u/resume.sqlite resume 90ad34ab-b624-4bc4-8361-0c8db9b31a84
 
-run=ea7421dd-9902-4385-9f47-9daca238e880 workflow=resume-evidence status=succeeded durationMs=6
+run=90ad34ab-b624-4bc4-8361-0c8db9b31a84 workflow=resume-evidence status=succeeded durationMs=5
 STEP                     STATUS     VISITS ATTEMPTS
 a                        succeeded  1      1       
 b                        succeeded  1      1       

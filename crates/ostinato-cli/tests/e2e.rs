@@ -4843,6 +4843,87 @@ command: selmixnested: lib.base & group.inner
 "#,
             false,
         ),
+        (
+            "taskbase",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+command: taskbase: {
+	run: exec.Run & base
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "taskdef",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+#B: {cmd: ["sh", "-c", "printf 'abc'"], stdout: string, ...}
+command: taskdef: {
+	run: exec.Run & #B
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "tasktwo",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+b1: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+b2: {extra: 1}
+command: tasktwo: {
+	run: b1 & b2
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "taskparen",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+command: taskparen: {
+	run: (exec.Run & base)
+	p: cli.Print & {text: "R=\(run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "tasksuccess",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: {cmd: ["false"], success: bool, mustSucceed: false}
+command: tasksuccess: {
+	run: exec.Run & base
+	p: cli.Print & {text: "ok=\(run.success)"}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
