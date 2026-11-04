@@ -4226,10 +4226,10 @@ fn definition_key_order(
         let StructItem::Field(field) = item else {
             continue;
         };
-        let Label::Name(name, _) = &field.label else {
-            continue;
-        };
-        if field.definition || field.optional || name.starts_with('_') {
+        if field.definition
+            || field.optional
+            || matches!(&field.label, Label::Name(name, _) if !field.quoted && name.starts_with('_'))
+        {
             continue;
         }
         let index = counter;
@@ -4257,6 +4257,68 @@ fn is_direct_output_read(expr: &Expr) -> bool {
         value = inner;
     }
     matches!(value, Expr::Select(_, field, _, _) if matches!(field.as_str(), "stdout" | "success"))
+}
+
+fn alias_operand<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+) -> Option<&'a Expr> {
+    match expr {
+        Expr::Ident(name, _) => match local_binding(scopes, root, name)? {
+            StructItem::Let { value, .. } => Some(value),
+            StructItem::Field(field) if !field.definition => Some(&field.value),
+            _ => None,
+        },
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            alias_operand(inner, scopes, root)
+        }
+        other => Some(other),
+    }
+}
+
+fn selected_field_value<'a>(value: &'a Expr, field: &str) -> Option<&'a Expr> {
+    match value {
+        Expr::Struct(items, _) => items.iter().find_map(|item| match item {
+            StructItem::Field(field_item)
+                if matches!(&field_item.label, Label::Name(label, _) if label == field) =>
+            {
+                Some(&field_item.value)
+            }
+            _ => None,
+        }),
+        Expr::Unify(left, right, _) => {
+            selected_field_value(left, field).or_else(|| selected_field_value(right, field))
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            selected_field_value(inner, field)
+        }
+        _ => None,
+    }
+}
+
+fn selected_alias_value<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+) -> Option<&'a Expr> {
+    match expr {
+        Expr::Select(base, field, _, _) => {
+            let value = alias_operand(base, scopes, root)?;
+            selected_field_value(value, field)
+        }
+        Expr::Index(base, index, _) => {
+            let target = index_field_name(index)?;
+            let value = alias_operand(base, scopes, root)?;
+            if let Expr::List(items, _) = value
+                && let Ok(position) = target.parse::<usize>()
+            {
+                return items.get(position);
+            }
+            selected_field_value(value, &target)
+        }
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4290,12 +4352,19 @@ fn scan_order_expr(
                         entry.1 = Some(entry.1.map_or(index, |existing| existing.min(index)));
                     }
                 }
-            } else if allow_decl
-                && let Some(key) = task_value_key(expr, scopes, root, imports)
-                && key.starts_with("def:")
-            {
-                let entry = info.entry(key).or_insert((None, None));
-                entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
+            } else {
+                if allow_decl
+                    && let Some(key) = task_value_key(expr, scopes, root, imports)
+                    && key.starts_with("def:")
+                {
+                    let entry = info.entry(key).or_insert((None, None));
+                    entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
+                }
+                if allow_read && let Some(value) = selected_alias_value(expr, scopes, root) {
+                    scan_order_expr(
+                        value, true, false, index, scopes, root, imports, info, counter, visited,
+                    );
+                }
             }
             scan_order_expr(
                 base, false, false, index, scopes, root, imports, info, counter, visited,
@@ -4338,6 +4407,11 @@ fn scan_order_expr(
                 let entry = info.entry(key).or_insert((None, None));
                 entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
             }
+            if allow_read && let Some(value) = selected_alias_value(expr, scopes, root) {
+                scan_order_expr(
+                    value, true, false, index, scopes, root, imports, info, counter, visited,
+                );
+            }
             scan_order_expr(
                 base, false, false, index, scopes, root, imports, info, counter, visited,
             );
@@ -4349,10 +4423,10 @@ fn scan_order_expr(
                 let StructItem::Field(field) = item else {
                     continue;
                 };
-                let Label::Name(name, _) = &field.label else {
-                    continue;
-                };
-                if field.definition || field.optional || name.starts_with('_') {
+                if field.definition
+                    || field.optional
+                    || matches!(&field.label, Label::Name(name, _) if !field.quoted && name.starts_with('_'))
+                {
                     continue;
                 }
                 let field_index = *counter;

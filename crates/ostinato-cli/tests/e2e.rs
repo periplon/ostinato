@@ -7268,6 +7268,73 @@ command: defnesteddefdecl: {
             false,
         ),
         (
+            "defdynamicdecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+x: "a"
+command: defdynamicdecl: {
+	"\(x)": p1: #G.run
+	q: cli.Print & {text: "R=\(#G.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defquoteddecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defquoteddecl: {
+	"_x": p1: #G.run
+	q: cli.Print & {text: "R=\(#G.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defselectoraliasdecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defselectoraliasdecl: {
+	a: p1: #G.run
+	r: {s: #G.run.stdout}
+	q: cli.Print & {text: "R=\(r.s)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defselectoraliasfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defselectoraliasfirst: {
+	r: {s: #G.run.stdout}
+	q: cli.Print & {text: "R=\(r.s)"}
+	a: p1: #G.run
+}
+"#,
+            true,
+        ),
+        (
             "readrootmodule",
             r#"
 package foo

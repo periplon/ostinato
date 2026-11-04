@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.33.3
+
+Definition order scan labels and selector aliases.
+
+- Dynamic labels and quoted `_` fields participate in the order scan; only
+  unquoted hidden fields (plus optional/definition fields) are skipped.
+- Use-site reads through selector/index access to a field alias are counted
+  (e.g. `r: {s: #G.run.stdout}; \(r.s)`), so declaration-before-read rejects
+  and read-before-declaration accepts like CUE.
+- Added e2e cases for dynamic, quoted and selector-alias forms.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.33.2
 
 Use-site order resolution for definition reads.
