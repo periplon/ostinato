@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.24.8
+
+Selector/index task-binding resolution.
+
+- Task-output detection resolves selectors and literal indexes through local
+  bindings: `src.run`, `src["run"]` and chains count as tasks, while
+  `src.producer` landing on a concrete struct does not.
+- Index-selected task aliases are rejected before executing when their output
+  is consumed (no side effects); concrete selector values no longer cause
+  false rejections.
+- Added e2e and tool conformance regressions.
+- 430 tests (95 CLI E2E, 1 conformance, 1 tool conformance, 245 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.24.7
 
 Binding-aware task output detection.

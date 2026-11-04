@@ -2010,6 +2010,62 @@ fn is_task_binding<'a>(
         .is_some_and(|value| is_task_expr(value, scopes, root, visited))
 }
 
+fn select_field_value<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    expr: &'a Expr,
+    field: &str,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<&'a Expr> {
+    match expr {
+        Expr::Struct(items, _) => find_definition(items, field),
+        Expr::Unify(left, right, _) => select_field_value(scopes, root, left, field, visited)
+            .or_else(|| select_field_value(scopes, root, right, field, visited)),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            select_field_value(scopes, root, inner, field, visited)
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.to_owned()) {
+                return None;
+            }
+            local_definition_scopes(scopes, root, name)
+                .and_then(|value| select_field_value(scopes, root, value, field, visited))
+        }
+        _ => None,
+    }
+}
+
+fn resolve_local_value<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    expr: &'a Expr,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<&'a Expr> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.to_owned()) {
+                return None;
+            }
+            local_definition_scopes(scopes, root, name)
+        }
+        Expr::Select(base, field, _, _) => {
+            let base_value = resolve_local_value(scopes, root, base, visited)?;
+            select_field_value(scopes, root, base_value, field, visited)
+        }
+        Expr::Index(base, index, _) => {
+            let field = index_field_name(index)?;
+            let base_value = resolve_local_value(scopes, root, base, visited)?;
+            select_field_value(scopes, root, base_value, &field, visited)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            resolve_local_value(scopes, root, inner, visited)
+        }
+        Expr::Unify(left, right, _) => resolve_local_value(scopes, root, left, visited)
+            .or_else(|| resolve_local_value(scopes, root, right, visited)),
+        _ => None,
+    }
+}
+
 fn is_task_expr<'a>(
     expr: &'a Expr,
     scopes: &[&'a [StructItem]],
@@ -2017,7 +2073,16 @@ fn is_task_expr<'a>(
     visited: &mut std::collections::BTreeSet<String>,
 ) -> bool {
     match expr {
-        Expr::Select(..) => true,
+        Expr::Select(base, field, _, _) => {
+            is_task_selection(base, Some(field), scopes, root, visited)
+        }
+        Expr::Index(base, index, _) => is_task_selection(
+            base,
+            index_field_name(index).as_deref(),
+            scopes,
+            root,
+            visited,
+        ),
         Expr::Unify(left, right, _) => {
             is_task_expr(left, scopes, root, visited) || is_task_expr(right, scopes, root, visited)
         }
@@ -2026,6 +2091,25 @@ fn is_task_expr<'a>(
         }
         Expr::Ident(name, _) => is_task_binding(scopes, root, name, visited),
         _ => false,
+    }
+}
+
+fn is_task_selection<'a>(
+    base: &'a Expr,
+    field: Option<&str>,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    visited: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    let Some(base_value) = resolve_local_value(scopes, root, base, visited) else {
+        // Unresolvable selector chain (tool import/export): task-bearing.
+        return true;
+    };
+    let selected =
+        field.and_then(|field| select_field_value(scopes, root, base_value, field, visited));
+    match selected {
+        Some(selected) => is_task_expr(selected, scopes, root, visited),
+        None => is_task_expr(base_value, scopes, root, visited),
     }
 }
 
