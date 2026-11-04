@@ -1809,6 +1809,45 @@ fn path_key(path: &[String]) -> String {
     format!("def:{}", path.join("/"))
 }
 
+fn canonical_definition_path(root: &[StructItem], path: &[String]) -> Vec<String> {
+    let mut current = path.to_vec();
+    while let Some(first) = current.first().cloned() {
+        if !first.starts_with('#') {
+            break;
+        }
+        let Some(StructItem::Field(field)) = root
+            .iter()
+            .find(|item| matches!(item, StructItem::Field(field) if matches!(&field.label, Label::Name(label, _) if label == &first)))
+        else {
+            break;
+        };
+        if !field.definition {
+            break;
+        }
+        let mut value = &field.value;
+        while let Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) = value
+        {
+            value = inner;
+        }
+        let Expr::Ident(target, _) = value else {
+            break;
+        };
+        let Some(StructItem::Field(target_field)) = root
+            .iter()
+            .find(|item| matches!(item, StructItem::Field(field) if matches!(&field.label, Label::Name(label, _) if label == target)))
+        else {
+            break;
+        };
+        if !target_field.definition {
+            break;
+        }
+        let mut next = vec![target.clone()];
+        next.extend_from_slice(&current[1..]);
+        current = next;
+    }
+    current
+}
+
 /// Package-root fields that only alias a bare local-module task selector.
 ///
 /// CUE does not schedule these through `let`/alias output reads, unlike root
@@ -3961,9 +4000,11 @@ fn task_value_key<'a>(
                 root,
                 &mut std::collections::BTreeSet::new(),
                 false,
-            ) && path.first().is_some_and(|segment| segment.starts_with('#'))
-            {
-                return Some(path_key(&path));
+            ) {
+                let path = canonical_definition_path(root, &path);
+                if path.first().is_some_and(|segment| segment.starts_with('#')) {
+                    return Some(path_key(&path));
+                }
             }
             import_task_alias(expr, imports).map(|alias| format!("import:{alias}"))
         }
@@ -4151,6 +4192,118 @@ fn collect_definition_fields_expr(
     }
 }
 
+fn definition_key_order(
+    command_items: &[StructItem],
+    root: &[StructItem],
+    imports: &ImportKinds,
+) -> std::collections::BTreeMap<String, (Option<usize>, Option<usize>)> {
+    let scopes: [&[StructItem]; 1] = [command_items];
+    let mut info = std::collections::BTreeMap::new();
+    for (index, item) in command_items.iter().enumerate() {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        scan_order_expr(&field.value, index, &scopes, root, imports, &mut info);
+    }
+    info
+}
+
+fn scan_order_expr(
+    expr: &Expr,
+    index: usize,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &ImportKinds,
+    info: &mut std::collections::BTreeMap<String, (Option<usize>, Option<usize>)>,
+) {
+    match expr {
+        Expr::Select(base, field, _, _) => {
+            if matches!(field.as_str(), "stdout" | "success") {
+                if let Some(path) = resolved_path(
+                    base,
+                    scopes,
+                    root,
+                    &mut std::collections::BTreeSet::new(),
+                    false,
+                ) {
+                    let path = canonical_definition_path(root, &path);
+                    if !path.first().is_some_and(|segment| segment.starts_with('#')) {
+                        scan_order_expr(base, index, scopes, root, imports, info);
+                        return;
+                    }
+                    let entry = info.entry(path_key(&path)).or_insert((None, None));
+                    entry.1 = Some(entry.1.map_or(index, |existing| existing.min(index)));
+                }
+            } else if let Some(key) = task_value_key(expr, scopes, root, imports)
+                && key.starts_with("def:")
+            {
+                let entry = info.entry(key).or_insert((None, None));
+                entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
+            }
+            scan_order_expr(base, index, scopes, root, imports, info);
+        }
+        Expr::Ident(..) | Expr::Index(..) => {
+            if let Some(key) = task_value_key(expr, scopes, root, imports)
+                && key.starts_with("def:")
+            {
+                let entry = info.entry(key).or_insert((None, None));
+                entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
+            }
+            if let Expr::Index(base, _, _) = expr {
+                scan_order_expr(base, index, scopes, root, imports, info);
+            }
+        }
+        Expr::Struct(items, _) => {
+            let mut nested = scopes.to_vec();
+            nested.push(items);
+            for item in items {
+                if let StructItem::Field(field) = item {
+                    scan_order_expr(&field.value, index, &nested, root, imports, info);
+                }
+            }
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            scan_order_expr(left, index, scopes, root, imports, info);
+            scan_order_expr(right, index, scopes, root, imports, info);
+        }
+        Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Bound(_, inner, _)
+        | Expr::Unary(_, inner, _) => scan_order_expr(inner, index, scopes, root, imports, info),
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                scan_order_expr(item, index, scopes, root, imports, info);
+            }
+        }
+        Expr::OpenList(Some(inner), _) => {
+            scan_order_expr(inner, index, scopes, root, imports, info)
+        }
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let ostinato_lang::ast::StrPart::Interp(inner) = part {
+                    scan_order_expr(inner, index, scopes, root, imports, info);
+                }
+            }
+        }
+        Expr::BytesInterp(parts, _) => {
+            for part in parts {
+                if let ostinato_lang::ast::BytePart::Interp(inner) = part {
+                    scan_order_expr(inner, index, scopes, root, imports, info);
+                }
+            }
+        }
+        Expr::Call(callee, arguments, _) => {
+            scan_order_expr(callee, index, scopes, root, imports, info);
+            for argument in arguments {
+                scan_order_expr(argument, index, scopes, root, imports, info);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn active_task_decl_ids(
     items: &[StructItem],
     command_name: &str,
@@ -4201,9 +4354,47 @@ fn active_task_decl_ids(
         }
     }
     collect_definition_fields(items, non_task_imports, &mut import_task_fields);
+    let mut ordered_definitions = std::collections::BTreeSet::new();
+    for item in items.iter() {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        if !matches!(&field.label, Label::Name(name, _) if name == "command") {
+            continue;
+        }
+        let Expr::Struct(command_items, _) = &field.value else {
+            continue;
+        };
+        for command_item in command_items {
+            let StructItem::Field(command_field) = command_item else {
+                continue;
+            };
+            if matches!(&command_field.label, Label::Name(name, _) if name == command_name) {
+                let mut resolved = Vec::new();
+                resolve_command_items(
+                    items,
+                    &command_field.value,
+                    &mut std::collections::BTreeSet::new(),
+                    &mut resolved,
+                );
+                for (key, (decl, read)) in definition_key_order(&resolved, items, non_task_imports)
+                {
+                    if let (Some(decl), Some(read)) = (decl, read)
+                        && decl < read
+                    {
+                        ordered_definitions.insert(key);
+                    }
+                }
+            }
+        }
+    }
     let mut suppressed = std::collections::BTreeSet::new();
-    for ids in import_task_fields.values() {
-        if ids.len() > 1 {
+    for (key, ids) in &import_task_fields {
+        if key.starts_with("def:") {
+            if ordered_definitions.contains(key) {
+                suppressed.extend(ids.iter().copied());
+            }
+        } else if ids.len() > 1 {
             suppressed.extend(ids.iter().copied());
         }
     }

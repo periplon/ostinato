@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.33.1
+
+Ordered definition suppression and alias paths.
+
+- Definition container declaration/read suppression is order-aware: a
+  declaration before the read suppresses injection (CUE rejects), while a
+  read before the declaration keeps injecting (CUE accepts).
+- Alias-container paths are canonicalized to their terminal definition for
+  suppression keys, so `x: p1: #a.run` + `\(#a.run.stdout)` rejects and
+  read-first alias forms accept like CUE.
+- Added e2e cases for read-first containers, alias read-first and alias
+  declaration/read pairs.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.33.0
 
 Path-keyed definition output reads.
