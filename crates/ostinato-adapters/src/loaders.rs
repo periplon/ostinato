@@ -3646,7 +3646,13 @@ fn definition_is_alias(scopes: &[&[StructItem]], root: &[StructItem], name: &str
     while let Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) = value {
         value = inner;
     }
-    matches!(value, Expr::Ident(..))
+    let Expr::Ident(target, _) = value else {
+        return false;
+    };
+    matches!(
+        local_binding(scopes, root, target),
+        Some(StructItem::Field(target_field)) if target_field.definition
+    )
 }
 
 fn binding_matches(item: &&StructItem, name: &str) -> bool {
