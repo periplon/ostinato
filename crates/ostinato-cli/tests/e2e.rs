@@ -4821,6 +4821,28 @@ command: selmix: lib.base & group.inner
 "#,
             false,
         ),
+        (
+            "selmixnested",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+lib: {
+	base: {
+		producer: exec.Run & {cmd: ["sh", "-c", "printf 'abc'"], stdout: string}
+		run:      cli.Print & {text: "R=\(producer.stdout)"}
+	}
+}
+let group = {inner: {
+	z: exec.Run & {cmd: ["true"]}
+	meta: {run: 1}
+}}
+command: selmixnested: lib.base & group.inner
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");

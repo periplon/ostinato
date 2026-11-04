@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.24.5
+
+Scoped let-rooted rejection.
+
+- Mixed unified commands are rejected only when the let-rooted operand's own
+  tasks consume an output; nested non-task labels no longer misclassify
+  non-let tasks and cause false rejections.
+- Added e2e and tool conformance regression for the nested-label case.
+- 430 tests (95 CLI E2E, 1 conformance, 1 tool conformance, 245 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.24.4
 
 Selector and unified-command corrections.
