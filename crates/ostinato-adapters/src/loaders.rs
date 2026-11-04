@@ -3144,6 +3144,12 @@ enum AfterSelector {
     Drop,
 }
 
+#[derive(Clone, Copy)]
+enum AfterVal<'e, 'v> {
+    Expr(&'e Expr),
+    Value(&'v Value),
+}
+
 /// Decide how to keep a non-task selector operand. Missing members of a
 /// struct/import are ignored (the root keeps the binding "used"); missing
 /// members of concrete values stay so evaluation reports CUE's error.
@@ -3164,68 +3170,136 @@ fn classify_after_selector(
             if field.definition {
                 return AfterSelector::KeepFull;
             }
-            let mut current = &field.value;
-            for segment in rest {
-                if let Some(next) = select_field_value(
-                    scopes,
-                    root,
-                    current,
-                    segment,
-                    &mut std::collections::BTreeSet::new(),
-                ) {
-                    current = next;
-                } else {
-                    return if ast_is_structish(current, scopes, root, imported_values) {
-                        AfterSelector::Drop
-                    } else {
-                        AfterSelector::KeepFull
-                    };
-                }
-            }
-            AfterSelector::Drop
+            walk_after_members(
+                AfterVal::Expr(&field.value),
+                rest,
+                scopes,
+                root,
+                imported_values,
+                AfterSelector::Drop,
+                AfterSelector::Drop,
+            )
         }
-        Some((_, StructItem::Let { value, .. })) => {
-            let mut current = value;
-            for segment in rest {
-                if let Some(next) = select_field_value(
-                    scopes,
-                    root,
-                    current,
-                    segment,
-                    &mut std::collections::BTreeSet::new(),
-                ) {
-                    current = next;
-                } else {
-                    return if ast_is_structish(current, scopes, root, imported_values) {
-                        AfterSelector::KeepRoot(root_name.clone())
-                    } else {
-                        AfterSelector::KeepFull
-                    };
-                }
-            }
-            AfterSelector::KeepFull
-        }
+        Some((_, StructItem::Let { value, .. })) => walk_after_members(
+            AfterVal::Expr(value),
+            rest,
+            scopes,
+            root,
+            imported_values,
+            AfterSelector::KeepRoot(root_name.clone()),
+            AfterSelector::KeepFull,
+        ),
         Some(_) => AfterSelector::KeepFull,
         None => {
             let Some(value) = imported_values.get(root_name) else {
                 return AfterSelector::KeepFull;
             };
-            let mut current = value;
-            for segment in rest {
-                match value_field(current, segment) {
-                    Some(next) => current = next,
-                    None => {
-                        return if matches!(current, Value::Struct(_) | Value::Definition { .. }) {
-                            AfterSelector::KeepRoot(root_name.clone())
-                        } else {
-                            AfterSelector::KeepFull
-                        };
-                    }
-                }
-            }
-            AfterSelector::KeepFull
+            walk_after_members(
+                AfterVal::Value(value),
+                rest,
+                scopes,
+                root,
+                imported_values,
+                AfterSelector::KeepRoot(root_name.clone()),
+                AfterSelector::KeepFull,
+            )
         }
     }
+}
+
+fn walk_after_members<'e, 'v>(
+    mut current: AfterVal<'e, 'v>,
+    rest: &[String],
+    scopes: &[&'e [StructItem]],
+    root: &'e [StructItem],
+    imported_values: &'v BTreeMap<String, Value>,
+    on_structish: AfterSelector,
+    on_resolved: AfterSelector,
+) -> AfterSelector {
+    for segment in rest {
+        match advance_after_member(current, segment, scopes, root, imported_values) {
+            Some(next) => current = next,
+            None => {
+                let structish = match current {
+                    AfterVal::Expr(expr) => ast_is_structish(expr, scopes, root, imported_values),
+                    AfterVal::Value(value) => is_struct_value(value),
+                };
+                return if structish {
+                    on_structish
+                } else {
+                    AfterSelector::KeepFull
+                };
+            }
+        }
+    }
+    on_resolved
+}
+
+fn advance_after_member<'e, 'v>(
+    current: AfterVal<'e, 'v>,
+    segment: &str,
+    scopes: &[&'e [StructItem]],
+    root: &'e [StructItem],
+    imported_values: &'v BTreeMap<String, Value>,
+) -> Option<AfterVal<'e, 'v>> {
+    match current {
+        AfterVal::Expr(expr) => {
+            if let Some(next) = select_field_value(
+                scopes,
+                root,
+                expr,
+                segment,
+                &mut std::collections::BTreeSet::new(),
+            ) {
+                return Some(AfterVal::Expr(next));
+            }
+            let value = imported_value_path(expr, scopes, root, imported_values)?;
+            value_field(value, segment).map(AfterVal::Value)
+        }
+        AfterVal::Value(value) => value_field(value, segment).map(AfterVal::Value),
+    }
+}
+
+fn imported_value_path<'e, 'v>(
+    expr: &'e Expr,
+    scopes: &[&'e [StructItem]],
+    root: &'e [StructItem],
+    imported_values: &'v BTreeMap<String, Value>,
+) -> Option<&'v Value> {
+    imported_value_path_inner(
+        expr,
+        scopes,
+        root,
+        imported_values,
+        &mut std::collections::BTreeSet::new(),
+    )
+}
+
+fn imported_value_path_inner<'e, 'v>(
+    expr: &'e Expr,
+    scopes: &[&'e [StructItem]],
+    root: &'e [StructItem],
+    imported_values: &'v BTreeMap<String, Value>,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<&'v Value> {
+    if let Expr::Ident(name, _) = expr
+        && !visited.insert(name.clone())
+    {
+        return None;
+    }
+    if let Some(value) =
+        resolve_local_value(scopes, root, expr, &mut std::collections::BTreeSet::new())
+        && !std::ptr::eq(value, expr)
+    {
+        return imported_value_path_inner(value, scopes, root, imported_values, visited);
+    }
+    let path = selector_names(expr, None)?;
+    let (root_name, rest) = path.split_first()?;
+    let mut value = imported_values.get(root_name)?;
+    for segment in rest {
+        value = value_field(value, segment)?;
+    }
+    Some(value)
 }
 
 fn value_field<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
