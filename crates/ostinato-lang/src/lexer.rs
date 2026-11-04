@@ -73,7 +73,7 @@ impl Tok {
     }
 
     fn is_ident_continue(c: char) -> bool {
-        c.is_alphanumeric() || c == '_'
+        c.is_alphanumeric() || c == '_' || c == '$'
     }
 }
 
