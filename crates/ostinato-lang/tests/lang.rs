@@ -6468,6 +6468,13 @@ x\('''
   v=\(1+2)
   ''')y
 '''
+h: "x\('a)b')y"
+i: "x\('a"b')y"
+j: """
+x\('''
+"""
+''')y
+"""
 "#;
     let file = ostinato_lang::parse(source).expect("parse nested multiline interpolation");
     let value = ostinato_lang::eval_file(&file).expect("eval nested multiline interpolation");
@@ -6479,6 +6486,9 @@ x\('''
     assert_eq!(json["e"], "eGhpeQ==");
     assert_eq!(json["f"], "eGhpeQ==");
     assert_eq!(json["g"], "eHY9M3k=");
+    assert_eq!(json["h"], "xa)by");
+    assert_eq!(json["i"], "xa\"by");
+    assert_eq!(json["j"], "x\"\"\"y");
 
     for source in [
         "package demo\na: \"x\\(\"\"\"\nhi\n\"\"\"\n\"\n",

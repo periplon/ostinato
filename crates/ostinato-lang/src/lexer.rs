@@ -728,73 +728,10 @@ impl Lexer {
         }
 
         let mut raw = String::new();
-        let mut interpolation_depth = 0usize;
-        let mut in_inner_string = false;
         loop {
             let Some(current) = self.peek() else {
-                return Err(LangError::parse(
-                    line,
-                    col,
-                    if interpolation_depth > 0 {
-                        "unterminated interpolation"
-                    } else {
-                        "unterminated string"
-                    },
-                ));
+                return Err(LangError::parse(line, col, "unterminated string"));
             };
-
-            if interpolation_depth > 0 {
-                if in_inner_string {
-                    match current {
-                        '\\' => {
-                            raw.push(current);
-                            self.bump();
-                            if let Some(escaped) = self.bump() {
-                                raw.push(escaped);
-                            } else {
-                                return Err(LangError::parse(
-                                    line,
-                                    col,
-                                    "unterminated escape sequence",
-                                ));
-                            }
-                        }
-                        '"' => {
-                            raw.push(current);
-                            self.bump();
-                            in_inner_string = false;
-                        }
-                        _ => {
-                            raw.push(current);
-                            self.bump();
-                        }
-                    }
-                } else {
-                    match current {
-                        '"' => {
-                            raw.push(current);
-                            self.bump();
-                            in_inner_string = true;
-                        }
-                        '(' => {
-                            interpolation_depth += 1;
-                            raw.push(current);
-                            self.bump();
-                        }
-                        ')' => {
-                            interpolation_depth -= 1;
-                            raw.push(current);
-                            self.bump();
-                        }
-                        _ => {
-                            raw.push(current);
-                            self.bump();
-                        }
-                    }
-                }
-                continue;
-            }
-
             if current == '\n' {
                 return Err(LangError::parse(line, col, "unterminated string"));
             }
@@ -820,7 +757,7 @@ impl Lexer {
                         '(' => {
                             raw.push('\\');
                             raw.push('(');
-                            interpolation_depth = 1;
+                            self.scan_interpolation(&mut raw, line, col)?;
                         }
                         other => {
                             raw.push('\\');
@@ -843,7 +780,7 @@ enum MultilinePart {
 }
 
 /// Split multiline bytes source into literal text and interpolation spans.
-fn interpolation_end(chars: &[char], start: usize) -> Option<usize> {
+pub(crate) fn interpolation_end(chars: &[char], start: usize) -> Option<usize> {
     let mut depth = 1usize;
     let mut index = start;
     while index < chars.len() {
