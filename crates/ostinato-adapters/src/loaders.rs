@@ -1806,7 +1806,6 @@ fn root_bare_module_task(items: &[StructItem], name: &str, imports: &ImportKinds
     fn classify<'a>(
         items: &'a [StructItem],
         expr: &'a Expr,
-        in_definition: bool,
         seen: &mut std::collections::BTreeSet<String>,
         imports: &ImportKinds,
     ) -> TaskKind {
@@ -1825,17 +1824,13 @@ fn root_bare_module_task(items: &[StructItem], name: &str, imports: &ImportKinds
                                 && matches!(&field.label, Label::Name(label, _) if label == name) =>
                         {
                             found = true;
-                            kind = merge(
-                                kind,
-                                classify(items, &field.value, definition, seen, imports),
-                            );
+                            kind = merge(kind, classify(items, &field.value, seen, imports));
                         }
                         StructItem::Let {
                             name: label, value, ..
                         } if !definition && label == name => {
                             found = true;
-                            kind =
-                                merge(kind, classify(items, value, in_definition, seen, imports));
+                            kind = merge(kind, classify(items, value, seen, imports));
                         }
                         _ => {}
                     }
@@ -1844,24 +1839,23 @@ fn root_bare_module_task(items: &[StructItem], name: &str, imports: &ImportKinds
                 if found { kind } else { TaskKind::Neutral }
             }
             Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-                classify(items, inner, in_definition, seen, imports)
+                classify(items, inner, seen, imports)
             }
-            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-                let left = classify(items, left, in_definition, seen, imports);
-                let right = classify(items, right, in_definition, seen, imports);
+            Expr::Unify(left, right, _) => {
+                let left = classify(items, left, seen, imports);
+                let right = classify(items, right, seen, imports);
+                merge(left, right)
+            }
+            Expr::Disjunction(left, right, _) => {
+                let left = classify(items, left, seen, imports);
+                let right = classify(items, right, seen, imports);
                 if left == TaskKind::Bare || right == TaskKind::Bare {
                     TaskKind::Composed
                 } else {
                     TaskKind::Neutral
                 }
             }
-            Expr::Struct(..) => {
-                if in_definition {
-                    TaskKind::Neutral
-                } else {
-                    TaskKind::Composed
-                }
-            }
+            Expr::Struct(..) => TaskKind::Composed,
             Expr::Select(..) | Expr::Index(..) => {
                 if import_task_alias(expr, imports).is_some() {
                     TaskKind::Bare
@@ -1886,7 +1880,6 @@ fn root_bare_module_task(items: &[StructItem], name: &str, imports: &ImportKinds
                 classify(
                     items,
                     &field.value,
-                    false,
                     &mut std::collections::BTreeSet::new(),
                     imports,
                 ),

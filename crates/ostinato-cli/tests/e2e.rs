@@ -6942,6 +6942,56 @@ command: readrootmodulebaretwice: {
             false,
         ),
         (
+            "readrootunifybare",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+base: lib.run & lib.run
+command: readrootunifybare: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "readrootunifyopen",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+base: lib.run & _
+command: readrootunifyopen: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "readrootunifybarealone",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run & lib.run
+command: readrootunifybarealone: {
+	let t = base
+	q: cli.Print & {text: "R=\(t.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
             "readrootfield",
             r#"
 package foo

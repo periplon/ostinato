@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.31.3
+
+Unification classification for root module reads.
+
+- Unifying bare module task selectors (`lib.run & lib.run`, `lib.run & _`)
+  no longer counts as composition for output-read filtering, so those reads
+  reject like CUE; struct/disjunction composition still injects.
+- Added e2e cases for the bare-unification forms.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.31.2
 
 Aggregate root module declarations.
