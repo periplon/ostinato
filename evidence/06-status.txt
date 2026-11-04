@@ -1,8 +1,8 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-def4/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.70ZOkauwUV/db.sqlite status 9b6d9429-8d8a-4bd5-b2e7-afd04679fec1
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-def4/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.hl6eG8ol6s/db.sqlite status c8480af4-2d0f-405c-b2e6-f7e17d64f98c
 
-run=9b6d9429-8d8a-4bd5-b2e7-afd04679fec1 workflow=cycle status=succeeded resumeIndex=11
+run=c8480af4-2d0f-405c-b2e6-f7e17d64f98c workflow=cycle status=succeeded resumeIndex=11
 source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/definition-nested-reads/examples/cycle.cue
-created=2026-11-04T15:48:27.124Z updated=2026-11-04T15:48:27.215Z
+created=2026-11-04T16:25:41.109Z updated=2026-11-04T16:25:41.193Z
 STEP                     STATUS     VISITS ATTEMPTS ROUND 
 refine                   succeeded  3      1        2     
 review                   succeeded  3      1        2     
