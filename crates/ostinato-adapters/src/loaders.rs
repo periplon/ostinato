@@ -1152,14 +1152,16 @@ pub fn run_tool_command(
         let Some(leaf) = path.last() else {
             return false;
         };
-        if probe_scheduled
-            .iter()
-            .any(|(scheduled_name, _, _)| scheduled_name == leaf)
-        {
-            return false;
-        }
-        if path.len() == 1 && root_bare_module_task(&combined.items, leaf, &non_task_imports) {
-            return false;
+        if path.len() == 1 {
+            if probe_scheduled
+                .iter()
+                .any(|(scheduled_name, _, _)| scheduled_name == leaf)
+            {
+                return false;
+            }
+            if root_bare_module_task(&combined.items, leaf, &non_task_imports) {
+                return false;
+            }
         }
         find_field_expr_at_path(&combined.items, path).is_some_and(|value| {
             is_task_expr(
@@ -1171,20 +1173,21 @@ pub fn run_tool_command(
             )
         })
     });
-    // A command task that aliases a package task (`r: prep`) makes direct
-    // package-root reads of that task non-concrete in CUE.
-    let command_claimed: std::collections::BTreeSet<Vec<String>> = {
+    // Command task fields that alias a package task (`r: prep`).
+    let command_aliases: std::collections::BTreeMap<String, Vec<String>> = {
         let command_scopes: Vec<&[StructItem]> = vec![task_items.as_slice()];
-        let mut claimed = std::collections::BTreeSet::new();
+        let mut aliases = std::collections::BTreeMap::new();
         collect_command_task_package_paths(
             &Expr::Struct(task_items.clone(), Span::default()),
             &command_scopes,
             &combined.items,
             &non_task_imports,
-            &mut claimed,
+            &mut aliases,
         );
-        claimed
+        aliases
     };
+    let command_claimed: std::collections::BTreeSet<Vec<String>> =
+        command_aliases.values().cloned().collect();
     {
         let order = package_read_order(
             task_items.as_slice(),
@@ -1206,6 +1209,8 @@ pub fn run_tool_command(
     // Package-level tasks reachable from command `$after` operands or package
     // output reads (top-level fields, definitions, nested containers).
     let mut package_tasks: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+    let mut alias_dependencies: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     {
         let mut queue: std::collections::VecDeque<Vec<String>> = std::collections::VecDeque::new();
         {
@@ -1227,6 +1232,33 @@ pub fn run_tool_command(
             if is_package_root_path(path, &combined.items) {
                 queue.push_back(path.clone());
             }
+        }
+        // A command alias runs the target task instance, so the target is not
+        // scheduled again; only its own `$after` prerequisites are.
+        for (task_name, path) in &command_aliases {
+            let Some(expr) = find_field_expr_at_path(&combined.items, path) else {
+                continue;
+            };
+            let scopes = scopes_for_path(&combined.items, path);
+            let mut dependency_paths = Vec::new();
+            collect_package_task_after_paths(
+                expr,
+                &scopes,
+                &combined.items,
+                &non_task_imports,
+                true,
+                &mut std::collections::BTreeSet::new(),
+                &mut dependency_paths,
+            )?;
+            let mut dependencies = Vec::new();
+            for dependency_path in dependency_paths {
+                let dependency = package_task_key(&dependency_path);
+                if !dependencies.contains(&dependency) {
+                    dependencies.push(dependency.clone());
+                }
+                queue.push_back(dependency_path);
+            }
+            alias_dependencies.insert(task_name.clone(), dependencies);
         }
         let mut seen = std::collections::BTreeSet::new();
         while let Some(path) = queue.pop_front() {
@@ -1302,6 +1334,7 @@ pub fn run_tool_command(
             "tool command `{command_name}` has no tasks"
         )));
     }
+    add_alias_dependencies(&mut scheduled, &alias_dependencies);
     let mut external_by_key: BTreeMap<String, Vec<String>> = external_paths
         .iter()
         .map(|path| (external_task_key(path, &combined.items), path.clone()))
@@ -1438,6 +1471,7 @@ pub fn run_tool_command(
                             &mut reschedule_scopes,
                             &mut rescheduled,
                         )?;
+                        add_alias_dependencies(&mut rescheduled, &alias_dependencies);
                         let mut merged = external_scheduled.clone();
                         merged.extend(rescheduled.iter().cloned());
                         rescheduled = merged;
@@ -3248,6 +3282,12 @@ fn package_read_order(
         let StructItem::Field(field) = item else {
             continue;
         };
+        if field.definition
+            || field.optional
+            || matches!(&field.label, Label::Name(name, _) if !field.quoted && name.starts_with('_'))
+        {
+            continue;
+        }
         let index = counter;
         counter += 1;
         scan_package_declarations(
@@ -3300,7 +3340,11 @@ fn scan_package_declarations(
                 let StructItem::Field(field) = item else {
                     continue;
                 };
-                if matches!(&field.label, Label::Name(name, _) if name.starts_with('$')) {
+                if matches!(&field.label, Label::Name(name, _) if name.starts_with('$'))
+                    || field.definition
+                    || field.optional
+                    || matches!(&field.label, Label::Name(name, _) if !field.quoted && name.starts_with('_'))
+                {
                     continue;
                 }
                 scan_package_declarations(
@@ -3461,13 +3505,14 @@ fn external_task_key(path: &[String], root: &[StructItem]) -> String {
     }
 }
 
-/// Package paths that command task fields alias (`r: prep`, `r: group.prep`).
+/// Package paths that command task fields alias (`r: prep`, `r: group.prep`),
+/// keyed by the command task name.
 fn collect_command_task_package_paths(
     expr: &Expr,
     scopes: &[&[StructItem]],
     root: &[StructItem],
     imports: &ImportKinds,
-    out: &mut std::collections::BTreeSet<Vec<String>>,
+    out: &mut std::collections::BTreeMap<String, Vec<String>>,
 ) {
     match expr {
         Expr::Struct(items, _) => {
@@ -3500,7 +3545,7 @@ fn collect_command_task_package_paths(
                         &mut std::collections::BTreeSet::new(),
                     )
                 {
-                    out.insert(path);
+                    out.entry(label.clone()).or_insert(path);
                 }
                 collect_command_task_package_paths(&field.value, scopes, root, imports, out);
             }
@@ -3513,6 +3558,25 @@ fn collect_command_task_package_paths(
             collect_command_task_package_paths(inner, scopes, root, imports, out);
         }
         _ => {}
+    }
+}
+
+fn add_alias_dependencies(
+    scheduled: &mut [(String, Vec<String>, BTreeMap<String, Value>)],
+    alias_dependencies: &std::collections::BTreeMap<String, Vec<String>>,
+) {
+    for (name, dependencies) in alias_dependencies {
+        let Some((_, existing, _)) = scheduled
+            .iter_mut()
+            .find(|(scheduled_name, _, _)| scheduled_name == name)
+        else {
+            continue;
+        };
+        for dependency in dependencies {
+            if !existing.contains(dependency) {
+                existing.push(dependency.clone());
+            }
+        }
     }
 }
 
