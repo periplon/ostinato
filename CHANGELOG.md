@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.22.0
+
+Tool command outputs, `cli.Print` and file tasks.
+
+- `tool/cli.Print` prints text plus newline; `tool/file.Append` and
+  `tool/file.Create` write package-relative paths with CUE error messages.
+- Captured `stdout` and `success` are injected by re-evaluating the package,
+  so dependent tasks (with or without `$after`) can consume them; `stderr`
+  capture suppresses streaming but is not injected, matching cue.
+- `*_tool.cue` tasks support mixed exec/print/file graphs and inferred
+  ordering from output references.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.21.5
 
 Tool-command compatible-default and spawn-message fixes.
