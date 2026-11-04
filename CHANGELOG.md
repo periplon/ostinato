@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.26.0
+
+Unused-import rejection.
+
+- Each file's imports must be referenced in that file, matching CUE; unused
+  default, aliased and blank imports report `imported and not used`, and a
+  field that redeclares an import reports CUE's redeclaration error.
+- Usage detection respects struct-field and comprehension-variable shadowing
+  and counts hidden fields, definitions, interpolations, dynamic labels,
+  comprehension conditions and let values.
+- Workflow and `*_tool.cue` files are both validated: `validate` still ignores
+  tool files while `ostinato cmd` validates them.
+- Added language/e2e tests and a `conformance/invalid` corpus checked against
+  both evaluators.
+- 433 tests (96 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.25.2
 
 Inherited `$after` across split declarations and selector aliases.

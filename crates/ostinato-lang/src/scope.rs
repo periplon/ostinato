@@ -11,6 +11,7 @@ use crate::error::LangError;
 /// Returns an error for invalid alias declarations (duplicates, field
 /// conflicts, unreferenced aliases).
 pub fn rename_file_locals(file: &mut File, file_index: usize) -> Result<(), LangError> {
+    validate_imports(file)?;
     let import_aliases: Vec<String> = file
         .imports
         .iter()
@@ -218,6 +219,8 @@ struct AliasCtx {
     scopes: Vec<AliasScope>,
     aliases: Vec<AliasInfo>,
     let_edges: Vec<((usize, String), (usize, String))>,
+    import_aliases: HashSet<String>,
+    import_used: HashSet<String>,
 }
 
 impl AliasCtx {
@@ -696,6 +699,13 @@ impl AliasCtx {
                         return Ok(());
                     }
                 }
+                if self.import_aliases.contains(name)
+                    && !chain
+                        .iter()
+                        .any(|scope| self.scopes[*scope].fields.contains(name))
+                {
+                    self.import_used.insert(name.clone());
+                }
             }
             Expr::Paren(inner, _) | Expr::Default(inner, _) => {
                 self.expr(inner, chain, shadowed, from)?;
@@ -832,6 +842,57 @@ impl AliasCtx {
     }
 }
 
+fn default_import_alias(path: &str) -> &str {
+    let segment = path.rsplit('/').next().unwrap_or(path);
+    segment.split('@').next().unwrap_or(segment)
+}
+
+/// Reject imports that are never referenced in their file, matching CUE.
+///
+/// # Errors
+/// Returns an evaluation error for unused imports and for a field that
+/// redeclares an imported package name.
+pub fn validate_imports(file: &File) -> Result<(), LangError> {
+    let import_aliases: HashSet<String> = file
+        .imports
+        .iter()
+        .map(|import| import.alias.clone())
+        .collect();
+    if import_aliases.is_empty() {
+        return Ok(());
+    }
+    let mut ctx = AliasCtx {
+        scopes: Vec::new(),
+        aliases: Vec::new(),
+        let_edges: Vec::new(),
+        import_aliases,
+        import_used: HashSet::new(),
+    };
+    let root = ctx.scope(&file.items, None, &[], &HashSet::new(), None)?;
+    for import in &file.imports {
+        if ctx.scopes[root].fields.contains(&import.alias) {
+            return Err(LangError::eval(
+                import.span.line,
+                import.span.col,
+                format!("{} redeclared as imported package name", import.alias),
+            ));
+        }
+        if !ctx.import_used.contains(&import.alias) {
+            let default = default_import_alias(&import.path);
+            let message = if import.alias == default {
+                format!("imported and not used: \"{}\"", import.path)
+            } else {
+                format!(
+                    "imported and not used: \"{}\" as {}",
+                    import.path, import.alias
+                )
+            };
+            return Err(LangError::eval(import.span.line, import.span.col, message));
+        }
+    }
+    Ok(())
+}
+
 /// Validate alias declarations, usage and alias/field conflicts.
 ///
 /// # Errors
@@ -842,6 +903,8 @@ pub fn validate_aliases(items: &[StructItem], import_aliases: &[String]) -> Resu
         scopes: Vec::new(),
         aliases: Vec::new(),
         let_edges: Vec::new(),
+        import_aliases: import_aliases.iter().cloned().collect(),
+        import_used: HashSet::new(),
     };
     let root = ctx.scope(items, None, &[], &HashSet::new(), None)?;
     detect_let_cycles(&ctx)?;
