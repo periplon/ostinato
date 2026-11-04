@@ -1,7 +1,7 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-5271344
+feebab7
 
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                                    16a10c5 [main]
@@ -13,7 +13,7 @@
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection           e071d4e (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection      2f4178f (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports     dda0eba (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after      5271344 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after      feebab7 [fix/v0.37.2-after-missing-members]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps      fee7d72 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/order-scan              79704b8 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/package-after           628424d (detached HEAD)

@@ -1098,7 +1098,7 @@ pub fn run_tool_command(
         }
     }
     ostinato_lang::assign_field_ids(&mut combined);
-    sanitize_after_fields(&mut combined.items, &non_task_imports);
+    sanitize_after_fields(&mut combined.items, &non_task_imports, &imports);
     let tags = ostinato_lang::parameter_tags(&combined)?;
     let injected = BTreeMap::new();
     for (key, raw) in overrides {
@@ -2960,12 +2960,23 @@ fn resolve_after_path(
 /// Drop `$after` operands that are defined but not tasks, matching CUE's
 /// "ignore non-task references" behaviour while keeping undefined references
 /// so evaluation still reports them.
-fn sanitize_after_fields(items: &mut [StructItem], imports: &ImportKinds) {
+fn sanitize_after_fields(
+    items: &mut [StructItem],
+    imports: &ImportKinds,
+    imported_values: &BTreeMap<String, Value>,
+) {
     let mut plan: std::collections::BTreeMap<usize, Expr> = std::collections::BTreeMap::new();
     {
         let root: &[StructItem] = items;
         let mut scopes: Vec<&[StructItem]> = Vec::new();
-        plan_after_fields(items, root, imports, &mut scopes, &mut plan);
+        plan_after_fields(
+            items,
+            root,
+            imports,
+            imported_values,
+            &mut scopes,
+            &mut plan,
+        );
     }
     apply_after_plan(items, &plan);
 }
@@ -2974,6 +2985,7 @@ fn plan_after_fields<'a>(
     items: &'a [StructItem],
     root: &'a [StructItem],
     imports: &ImportKinds,
+    imported_values: &BTreeMap<String, Value>,
     scopes: &mut Vec<&'a [StructItem]>,
     plan: &mut std::collections::BTreeMap<usize, Expr>,
 ) {
@@ -2982,25 +2994,26 @@ fn plan_after_fields<'a>(
         match item {
             StructItem::Field(field) => {
                 if matches!(&field.label, Label::Name(name, _) if name == "$after") {
-                    let kept = filter_after_operands(&field.value, scopes, root, imports);
+                    let kept =
+                        filter_after_operands(&field.value, scopes, root, imports, imported_values);
                     plan.insert(field.id, Expr::List(kept, field.value.span()));
                 } else {
-                    plan_after_expr(&field.value, root, imports, scopes, plan);
+                    plan_after_expr(&field.value, root, imports, imported_values, scopes, plan);
                 }
             }
             StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                plan_after_expr(value, root, imports, scopes, plan);
+                plan_after_expr(value, root, imports, imported_values, scopes, plan);
             }
             StructItem::For { source, body, .. } => {
-                plan_after_expr(source, root, imports, scopes, plan);
+                plan_after_expr(source, root, imports, imported_values, scopes, plan);
                 for body_item in body {
-                    plan_after_item(body_item, root, imports, scopes, plan);
+                    plan_after_item(body_item, root, imports, imported_values, scopes, plan);
                 }
             }
             StructItem::If { cond, body, .. } => {
-                plan_after_expr(cond, root, imports, scopes, plan);
+                plan_after_expr(cond, root, imports, imported_values, scopes, plan);
                 for body_item in body {
-                    plan_after_item(body_item, root, imports, scopes, plan);
+                    plan_after_item(body_item, root, imports, imported_values, scopes, plan);
                 }
             }
             StructItem::Ellipsis(_) => {}
@@ -3013,20 +3026,22 @@ fn plan_after_item<'a>(
     item: &'a StructItem,
     root: &'a [StructItem],
     imports: &ImportKinds,
+    imported_values: &BTreeMap<String, Value>,
     scopes: &mut Vec<&'a [StructItem]>,
     plan: &mut std::collections::BTreeMap<usize, Expr>,
 ) {
     match item {
         StructItem::Field(field) => {
             if matches!(&field.label, Label::Name(name, _) if name == "$after") {
-                let kept = filter_after_operands(&field.value, scopes, root, imports);
+                let kept =
+                    filter_after_operands(&field.value, scopes, root, imports, imported_values);
                 plan.insert(field.id, Expr::List(kept, field.value.span()));
             } else {
-                plan_after_expr(&field.value, root, imports, scopes, plan);
+                plan_after_expr(&field.value, root, imports, imported_values, scopes, plan);
             }
         }
         StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-            plan_after_expr(value, root, imports, scopes, plan);
+            plan_after_expr(value, root, imports, imported_values, scopes, plan);
         }
         _ => {}
     }
@@ -3036,42 +3051,43 @@ fn plan_after_expr<'a>(
     expr: &'a Expr,
     root: &'a [StructItem],
     imports: &ImportKinds,
+    imported_values: &BTreeMap<String, Value>,
     scopes: &mut Vec<&'a [StructItem]>,
     plan: &mut std::collections::BTreeMap<usize, Expr>,
 ) {
     match expr {
         Expr::Struct(items, _) => {
-            plan_after_fields(items, root, imports, scopes, plan);
+            plan_after_fields(items, root, imports, imported_values, scopes, plan);
         }
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            plan_after_expr(left, root, imports, scopes, plan);
-            plan_after_expr(right, root, imports, scopes, plan);
+            plan_after_expr(left, root, imports, imported_values, scopes, plan);
+            plan_after_expr(right, root, imports, imported_values, scopes, plan);
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
         | Expr::Unary(_, inner, _) => {
-            plan_after_expr(inner, root, imports, scopes, plan);
+            plan_after_expr(inner, root, imports, imported_values, scopes, plan);
         }
         Expr::Index(base, index, _) => {
-            plan_after_expr(base, root, imports, scopes, plan);
-            plan_after_expr(index, root, imports, scopes, plan);
+            plan_after_expr(base, root, imports, imported_values, scopes, plan);
+            plan_after_expr(index, root, imports, imported_values, scopes, plan);
         }
         Expr::Call(callee, arguments, _) => {
-            plan_after_expr(callee, root, imports, scopes, plan);
+            plan_after_expr(callee, root, imports, imported_values, scopes, plan);
             for argument in arguments {
-                plan_after_expr(argument, root, imports, scopes, plan);
+                plan_after_expr(argument, root, imports, imported_values, scopes, plan);
             }
         }
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
             for item in items {
-                plan_after_expr(item, root, imports, scopes, plan);
+                plan_after_expr(item, root, imports, imported_values, scopes, plan);
             }
         }
         Expr::OpenList(Some(inner), _) => {
-            plan_after_expr(inner, root, imports, scopes, plan);
+            plan_after_expr(inner, root, imports, imported_values, scopes, plan);
         }
         _ => {}
     }
@@ -3082,22 +3098,26 @@ fn filter_after_operands(
     scopes: &[&[StructItem]],
     root: &[StructItem],
     imports: &ImportKinds,
+    imported_values: &BTreeMap<String, Value>,
 ) -> Vec<Expr> {
     match expr {
         Expr::List(items, _) => items
             .iter()
-            .flat_map(|item| filter_after_operands(item, scopes, root, imports))
+            .flat_map(|item| filter_after_operands(item, scopes, root, imports, imported_values))
             .collect(),
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            filter_after_operands(inner, scopes, root, imports)
+            filter_after_operands(inner, scopes, root, imports, imported_values)
         }
         Expr::Select(..) | Expr::Index(..) => {
             if let Some(prefix) = after_task_prefix(expr, scopes, root, imports) {
-                vec![prefix]
-            } else if keep_after_reference(expr, scopes, root) {
-                vec![expr.clone()]
-            } else {
-                Vec::new()
+                return vec![prefix];
+            }
+            match classify_after_selector(expr, scopes, root, imported_values) {
+                AfterSelector::KeepFull => vec![expr.clone()],
+                AfterSelector::KeepRoot(name) => {
+                    vec![Expr::Ident(name, expr.span())]
+                }
+                AfterSelector::Drop => Vec::new(),
             }
         }
         Expr::Ident(..) => {
@@ -3115,6 +3135,100 @@ fn filter_after_operands(
             }
         }
         _ => Vec::new(),
+    }
+}
+
+enum AfterSelector {
+    KeepFull,
+    KeepRoot(String),
+    Drop,
+}
+
+/// Decide how to keep a non-task selector operand. Missing members of a
+/// struct/import are ignored (the root keeps the binding "used"); missing
+/// members of concrete values stay so evaluation reports CUE's error.
+fn classify_after_selector(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imported_values: &BTreeMap<String, Value>,
+) -> AfterSelector {
+    let Some(path) = selector_names(expr, None) else {
+        return AfterSelector::KeepFull;
+    };
+    let Some((root_name, rest)) = path.split_first() else {
+        return AfterSelector::KeepFull;
+    };
+    match local_binding_location(scopes, root, root_name) {
+        Some((_, StructItem::Field(_))) => AfterSelector::Drop,
+        Some((_, StructItem::Let { value, .. })) => {
+            let mut current = value;
+            for segment in rest {
+                if let Some(next) = select_field_value(
+                    scopes,
+                    root,
+                    current,
+                    segment,
+                    &mut std::collections::BTreeSet::new(),
+                ) {
+                    current = next;
+                } else {
+                    return if ast_is_structish(current, scopes, root) {
+                        AfterSelector::KeepRoot(root_name.clone())
+                    } else {
+                        AfterSelector::KeepFull
+                    };
+                }
+            }
+            AfterSelector::KeepFull
+        }
+        Some(_) => AfterSelector::KeepFull,
+        None => {
+            let Some(value) = imported_values.get(root_name) else {
+                return AfterSelector::KeepFull;
+            };
+            let mut current = value;
+            for segment in rest {
+                match value_field(current, segment) {
+                    Some(next) => current = next,
+                    None => {
+                        return if matches!(current, Value::Struct(_) | Value::Definition { .. }) {
+                            AfterSelector::KeepRoot(root_name.clone())
+                        } else {
+                            AfterSelector::KeepFull
+                        };
+                    }
+                }
+            }
+            AfterSelector::KeepFull
+        }
+    }
+}
+
+fn value_field<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
+    match value {
+        Value::Struct(fields) => fields.get(field),
+        Value::Definition {
+            fields,
+            definitions,
+            ..
+        } => fields.get(field).or_else(|| definitions.get(field)),
+        _ => None,
+    }
+}
+
+fn ast_is_structish(expr: &Expr, scopes: &[&[StructItem]], root: &[StructItem]) -> bool {
+    match expr {
+        Expr::Struct(..)
+        | Expr::Unify(..)
+        | Expr::Paren(..)
+        | Expr::Default(..)
+        | Expr::Bound(..) => true,
+        Expr::Ident(..) => {
+            resolve_local_value(scopes, root, expr, &mut std::collections::BTreeSet::new())
+                .is_some_and(|value| ast_is_structish(value, scopes, root))
+        }
+        _ => false,
     }
 }
 

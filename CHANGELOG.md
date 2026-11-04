@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.37.2
+
+`$after` selector member handling.
+
+- Missing members of struct/import-rooted `$after` selectors
+  (`math.missing`, `lib.cfg.missing`, `g.missing` on a let struct) are
+  ignored like CUE while keeping the root binding counted as used, so valid
+  programs no longer fail with field-not-found, unreferenced-let or
+  unused-import errors.
+- Missing members of concrete values (`math.Pi.missing`, `g.x.missing`) and
+  undefined roots still fail evaluation like CUE.
+- Added e2e and conformance coverage for import, local-module and let
+  selectors.
+
+- 443 tests (106 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.37.1
 
 Non-task `$after` operand corrections.

@@ -7553,6 +7553,105 @@ command: aftermathpi: {
             None,
         ),
         (
+            "aftermathmissing",
+            r#"
+package foo
+import (
+	"math"
+	"tool/cli"
+	"tool/exec"
+)
+pi: math.Pi
+command: aftermathmissing: {
+	a: exec.Run & {$after: math.missing, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "aftermathmissingonly",
+            r#"
+package foo
+import (
+	"math"
+	"tool/cli"
+	"tool/exec"
+)
+command: aftermathmissingonly: {
+	a: exec.Run & {$after: math.missing, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterletstructmissing",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let g = {x: 1}
+v: g.x
+command: afterletstructmissing: {
+	a: exec.Run & {$after: g.missing, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterletstructmissingonly",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let g = {x: 1}
+command: afterletstructmissingonly: {
+	a: exec.Run & {$after: g.missing, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "afterletconcretemissing",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+let g = {x: 1}
+v: g.x
+command: afterletconcretemissing: {
+	a: exec.Run & {$after: g.x.missing, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
+            "aftermathpimissing",
+            r#"
+package foo
+import (
+	"math"
+	"tool/cli"
+	"tool/exec"
+)
+command: aftermathpimissing: {
+	a: exec.Run & {$after: math.Pi.missing, cmd: ["sh", "-c", "printf A"], stdout: string}
+	q: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
             "afterundefinedident",
             r#"
 package foo

@@ -1,4 +1,4 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nestedorder/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.oocPt3nrc9/agents.sqlite --json artifacts 4a733979-b46a-4354-8cc6-7a0a46849a23
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nestedorder/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.cTBZNHToaG/agents.sqlite --json artifacts 71321b5f-929f-49e4-8d38-a9afc6b0b07c
 
 {
   "artifacts": [
@@ -28,7 +28,7 @@
     }
   ],
   "extracted": [],
-  "run": "4a733979-b46a-4354-8cc6-7a0a46849a23"
+  "run": "71321b5f-929f-49e4-8d38-a9afc6b0b07c"
 }
 
 exit=0
