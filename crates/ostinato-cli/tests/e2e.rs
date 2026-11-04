@@ -6799,6 +6799,22 @@ command: moduleconcreteuse: {
 "#,
         ),
         (
+            "modulecomposed",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: {
+	a: p1: lib.run & {stdout: string}
+	b: p2: lib.tasks.r1 & {stdout: string}
+	q: cli.Print & {text: "R=\(a.p1.stdout)-\(b.p2.stdout)"}
+}
+command: modulecomposed: base
+"#,
+        ),
+        (
             "moduleignoreddef",
             r#"
 package foo
