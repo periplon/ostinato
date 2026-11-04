@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.20.5
+
+- Leading/between-pattern standalone `@tag` stays detached and accepted while
+  same-line pattern-value tags remain rejected like CUE.
+- 347 tests (62 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.20.4
 
 - Pattern-value `@tag` attributes are retained and rejected with the correct

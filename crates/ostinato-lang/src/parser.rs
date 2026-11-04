@@ -292,13 +292,14 @@ impl Parser {
             if let Some(pattern) = self.try_parse_pattern()? {
                 self.expect(&Tok::Colon, "`:`")?;
                 let value = self.parse_field_value()?;
+                let mut trailing = Vec::new();
                 while matches!(self.peek_tok(), Tok::At) {
-                    attributes.push(self.parse_attribute()?);
+                    trailing.push(self.parse_attribute()?);
                 }
                 return Ok(Some(StructItem::Pattern {
                     pattern,
                     value,
-                    attributes,
+                    attributes: trailing,
                     span: self.span(),
                 }));
             }

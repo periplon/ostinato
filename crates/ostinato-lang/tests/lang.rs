@@ -6599,6 +6599,15 @@ list_holder: [{a: string | *"l"}] @tag(list_holder)
 dynamic_ok: {k: "a", "\(k)": {x: string | *"d"}}
 pattern_newline_attr: {[string]: string | *"ok"
 @tag(standalone)}
+pattern_leading_attr: {
+	@tag(standalone)
+	[string]: 1
+}
+pattern_between_attrs: {
+	[string]: 1
+	@tag(standalone)
+	[string]: int
+}
 "#;
     let file = ostinato_lang::parse(allowed).expect("parse allowed tags");
     let value = ostinato_lang::eval_file(&file).expect("eval allowed tags");
@@ -6609,6 +6618,8 @@ pattern_newline_attr: {[string]: string | *"ok"
     assert_eq!(json["unicode_escape"]["é"], "u");
     assert_eq!(json["dynamic_ok"]["a"]["x"], "d");
     assert_eq!(json["pattern_newline_attr"], serde_json::json!({}));
+    assert_eq!(json["pattern_leading_attr"], serde_json::json!({}));
+    assert_eq!(json["pattern_between_attrs"], serde_json::json!({}));
 
     // Rejected: multi-rune bytes labels and any tag lexically inside a list.
     for source in [
