@@ -1,8 +1,8 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-let/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.O7gakVXIKO/db.sqlite status fb11cbc7-a2b1-44a6-9be1-bddc1f77f3c3
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-let/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.BQUx0Oeauw/db.sqlite status cbd57beb-60d1-4b26-86b2-13cbe0bf84cc
 
-run=fb11cbc7-a2b1-44a6-9be1-bddc1f77f3c3 workflow=cycle status=succeeded resumeIndex=11
+run=cbd57beb-60d1-4b26-86b2-13cbe0bf84cc workflow=cycle status=succeeded resumeIndex=11
 source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection/examples/cycle.cue
-created=2026-11-04T10:57:11.839Z updated=2026-11-04T10:57:11.910Z
+created=2026-11-04T11:13:41.381Z updated=2026-11-04T11:13:41.449Z
 STEP                     STATUS     VISITS ATTEMPTS ROUND 
 refine                   succeeded  3      1        2     
 review                   succeeded  3      1        2     
