@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.29.4
+
+Composed module tasks are distinct values.
+
+- Suppression keys only bare import selectors and let bindings; composed
+  task values (`lib.run & {...}`) are treated as distinct declarations, so
+  referenced and literal commands inject them independently like CUE.
+- Added a composed referenced-command e2e success case.
+- 437 tests (100 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.29.3
 
 Module-suppression follows resolved commands.

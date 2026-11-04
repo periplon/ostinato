@@ -3121,8 +3121,9 @@ fn task_value_key<'a>(
                 None
             }
         }
-        Expr::Unify(left, right, _) => task_value_key(left, scopes, root, imports)
-            .or_else(|| task_value_key(right, scopes, root, imports)),
+        // Composed task values (`lib.run & {...}`) are distinct per
+        // declaration, so CUE injects them independently.
+        Expr::Unify(..) => None,
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             task_value_key(inner, scopes, root, imports)
         }
