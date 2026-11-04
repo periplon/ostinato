@@ -2043,12 +2043,16 @@ impl<'a> Frame<'a> {
                             .get(&key)
                             .map(|definition| definition.exprs.clone())
                             .unwrap_or_default();
-                        let unified = if exprs.len() == 1 {
-                            eval_narrowed_declaration(&child, &exprs[0], &value, span)?
-                        } else {
-                            let declared = close_nested(&child.eval_field_key(&key, span)?);
-                            unify_values(&declared, &value, span)?
-                        };
+                        let mut merged = Value::Bottom;
+                        for (index, expr) in exprs.iter().enumerate() {
+                            let part = eval_declaration_part(&child, expr, &value, span)?;
+                            merged = if index == 0 {
+                                part
+                            } else {
+                                merge_declaration(&merged, &part, span)?
+                            };
+                        }
+                        let unified = unify_values(&close_nested(&merged), &value, span)?;
                         child.values.borrow_mut().insert(key.clone(), unified);
                         child.materialized.borrow_mut().insert(key.clone());
                         child
@@ -2889,7 +2893,7 @@ fn try_definition_unify(
     unify_values(&defined, &value, span).map(Some)
 }
 
-fn eval_narrowed_declaration(
+fn eval_declaration_part(
     frame: &Frame<'_>,
     expr: &Expr,
     value: &Value,
@@ -2897,17 +2901,23 @@ fn eval_narrowed_declaration(
 ) -> Result<Value, LangError> {
     let expr = strip_expr_parens(expr);
     match (expr, value) {
-        (Expr::List(items, _), Value::List(values)) => {
-            if items.len() != values.len() {
-                return Err(LangError::eval(
-                    span.line,
-                    span.col,
-                    "cannot unify lists of different lengths",
-                ));
+        (Expr::Struct(_, _), value) => {
+            if let Some(nested) = concrete_fields(value) {
+                *frame.next_injections.borrow_mut() = Some(nested);
             }
+            let declared = eval_expr(expr, frame)?;
+            frame.next_injections.borrow_mut().take();
+            Ok(close_nested(&declared))
+        }
+        (Expr::Unify(left, right, _), value) => {
+            let left = eval_declaration_part(frame, left, value, span)?;
+            let right = eval_declaration_part(frame, right, value, span)?;
+            merge_declaration(&left, &right, span)
+        }
+        (Expr::List(items, _), Value::List(values)) if items.len() == values.len() => {
             let mut out = Vec::with_capacity(values.len());
             for (item, value) in items.iter().zip(values) {
-                out.push(eval_narrowed_declaration(frame, item, value, span)?);
+                out.push(eval_declaration_part(frame, item, value, span)?);
             }
             Ok(Value::List(out))
         }
@@ -2915,42 +2925,24 @@ fn eval_narrowed_declaration(
             let mut out = Vec::with_capacity(values.len());
             for value in values {
                 out.push(match element {
-                    Some(element) => eval_narrowed_declaration(frame, element, value, span)?,
+                    Some(element) => eval_declaration_part(frame, element, value, span)?,
                     None => value.clone(),
                 });
             }
             Ok(Value::List(out))
         }
         (Expr::OpenListPrefix(prefix, tail, _), Value::List(values)) => {
-            if prefix.len() > values.len() {
-                return Err(LangError::eval(
-                    span.line,
-                    span.col,
-                    "list prefix is longer than the concrete list",
-                ));
-            }
             let mut out = Vec::with_capacity(values.len());
             for (index, value) in values.iter().enumerate() {
                 let expected = prefix.get(index).or(tail.as_deref());
                 out.push(match expected {
-                    Some(expected) => eval_narrowed_declaration(frame, expected, value, span)?,
+                    Some(expected) => eval_declaration_part(frame, expected, value, span)?,
                     None => value.clone(),
                 });
             }
             Ok(Value::List(out))
         }
-        (Expr::Struct(_, _), value) => {
-            if let Some(nested) = concrete_fields(value) {
-                *frame.next_injections.borrow_mut() = Some(nested);
-            }
-            let declared = eval_expr(expr, frame)?;
-            frame.next_injections.borrow_mut().take();
-            unify_values(&close_nested(&declared), value, span)
-        }
-        _ => {
-            let declared = eval_expr(expr, frame)?;
-            unify_values(&close_nested(&declared), value, span)
-        }
+        _ => eval_expr(expr, frame),
     }
 }
 
@@ -3090,6 +3082,43 @@ fn merge_declaration(left: &Value, right: &Value, span: Span) -> Result<Value, L
                 open: *open,
                 admissions,
             })
+        }
+        (Value::List(left), Value::List(right)) => {
+            if left.len() != right.len() {
+                return unify_values(
+                    &Value::List(left.clone()),
+                    &Value::List(right.clone()),
+                    span,
+                );
+            }
+            let mut out = Vec::with_capacity(left.len());
+            for (left, right) in left.iter().zip(right) {
+                out.push(merge_declaration(left, right, span)?);
+            }
+            Ok(Value::List(out))
+        }
+        (Value::OpenList(Some(left)), Value::OpenList(Some(right))) => Ok(Value::OpenList(Some(
+            Box::new(merge_declaration(left, right, span)?),
+        ))),
+        (Value::OpenList(Some(element)), Value::List(values))
+        | (Value::List(values), Value::OpenList(Some(element))) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(merge_declaration(element, value, span)?);
+            }
+            Ok(Value::List(out))
+        }
+        (Value::OpenListPrefix(prefix, tail), Value::List(values))
+        | (Value::List(values), Value::OpenListPrefix(prefix, tail)) => {
+            let mut out = Vec::with_capacity(values.len());
+            for (index, value) in values.iter().enumerate() {
+                let expected = prefix.get(index).or(tail.as_deref());
+                out.push(match expected {
+                    Some(expected) => merge_declaration(expected, value, span)?,
+                    None => value.clone(),
+                });
+            }
+            Ok(Value::List(out))
         }
         (Value::Struct(left_fields), Value::Struct(right_fields)) => {
             Ok(Value::Struct(merge_map(left_fields, right_fields, span)?))

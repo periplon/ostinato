@@ -6341,6 +6341,10 @@ substring: #S & {n: 3}
 pair: #Pair & {l: [{b: 5}, {b: 6}]}
 #LL: {l: [[{b: int | *1, c: b + 1}]], d: l[0][0].c + 1}
 nested_list: #LL & {l: [[{b: 5}]]}
+#Multi: {o: {b: int | *1, c: b + 1}, o: {d: 6}}
+multi_decl: #Multi & {o: {b: 5}}
+#Composed: {l: [{b: int | *1, c: b + 1}] & [{d: 6}]}
+composed_decl: #Composed & {l: [{b: 5}]}
 "#;
     let file = ostinato_lang::parse(source).expect("parse default narrowing");
     let value = ostinato_lang::eval_file(&file).expect("eval default narrowing");
@@ -6363,6 +6367,10 @@ nested_list: #LL & {l: [[{b: 5}]]}
     assert_eq!(json["pair"]["l"][1]["c"], 7);
     assert_eq!(json["nested_list"]["l"][0][0]["c"], 6);
     assert_eq!(json["nested_list"]["d"], 7);
+    assert_eq!(json["multi_decl"]["o"]["c"], 6);
+    assert_eq!(json["multi_decl"]["o"]["d"], 6);
+    assert_eq!(json["composed_decl"]["l"][0]["c"], 6);
+    assert_eq!(json["composed_decl"]["l"][0]["d"], 6);
 
     for source in [
         "package demo\n#L2: {l: [{b: int | *1, c: b + 1}]}\nx: #L2 & {l: [{b: 5}, {b: 6}]}\n",

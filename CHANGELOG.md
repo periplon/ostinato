@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.18.3
+
+Multi-declaration and composed narrowing corrections.
+
+- Multiple declarations of a narrowed field merge declarations before applying
+  the narrowed value, instead of evaluating each part against a closed literal.
+- Composed (`&`) field declarations and list/open-list declarations merge
+  element-wise, so nested defaults recompute.
+- 343 tests (61 CLI E2E, 1 conformance, 239 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.18.2
 
 Fixed/list nested narrowing corrections.
