@@ -1,6 +1,6 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nested/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.nX59PSVNM6/gateway-cycle.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/gateway_cycle.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-module/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.IEawSrJ7Cs/gateway-cycle.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/gateway_cycle.cue
 
-run=18941577-7123-4787-b592-6f5cd5cc203f workflow=gateway-cycle status=succeeded durationMs=7
+run=a53f2ec3-7158-4120-968a-a0879366a018 workflow=gateway-cycle status=succeeded durationMs=8
 STEP                     STATUS     VISITS ATTEMPTS ROUND 
 idle                     succeeded  2      1        1     
 loop                     succeeded  2      1        1     
