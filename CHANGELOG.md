@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.17.1
+
+Optional-reference and comprehension-shadowing guards.
+
+- Optional fields remain unreferenceable through `&` for regular/hidden fields
+  and inside definitions; materialized optionals are still allowed.
+- Comprehension variables/lets/aliases shadow same-named outer fields during
+  unification, matching CUE evaluation order.
+- 342 tests (61 CLI E2E, 1 conformance, 238 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.17.0
 
 Optional/open metadata on non-definition struct literals.
