@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.27.0
+
+Let-selector output-injection extension.
+
+- `command: c: group.inner` where `group` is a `let` now receives injected
+  `stdout`/`success`, including through helper fields and alias/index
+  selectors. CUE v0.17.1 rejects these shapes; this is a documented Ostinato
+  extension, covered by a marked conformance case and a dedicated e2e test.
+- Direct `let` commands, whole-let commands and concrete-field selectors keep
+  their existing CUE-compatible behavior.
+- 433 tests (96 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.26.1
 
 Unused-import validation corrections.

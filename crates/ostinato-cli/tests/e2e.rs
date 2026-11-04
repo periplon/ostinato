@@ -6669,7 +6669,7 @@ command: selindexconcrete: group.inner
 }
 
 #[test]
-fn tool_command_let_selector_outputs_are_rejected_before_side_effects() {
+fn tool_command_let_selector_injection_is_an_ostinato_extension() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");
         return;
@@ -6685,7 +6685,7 @@ import (
 )
 let group = {
 	inner: {
-		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc' > marker"], stdout: string}
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'; touch marker"], stdout: string}
 		p: cli.Print & {text: "R=\(run.stdout)"}
 	}
 }
@@ -6702,7 +6702,7 @@ import (
 )
 let group = {inner: {
 	pipeline: {
-		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc' > marker"], stdout: string}
+		run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'; touch marker"], stdout: string}
 		msg: run.stdout
 		report: {
 			p: cli.Print & {text: "R=\(msg)"}
@@ -6721,7 +6721,7 @@ import (
 	"tool/exec"
 )
 let group = {inner: {
-	src: {run: exec.Run & {cmd: ["sh", "-c", "printf 'abc' > marker"], stdout: string}}
+	src: {run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'; touch marker"], stdout: string}}
 	alias: src["run"]
 	p: cli.Print & {text: "R=\(alias.stdout)"}
 }}
@@ -6737,7 +6737,7 @@ import (
 	"tool/exec"
 )
 let group = {inner: {
-	src: {run: exec.Run & {cmd: ["sh", "-c", "printf 'abc' > marker"], stdout: string}}
+	src: {run: exec.Run & {cmd: ["sh", "-c", "printf 'abc'; touch marker"], stdout: string}}
 	k: "run"
 	alias: src[k]
 	p: cli.Print & {text: "R=\(alias.stdout)"}
@@ -6757,12 +6757,18 @@ command: letindexconst: group.inner
             .output()
             .expect("run cue cmd");
         let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        // CUE v0.17.1 rejects task outputs selected through a `let`; injecting
+        // them is an intentional Ostinato extension.
         assert!(!expected.status.success(), "{name}: cue must reject");
-        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
-        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        assert!(actual.status.success(), "{name}: extension must succeed");
+        assert_eq!(actual.stdout, b"R=abc\n", "{name}: stdout differs");
         assert!(
-            !rust_dir.path().join("marker").exists(),
-            "{name}: ostinato must not execute tasks before rejecting the selector"
+            rust_dir.path().join("marker").exists(),
+            "{name}: task did not execute"
+        );
+        assert!(
+            !cue_dir.path().join("marker").exists(),
+            "{name}: cue unexpectedly executed tasks"
         );
     }
 }
