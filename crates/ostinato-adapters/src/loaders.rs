@@ -1199,6 +1199,12 @@ pub fn run_tool_command(
         if root_field_composed(&combined.items, first) {
             return false;
         }
+        // A field aliasing another local field is its own instance.
+        if find_field_expr_at_path_in_root(&combined.items, path, &combined.items)
+            .is_some_and(|value| expr_roots_local_binding(&combined.items, value))
+        {
+            return false;
+        }
         find_field_expr_at_path_in_root(&combined.items, path, &combined.items).is_some_and(
             |value| {
                 module_task_path_scoped(
@@ -1253,6 +1259,7 @@ pub fn run_tool_command(
             &combined.items,
             &non_task_imports,
             &imports,
+            0,
             &mut aliases,
         );
         aliases
@@ -1295,6 +1302,21 @@ pub fn run_tool_command(
             _ => true,
         }
     });
+
+    // CUE gives an intermediate package field alias its own task instance, so
+    // `p2: prep; r: p2` executes twice while `r: prep` executes once.
+    let alias_instance_paths: std::collections::BTreeSet<Vec<String>> = command_aliases
+        .values()
+        .filter(|target| target.depth == 0)
+        .filter_map(|target| {
+            target
+                .local
+                .as_ref()
+                .filter(|local| package_alias_instance(&combined.items, local))
+                .cloned()
+        })
+        .collect();
+    external_paths.extend(alias_instance_paths.iter().cloned());
 
     // Package-level tasks reachable from command `$after` operands or package
     // output reads (top-level fields, definitions, nested containers).
@@ -1530,14 +1552,18 @@ pub fn run_tool_command(
                     done.insert(name.clone());
                     progress = true;
                     let mut injected_ok = if let Some(path) = external_by_key.get(name) {
-                        inject_named_outputs(
-                            &mut combined.items,
-                            command_name,
-                            name,
-                            path,
-                            &outputs,
-                            &non_task_imports,
-                        )
+                        if alias_instance_paths.contains(path) {
+                            inject_named_outputs_any(&mut combined.items, name, path, &outputs)
+                        } else {
+                            inject_named_outputs(
+                                &mut combined.items,
+                                command_name,
+                                name,
+                                path,
+                                &outputs,
+                                &non_task_imports,
+                            )
+                        }
                     } else {
                         inject_command_outputs(
                             &mut combined.items,
@@ -1552,14 +1578,24 @@ pub fn run_tool_command(
                             && plain_alias_targets.contains(local)
                         {
                             let target_name = local.last().cloned().unwrap_or_default();
-                            if inject_named_outputs(
-                                &mut combined.items,
-                                command_name,
-                                &target_name,
-                                local,
-                                &outputs,
-                                &non_task_imports,
-                            ) {
+                            let injected = if alias_instance_paths.contains(local) {
+                                inject_named_outputs_any(
+                                    &mut combined.items,
+                                    &target_name,
+                                    local,
+                                    &outputs,
+                                )
+                            } else {
+                                inject_named_outputs(
+                                    &mut combined.items,
+                                    command_name,
+                                    &target_name,
+                                    local,
+                                    &outputs,
+                                    &non_task_imports,
+                                )
+                            };
+                            if injected {
                                 injected_ok = true;
                             }
                         }
@@ -2962,6 +2998,22 @@ fn inject_named_outputs(
     if !active_task_decl_ids(items, command_name, imports).contains(&id) {
         return false;
     }
+    let Some(wrapper) = task_output_struct(outputs, Span::default()) else {
+        return false;
+    };
+    inject_field(items, id, &wrapper)
+}
+
+fn inject_named_outputs_any(
+    items: &mut [StructItem],
+    name: &str,
+    path: &[String],
+    outputs: &[(String, Value)],
+) -> bool {
+    let id = find_field_id_by_path(items, path).or_else(|| find_field_id_by_label(items, name));
+    let Some(id) = id else {
+        return false;
+    };
     let Some(wrapper) = task_output_struct(outputs, Span::default()) else {
         return false;
     };
@@ -4503,6 +4555,34 @@ fn record_package_declaration(
     }
 }
 
+/// A package field whose value aliases a local binding creates its own task
+/// instance when used as a command alias target.
+fn package_alias_instance(items: &[StructItem], path: &[String]) -> bool {
+    let Some(value) = find_field_expr_at_path_in_root(items, path, items) else {
+        return false;
+    };
+    expr_roots_local_binding(items, value)
+}
+
+fn expr_roots_local_binding(items: &[StructItem], expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(name, _) => matches!(
+            local_binding_location(&[items], items, name),
+            Some((true, StructItem::Field(_)))
+        ),
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+            expr_roots_local_binding(items, base)
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            expr_roots_local_binding(items, left) || expr_roots_local_binding(items, right)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            expr_roots_local_binding(items, inner)
+        }
+        _ => false,
+    }
+}
+
 fn is_package_root_path(path: &[String], root: &[StructItem]) -> bool {
     let Some(first) = path.first() else {
         return false;
@@ -4531,6 +4611,7 @@ fn external_task_key(path: &[String], root: &[StructItem]) -> String {
 struct CommandAliasTarget {
     module: Option<Vec<String>>,
     local: Option<Vec<String>>,
+    depth: usize,
 }
 
 fn resolve_command_alias_target(
@@ -4572,7 +4653,11 @@ fn resolve_command_alias_target(
             if local.is_none() && module.is_none() {
                 return None;
             }
-            Some(CommandAliasTarget { module, local })
+            Some(CommandAliasTarget {
+                module,
+                local,
+                depth: 0,
+            })
         }
     }
 }
@@ -4764,6 +4849,7 @@ fn collect_command_task_package_paths(
     root: &[StructItem],
     imports: &ImportKinds,
     module_values: &BTreeMap<String, Value>,
+    depth: usize,
     out: &mut std::collections::BTreeMap<String, CommandAliasTarget>,
 ) {
     match expr {
@@ -4790,7 +4876,7 @@ fn collect_command_task_package_paths(
                     imports,
                 );
                 if child_is_task
-                    && let Some(target) = resolve_command_alias_target(
+                    && let Some(mut target) = resolve_command_alias_target(
                         &field.value,
                         scopes,
                         root,
@@ -4798,6 +4884,7 @@ fn collect_command_task_package_paths(
                         module_values,
                     )
                 {
+                    target.depth = depth;
                     out.entry(label.clone()).or_insert(target);
                 }
                 collect_command_task_package_paths(
@@ -4806,16 +4893,41 @@ fn collect_command_task_package_paths(
                     root,
                     imports,
                     module_values,
+                    depth + usize::from(matches!(field.value, Expr::Struct(..))),
                     out,
                 );
             }
         }
         Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            collect_command_task_package_paths(left, scopes, root, imports, module_values, out);
-            collect_command_task_package_paths(right, scopes, root, imports, module_values, out);
+            collect_command_task_package_paths(
+                left,
+                scopes,
+                root,
+                imports,
+                module_values,
+                depth,
+                out,
+            );
+            collect_command_task_package_paths(
+                right,
+                scopes,
+                root,
+                imports,
+                module_values,
+                depth,
+                out,
+            );
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            collect_command_task_package_paths(inner, scopes, root, imports, module_values, out);
+            collect_command_task_package_paths(
+                inner,
+                scopes,
+                root,
+                imports,
+                module_values,
+                depth,
+                out,
+            );
         }
         _ => {}
     }

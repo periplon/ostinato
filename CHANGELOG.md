@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.41.0
+
+Second-hop package alias chains.
+
+- An intermediate package field alias now gets its own task instance exactly
+  like CUE: `prep: lib.run; p2: prep; r: p2` (and local/definition/struct
+  variants) executes twice, while a direct `r: prep` still executes once.
+- Alias instances are materialised before evaluation and their outputs inject
+  into the intermediate field, so plain and task-input reads
+  (`q: "\\(p2.stdout)"`, `cli.Print & {text: "\\(p2.stdout)"}`) resolve
+  like CUE.
+- `let`-bound targets keep CUE's single-instance behaviour.
+- Added a 17-shape differential e2e test and four conformance cases.
+
+- 446 tests (109 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.40.0
 
 Module definition task aliases and plain reads.
