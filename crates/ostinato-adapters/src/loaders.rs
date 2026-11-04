@@ -1151,10 +1151,11 @@ pub fn run_tool_command(
             false,
             &mut std::collections::BTreeSet::new(),
             &non_task_imports,
+            &imports,
         );
     }
     plain_read_paths.retain(|path| {
-        find_field_expr_at_path(&combined.items, path).is_some_and(|value| {
+        if find_field_expr_at_path(&combined.items, path).is_some_and(|value| {
             is_task_expr(
                 value,
                 &[combined.items.as_slice()],
@@ -1162,6 +1163,15 @@ pub fn run_tool_command(
                 &mut std::collections::BTreeSet::new(),
                 &non_task_imports,
             )
+        }) {
+            return true;
+        }
+        path.split_first().is_some_and(|(root_name, rest)| {
+            imports
+                .get(root_name)
+                .and_then(|value| module_task_value(value, rest))
+                .and_then(value_fields)
+                .is_some_and(|fields| fields.contains_key("$id"))
         })
     });
     external_paths.retain(|path| {
@@ -1198,6 +1208,7 @@ pub fn run_tool_command(
             &command_scopes,
             &combined.items,
             &non_task_imports,
+            &imports,
             &mut aliases,
         );
         aliases
@@ -1498,6 +1509,9 @@ pub fn run_tool_command(
                             &outputs,
                             &non_task_imports,
                         ) {
+                            injected_ok = true;
+                        }
+                        if inject_module_outputs(&mut imports, target_path, &outputs) {
                             injected_ok = true;
                         }
                     }
@@ -2328,6 +2342,7 @@ fn collect_output_task_paths<'a>(
     in_task: bool,
     visited: &mut std::collections::BTreeSet<String>,
     imports: &ImportKinds,
+    module_values: &BTreeMap<String, Value>,
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
@@ -2339,6 +2354,15 @@ fn collect_output_task_paths<'a>(
                     &mut std::collections::BTreeSet::new(),
                     imports,
                 )
+                .or_else(|| {
+                    module_task_path_scoped(
+                        base,
+                        scopes,
+                        root,
+                        module_values,
+                        &mut std::collections::BTreeSet::new(),
+                    )
+                })
             {
                 if in_task {
                     out.insert(path);
@@ -2346,7 +2370,17 @@ fn collect_output_task_paths<'a>(
                     plain.insert(path);
                 }
             }
-            collect_output_task_paths(base, scopes, root, out, plain, in_task, visited, imports);
+            collect_output_task_paths(
+                base,
+                scopes,
+                root,
+                out,
+                plain,
+                in_task,
+                visited,
+                imports,
+                module_values,
+            );
         }
         Expr::Ident(name, _) => {
             if !visited.insert(name.clone()) {
@@ -2356,7 +2390,15 @@ fn collect_output_task_paths<'a>(
                 match item {
                     StructItem::Let { value, .. } => {
                         collect_output_task_paths(
-                            value, scopes, root, out, plain, in_task, visited, imports,
+                            value,
+                            scopes,
+                            root,
+                            out,
+                            plain,
+                            in_task,
+                            visited,
+                            imports,
+                            module_values,
                         );
                     }
                     StructItem::Field(field) if !field.definition => {
@@ -2369,6 +2411,7 @@ fn collect_output_task_paths<'a>(
                             in_task,
                             visited,
                             imports,
+                            module_values,
                         );
                     }
                     _ => {}
@@ -2398,16 +2441,33 @@ fn collect_output_task_paths<'a>(
                             child_in_task,
                             visited,
                             imports,
+                            module_values,
                         );
                     }
                     StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
                         collect_output_task_paths(
-                            value, scopes, root, out, plain, in_task, visited, imports,
+                            value,
+                            scopes,
+                            root,
+                            out,
+                            plain,
+                            in_task,
+                            visited,
+                            imports,
+                            module_values,
                         );
                     }
                     StructItem::For { source, body, .. } => {
                         collect_output_task_paths(
-                            source, scopes, root, out, plain, in_task, visited, imports,
+                            source,
+                            scopes,
+                            root,
+                            out,
+                            plain,
+                            in_task,
+                            visited,
+                            imports,
+                            module_values,
                         );
                         for body_item in body {
                             if let StructItem::Field(field) = body_item {
@@ -2420,13 +2480,22 @@ fn collect_output_task_paths<'a>(
                                     in_task,
                                     visited,
                                     imports,
+                                    module_values,
                                 );
                             }
                         }
                     }
                     StructItem::If { cond, body, .. } => {
                         collect_output_task_paths(
-                            cond, scopes, root, out, plain, in_task, visited, imports,
+                            cond,
+                            scopes,
+                            root,
+                            out,
+                            plain,
+                            in_task,
+                            visited,
+                            imports,
+                            module_values,
                         );
                         for body_item in body {
                             if let StructItem::Field(field) = body_item {
@@ -2439,6 +2508,7 @@ fn collect_output_task_paths<'a>(
                                     in_task,
                                     visited,
                                     imports,
+                                    module_values,
                                 );
                             }
                         }
@@ -2451,24 +2521,90 @@ fn collect_output_task_paths<'a>(
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            collect_output_task_paths(left, scopes, root, out, plain, in_task, visited, imports);
-            collect_output_task_paths(right, scopes, root, out, plain, in_task, visited, imports);
+            collect_output_task_paths(
+                left,
+                scopes,
+                root,
+                out,
+                plain,
+                in_task,
+                visited,
+                imports,
+                module_values,
+            );
+            collect_output_task_paths(
+                right,
+                scopes,
+                root,
+                out,
+                plain,
+                in_task,
+                visited,
+                imports,
+                module_values,
+            );
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
-        | Expr::Unary(_, inner, _) => {
-            collect_output_task_paths(inner, scopes, root, out, plain, in_task, visited, imports)
-        }
+        | Expr::Unary(_, inner, _) => collect_output_task_paths(
+            inner,
+            scopes,
+            root,
+            out,
+            plain,
+            in_task,
+            visited,
+            imports,
+            module_values,
+        ),
         Expr::Index(base, index, _) => {
-            collect_output_task_paths(base, scopes, root, out, plain, in_task, visited, imports);
-            collect_output_task_paths(index, scopes, root, out, plain, in_task, visited, imports);
+            collect_output_task_paths(
+                base,
+                scopes,
+                root,
+                out,
+                plain,
+                in_task,
+                visited,
+                imports,
+                module_values,
+            );
+            collect_output_task_paths(
+                index,
+                scopes,
+                root,
+                out,
+                plain,
+                in_task,
+                visited,
+                imports,
+                module_values,
+            );
         }
         Expr::Call(callee, arguments, _) => {
-            collect_output_task_paths(callee, scopes, root, out, plain, in_task, visited, imports);
+            collect_output_task_paths(
+                callee,
+                scopes,
+                root,
+                out,
+                plain,
+                in_task,
+                visited,
+                imports,
+                module_values,
+            );
             for argument in arguments {
                 collect_output_task_paths(
-                    argument, scopes, root, out, plain, in_task, visited, imports,
+                    argument,
+                    scopes,
+                    root,
+                    out,
+                    plain,
+                    in_task,
+                    visited,
+                    imports,
+                    module_values,
                 );
             }
         }
@@ -2476,7 +2612,15 @@ fn collect_output_task_paths<'a>(
             for part in parts {
                 if let ostinato_lang::ast::StrPart::Interp(inner) = part {
                     collect_output_task_paths(
-                        inner, scopes, root, out, plain, in_task, visited, imports,
+                        inner,
+                        scopes,
+                        root,
+                        out,
+                        plain,
+                        in_task,
+                        visited,
+                        imports,
+                        module_values,
                     );
                 }
             }
@@ -2485,7 +2629,15 @@ fn collect_output_task_paths<'a>(
             for part in parts {
                 if let ostinato_lang::ast::BytePart::Interp(inner) = part {
                     collect_output_task_paths(
-                        inner, scopes, root, out, plain, in_task, visited, imports,
+                        inner,
+                        scopes,
+                        root,
+                        out,
+                        plain,
+                        in_task,
+                        visited,
+                        imports,
+                        module_values,
                     );
                 }
             }
@@ -2493,13 +2645,29 @@ fn collect_output_task_paths<'a>(
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
             for item in items {
                 collect_output_task_paths(
-                    item, scopes, root, out, plain, in_task, visited, imports,
+                    item,
+                    scopes,
+                    root,
+                    out,
+                    plain,
+                    in_task,
+                    visited,
+                    imports,
+                    module_values,
                 );
             }
         }
-        Expr::OpenList(Some(inner), _) => {
-            collect_output_task_paths(inner, scopes, root, out, plain, in_task, visited, imports)
-        }
+        Expr::OpenList(Some(inner), _) => collect_output_task_paths(
+            inner,
+            scopes,
+            root,
+            out,
+            plain,
+            in_task,
+            visited,
+            imports,
+            module_values,
+        ),
         _ => {}
     }
 }
@@ -3401,6 +3569,59 @@ fn imported_value_path_inner<'e, 'v>(
     Some(value)
 }
 
+fn inject_module_outputs(
+    module_values: &mut BTreeMap<String, Value>,
+    path: &[String],
+    outputs: &[(String, Value)],
+) -> bool {
+    let Some((root_name, rest)) = path.split_first() else {
+        return false;
+    };
+    let Some(value) = module_values.get_mut(root_name) else {
+        return false;
+    };
+    let Some(target) = module_value_mut(value, rest) else {
+        return false;
+    };
+    let Some(fields) = value_fields_mut(target) else {
+        return false;
+    };
+    for (name, output) in outputs {
+        fields.insert(name.clone(), output.clone());
+    }
+    true
+}
+
+fn module_value_mut<'a>(value: &'a mut Value, path: &[String]) -> Option<&'a mut Value> {
+    let mut current = value;
+    for segment in path {
+        current = match current {
+            Value::Struct(fields) => fields.get_mut(segment)?,
+            Value::Definition {
+                fields,
+                definitions,
+                ..
+            } => {
+                if fields.contains_key(segment) {
+                    fields.get_mut(segment)?
+                } else {
+                    definitions.get_mut(segment)?
+                }
+            }
+            _ => return None,
+        };
+    }
+    Some(current)
+}
+
+fn value_fields_mut(value: &mut Value) -> Option<&mut BTreeMap<String, Value>> {
+    match value {
+        Value::Struct(fields) => Some(fields),
+        Value::Definition { fields, .. } => Some(fields),
+        _ => None,
+    }
+}
+
 fn value_field<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
     match value {
         Value::Struct(fields) => fields.get(field),
@@ -4238,30 +4459,90 @@ fn resolve_command_alias_path(
     scopes: &[&[StructItem]],
     root: &[StructItem],
     imports: &ImportKinds,
+    module_values: &BTreeMap<String, Value>,
 ) -> Option<Vec<String>> {
     match expr {
-        Expr::Unify(left, right, _) => resolve_command_alias_path(left, scopes, root, imports)
-            .or_else(|| resolve_command_alias_path(right, scopes, root, imports)),
+        Expr::Unify(left, right, _) => {
+            resolve_command_alias_path(left, scopes, root, imports, module_values)
+                .or_else(|| resolve_command_alias_path(right, scopes, root, imports, module_values))
+        }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            resolve_command_alias_path(inner, scopes, root, imports)
+            resolve_command_alias_path(inner, scopes, root, imports, module_values)
         }
         _ => {
-            let (path, true) =
-                resolve_after_path(expr, scopes, root, &mut std::collections::BTreeSet::new())?
-            else {
-                return None;
-            };
-            let value = find_field_expr_at_path(root, &path)?;
-            is_task_expr(
-                value,
+            if let Some((path, true)) =
+                resolve_after_path(expr, scopes, root, &mut std::collections::BTreeSet::new())
+                && let Some(value) = find_field_expr_at_path(root, &path)
+                && is_task_expr(
+                    value,
+                    scopes,
+                    root,
+                    &mut std::collections::BTreeSet::new(),
+                    imports,
+                )
+            {
+                return Some(path);
+            }
+            module_task_path_scoped(
+                expr,
                 scopes,
                 root,
+                module_values,
                 &mut std::collections::BTreeSet::new(),
-                imports,
             )
-            .then_some(path)
         }
     }
+}
+
+/// Like [`module_task_path`], following local `let`/field bindings first.
+fn module_task_path_scoped(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    module_values: &BTreeMap<String, Value>,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<Vec<String>> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return None;
+            }
+            let resolved = match local_binding_location(scopes, root, name) {
+                Some((_, StructItem::Let { value, .. })) => {
+                    module_task_path_scoped(value, scopes, root, module_values, visited)
+                }
+                Some((_, StructItem::Field(field))) if !field.definition => {
+                    module_task_path_scoped(&field.value, scopes, root, module_values, visited)
+                }
+                _ => module_task_path(expr, module_values),
+            };
+            visited.remove(name);
+            resolved
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            module_task_path_scoped(inner, scopes, root, module_values, visited)
+        }
+        _ => module_task_path(expr, module_values),
+    }
+}
+
+/// Resolve a selector rooted at an import to a module task path.
+fn module_task_path(expr: &Expr, module_values: &BTreeMap<String, Value>) -> Option<Vec<String>> {
+    let path = selector_names(expr, None)?;
+    let (root_name, rest) = path.split_first()?;
+    let mut value = module_values.get(root_name)?;
+    for segment in rest {
+        value = value_field(value, segment)?;
+    }
+    value_fields(value)?.contains_key("$id").then_some(path)
+}
+
+fn module_task_value<'a>(value: &'a Value, path: &[String]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        current = value_field(current, segment)?;
+    }
+    Some(current)
 }
 
 /// Package paths that command task fields alias (`r: prep`, `r: group.prep`),
@@ -4271,6 +4552,7 @@ fn collect_command_task_package_paths(
     scopes: &[&[StructItem]],
     root: &[StructItem],
     imports: &ImportKinds,
+    module_values: &BTreeMap<String, Value>,
     out: &mut std::collections::BTreeMap<String, Vec<String>>,
 ) {
     match expr {
@@ -4297,20 +4579,32 @@ fn collect_command_task_package_paths(
                     imports,
                 );
                 if child_is_task
-                    && let Some(path) =
-                        resolve_command_alias_path(&field.value, scopes, root, imports)
+                    && let Some(path) = resolve_command_alias_path(
+                        &field.value,
+                        scopes,
+                        root,
+                        imports,
+                        module_values,
+                    )
                 {
                     out.entry(label.clone()).or_insert(path);
                 }
-                collect_command_task_package_paths(&field.value, scopes, root, imports, out);
+                collect_command_task_package_paths(
+                    &field.value,
+                    scopes,
+                    root,
+                    imports,
+                    module_values,
+                    out,
+                );
             }
         }
         Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            collect_command_task_package_paths(left, scopes, root, imports, out);
-            collect_command_task_package_paths(right, scopes, root, imports, out);
+            collect_command_task_package_paths(left, scopes, root, imports, module_values, out);
+            collect_command_task_package_paths(right, scopes, root, imports, module_values, out);
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            collect_command_task_package_paths(inner, scopes, root, imports, out);
+            collect_command_task_package_paths(inner, scopes, root, imports, module_values, out);
         }
         _ => {}
     }
