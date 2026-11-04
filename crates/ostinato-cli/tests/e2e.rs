@@ -7067,6 +7067,56 @@ command: defcontainerdeclread: {
             false,
         ),
         (
+            "defcontainerreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+command: defcontainerreadfirst: {
+	q: cli.Print & {text: "R=\(#G.run.stdout)"}
+	a: p1: #G.run
+}
+"#,
+            true,
+        ),
+        (
+            "defaliasreadfirst",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#b: {run: lib.run}
+#a: #b
+command: defaliasreadfirst: {
+	q: cli.Print & {text: "R=\(#a.run.stdout)"}
+	x: p1: #b.run
+}
+"#,
+            true,
+        ),
+        (
+            "defaliasdeclread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#b: {run: lib.run}
+#a: #b
+command: defaliasdeclread: {
+	x: p1: #a.run
+	q: cli.Print & {text: "R=\(#a.run.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
             "defcontaineraliasdecl",
             r#"
 package foo
