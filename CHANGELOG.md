@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.22.2
+
+Complete tool-task pre-validation.
+
+- Concrete invalid `exec.Run` inputs (`cmd` type/empty, `dir`, `env`, `stdin`, `stdout`/`stderr` capture types, `mustSucceed`) are rejected before any task runs, so sibling prints/files never execute.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.22.1
 
 Tool-task input validation and documented limits.

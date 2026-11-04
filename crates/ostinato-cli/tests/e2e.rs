@@ -3961,6 +3961,20 @@ import "tool/exec"
 command: stdoutconflict: {run: exec.Run & {cmd: ["sh", "-c", "echo O"], stdout: *"x" | null}}
 "#,
         ),
+        (
+            "baddir",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: baddir: {
+	print: cli.Print & {text: "SIBLING"}
+	run: exec.Run & {$after: print, cmd: ["echo", "R"], dir: 5}
+}
+"#,
+        ),
     ];
     for (name, source) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");

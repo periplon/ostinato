@@ -1595,23 +1595,117 @@ fn validate_task_inputs(
         };
         match id.as_str() {
             "tool/exec.Run" => {
-                if let Some(Value::List(items)) = task.get("cmd") {
-                    for item in items {
-                        if !matches!(
-                            item.concretize(),
-                            Value::String(_) | Value::Type(_) | Value::Bottom
-                        ) {
+                if let Some(cmd) = task.get("cmd") {
+                    match cmd {
+                        Value::String(text) => {
+                            if text.split_whitespace().next().is_none() {
+                                return Err(ostinato_lang::LangError::Workflow(
+                                    "tool/exec.Run `cmd` must not be empty".to_owned(),
+                                ));
+                            }
+                        }
+                        Value::List(items) => {
+                            if items.is_empty() {
+                                return Err(ostinato_lang::LangError::Workflow(
+                                    "tool/exec.Run `cmd` must not be empty".to_owned(),
+                                ));
+                            }
+                            for item in items {
+                                if !matches!(
+                                    item.concretize(),
+                                    Value::String(_) | Value::Type(_) | Value::Bottom
+                                ) {
+                                    return Err(ostinato_lang::LangError::Workflow(
+                                        "tool/exec.Run `cmd` element must be a string".to_owned(),
+                                    ));
+                                }
+                            }
+                        }
+                        Value::Type(_) | Value::Bottom => {}
+                        _ => {
                             return Err(ostinato_lang::LangError::Workflow(
-                                "tool/exec.Run `cmd` element must be a string".to_owned(),
+                                "tool/exec.Run `cmd` must be a string or list of strings"
+                                    .to_owned(),
                             ));
                         }
                     }
                 }
-                if let Some(Value::Bool(_)) | None = task.get("mustSucceed") {
-                } else if let Some(value) = task.get("mustSucceed")
+                if let Some(value) = task.get("dir")
                     && !matches!(
                         value,
-                        Value::Type(_) | Value::Bottom | Value::Disjunction(..)
+                        Value::String(_) | Value::Type(_) | Value::Bottom | Value::Disjunction(..)
+                    )
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/exec.Run `dir` must be a string".to_owned(),
+                    ));
+                }
+                match task.get("env") {
+                    None
+                    | Some(Value::Type(_))
+                    | Some(Value::Bottom)
+                    | Some(Value::Disjunction(..)) => {}
+                    Some(Value::Struct(env)) => {
+                        for value in env.values() {
+                            if !matches!(
+                                value.concretize(),
+                                Value::String(_) | Value::Type(_) | Value::Bottom
+                            ) {
+                                return Err(ostinato_lang::LangError::Workflow(
+                                    "tool/exec.Run `env` values must be strings".to_owned(),
+                                ));
+                            }
+                        }
+                    }
+                    Some(Value::List(entries)) => {
+                        for entry in entries {
+                            if !matches!(
+                                entry.concretize(),
+                                Value::String(_) | Value::Type(_) | Value::Bottom
+                            ) {
+                                return Err(ostinato_lang::LangError::Workflow(
+                                    "tool/exec.Run `env` list entries must be `NAME=value` strings"
+                                        .to_owned(),
+                                ));
+                            }
+                        }
+                    }
+                    Some(_) => {
+                        return Err(ostinato_lang::LangError::Workflow(
+                            "tool/exec.Run `env` must be a struct or list".to_owned(),
+                        ));
+                    }
+                }
+                if let Some(value) = task.get("stdin")
+                    && !matches!(
+                        value,
+                        Value::Null
+                            | Value::String(_)
+                            | Value::Bytes(_)
+                            | Value::Type(_)
+                            | Value::Bottom
+                            | Value::Disjunction(..)
+                    )
+                {
+                    return Err(ostinato_lang::LangError::Workflow(
+                        "tool/exec.Run `stdin` must be a string or bytes".to_owned(),
+                    ));
+                }
+                for key in ["stdout", "stderr"] {
+                    match capture_kind(task, key) {
+                        Ok(CaptureKind::Other) => {
+                            return Err(ostinato_lang::LangError::Workflow(format!(
+                                "invalid {key}: conflicting values bytes and string"
+                            )));
+                        }
+                        Ok(CaptureKind::None | CaptureKind::String) => {}
+                        Err(err) => return Err(err),
+                    }
+                }
+                if let Some(value) = task.get("mustSucceed")
+                    && !matches!(
+                        value,
+                        Value::Bool(_) | Value::Type(_) | Value::Bottom | Value::Disjunction(..)
                     )
                 {
                     return Err(ostinato_lang::LangError::Workflow(
