@@ -22,6 +22,8 @@ Named agent definitions, external agent CLIs, traces and isolation.
   unless `keep: true`.
 - `improve` agent calls are traced too; `doctor` reports provider paths.
 - Docs: `docs/AGENTS.md`, README/LANGUAGE updates and `examples/agents.cue`.
+- 384 tests (77 CLI E2E, 1 conformance, 242 language, 6 language agents, 3 language unit,
+  18 application, 19 domain, 6 store, 6 workspace, 6 adapters unit).
 
 ## v0.22.3
 

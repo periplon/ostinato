@@ -1,0 +1,10 @@
+### agents a0e22ae9-fe88-47ca-8c43-7b02615e1761 --verify
+STEP                 ROUND ATTEMPT PROVIDER   MODEL        EXIT   DUR(ms)  ARTIFACTS TRACE
+warning: cannot list traces: store error: agent trace 1 is not valid JSON: missing field `run_id` at line 1 column 17
+TRACE FAILED trace=1 step=review attempt=0: trace hash does not match the stored trace JSON; trace JSON is invalid: missing field `run_id` at line 1 column 17
+exit=1
+
+### audit verify a0e22ae9-fe88-47ca-8c43-7b02615e1761
+AUDIT FAILED run=a0e22ae9-fe88-47ca-8c43-7b02615e1761: trace 1 (step=review attempt=0): trace hash does not match the stored trace JSON; trace JSON is invalid: missing field `run_id` at line 1 column 17
+exit=1
+

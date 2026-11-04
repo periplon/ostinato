@@ -1,0 +1,5 @@
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.QLCQjaENwL/agents.sqlite audit verify a0e22ae9-fe88-47ca-8c43-7b02615e1761
+
+OK run=a0e22ae9-fe88-47ca-8c43-7b02615e1761 events=8 head=ffed3d0c94775fee49f28090c09309a2a94194fe3e5ea37716081d41688d1750
+
+exit=0

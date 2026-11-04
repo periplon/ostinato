@@ -4608,3 +4608,124 @@ workflow: {{
     assert_eq!(traces["traces"][0]["trace"]["definition"], "reviewer");
     assert_eq!(traces["traces"][0]["trace"]["provider"], "codex");
 }
+
+#[test]
+fn resume_replays_a_group_without_trace_key_collisions() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let flag = directory.path().join("go");
+    let agent = directory.path().join("agent.sh");
+    write(&agent, "#!/bin/sh\ncat >/dev/null\necho '{\"score\":1}'\n");
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"]}}}}
+workflow: {{
+    name: "resume-traces"
+    steps: {{
+        a: {{kind: "agent", agent: {{use: "a", prompt: "x"}}}}
+        b: {{kind: "exec", exec: {{cmd: ["sh", "-c", "test -f {flag} || exit 7"]}}}}
+    }}
+}}
+"#,
+            agent = agent.display(),
+            flag = flag.display()
+        ),
+    );
+    let first = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(!first.status.success());
+    let run = run_id(&db);
+    let before = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    assert_eq!(json(&before)["traces"].as_array().expect("traces").len(), 1);
+    std::fs::write(&flag, "go").expect("flag");
+    let resumed = ost(&["--db", db.to_str().expect("db"), "resume", &run]);
+    assert!(
+        resumed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let after = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    let traces = json(&after);
+    let traces = traces["traces"].as_array().expect("traces");
+    assert_eq!(traces.len(), 2, "{traces:?}");
+    let verified = ost(&["--db", db.to_str().expect("db"), "agents", &run, "--verify"]);
+    assert!(
+        verified.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+}
+
+#[test]
+fn cycle_rounds_each_get_a_trace() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let counter = directory.path().join("counter");
+    let agent = directory.path().join("agent.sh");
+    write(
+        &agent,
+        &format!(
+            "#!/bin/sh\ncat >/dev/null\nn=$(cat {counter} 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > {counter}\ncase $n in 1) s=0.1;; 2) s=0.5;; *) s=0.95;; esac\necho \"{{\\\"score\\\":$s}}\"\n",
+            counter = counter.display()
+        ),
+    );
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"]}}}}
+workflow: {{
+    name: "cycle-traces"
+    steps: {{
+        review: {{
+            kind: "agent"
+            needs: ["review"]
+            cycle: {{max: 3, until: "steps.review.score >= 0.9"}}
+            agent: {{use: "a", prompt: "x"}}
+        }}
+    }}
+}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let traces = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    let traces = json(&traces);
+    let traces = traces["traces"].as_array().expect("traces");
+    assert_eq!(traces.len(), 3, "{traces:?}");
+    let rounds: Vec<u64> = traces
+        .iter()
+        .map(|item| item["trace"]["round"].as_u64().expect("round"))
+        .collect();
+    assert_eq!(rounds, vec![0, 1, 2]);
+    let verified = ost(&["--db", db.to_str().expect("db"), "agents", &run, "--verify"]);
+    assert!(verified.status.success());
+}

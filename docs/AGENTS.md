@@ -112,7 +112,9 @@ Every process receives `OSTINATO_STEP`, `OSTINATO_RUN_ID`, `OSTINATO_MODEL`,
 `OSTINATO_PROVIDER` and `OSTINATO_AGENT_NAME`. `OSTINATO_AGENT` is **not**
 overwritten: it remains the command configured by `--agent-cmd`. Dangerous
 variables (`LD_PRELOAD`, `DYLD_*`, `GIT_*`, `NODE_OPTIONS`, ...) and the
-reserved `OSTINATO_*` names are rejected in `agents.*.env`.
+reserved `OSTINATO_AGENT`, `OSTINATO_AGENT_NAME`, `OSTINATO_STEP`,
+`OSTINATO_RUN_ID`, `OSTINATO_MODEL` and `OSTINATO_PROVIDER` names are rejected
+in `agents.*.env` and step-level `agent.env`.
 
 ## Traces
 
@@ -134,6 +136,11 @@ The step output contains an `agent` object with `traceId`, `traceHash`,
 provider/definition/isolation metadata, artifact metadata, timestamps and
 error fields. The flat `provider` field keeps its historical meaning: the
 executable that ran (for example `claude` or `./agent.sh`).
+
+`ostinato agents --json` returns the serde representation of the trace, whose
+field names are `snake_case` (`isolation_path`, `isolation_base`,
+`prompt_sha256`, `stored_size`, ...). The `ostinato artifacts --json` summary
+uses `camelCase` (`traceId`, `storedSize`, `step`, `round`, `attempt`).
 
 ### Verification
 
@@ -169,6 +176,9 @@ database remains the durability boundary.
 - In `worktree` mode, changed, created and deleted files are captured
   automatically, plus `_isolation/changes.patch` (untracked files included,
   generated with a private index and `--no-ext-diff --no-textconv`).
+- Commands and relative artifact globs resolve against the workflow
+  directory, in both isolation modes. `./agent.sh` in `examples/workflow.cue`
+  therefore means `examples/agent.sh`.
 
 ```sh
 ostinato artifacts <run>

@@ -1,9 +1,9 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.aLpLVapIfC/db.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/hello.cue -p name=Ostinato
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.QLCQjaENwL/db.sqlite --cue cue run examples/hello.cue -p name=Ostinato
 
-run=23e9f259-9f00-4f2a-931b-d8ec7c718ebb workflow=hello status=succeeded durationMs=12
+run=a727a40f-911d-4c0a-ae4c-c683657e96ef workflow=hello status=succeeded durationMs=15
 STEP                     STATUS     VISITS ATTEMPTS
-audit                    succeeded  1      1       
-greet                    succeeded  1      1       
-prepare                  succeeded  1      1       
+audit                    succeeded  1      1
+greet                    succeeded  1      1
+prepare                  succeeded  1      1
 
 exit=0

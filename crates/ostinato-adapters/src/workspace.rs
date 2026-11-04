@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -666,8 +666,10 @@ pub fn write_artifact(
     let parent = destination
         .parent()
         .ok_or_else(|| format!("artifact `{name}` has no parent directory"))?;
-    fs::create_dir_all(parent)
-        .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+    let relative_parent = parent
+        .strip_prefix(root)
+        .map_err(|_| format!("artifact `{name}` has no parent under the extraction root"))?;
+    create_dirs_no_symlink(root, relative_parent)?;
     let canonical_root = fs::canonicalize(root)
         .map_err(|err| format!("cannot canonicalize {}: {err}", root.display()))?;
     let canonical_parent = fs::canonicalize(parent)
@@ -700,27 +702,45 @@ pub fn write_artifact(
     Ok(destination)
 }
 
+fn create_dirs_no_symlink(root: &Path, relative: &Path) -> Result<(), String> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return Err(format!(
+                "unsafe extraction path component in {}",
+                relative.display()
+            ));
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    return Err(format!(
+                        "extraction path {} is a symbolic link",
+                        current.display()
+                    ));
+                }
+                if !metadata.is_dir() {
+                    return Err(format!(
+                        "extraction path {} is not a directory",
+                        current.display()
+                    ));
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current)
+                    .map_err(|err| format!("cannot create {}: {err}", current.display()))?;
+            }
+            Err(err) => {
+                return Err(format!("cannot inspect {}: {err}", current.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Convenience for tests and callers that only need the safe relative check.
 #[must_use]
 pub fn is_safe_relative(path: &str) -> bool {
     safe_relative(path)
-}
-
-/// Names captured from git status, exposed for adapter tests.
-#[doc(hidden)]
-pub fn git_status_names(cwd: &Path) -> Vec<String> {
-    git_changes(cwd)
-        .map(|changes| changes.into_iter().map(|(name, _)| name).collect())
-        .unwrap_or_default()
-}
-
-/// Deterministic sorted set used by tests.
-#[doc(hidden)]
-pub fn sorted_unique(values: &[String]) -> Vec<String> {
-    values
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
 }

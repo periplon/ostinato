@@ -14,6 +14,30 @@ use wait_timeout::ChildExt;
 
 const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Variables that must not leak into an agent from the engine's environment.
+const DANGEROUS_INHERITED: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "BASH_ENV",
+    "ENV",
+    "SHELLOPTS",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_COUNT",
+    "GIT_SSH_COMMAND",
+    "PROMPT_COMMAND",
+    "NODE_OPTIONS",
+    "PYTHONSTARTUP",
+    "PERL5OPT",
+    "RUBYOPT",
+];
+
 /// Executes deterministic commands with bounded timeouts and captured output.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ProcessExecutor;
@@ -308,6 +332,9 @@ impl AgentRunner for CommandAgent {
             .collect();
 
         let mut process = Command::new(&program);
+        for key in DANGEROUS_INHERITED {
+            process.env_remove(key);
+        }
         process
             .args(&args)
             .envs(&env)
@@ -563,5 +590,49 @@ mod tests {
             .invocation(&request(AgentProvider::Command))
             .expect_err("missing command");
         assert!(error.to_string().contains("agent step requires"));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn timed_out_agents_still_capture_output() {
+        let agent = CommandAgent::default();
+        let mut request = request_for_timeout();
+        request.command = Some(vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "echo before-timeout; sleep 5".to_owned(),
+        ]);
+        request.timeout = Some(Duration::from_millis(150));
+        let outcome = agent.run(&request).expect("run");
+        assert!(outcome.timed_out);
+        assert!(!outcome.success);
+        assert!(
+            outcome.stdout.contains("before-timeout"),
+            "{:?}",
+            outcome.stdout
+        );
+        assert!(outcome.error.expect("error").contains("timed out"));
+    }
+
+    fn request_for_timeout() -> AgentRequest {
+        AgentRequest {
+            run_id: "run".to_owned(),
+            step: "step".to_owned(),
+            definition: None,
+            provider: AgentProvider::Command,
+            prompt: "prompt".to_owned(),
+            system: None,
+            model: None,
+            command: None,
+            prompt_delivery: None,
+            env: BTreeMap::new(),
+            timeout: None,
+            cwd: None,
+        }
     }
 }
