@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.27.3
+
+Builtin-import selectors are concrete for injection gating.
+
+- Unresolvable selector roots are task-bearing only for tool/local-module
+  imports; builtin imports (`math`, `time`, `strings`, `regexp`, `list`) are
+  treated as concrete. Concrete fields such as `math.Pi & number` or
+  `time.RFC3339 & string` no longer absorb injected outputs when a task shares
+  their name, in let-rooted and direct selectors.
+- Added e2e and conformance parity cases for both shapes.
+- 433 tests (96 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.27.2
 
 Semantic task-identity gating for injection.

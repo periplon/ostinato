@@ -104,7 +104,9 @@ rejects:
   for these shapes (while direct `let` commands and concrete-field selectors
   work in both). Injection targets only fields that are actual task
   declarations, so unrelated concrete fields that merely share a scheduled
-  task's name—including ones that reference sibling values—are left untouched.
+  task's name—including ones that reference sibling values, defaults, or
+  builtin-import selectors such as `math.Pi`/`time.RFC3339`—are left
+  untouched.
   This extension is covered by
   `conformance/tool_cases/selector-let-injection` (marked `extension`) and the
   `tool_command_let_selector_injection_is_an_ostinato_extension` e2e test.
