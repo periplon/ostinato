@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.29.3
+
+Module-suppression follows resolved commands.
+
+- Multi-task suppression resolves referenced, `let`-bound and parenthesised
+  command values before counting task declarations, so commands like
+  `command: c: base` and `command: c: (base)` no longer bypass CUE's
+  non-concrete behaviour for same-module task pairs.
+- Task values are keyed by import alias or let binding, so a `let` task used
+  twice is suppressed while single uses keep their injection.
+- Added e2e regressions for base/let/paren command values.
+- 437 tests (100 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.29.2
 
 Multiple module exports documented as an extension.

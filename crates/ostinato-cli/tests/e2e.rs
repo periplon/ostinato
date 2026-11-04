@@ -6919,6 +6919,80 @@ command: moduletwo: {
     );
     assert_eq!(actual.status.code(), expected.status.code());
     assert_eq!(actual.stdout, expected.stdout);
+
+    // Suppression must follow referenced/let/parenthesised command values.
+    let referenced = [
+        (
+            "moduletwobase",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: {
+	a: p1: lib.tasks.r1
+	b: p2: lib.tasks.r2
+	q: cli.Print & {text: "R=\(a.p1.stdout)-\(b.p2.stdout)"}
+}
+command: moduletwobase: base
+"#,
+        ),
+        (
+            "moduletwolet",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+command: moduletwolet: {
+	let base = {
+		a: p1: lib.tasks.r1
+		b: p2: lib.tasks.r2
+		q: cli.Print & {text: "R=\(a.p1.stdout)-\(b.p2.stdout)"}
+	}
+	x: base
+}
+"#,
+        ),
+        (
+            "moduletwoparen",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: {
+	a: p1: lib.tasks.r1
+	b: p2: lib.tasks.r2
+	q: cli.Print & {text: "R=\(a.p1.stdout)-\(b.p2.stdout)"}
+}
+command: moduletwoparen: (base)
+"#,
+        ),
+    ];
+    for (name, source) in referenced {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+            std::fs::create_dir_all(directory.join("lib")).expect("lib");
+            write(&directory.join("cue.mod/module.cue"), module);
+            write(&directory.join("lib/lib.cue"), library);
+            write(&directory.join("x_tool.cue"), source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert!(!expected.status.success(), "{name}: cue must reject");
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+    }
 }
 
 #[test]

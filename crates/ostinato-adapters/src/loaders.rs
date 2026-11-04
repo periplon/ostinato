@@ -3091,13 +3091,56 @@ fn import_task_alias(expr: &Expr, imports: &ImportKinds) -> Option<String> {
     }
 }
 
-fn collect_import_task_fields(
-    value: &Expr,
+fn is_task_leaf(expr: &Expr) -> bool {
+    match expr {
+        Expr::Select(..) | Expr::Index(..) | Expr::Ident(..) => true,
+        Expr::Unify(left, right, _) => is_task_leaf(left) || is_task_leaf(right),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            is_task_leaf(inner)
+        }
+        Expr::Struct(..) => struct_has_task_id(expr),
+        _ => false,
+    }
+}
+
+/// Identity of the value a task declaration draws its outputs from.
+///
+/// Imports are shared by alias and let bindings by name, matching CUE's
+/// behaviour of failing to inject when one source feeds several tasks.
+fn task_value_key<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
     imports: &ImportKinds,
+) -> Option<String> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if local_definition_scopes(scopes, root, name).is_some() {
+                Some(format!("ident:{name}"))
+            } else {
+                None
+            }
+        }
+        Expr::Unify(left, right, _) => task_value_key(left, scopes, root, imports)
+            .or_else(|| task_value_key(right, scopes, root, imports)),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            task_value_key(inner, scopes, root, imports)
+        }
+        _ => import_task_alias(expr, imports).map(|alias| format!("import:{alias}")),
+    }
+}
+
+fn collect_import_task_fields<'a>(
+    value: &'a Expr,
+    scopes: &mut Vec<&'a [StructItem]>,
+    root: &'a [StructItem],
+    imports: &ImportKinds,
+    visited: &mut std::collections::BTreeSet<String>,
     ids: &mut std::collections::BTreeMap<String, Vec<usize>>,
 ) {
     match value {
         Expr::Struct(items, _) => {
+            scopes.push(items);
             for item in items {
                 let StructItem::Field(field) = item else {
                     continue;
@@ -3108,18 +3151,36 @@ fn collect_import_task_fields(
                 {
                     continue;
                 }
-                if let Some(alias) = import_task_alias(&field.value, imports) {
-                    ids.entry(alias).or_default().push(field.id);
+                if is_task_leaf(&field.value)
+                    && is_task_expr(
+                        &field.value,
+                        scopes,
+                        root,
+                        &mut std::collections::BTreeSet::new(),
+                        imports,
+                    )
+                    && let Some(key) = task_value_key(&field.value, scopes, root, imports)
+                {
+                    ids.entry(key).or_default().push(field.id);
                 }
-                collect_import_task_fields(&field.value, imports, ids);
+                collect_import_task_fields(&field.value, scopes, root, imports, visited, ids);
+            }
+            scopes.pop();
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return;
+            }
+            if let Some(value) = local_definition_scopes(scopes, root, name) {
+                collect_import_task_fields(value, scopes, root, imports, visited, ids);
             }
         }
         Expr::Unify(left, right, _) => {
-            collect_import_task_fields(left, imports, ids);
-            collect_import_task_fields(right, imports, ids);
+            collect_import_task_fields(left, scopes, root, imports, visited, ids);
+            collect_import_task_fields(right, scopes, root, imports, visited, ids);
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            collect_import_task_fields(inner, imports, ids);
+            collect_import_task_fields(inner, scopes, root, imports, visited, ids);
         }
         _ => {}
     }
@@ -3153,9 +3214,24 @@ fn inject_command_outputs(
                 continue;
             };
             if matches!(&command_field.label, Label::Name(name, _) if name == command_name) {
-                collect_import_task_fields(
+                // Resolve referenced/let/parenthesised command values so the
+                // suppression pass sees the same declarations that get
+                // scheduled.
+                let mut resolved = Vec::new();
+                resolve_command_items(
+                    items,
                     &command_field.value,
+                    &mut std::collections::BTreeSet::new(),
+                    &mut resolved,
+                );
+                let resolved_expr = Expr::Struct(resolved, command_field.value.span());
+                let mut scopes = Vec::new();
+                collect_import_task_fields(
+                    &resolved_expr,
+                    &mut scopes,
+                    items,
                     non_task_imports,
+                    &mut std::collections::BTreeSet::new(),
                     &mut import_task_fields,
                 );
             }
