@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.25.1
+
+Inherited `$after` for composed tasks.
+
+- `$after` declared in a referenced base or open definition is resolved when
+  the task value composes it (`run: exec.Run & base`, `exec.Run & #base`),
+  including list forms, matching `cue cmd` ordering.
+- Added e2e fixtures and tool-conformance cases (base, open definition and
+  list `$after`) with artifact assertions.
+- 430 tests (95 CLI E2E, 1 conformance, 1 tool conformance, 245 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.25.0
 
 Task-level composed output injection.

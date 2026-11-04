@@ -1086,7 +1086,14 @@ pub fn run_tool_command(
         eval_file_with_imports_mode_allow_incomplete(&combined, &imports, &injected, false)?;
     let probe_tasks = extract_command_tasks(&probe, command_name)?;
     let mut probe_scheduled = Vec::new();
-    collect_schedule(&probe_tasks, Some(&task_items), &mut probe_scheduled)?;
+    let mut probe_scopes = Vec::new();
+    collect_schedule(
+        &probe_tasks,
+        Some(&task_items),
+        &combined.items,
+        &mut probe_scopes,
+        &mut probe_scheduled,
+    )?;
     let task_name_set: std::collections::HashSet<String> = probe_scheduled
         .iter()
         .map(|(name, _, _)| name.clone())
@@ -1101,7 +1108,14 @@ pub fn run_tool_command(
     let mut tasks = extract_command_tasks(&value, command_name)?;
 
     let mut scheduled = Vec::new();
-    collect_schedule(&tasks, Some(&task_items), &mut scheduled)?;
+    let mut schedule_scopes = Vec::new();
+    collect_schedule(
+        &tasks,
+        Some(&task_items),
+        &combined.items,
+        &mut schedule_scopes,
+        &mut scheduled,
+    )?;
     if scheduled.is_empty() {
         return Err(ostinato_lang::LangError::Workflow(format!(
             "tool command `{command_name}` has no tasks"
@@ -1199,7 +1213,14 @@ pub fn run_tool_command(
                         )?;
                         tasks = extract_command_tasks(&value, command_name)?;
                         let mut rescheduled = Vec::new();
-                        collect_schedule(&tasks, Some(&task_items), &mut rescheduled)?;
+                        let mut reschedule_scopes = Vec::new();
+                        collect_schedule(
+                            &tasks,
+                            Some(&task_items),
+                            &combined.items,
+                            &mut reschedule_scopes,
+                            &mut rescheduled,
+                        )?;
                         add_output_dependencies(&combined.items, &mut rescheduled);
                         flat = rescheduled
                             .iter()
@@ -1703,20 +1724,48 @@ fn named_field<'a>(items: &'a [StructItem], name: &str) -> Option<&'a Expr> {
     })
 }
 
-fn after_expr(expr: &Expr) -> Option<&Expr> {
+fn after_expr<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    expr: &'a Expr,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<&'a Expr> {
     match expr {
         Expr::Struct(items, _) => named_field(items, "$after"),
-        Expr::Unify(left, right, _) => after_expr(left).or_else(|| after_expr(right)),
-        Expr::Paren(inner, _) | Expr::Default(inner, _) => after_expr(inner),
+        Expr::Unify(left, right, _) => after_expr(scopes, root, left, visited)
+            .or_else(|| after_expr(scopes, root, right, visited)),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            after_expr(scopes, root, inner, visited)
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return None;
+            }
+            let value = local_definition_scopes(scopes, root, name)?;
+            after_expr(scopes, root, value, visited)
+        }
+        Expr::Select(..) | Expr::Index(..) => {
+            let value = resolve_local_value(scopes, root, expr, visited)?;
+            after_expr(scopes, root, value, visited)
+        }
         _ => None,
     }
 }
 
-fn after_names(item: &StructItem) -> Result<Vec<String>, ostinato_lang::LangError> {
+fn after_names(
+    item: &StructItem,
+    root: &[StructItem],
+    scopes: &[&[StructItem]],
+) -> Result<Vec<String>, ostinato_lang::LangError> {
     let StructItem::Field(field) = item else {
         return Ok(Vec::new());
     };
-    let Some(after) = after_expr(&field.value) else {
+    let Some(after) = after_expr(
+        scopes,
+        root,
+        &field.value,
+        &mut std::collections::BTreeSet::new(),
+    ) else {
         return Ok(Vec::new());
     };
     let mut names = Vec::new();
@@ -1743,11 +1792,16 @@ fn collect_after_names(expr: &Expr, out: &mut Vec<String>) -> Result<(), ostinat
     }
 }
 
-fn collect_schedule(
+fn collect_schedule<'a>(
     map: &BTreeMap<String, Value>,
-    ast: Option<&[StructItem]>,
+    ast: Option<&'a [StructItem]>,
+    root: &'a [StructItem],
+    scopes: &mut Vec<&'a [StructItem]>,
     out: &mut Vec<(String, Vec<String>, BTreeMap<String, Value>)>,
 ) -> Result<(), ostinato_lang::LangError> {
+    if let Some(items) = ast {
+        scopes.push(items);
+    }
     for (key, value) in map {
         if key.starts_with('$') || key.starts_with('_') || key.starts_with('#') {
             continue;
@@ -1758,7 +1812,7 @@ fn collect_schedule(
         let item = ast.and_then(|items| field_item(items, key));
         if fields.contains_key("$id") {
             let dependencies = match ast {
-                Some(items) => after_names_union(items, key)?,
+                Some(items) => after_names_union(items, key, root, scopes)?,
                 None => Vec::new(),
             };
             out.push((key.clone(), dependencies, fields.clone()));
@@ -1771,7 +1825,10 @@ fn collect_schedule(
             },
             _ => None,
         });
-        collect_schedule(fields, sub_ast, out)?;
+        collect_schedule(fields, sub_ast, root, scopes, out)?;
+    }
+    if ast.is_some() {
+        scopes.pop();
     }
     Ok(())
 }
@@ -1779,6 +1836,8 @@ fn collect_schedule(
 fn after_names_union(
     items: &[StructItem],
     name: &str,
+    root: &[StructItem],
+    scopes: &[&[StructItem]],
 ) -> Result<Vec<String>, ostinato_lang::LangError> {
     let mut dependencies = Vec::new();
     for item in items {
@@ -1788,7 +1847,7 @@ fn after_names_union(
         if !matches!(&field.label, Label::Name(label, _) if label == name) {
             continue;
         }
-        for dependency in after_names(item)? {
+        for dependency in after_names(item, root, scopes)? {
             if !dependencies.contains(&dependency) {
                 dependencies.push(dependency);
             }

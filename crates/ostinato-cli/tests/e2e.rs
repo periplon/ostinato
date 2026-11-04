@@ -4924,6 +4924,58 @@ command: tasksuccess: {
 "#,
             false,
         ),
+        (
+            "taskafterbase",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: taskafterbase: {
+	base: {cmd: ["sh", "-c", "test -f ready && printf 'R' || printf 'X'"], stdout: string, $after: z}
+	run:  exec.Run & base
+	p:    cli.Print & {text: "P=\(run.stdout)"}
+	z:    exec.Run & {cmd: ["sh", "-c", "touch ready"]}
+}
+"#,
+            false,
+        ),
+        (
+            "taskafterdef",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: taskafterdef: {
+	#base: {cmd: ["sh", "-c", "test -f ready && printf 'R' || printf 'X'"], stdout: string, $after: z, ...}
+	run:   exec.Run & #base
+	p:     cli.Print & {text: "P=\(run.stdout)"}
+	z:     exec.Run & {cmd: ["sh", "-c", "touch ready"]}
+}
+"#,
+            false,
+        ),
+        (
+            "taskafterlist",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: taskafterlist: {
+	base: {cmd: ["sh", "-c", "test -f a && test -f b && printf 'R' || printf 'X'"], stdout: string, $after: [z, m]}
+	run:  exec.Run & base
+	p:    cli.Print & {text: "P=\(run.stdout)"}
+	z:    exec.Run & {cmd: ["sh", "-c", "touch a"]}
+	m:    exec.Run & {cmd: ["sh", "-c", "touch b"]}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");

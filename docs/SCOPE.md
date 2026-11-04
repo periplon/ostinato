@@ -55,7 +55,8 @@ workflow outside the Rust surface has a supported escape hatch.
   injection and interpolation for literal task structs, composed task values
   (`exec.Run & base`, open `#Def`, unified bindings), referenced commands
   (`command: c: base`, `lib.base`/`lib["base"]` selectors, lets, unified bases,
-  alias chains) and helper fields/lets, `$after` ordering and `@tag` injection;
+  alias chains) and helper fields/lets, `$after` ordering (including inherited
+  from composed bases/definitions) and `@tag` injection;
 - workflow gateways (`kind: "gateway"`): XOR/OR/AND splits and joins, `n_of`
   quorum joins, complex `expression` joins, branch conditions, default
   branches, dead-path elimination, `stepStatus` routing, gateway-bearing
