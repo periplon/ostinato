@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.29.2
+
+Multiple module exports documented as an extension.
+
+- Ostinato deterministically supports commands that materialise tasks from
+  two local modules or aliases; CUE v0.17.1 leaves their outputs
+  non-concrete. Documented under `Extensions beyond CUE` and covered by the
+  `module-task-multi-module` extension conformance case.
+- 437 tests (100 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.29.1
 
 Module-task export corrections.

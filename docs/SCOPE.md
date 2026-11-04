@@ -100,6 +100,14 @@ workflow outside the Rust surface has a supported escape hatch.
 Ostinato intentionally accepts a small number of programs that CUE v0.17.1
 rejects:
 
+- **Multiple local-module task exports in one command.** When a command
+  materialises task values from two local modules or two aliases (for example
+  `liba.run` and `libb.run`), CUE v0.17.1 leaves their outputs non-concrete and
+  fails when they are consumed; Ostinato schedules and injects both. Covered by
+  `conformance/tool_cases/module-task-multi-module` (marked `extension`). CUE's
+  behaviour when only one of several imported tasks is consumed is
+  nondeterministic, so the extension is deterministic in Ostinato.
+
 - **Task outputs through a `let` selector.** `command: c: group.inner` where
   `group` is a `let` receives injected `stdout`/`success`, including through
   helper fields and alias/index selectors. CUE reports a non-concrete value
