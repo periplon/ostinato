@@ -23,3 +23,4 @@ case "$MAJOR_MINOR" in
 esac
 
 cargo test -p ostinato --test conformance -- --nocapture
+cargo test -p ostinato --test tool_conformance -- --nocapture

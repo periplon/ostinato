@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.24.3
+
+Selector-valued tool commands.
+
+- `command: c: lib.base`, nested `lib.inner.base`, quoted/index selectors,
+  `#Def.base`, parenthesised bases, unified selectors and alias chains
+  (`lib: {base: other.inner}`, intermediate aliases) resolve for task
+  scheduling, `$after` and output injection.
+- Selectors through a `let` cannot receive task outputs (matching cue's
+  non-concrete error); they are rejected before executing tasks. Whole
+  `let`-valued commands and let selectors without output references still run.
+- New `conformance/tool_cases` corpus and `tool_conformance` test compare
+  `cue cmd` and `ostinato cmd` for selector scheduling, aliases, `$after`
+  and artifact files.
+- 430 tests (95 CLI E2E, 1 conformance, 1 tool conformance, 245 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.24.2
 
 Reproducible worktree evidence.
