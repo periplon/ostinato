@@ -78,7 +78,7 @@ The Rust evaluator handles package selection, same-package sibling files, import
 | `retry.jitter` | `bool` | `true` | Deterministic jitter in `[0.5, 1.5)` |
 | `cycle` | `{max: int 1..=1000, until?: string}` | none | Bounded cycle policy (default `max: 3` if omitted) |
 | `exec` | object | none | Required for `kind: "exec"` |
-| `agent` | object | none | Required for `kind: "agent"` |
+| `agent` | object or string | none | Required for `kind: "agent"`; inline fields, `{use: "<name>"}`, or `"<name>"` shorthand |
 | `improve` | object | none | Required for `kind: "improve"` |
 | `continueOnError` | `bool` | `false` | Keep the run going after this step fails |
 | `timeoutMs` | `int >= 0` | `600000` for exec, 300000 for agent | Per-attempt timeout |

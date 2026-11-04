@@ -1619,8 +1619,8 @@ impl Engine {
             capture_error,
             cleanup_error,
         };
-        let trace_hash = trace.trace_hash();
         let record = self.store.record_agent_trace(&trace, &artifacts)?;
+        let trace_hash = record.trace_hash.clone();
 
         let parsed = parse_json_maybe(&outcome.stdout);
         let score = parsed

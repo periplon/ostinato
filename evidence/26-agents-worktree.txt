@@ -1,7 +1,5 @@
 ### git status --porcelain (checkout must stay clean)
- M crates/ostinato-adapters/src/process.rs
- M crates/ostinato-cli/tests/e2e.rs
- M evidence/00-environment.txt
+ M crates/ostinato-application/src/engine.rs
  M evidence/01-quality.txt
  M evidence/02-validate-rust.txt
  M evidence/02b-validate-oracle.txt
@@ -27,17 +25,19 @@
  M evidence/18-gateways-run.txt
  M evidence/18-gateways-status.txt
  M evidence/18-gateways-trials.txt
-?? evidence/19-agents-validate.txt
-?? evidence/20-agents-run.txt
-?? evidence/21-agents-traces.txt
-?? evidence/22-agents-verify.txt
-?? evidence/23-agents-artifacts.txt
-?? evidence/24-agents-extract.txt
-?? evidence/25-agents-audit.txt
-?? evidence/26-agents-worktree.txt
+ M evidence/19-agents-validate.txt
+ M evidence/20-agents-run.txt
+ M evidence/21-agents-traces.txt
+ M evidence/22-agents-verify.txt
+ M evidence/23-agents-artifacts.txt
+ M evidence/24-agents-extract.txt
+ M evidence/25-agents-audit.txt
+ M evidence/26-agents-worktree.txt
+ D evidence/27-agents-doctor.txt
+ D evidence/28-agents-tamper.txt
 
 ### git worktree list
-/Users/joanmarc/dailywork/jmca/ostinato                              c2406e5 [main]
+/Users/joanmarc/dailywork/jmca/ostinato                              f18a51d [feat/v0.23.0-tool-output-interpolation]
 /Users/joanmarc/dailywork/jmca/ostinato-gateways                     668e12f [feat/gateways]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions 085669c [feat/agent-definitions]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions 4495c6a [feat/agent-definitions]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan     7b778bb [feat/gateways-r0-r4]
