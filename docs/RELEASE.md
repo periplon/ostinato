@@ -12,7 +12,7 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
-## v0.31.3
+## v0.31.4\n\n- Disjunction and local selector/index composition inject for root module\n  reads; selectors to bare module tasks still reject.\n- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,\n  6 language agents, 3 language unit, 22 application, 9 analysis,\n  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).\n\n## v0.31.3
 
 - Bare module-task unification is not treated as composition; struct and
   disjunction composition still inject.

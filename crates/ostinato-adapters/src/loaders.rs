@@ -1433,6 +1433,9 @@ fn command_task_items(
 
 /// Extract a literal string index such as `lib["base"]`.
 fn index_field_name(expr: &Expr) -> Option<String> {
+    if let Expr::Int(value, _) = expr {
+        return Some(value.to_string());
+    }
     let Expr::Str(parts, _) = expr else {
         return None;
     };
@@ -1846,19 +1849,18 @@ fn root_bare_module_task(items: &[StructItem], name: &str, imports: &ImportKinds
                 let right = classify(items, right, seen, imports);
                 merge(left, right)
             }
-            Expr::Disjunction(left, right, _) => {
-                let left = classify(items, left, seen, imports);
-                let right = classify(items, right, seen, imports);
-                if left == TaskKind::Bare || right == TaskKind::Bare {
-                    TaskKind::Composed
-                } else {
-                    TaskKind::Neutral
-                }
-            }
-            Expr::Struct(..) => TaskKind::Composed,
+            Expr::Disjunction(..) => TaskKind::Composed,
+            Expr::Struct(..) | Expr::List(..) => TaskKind::Composed,
             Expr::Select(..) | Expr::Index(..) => {
                 if import_task_alias(expr, imports).is_some() {
                     TaskKind::Bare
+                } else if let Some(value) = resolve_local_value(
+                    &[items],
+                    items,
+                    expr,
+                    &mut std::collections::BTreeSet::new(),
+                ) {
+                    classify(items, value, seen, imports)
                 } else {
                     TaskKind::Neutral
                 }
@@ -2718,10 +2720,16 @@ fn resolve_local_value<'a>(
             select_field_value(scopes, root, base_value, field, visited)
         }
         Expr::Index(base, index, _) => {
-            let field = index_field_name(index)?;
+            let target = index_field_name(index)?;
             let base_value = resolve_local_value(scopes, root, base, visited)?;
-            select_field_value(scopes, root, base_value, &field, visited)
+            if let Expr::List(items, _) = base_value
+                && let Ok(position) = target.parse::<usize>()
+            {
+                return items.get(position);
+            }
+            select_field_value(scopes, root, base_value, &target, visited)
         }
+        Expr::Struct(..) | Expr::List(..) => Some(expr),
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             resolve_local_value(scopes, root, inner, visited)
         }
