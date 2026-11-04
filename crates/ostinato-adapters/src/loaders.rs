@@ -2928,14 +2928,9 @@ fn collect_task_decl_ids_items<'a>(
                     // Plain field references are not injected by CUE; only
                     // `let` bindings receive captured outputs.
                     Expr::Ident(name, _) => {
-                        let import_task = ident_import_key(
-                            &field.value,
-                            scopes,
-                            root,
-                            non_task_imports,
-                            &mut std::collections::BTreeSet::new(),
-                        )
-                        .is_some();
+                        let import_task =
+                            reference_import_key(&field.value, scopes, root, non_task_imports)
+                                .is_some();
                         (is_let_binding(scopes, root, name) || import_task)
                             && is_task_expr(
                                 &field.value,
@@ -2947,13 +2942,14 @@ fn collect_task_decl_ids_items<'a>(
                     }
                     value => {
                         struct_has_task_id(value)
-                            || is_task_expr(
-                                value,
-                                scopes,
-                                root,
-                                &mut std::collections::BTreeSet::new(),
-                                non_task_imports,
-                            )
+                            || (!is_in_place_reference(value, scopes, root)
+                                && is_task_expr(
+                                    value,
+                                    scopes,
+                                    root,
+                                    &mut std::collections::BTreeSet::new(),
+                                    non_task_imports,
+                                ))
                     }
                 };
                 if is_task {
@@ -3136,23 +3132,81 @@ fn is_task_leaf(expr: &Expr) -> bool {
     }
 }
 
-fn local_binding<'a>(
-    scopes: &[&'a [StructItem]],
-    root: &'a [StructItem],
-    name: &str,
-) -> Option<&'a StructItem> {
-    let matches = |item: &&StructItem| match item {
+fn binding_matches(item: &&StructItem, name: &str) -> bool {
+    match item {
         StructItem::Field(field) => {
             matches!(&field.label, Label::Name(label, _) if label == name)
         }
         StructItem::Let { name: label, .. } => label == name,
         _ => false,
-    };
-    scopes
-        .iter()
-        .rev()
-        .find_map(|scope| scope.iter().find(matches))
-        .or_else(|| root.iter().find(matches))
+    }
+}
+
+/// Resolve a binding and whether it lives at package root (outside the command
+/// subtree) rather than in a nested struct scope.
+fn local_binding_location<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    name: &str,
+) -> Option<(bool, &'a StructItem)> {
+    for (index, scope) in scopes.iter().enumerate().rev() {
+        if index == 0 && std::ptr::eq(*scope, root) {
+            continue;
+        }
+        if let Some(item) = scope.iter().find(|item| binding_matches(item, name)) {
+            return Some((false, item));
+        }
+    }
+    root.iter()
+        .find(|item| binding_matches(item, name))
+        .map(|item| (true, item))
+}
+
+fn local_binding<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    name: &str,
+) -> Option<&'a StructItem> {
+    local_binding_location(scopes, root, name).map(|(_, item)| item)
+}
+
+/// True when a local reference is injected at its declaration rather than at
+/// the reference: a non-hidden field declared in the command subtree, or a
+/// definition anywhere.
+fn is_in_place_reference<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+) -> bool {
+    match expr {
+        Expr::Ident(name, _) => match local_binding_location(scopes, root, name) {
+            Some((true, StructItem::Field(field))) => field.definition,
+            Some((false, StructItem::Field(field))) => field.definition || !name.starts_with('_'),
+            _ => false,
+        },
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            is_in_place_reference(inner, scopes, root)
+        }
+        _ => false,
+    }
+}
+
+fn reference_import_key<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    imports: &ImportKinds,
+) -> Option<String> {
+    if is_in_place_reference(expr, scopes, root) {
+        return None;
+    }
+    ident_import_key(
+        expr,
+        scopes,
+        root,
+        imports,
+        &mut std::collections::BTreeSet::new(),
+    )
 }
 
 fn ident_import_key<'a>(
@@ -3171,6 +3225,7 @@ fn ident_import_key<'a>(
                 StructItem::Let { value, .. } => {
                     ident_import_key(value, scopes, root, imports, visited)
                 }
+                StructItem::Field(field) if field.definition => None,
                 StructItem::Field(field) => {
                     ident_import_key(&field.value, scopes, root, imports, visited)
                 }
@@ -3196,13 +3251,7 @@ fn task_value_key<'a>(
     imports: &ImportKinds,
 ) -> Option<String> {
     match expr {
-        Expr::Ident(..) => ident_import_key(
-            expr,
-            scopes,
-            root,
-            imports,
-            &mut std::collections::BTreeSet::new(),
-        ),
+        Expr::Ident(..) => reference_import_key(expr, scopes, root, imports),
         // Composed task values (`lib.run & {...}`) are distinct per
         // declaration, so CUE injects them independently.
         Expr::Unify(..) => None,
