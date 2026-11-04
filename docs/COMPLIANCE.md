@@ -2,7 +2,7 @@
 
 ## The contract
 
-Ostinato v0.21.2 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
+Ostinato v0.21.3 makes the **Rust evaluator the default language front-end**. It implements the CUE semantics required by the workflow language. The **official CUE CLI is the conformance oracle**: it is never used at runtime by default, only by `--evaluator cue` and by the conformance suite.
 
 ```text
 source .cue ──► ostinato-lang (Rust) ──► CompiledWorkflow ──► scheduler
@@ -41,7 +41,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | Quoted labels (`"x": v`) | ✅ | Exported but not identifier-bindable; a quoted `"#D"` stays distinct from the definition `#D` |
 | Full disjunction lattice over patterns | ⚠️ | Alternatives, defaults, bounds, `&` narrowing and intersection work; richer pattern intersections are out of scope |
 | Workflow gateways (`kind: "gateway"`) | ✅ | Ordinary CUE data; XOR/OR/AND split and join routing, conditions and default branches compile identically through both evaluators (see `conformance/cases/gateway.cue`) |
-| Tool commands (`_tool.cue`, `tool/exec.Run`) | ⚠️ | `ostinato cmd` runs `command:` tasks with `tool/exec.Run` (cmd/env map+list/dir/stdin/capture/mustSucceed/`$after`/@tag); other tool packages and dependent task outputs remain out of scope |
+| Tool commands (`_tool.cue`, `tool/exec.Run`) | ⚠️ | `ostinato cmd` runs single/grouped/referenced `command:` tasks with `tool/exec.Run` (cmd/env map+list/dir/stdin/capture/mustSucceed/`$after`/@tag); other tool packages and dependent task outputs remain out of scope |
 
 Unsupported features fail explicitly or are documented here. Use `--evaluator cue` for a workflow that needs them.
 
