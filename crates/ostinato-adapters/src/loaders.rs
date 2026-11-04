@@ -1788,53 +1788,112 @@ fn resolved_label<'a>(
 /// CUE does not schedule these through `let`/alias output reads, unlike root
 /// inline tasks and command-local fields.
 fn root_bare_module_task(items: &[StructItem], name: &str, imports: &ImportKinds) -> bool {
-    fn resolve<'a>(
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum TaskKind {
+        Neutral,
+        Bare,
+        Composed,
+    }
+
+    fn merge(left: TaskKind, right: TaskKind) -> TaskKind {
+        match (left, right) {
+            (TaskKind::Composed, _) | (_, TaskKind::Composed) => TaskKind::Composed,
+            (TaskKind::Bare, _) | (_, TaskKind::Bare) => TaskKind::Bare,
+            _ => TaskKind::Neutral,
+        }
+    }
+
+    fn classify<'a>(
         items: &'a [StructItem],
         expr: &'a Expr,
+        in_definition: bool,
         seen: &mut std::collections::BTreeSet<String>,
-    ) -> Option<&'a Expr> {
+        imports: &ImportKinds,
+    ) -> TaskKind {
         match expr {
             Expr::Ident(name, _) => {
                 if !seen.insert(name.clone()) {
-                    return None;
+                    return TaskKind::Neutral;
                 }
-                let value = items.iter().find_map(|item| match item {
-                    StructItem::Field(field)
-                        if !field.definition
-                            && matches!(&field.label, Label::Name(label, _) if label == name) =>
-                    {
-                        Some(&field.value)
+                let definition = name.starts_with('#');
+                let mut kind = TaskKind::Neutral;
+                let mut found = false;
+                for item in items {
+                    match item {
+                        StructItem::Field(field)
+                            if field.definition == definition
+                                && matches!(&field.label, Label::Name(label, _) if label == name) =>
+                        {
+                            found = true;
+                            kind = merge(
+                                kind,
+                                classify(items, &field.value, definition, seen, imports),
+                            );
+                        }
+                        StructItem::Let {
+                            name: label, value, ..
+                        } if !definition && label == name => {
+                            found = true;
+                            kind =
+                                merge(kind, classify(items, value, in_definition, seen, imports));
+                        }
+                        _ => {}
                     }
-                    StructItem::Let {
-                        name: label, value, ..
-                    } if label == name => Some(value),
-                    _ => None,
-                })?;
-                resolve(items, value, seen)
+                }
+                seen.remove(name);
+                if found { kind } else { TaskKind::Neutral }
             }
             Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-                resolve(items, inner, seen)
+                classify(items, inner, in_definition, seen, imports)
             }
-            other => Some(other),
+            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+                let left = classify(items, left, in_definition, seen, imports);
+                let right = classify(items, right, in_definition, seen, imports);
+                if left == TaskKind::Bare || right == TaskKind::Bare {
+                    TaskKind::Composed
+                } else {
+                    TaskKind::Neutral
+                }
+            }
+            Expr::Struct(..) => {
+                if in_definition {
+                    TaskKind::Neutral
+                } else {
+                    TaskKind::Composed
+                }
+            }
+            Expr::Select(..) | Expr::Index(..) => {
+                if import_task_alias(expr, imports).is_some() {
+                    TaskKind::Bare
+                } else {
+                    TaskKind::Neutral
+                }
+            }
+            _ => TaskKind::Neutral,
         }
     }
 
-    let Some(root) = items.iter().find_map(|item| match item {
-        StructItem::Field(field)
-            if !field.definition
-                && matches!(&field.label, Label::Name(label, _) if label == name) =>
+    let mut kind = TaskKind::Neutral;
+    let mut found = false;
+    for item in items {
+        if let StructItem::Field(field) = item
+            && !field.definition
+            && matches!(&field.label, Label::Name(label, _) if label == name)
         {
-            Some(&field.value)
+            found = true;
+            kind = merge(
+                kind,
+                classify(
+                    items,
+                    &field.value,
+                    false,
+                    &mut std::collections::BTreeSet::new(),
+                    imports,
+                ),
+            );
         }
-        _ => None,
-    }) else {
-        return false;
-    };
-
-    match resolve(items, root, &mut std::collections::BTreeSet::new()) {
-        Some(Expr::Unify(..)) | None => false,
-        Some(value) => import_task_alias(value, imports).is_some(),
     }
+    found && kind == TaskKind::Bare
 }
 
 /// Labels of task values whose outputs the command reads.
