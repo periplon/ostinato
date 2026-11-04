@@ -6634,6 +6634,58 @@ command: nestedoutputconcrete: {
 }
 
 #[test]
+fn tool_command_nested_output_ignores_import_concrete_values() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let source = r#"
+package foo
+
+import (
+	"tool/exec"
+	"example.com/k/lib"
+)
+
+command: c: {
+	q: exec.Run & {
+		cmd: ["sh", "-c", "printf Q\(a.producer.stdout) >> order.txt"]
+		stdout: string
+	}
+	a: producer: lib.val
+	z: producer: exec.Run & {
+		cmd: ["sh", "-c", "printf Z\(q.stdout) >> order.txt"]
+		stdout: string
+	}
+}
+"#;
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = "package lib\nval: {stdout: \"concrete\"}\n";
+    let cue_dir = tempfile::tempdir().expect("tempdir");
+    let rust_dir = tempfile::tempdir().expect("tempdir");
+    for directory in [cue_dir.path(), rust_dir.path()] {
+        std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+        std::fs::create_dir_all(directory.join("lib")).expect("lib");
+        write(&directory.join("cue.mod/module.cue"), module);
+        write(&directory.join("lib/lib.cue"), library);
+        write(&directory.join("x_tool.cue"), source);
+    }
+    let expected = Command::new(&cue)
+        .args(["cmd", "c"])
+        .current_dir(cue_dir.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&["cmd", "c", rust_dir.path().to_str().expect("path")]);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert_eq!(actual.stderr, expected.stderr);
+    assert_eq!(
+        std::fs::read(cue_dir.path().join("order.txt")).expect("cue order"),
+        std::fs::read(rust_dir.path().join("order.txt")).expect("rust order")
+    );
+}
+
+#[test]
 fn tool_command_selector_commands_match_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");

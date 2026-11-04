@@ -59,11 +59,12 @@ fn copy_dir(source: &Path, destination: &Path) {
     for entry in std::fs::read_dir(source).expect("read case directory") {
         let entry = entry.expect("entry");
         let path = entry.path();
-        if !entry.file_type().expect("file type").is_file() {
-            continue;
+        let target = destination.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_dir(&path, &target);
+        } else {
+            std::fs::copy(&path, target).expect("copy case file");
         }
-        let name = entry.file_name();
-        std::fs::copy(&path, destination.join(name)).expect("copy case file");
     }
 }
 
