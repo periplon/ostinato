@@ -32,7 +32,7 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 
 ## Status
 
-`v0.23.2` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
+`v0.24.0` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
 
 ## Features
 
@@ -44,6 +44,7 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 - **Cycles**: strongly-connected components execute as bounded rounds; `until` conditions stop early.
 - **Gateways**: XOR/OR/AND splits and joins, `n_of` quorum joins, complex `expression` joins, conditions, default branches, explicit convergence, dead-path elimination, gateway-bearing cycles, `stepStatus` failure routing and durable audit of every routing decision.
 - **Agentic + deterministic**: `exec`, `agent`, `improve`, `noop` and `gateway` step kinds share one scheduler.
+- **Named agents and real CLIs**: top-level `agents` definitions referenced with `agent.use`, built-in `claude`/`codex`/`opencode` providers, per-attempt traces (prompt, argv, output, artifacts, timings, hashes) and optional git-worktree isolation. See [docs/AGENTS.md](docs/AGENTS.md).
 - **Audit**: SHA-256 hash chain per run with a persisted head, a state digest and a chained `state.committed` anchor; `ostinato audit verify` detects payload tampering, tail truncation, status flips and edits to the spec/checkpoint/step outputs.
 - **Trials**: append-only log of every attempt with input/output hashes, score, duration and error.
 - **Observability**: structured tracing, `status`, `logs --follow`, run metrics, Prometheus text output.
@@ -73,7 +74,7 @@ Verify:
 
 ```sh
 ostinato doctor
-# ostinato 0.23.2
+# ostinato 0.24.0
 # evaluator rust (required CUE workflow semantics; default)
 # oracle cue version v0.17.1
 # db .ostinato/ostinato.db
@@ -133,12 +134,14 @@ workflow: {
 | `ostinato graph <file> [--format dot\|json]` | Show the dependency graph (DOT) or materialised plan (JSON) |
 | `ostinato run <file> [-p k=v] [--agent-cmd CMD]` | Start a durable run |
 | `ostinato cancel <run>` | Cancel between groups |
-| `ostinato resume <run>` | Resume after failure or crash |
+| `ostinato resume <run> [--agent-cmd CMD]` | Resume after failure or crash |
 | `ostinato status <run>` | Run + step status |
 | `ostinato runs [--limit N]` | Recent runs |
 | `ostinato logs <run> [--follow]` | Audit event stream |
 | `ostinato audit verify <run>` | Verify the hash chain |
 | `ostinato trials <run> [--limit N]` | Attempt-level trial log |
+| `ostinato agents <run> [--step S] [--verify]` | Agent traces; `--verify` re-hashes traces and artifacts |
+| `ostinato artifacts <run> [--step S] [--trace N] [--round R] [--attempt A] [--extract DIR] [--force]` | List or extract agent artifacts |
 | `ostinato improve <run> --rounds N --agent-cmd CMD` | Recursive improvement proposals + child runs |
 | `ostinato metrics [--run <id>] [--format text\|prometheus\|json]` | Aggregated metrics |
 | `ostinato doctor` | CUE, store and agent diagnostics |
@@ -148,6 +151,19 @@ Global flags: `--db`, `--evaluator cue|native`, `--cue`, `--json`, `-v`.
 ## The workflow schema
 
 ```cue
+agents: [string]: {
+	provider?:  "command" | "claude" | "codex" | "opencode"
+	command?:   [...string] | string
+	model?:     string
+	system?:    string
+	prompt?:    string
+	promptDelivery?: "stdin" | "arg"
+	env?:       [string]: string
+	timeoutMs?: int
+	isolation?: "none" | "worktree" | {mode: "none" | "worktree", base?: string, keep?: bool}
+	artifacts?: [...string] | string
+}
+
 workflow: {
 	name:        string | *"workflow"
 	maxParallel: int    | *4
@@ -159,8 +175,11 @@ workflow: {
 		cycle?:          {max: int | *3, until?: string}
 		exec?:           {cmd: [...string] | string, cwd?: string,
 		                  env?: [string]: string, timeoutMs?: int}
-		agent?:          {prompt: string, system?: string, model?: string,
-		                  command?: [...string] | string}
+		agent?:          {use?: string, prompt?: string, system?: string, model?: string,
+		                  provider?: string, command?: [...string] | string,
+		                  promptDelivery?: string, env?: [string]: string,
+		                  timeoutMs?: int, isolation?: string | object,
+		                  artifacts?: [...string] | string}
 		improve?:        {prompt?: string, maxSamples: int | *20}
 		continueOnError: bool | *false
 		timeoutMs?:      int
@@ -171,7 +190,7 @@ workflow: {
 ### Step kinds
 
 - **`exec`** — deterministic subprocess. Exit code 0 is success. `cmd` may be argv or a shell string.
-- **`agent`** — calls the configured agent command with the rendered prompt on **stdin**; stdout is the result. If stdout is JSON with `score`, the score drives `until` conditions.
+- **`agent`** — runs an inline specification or a referenced `agents` definition through `command`, `claude`, `codex` or `opencode`; the prompt is delivered on stdin or as an argument. stdout is the result; JSON `score` drives `until`. Every attempt is traced and may run in an isolated git worktree.
 - **`improve`** — summarises the run's trials, asks the agent for a JSON proposal, persists it, and emits it as the step output.
 - **`noop`** — join point / cycle marker.
 
@@ -207,6 +226,10 @@ Semantics:
 2. DFS back-edges are removed to order each round; forward edges run in order, back-edges read the previous round's outputs.
 3. After each round, `until` is evaluated against the latest outputs. If true, all remaining rounds are skipped and `cycle.completed` is audited.
 4. If the bound is exhausted, `cycle.exhausted` is audited — this is not a run failure.
+
+- **Agent definitions**: `agents.<name>` is merged into steps that use
+  `agent: {use: "<name>", ...}`. Providers are external CLIs; traces and
+  artifacts are durable and verifiable. See [docs/AGENTS.md](docs/AGENTS.md).
 
 See [docs/LANGUAGE.md](docs/LANGUAGE.md) for the full reference.
 
@@ -265,6 +288,8 @@ The committed [docs/EVIDENCE.md](docs/EVIDENCE.md) contains real command output 
 - No distributed workers, cron scheduler, or web UI (by design: CLI only).
 - Exec/agent steps are trusted configuration; CUE files are code.
 - Agent providers are CLI commands; no API keys are stored by Ostinato.
+- `worktree` isolation isolates filesystem edits only; it is not a container,
+  VM or network sandbox, and it requires a git repository.
 - The Rust evaluator is a workflow-focused CUE implementation, not a complete reimplementation of every CUE feature. The conformance corpus and gaps are documented in `docs/COMPLIANCE.md`.
 
 ## License

@@ -58,7 +58,10 @@ workflow outside the Rust surface has a supported escape hatch.
   quorum joins, complex `expression` joins, branch conditions, default
   branches, dead-path elimination, `stepStatus` routing, gateway-bearing
   cycles and structural branch analysis. Implicit joins in gateway workflows
-  are rejected; edge-level `when` and event-based gateways remain out of scope.
+  are rejected; edge-level `when` and event-based gateways remain out of scope;
+- named agent definitions (`agents` + `agent.use`), external CLI providers
+  (`command`/`claude`/`codex`/`opencode`), durable agent traces/artifacts and
+  optional git-worktree isolation.
 
 ## Explicitly out of scope
 

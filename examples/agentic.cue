@@ -3,8 +3,8 @@ package agentic
 // Agentic steps share the same scheduler as deterministic ones.
 // Run:
 //   chmod +x examples/agent.sh
-//   ostinato run examples/agentic.cue --agent-cmd ./examples/agent.sh
-//   ostinato improve <run-id> --rounds 2 --agent-cmd ./examples/agent.sh
+//   ostinato run examples/agentic.cue --agent-cmd ./agent.sh
+//   ostinato improve <run-id> --rounds 2 --agent-cmd ./agent.sh
 
 params: {
 	goal: string | *"ship the release" @tag(goal)

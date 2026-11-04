@@ -537,3 +537,94 @@ fn externally_entered_gateway_cycle_keeps_the_external_edge_round_agnostic() {
             })
     );
 }
+
+#[test]
+fn legacy_agent_specs_keep_their_state_digest_bytes() {
+    use ostinato_domain::{AgentSpec, StepSpec, WorkflowSpec, audit};
+    let mut steps = std::collections::BTreeMap::new();
+    steps.insert(
+        "review".to_owned(),
+        StepSpec {
+            name: "review".to_owned(),
+            kind: ostinato_domain::StepKind::Agent,
+            needs: Vec::new(),
+            retry: ostinato_domain::RetryPolicy::default(),
+            cycle: None,
+            exec: None,
+            agent: Some(AgentSpec {
+                prompt: "hello".to_owned(),
+                system: None,
+                model: None,
+                command: None,
+                ..AgentSpec::default()
+            }),
+            improve: None,
+            gateway: None,
+            continue_on_error: false,
+            timeout_ms: None,
+        },
+    );
+    let spec = WorkflowSpec {
+        name: "legacy".to_owned(),
+        max_parallel: 1,
+        steps,
+    };
+    let params = serde_json::json!({});
+    let before = audit::state_digest(&spec, &params, "legacy.cue", 0, &[]);
+    let json = serde_json::to_string(&spec).expect("serialize");
+    assert!(!json.contains("provider"), "{json}");
+    assert!(!json.contains("isolation"), "{json}");
+    assert!(!json.contains("definition"), "{json}");
+    let restored: WorkflowSpec = serde_json::from_str(&json).expect("deserialize");
+    let after = audit::state_digest(&restored, &params, "legacy.cue", 0, &[]);
+    assert_eq!(before, after);
+}
+
+#[test]
+fn agent_trace_hash_is_deterministic_and_content_sensitive() {
+    use ostinato_domain::AgentTrace;
+    let mut trace = AgentTrace {
+        run_id: "r".to_owned(),
+        step: "s".to_owned(),
+        round: 0,
+        attempt: 0,
+        definition: None,
+        provider: "command".to_owned(),
+        model: None,
+        prompt: "p".to_owned(),
+        prompt_sha256: ostinato_domain::sha256_hex(b"p"),
+        system: None,
+        argv: vec!["agent".to_owned()],
+        env_keys: Vec::new(),
+        env_hashes: std::collections::BTreeMap::new(),
+        cwd: "/tmp".to_owned(),
+        isolation: "none".to_owned(),
+        isolation_path: None,
+        isolation_base: None,
+        started_at: "a".to_owned(),
+        finished_at: "b".to_owned(),
+        duration_ms: 1,
+        success: true,
+        exit_code: Some(0),
+        timed_out: false,
+        signal: None,
+        pid: None,
+        program: Some("agent".to_owned()),
+        ostinato_version: "v".to_owned(),
+        stdout_truncated: false,
+        stderr_truncated: false,
+        stdin_sha256: None,
+        error: None,
+        stdout: "ok".to_owned(),
+        stderr: String::new(),
+        transcript: None,
+        artifacts: Vec::new(),
+        capture_warnings: Vec::new(),
+        capture_error: None,
+        cleanup_error: None,
+    };
+    let first = trace.trace_hash();
+    assert_eq!(first, trace.clone().trace_hash());
+    trace.stdout = "different".to_owned();
+    assert_ne!(first, trace.trace_hash());
+}

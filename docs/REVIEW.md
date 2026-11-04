@@ -162,6 +162,50 @@ are out of scope; joins are barriers (not early-firing); condition-coverage
 lints are deferred. See `docs/GATEWAYS.md` §14 and
 `docs/GATEWAYS-REMAINING-PLAN.md`.
 
+## Agent definitions review (v0.23.0)
+
+Six reviews informed the agent-definition feature: three design reviews
+(architecture/CUE surface, reliability/security, product/CLI/test) and three
+implementation reviews (Rust correctness, adversarial security, docs/UX).
+
+Findings fixed before release:
+
+| Finding | Fix |
+|---|---|
+| `OSTINATO_AGENT` collided with the definition name injected into the child | Inject `OSTINATO_AGENT_NAME`; keep `OSTINATO_AGENT` as the command |
+| Provider/command/`--agent-cmd` precedence was ambiguous | Documented and tested: step/definition command, provider template, ambient command only for `provider: "command"` |
+| Trace uniqueness would break resume/replay | Auto-increment trace ids; replay creates a new anchored row |
+| Failed-attempt traces were not tamper-evident | One `agent.traced` event per trace in the same transaction, plus step/trial output cross-checks |
+| Worktree capture compared against the agent-movable `HEAD` | Capture against the recorded `isolation_base` commit |
+| Subdirectory workflows captured repo-root paths against cwd | `--relative`, `show-prefix` stripping and cwd-relative patches; regression test |
+| Agent-written clean filters ran in the trusted process | Filter drivers are discovered and overridden with `cat`; hooks/fsmonitor/external diff disabled; patch generation avoids `git add` |
+| Agent-written hooks ran on the next `git worktree add` | `core.hooksPath=/dev/null` on every git invocation |
+| Recursive symlinks made globbing loop/OOM | Non-symlink-following `walkdir` with a 100k-entry ceiling; warnings for symlink matches |
+| Patch memory was unbounded | Bounded reads with a 32 MiB budget and per-file cap; untracked files above 8 MiB are artifact-only |
+| Cancelling during an agent step exited 2 and discarded the trace | `Cancelled` is mapped to the scheduler's graceful cancellation path |
+| Escaped (`setsid`) descendants erased captured output | Streaming reader retains partial output before the grace timeout |
+| Extraction could collide after resume or overwrite hardlinks | Trace-id namespacing; hardlink refusal; temp-file + rename replacement |
+| `--verify --step` hid failures in other steps | Verification always covers the whole run; the filter only affects listing |
+| Deleted artifacts were extracted as empty files | Deleted artifacts are listed but not written |
+| Arg prompt delivery accepted `--help` prompts | Option-like prompts are refused for arg delivery |
+| Trace columns/artifact kind/mode were outside verification | Columns and metadata are cross-checked against the stored trace JSON |
+| Unknown runs returned empty success for `agents`/`artifacts` | Both now error with `run not found` |
+| Docs mismatches (provider flags, env wildcard claims, example paths, filters) | README/LANGUAGE/AGENTS/examples corrected; fixed denylist documented |
+
+Residual risks (documented, not silently accepted):
+
+- Template/render failures happen before an agent process exists and are
+  reported by the trial log, not an `AgentTrace`.
+- The audit chain is unkeyed; an attacker with SQLite write access can re-seal
+  it. Output cross-checks raise the bar but do not replace a keyed chain.
+- Worktree isolation isolates filesystem edits only; the agent runs as the
+  same OS user and can write the shared `.git` directory. Use an OS/container
+  sandbox for a real isolation boundary.
+- `keep: false` cleanup failure is recorded as `cleanupError`; an orphan
+  worktree directory may remain and must be pruned manually.
+- Arg prompt delivery exposes the prompt in process listings; stdin is the
+  default for `command`/`claude`.
+
 ## Deliberately deferred / residual risks
 
 | Item | Status |

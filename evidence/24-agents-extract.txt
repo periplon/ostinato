@@ -1,0 +1,6 @@
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/agents.sqlite artifacts a1ab00e7-4ae6-4e8e-b6ab-58533299de58 --extract /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/agent-extract
+
+TRACE    STEP                 ROUND   ATTEMPT   KIND      SIZE      NAME
+no artifacts matched
+
+exit=0

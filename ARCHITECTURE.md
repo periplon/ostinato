@@ -15,8 +15,8 @@
 |---|---|---|
 | `ostinato-domain` | Workflow spec, run/trial records, plan builder (Tarjan SCCs), audit hash chain | `serde`, `sha2`, `thiserror` |
 | `ostinato-lang` | Native CUE subset, typed workflow compiler, condition evaluator, template renderer | `domain` |
-| `ostinato-application` | Use cases, ports, scheduler, retry loop, cycle control, improvement service | `domain`, `lang` |
-| `ostinato-adapters` | SQLite store, process executor, command agent, Rust package loader, CUE oracle loader, tracing | `application`, `lang` |
+| `ostinato-application` | Use cases, ports, scheduler, retry loop, cycle control, improvement service, agent trace orchestration | `domain`, `lang` |
+| `ostinato-adapters` | SQLite store, process executor, command agent, git/glob workspace isolation, Rust package loader, CUE oracle loader, tracing | `application`, `lang` |
 | `ostinato-cli` | clap parser, wiring, formatting, exit codes | all |
 
 The engine (`ostinato-application`) has no `rusqlite`, `std::process`, or `tracing` import. The CLI is the composition root.
@@ -28,7 +28,8 @@ The engine (`ostinato-application`) has no `rusqlite`, `std::process`, or `traci
 | `SpecLoader` | Evaluate a CUE source into a `LoadedWorkflow` | `NativeLoader` (Rust, default), `CueCliLoader` (oracle) |
 | `Store` | Durable runs, steps, events, trials, improvements, metrics | `SqliteStore` |
 | `CommandExecutor` | Run a deterministic subprocess with timeout | `ProcessExecutor` |
-| `AgentRunner` | Run an agent prompt through a provider | `CommandAgent` |
+| `AgentRunner` | Run an agent prompt through a provider | `CommandAgent` (command/claude/codex/opencode) |
+| `WorkspaceProvider` | Prepare an isolated git worktree and capture artifacts | `LocalWorkspace` |
 | `Clock` | Timestamps and sleeps | `SystemClock` |
 | `IdGenerator` | Run ids | `UuidGen` |
 | `Telemetry` | Audit events and metrics | `TracingTelemetry`, `NoTelemetry` |
@@ -98,6 +99,8 @@ Gateway activation is a separate pure step in `ostinato-application/src/activati
 If the process dies mid-group, no row is committed. On resume the group reruns. That is the deliberate **at-least-once per group** contract.
 
 Trials are recorded per attempt in their own transaction. They are an append-only observation log; losing the last trial of a crashing group is acceptable and does not affect correctness.
+
+Agent traces are written with their `agent.traced` audit event in one transaction (outside the group transaction) so that a failed group still leaves the agent attempt, output and artifacts anchored in the chain. Replaying a failed group creates a new trace row; there is deliberately no uniqueness constraint on `(run, step, round, attempt)`.
 
 ## Audit chain
 

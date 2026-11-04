@@ -322,6 +322,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -514,7 +520,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "ostinato"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -528,9 +534,11 @@ dependencies = [
 
 [[package]]
 name = "ostinato-adapters"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "chrono",
+ "glob",
+ "libc",
  "ostinato-application",
  "ostinato-domain",
  "ostinato-lang",
@@ -542,11 +550,12 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wait-timeout",
+ "walkdir",
 ]
 
 [[package]]
 name = "ostinato-application"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "hex",
  "ostinato-domain",
@@ -559,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "ostinato-domain"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "hex",
  "serde",
@@ -570,10 +579,11 @@ dependencies = [
 
 [[package]]
 name = "ostinato-lang"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "bigdecimal",
  "chrono",
+ "glob",
  "num-bigint",
  "ostinato-domain",
  "regex",
@@ -689,6 +699,15 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "same-file"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+dependencies = [
+ "winapi-util",
+]
 
 [[package]]
 name = "serde"
@@ -985,6 +1004,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "walkdir"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
+dependencies = [
+ "same-file",
+ "winapi-util",
+]
+
+[[package]]
 name = "wasm-bindgen"
 version = "0.2.130"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1026,6 +1055,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b1f9c3798725016c6ee5f2f57869ec0831e8bbc0ab0310a86e787e97f41389e"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "winapi-util"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+dependencies = [
+ "windows-sys",
 ]
 
 [[package]]

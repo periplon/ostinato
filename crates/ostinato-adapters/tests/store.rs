@@ -401,3 +401,187 @@ fn create_run_with_event_writes_the_start_anchor_atomically() {
     audit::verify_chain(&events).expect("chain");
     audit::verify_state_anchor(&events, &loaded.state_hash).expect("anchor");
 }
+
+fn sample_trace(
+    run_id: &str,
+) -> (
+    ostinato_domain::AgentTrace,
+    Vec<ostinato_domain::CapturedArtifact>,
+) {
+    let artifact = ostinato_domain::CapturedArtifact {
+        name: "out/report.txt".to_owned(),
+        kind: "declared".to_owned(),
+        bytes: b"report\n".to_vec(),
+        truncated: false,
+        original_size: 7,
+        mode: Some(0o644),
+    };
+    let trace = ostinato_domain::AgentTrace {
+        run_id: run_id.to_owned(),
+        step: "review".to_owned(),
+        round: 0,
+        attempt: 0,
+        definition: Some("reviewer".to_owned()),
+        provider: "command".to_owned(),
+        model: Some("m".to_owned()),
+        prompt: "hello".to_owned(),
+        prompt_sha256: ostinato_domain::sha256_hex(b"hello"),
+        system: Some("system".to_owned()),
+        argv: vec!["fake".to_owned()],
+        env_keys: vec!["OSTINATO_STEP".to_owned()],
+        env_hashes: BTreeMap::new(),
+        cwd: "/tmp".to_owned(),
+        isolation: "none".to_owned(),
+        isolation_path: None,
+        isolation_base: None,
+        started_at: "2026-01-01T00:00:00Z".to_owned(),
+        finished_at: "2026-01-01T00:00:01Z".to_owned(),
+        duration_ms: 1000,
+        success: true,
+        exit_code: Some(0),
+        timed_out: false,
+        signal: None,
+        pid: Some(1),
+        program: Some("fake".to_owned()),
+        ostinato_version: "test".to_owned(),
+        stdout_truncated: false,
+        stderr_truncated: false,
+        stdin_sha256: Some(ostinato_domain::sha256_hex(b"hello")),
+        error: None,
+        stdout: "ok".to_owned(),
+        stderr: String::new(),
+        transcript: None,
+        artifacts: vec![artifact.meta()],
+        capture_warnings: Vec::new(),
+        capture_error: None,
+        cleanup_error: None,
+    };
+    (trace, vec![artifact])
+}
+
+#[test]
+fn agent_traces_roundtrip_and_verify() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store = SqliteStore::open(&directory.path().join("db.sqlite")).expect("open");
+    let run = run_record("trace-run");
+    store.create_run(&run).expect("create");
+    let (trace, artifacts) = sample_trace("trace-run");
+    let record = store
+        .record_agent_trace(&trace, &artifacts)
+        .expect("record");
+    assert!(record.id > 0);
+    assert_eq!(record.trace_hash, trace.trace_hash());
+
+    let traces = store.agent_traces("trace-run").expect("list");
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0].trace.prompt, "hello");
+    let stored = store
+        .agent_artifacts("trace-run", Some("review"))
+        .expect("artifacts");
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].content, b"report\n");
+    assert_eq!(stored[0].sha256, artifacts[0].sha256());
+
+    let verified = store.verify_agent_traces("trace-run").expect("verify");
+    assert_eq!(verified.len(), 1);
+    assert!(verified[0].ok, "{verified:?}");
+
+    // The anchoring event is in the audit chain.
+    let events = store.events("trace-run").expect("events");
+    assert!(events.iter().any(|event| event.kind == "agent.traced"));
+    audit::verify_chain(&events).expect("chain");
+}
+
+#[test]
+fn agent_trace_and_artifact_tampering_are_detected() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let store = SqliteStore::open(&db).expect("open");
+    let run = run_record("tamper-run");
+    store.create_run(&run).expect("create");
+    let (trace, artifacts) = sample_trace("tamper-run");
+    store
+        .record_agent_trace(&trace, &artifacts)
+        .expect("record");
+
+    let connection = rusqlite::Connection::open(&db).expect("second connection");
+    connection
+        .execute(
+            "UPDATE agent_traces SET trace_json = '{}' WHERE run_id = 'tamper-run'",
+            [],
+        )
+        .expect("tamper trace");
+    let verified = store.verify_agent_traces("tamper-run").expect("verify");
+    assert!(!verified[0].ok);
+    assert!(
+        verified[0]
+            .problems
+            .iter()
+            .any(|problem| problem.contains("hash") || problem.contains("invalid")),
+        "{verified:?}"
+    );
+
+    // Restore the trace row and tamper with the artifact blob instead.
+    store
+        .record_agent_trace(&trace, &artifacts)
+        .expect("re-record");
+    // Column tampering is caught even when the JSON/hash is intact.
+    connection
+        .execute(
+            "UPDATE agent_traces SET step = 'other' WHERE run_id = 'tamper-run'",
+            [],
+        )
+        .expect("tamper column");
+    let verified = store.verify_agent_traces("tamper-run").expect("verify");
+    assert!(
+        verified.iter().any(|item| item
+            .problems
+            .iter()
+            .any(|problem| problem.contains("columns"))),
+        "{verified:?}"
+    );
+
+    connection
+        .execute(
+            "UPDATE agent_artifacts SET content = ?1 WHERE trace_id = (SELECT MAX(id) FROM agent_traces)",
+            [b"evil".as_slice()],
+        )
+        .expect("tamper artifact");
+    let verified = store.verify_agent_traces("tamper-run").expect("verify");
+    assert!(
+        verified.iter().any(|item| item
+            .problems
+            .iter()
+            .any(|problem| problem.contains("content"))),
+        "{verified:?}"
+    );
+}
+
+#[test]
+fn deleting_an_agent_event_breaks_trace_anchoring() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let store = SqliteStore::open(&db).expect("open");
+    let run = run_record("anchor-run");
+    store.create_run(&run).expect("create");
+    let (trace, artifacts) = sample_trace("anchor-run");
+    store
+        .record_agent_trace(&trace, &artifacts)
+        .expect("record");
+    let connection = rusqlite::Connection::open(&db).expect("second connection");
+    connection
+        .execute(
+            "DELETE FROM events WHERE run_id = 'anchor-run' AND kind = 'agent.traced'",
+            [],
+        )
+        .expect("delete event");
+    let verified = store.verify_agent_traces("anchor-run").expect("verify");
+    assert!(!verified[0].ok);
+    assert!(
+        verified[0]
+            .problems
+            .iter()
+            .any(|problem| problem.contains("not anchored")),
+        "{verified:?}"
+    );
+}

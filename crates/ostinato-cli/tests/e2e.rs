@@ -5069,3 +5069,818 @@ command: defaultcapfile: {
         }
     }
 }
+
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod");
+    }
+}
+
+fn git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+#[test]
+fn agent_definitions_produce_verifiable_traces_and_artifacts() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agent = directory.path().join("agent.sh");
+    write(
+        &agent,
+        "#!/bin/sh\ncat > prompt.txt\nmkdir -p out\nprintf 'report body\\n' > out/report.txt\nprintf '{\"score\":0.91,\"summary\":\"ok\"}\\n'\n",
+    );
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{
+    reviewer: {{
+        provider: "claude"
+        command: ["{agent}"]
+        model: "fake-model"
+        system: "review strictly"
+        artifacts: ["out/*.txt"]
+    }}
+}}
+workflow: {{
+    name: "agents"
+    steps: {{
+        review: {{
+            kind: "agent"
+            agent: {{use: "reviewer", prompt: "Review the change"}}
+        }}
+    }}
+}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "--json",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+
+    let validated = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+    ]);
+    let validated = json(&validated);
+    assert_eq!(
+        validated["workflow"]["steps"]["review"]["agent"]["definition"],
+        "reviewer"
+    );
+    assert_eq!(
+        validated["workflow"]["steps"]["review"]["agent"]["provider"],
+        "claude"
+    );
+    assert_eq!(
+        validated["workflow"]["steps"]["review"]["agent"]["model"],
+        "fake-model"
+    );
+
+    let traces = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    assert!(traces.status.success());
+    let traces = json(&traces);
+    let entries = traces["traces"].as_array().expect("traces");
+    assert_eq!(entries.len(), 1, "{traces:?}");
+    let trace = &entries[0];
+    assert_eq!(trace["trace"]["step"], "review");
+    assert_eq!(trace["trace"]["definition"], "reviewer");
+    assert_eq!(trace["trace"]["provider"], "claude");
+    assert_eq!(trace["trace"]["model"], "fake-model");
+    assert_eq!(trace["trace"]["success"], true);
+    assert_eq!(trace["trace"]["argv"][0], agent.to_str().expect("agent"));
+    assert_eq!(trace["trace"]["artifacts"][0]["name"], "out/report.txt");
+    assert_eq!(
+        trace["trace"]["stdout"],
+        "{\"score\":0.91,\"summary\":\"ok\"}\n"
+    );
+
+    let verified = ost(&["--db", db.to_str().expect("db"), "agents", &run, "--verify"]);
+    assert!(
+        verified.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    assert!(String::from_utf8_lossy(&verified.stdout).contains("OK trace="));
+
+    let artifacts = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "artifacts",
+        &run,
+    ]);
+    let artifacts = json(&artifacts);
+    let items = artifacts["artifacts"].as_array().expect("artifacts");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["name"], "out/report.txt");
+    assert_eq!(items[0]["kind"], "declared");
+
+    let extract = directory.path().join("extract");
+    let extracted = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "artifacts",
+        &run,
+        "--extract",
+        extract.to_str().expect("extract"),
+    ]);
+    assert!(
+        extracted.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&extracted.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(extract.join("out/report.txt")).expect("artifact"),
+        "report body\n"
+    );
+
+    let audit = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(
+        audit.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&audit.stderr)
+    );
+}
+
+#[test]
+fn agent_retries_keep_one_trace_per_attempt() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let counter = directory.path().join("counter");
+    let agent = directory.path().join("agent.sh");
+    write(
+        &agent,
+        &format!(
+            "#!/bin/sh\ncat >/dev/null\nn=$(cat {counter} 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > {counter}\nif [ $n -lt 2 ]; then echo first failed >&2; exit 7; fi\necho '{{\"score\":0.5}}'\n",
+            counter = counter.display()
+        ),
+    );
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{writer: {{command: ["{agent}"]}}}}
+workflow: {{
+    name: "retry"
+    steps: {{
+        work: {{
+            kind: "agent"
+            retry: {{max: 2, baseMs: 1, factor: 1.0, jitter: false}}
+            agent: {{use: "writer", prompt: "try"}}
+        }}
+    }}
+}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let traces = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    let traces = json(&traces);
+    let entries = traces["traces"].as_array().expect("traces");
+    assert_eq!(entries.len(), 2, "{traces:?}");
+    assert_eq!(entries[0]["trace"]["attempt"], 0);
+    assert_eq!(entries[0]["trace"]["success"], false);
+    assert!(
+        entries[0]["trace"]["error"]
+            .as_str()
+            .expect("error")
+            .contains("exited with 7")
+    );
+    assert_eq!(entries[1]["trace"]["attempt"], 1);
+    assert_eq!(entries[1]["trace"]["success"], true);
+    let verified = ost(&["--db", db.to_str().expect("db"), "agents", &run, "--verify"]);
+    assert!(
+        verified.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+}
+
+#[test]
+fn agent_trace_tampering_is_detected_by_audit_verify() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agent = directory.path().join("agent.sh");
+    write(&agent, "#!/bin/sh\ncat >/dev/null\necho '{\"score\":1}'\n");
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"]}}}}
+workflow: {{name: "tamper", steps: {{s: {{kind: "agent", agent: {{use: "a", prompt: "x"}}}}}}}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(output.status.success());
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("open db");
+    connection
+        .execute(
+            "UPDATE agent_traces SET trace_json = '{\"tampered\":true}' WHERE run_id = ?1",
+            [&run],
+        )
+        .expect("tamper");
+    let verified = ost(&["--db", db.to_str().expect("db"), "agents", &run, "--verify"]);
+    assert!(!verified.status.success());
+    assert!(
+        String::from_utf8_lossy(&verified.stderr).contains("TRACE FAILED"),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let audit = ost(&["--db", db.to_str().expect("db"), "audit", "verify", &run]);
+    assert!(!audit.status.success());
+    assert!(
+        String::from_utf8_lossy(&audit.stderr).contains("AUDIT FAILED"),
+        "stderr: {}",
+        String::from_utf8_lossy(&audit.stderr)
+    );
+}
+
+#[test]
+fn worktree_isolation_keeps_the_checkout_clean_and_captures_changes() {
+    if !git_available() {
+        eprintln!("skipping: git not installed");
+        return;
+    }
+    let directory = tempfile::tempdir().expect("tempdir");
+    let repo = directory.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo");
+    let run_git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    run_git(&["init", "-q"]);
+    write(&repo.join("tracked.txt"), "base\n");
+    let agent = repo.join("agent.sh");
+    write(
+        &agent,
+        "#!/bin/sh\ncat >/dev/null\necho agent >> tracked.txt\necho new > created.txt\nmkdir -p reports\necho report > reports/review.md\necho '{\"score\":0.8}'\n",
+    );
+    make_executable(&agent);
+    let workflow = repo.join("workflow.cue");
+    write(
+        &workflow,
+        r#"
+package demo
+agents: {
+    worker: {
+        command: ["./agent.sh"]
+        isolation: {mode: "worktree", keep: false}
+        artifacts: ["reports/*.md"]
+    }
+}
+workflow: {
+    name: "worktree"
+    steps: {
+        work: {kind: "agent", agent: {use: "worker", prompt: "edit"}}
+    }
+}
+"#,
+    );
+    run_git(&["add", "."]);
+    run_git(&["commit", "-qm", "init"]);
+    let db = directory.path().join("db.sqlite");
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("tracked.txt")).expect("tracked"),
+        "base\n"
+    );
+    assert!(!repo.join("created.txt").exists());
+    let run = run_id(&db);
+    let traces = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    let traces = json(&traces);
+    let trace = &traces["traces"][0]["trace"];
+    assert_eq!(trace["isolation"], "worktree");
+    assert!(trace["isolation_path"].is_string());
+    assert!(trace["isolation_base"].is_string());
+    let artifacts = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "artifacts",
+        &run,
+    ]);
+    let artifacts = json(&artifacts);
+    let names: Vec<&str> = artifacts["artifacts"]
+        .as_array()
+        .expect("artifacts")
+        .iter()
+        .map(|item| item["name"].as_str().expect("name"))
+        .collect();
+    assert!(names.contains(&"_isolation/changes.patch"), "{names:?}");
+    assert!(names.contains(&"created.txt"), "{names:?}");
+    assert!(names.contains(&"tracked.txt"), "{names:?}");
+    assert!(names.contains(&"reports/review.md"), "{names:?}");
+    let extract = directory.path().join("extract");
+    let extracted = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "artifacts",
+        &run,
+        "--extract",
+        extract.to_str().expect("extract"),
+    ]);
+    assert!(extracted.status.success());
+    let patch = std::fs::read_to_string(extract.join("_isolation/changes.patch")).expect("patch");
+    assert!(patch.contains("+agent"), "{patch}");
+    assert!(patch.contains("created.txt"), "{patch}");
+}
+
+#[test]
+fn official_cue_evaluator_resolves_agent_definitions() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agent = directory.path().join("agent.sh");
+    write(
+        &agent,
+        "#!/bin/sh\ncat >/dev/null\necho '{\"score\":0.7}'\n",
+    );
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{reviewer: {{provider: "codex", command: ["{agent}"], model: "m"}}}}
+workflow: {{
+    name: "cue-agents"
+    steps: {{review: {{kind: "agent", agent: {{use: "reviewer", prompt: "hello"}}}}}}
+}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--cue",
+        &cue,
+        "--evaluator",
+        "cue",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let traces = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    let traces = json(&traces);
+    assert_eq!(traces["traces"][0]["trace"]["definition"], "reviewer");
+    assert_eq!(traces["traces"][0]["trace"]["provider"], "codex");
+}
+
+#[test]
+fn resume_replays_a_group_without_trace_key_collisions() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let flag = directory.path().join("go");
+    let agent = directory.path().join("agent.sh");
+    write(&agent, "#!/bin/sh\ncat >/dev/null\necho '{\"score\":1}'\n");
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"]}}}}
+workflow: {{
+    name: "resume-traces"
+    steps: {{
+        a: {{kind: "agent", agent: {{use: "a", prompt: "x"}}}}
+        b: {{kind: "exec", exec: {{cmd: ["sh", "-c", "test -f {flag} || exit 7"]}}}}
+    }}
+}}
+"#,
+            agent = agent.display(),
+            flag = flag.display()
+        ),
+    );
+    let first = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(!first.status.success());
+    let run = run_id(&db);
+    let before = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    assert_eq!(json(&before)["traces"].as_array().expect("traces").len(), 1);
+    std::fs::write(&flag, "go").expect("flag");
+    let resumed = ost(&["--db", db.to_str().expect("db"), "resume", &run]);
+    assert!(
+        resumed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let after = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    let traces = json(&after);
+    let traces = traces["traces"].as_array().expect("traces");
+    assert_eq!(traces.len(), 2, "{traces:?}");
+    let verified = ost(&["--db", db.to_str().expect("db"), "agents", &run, "--verify"]);
+    assert!(
+        verified.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+}
+
+#[test]
+fn cycle_rounds_each_get_a_trace() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let counter = directory.path().join("counter");
+    let agent = directory.path().join("agent.sh");
+    write(
+        &agent,
+        &format!(
+            "#!/bin/sh\ncat >/dev/null\nn=$(cat {counter} 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > {counter}\ncase $n in 1) s=0.1;; 2) s=0.5;; *) s=0.95;; esac\necho \"{{\\\"score\\\":$s}}\"\n",
+            counter = counter.display()
+        ),
+    );
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"]}}}}
+workflow: {{
+    name: "cycle-traces"
+    steps: {{
+        review: {{
+            kind: "agent"
+            needs: ["review"]
+            cycle: {{max: 3, until: "steps.review.score >= 0.9"}}
+            agent: {{use: "a", prompt: "x"}}
+        }}
+    }}
+}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let traces = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    let traces = json(&traces);
+    let traces = traces["traces"].as_array().expect("traces");
+    assert_eq!(traces.len(), 3, "{traces:?}");
+    let rounds: Vec<u64> = traces
+        .iter()
+        .map(|item| item["trace"]["round"].as_u64().expect("round"))
+        .collect();
+    assert_eq!(rounds, vec![0, 1, 2]);
+    let verified = ost(&["--db", db.to_str().expect("db"), "agents", &run, "--verify"]);
+    assert!(verified.status.success());
+}
+
+#[test]
+fn jsonl_provider_output_drives_until_conditions() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agent = directory.path().join("agent.sh");
+    write(
+        &agent,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"assistant\",\"text\":\"working\"}' '{\"type\":\"result\",\"score\":0.95}'\n",
+    );
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{provider: "codex", command: ["{agent}"], promptDelivery: "stdin"}}}}
+workflow: {{
+    name: "jsonl"
+    steps: {{
+        review: {{
+            kind: "agent"
+            needs: ["review"]
+            cycle: {{max: 3, until: "steps.review.score >= 0.9"}}
+            agent: {{use: "a", prompt: "x"}}
+        }}
+    }}
+}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let traces = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    let traces = json(&traces);
+    let traces = traces["traces"].as_array().expect("traces");
+    assert_eq!(
+        traces.len(),
+        1,
+        "score from JSONL must stop the cycle: {traces:?}"
+    );
+    assert_eq!(traces[0]["trace"]["round"], 0);
+    assert!(traces[0]["trace"]["transcript"].is_array());
+}
+
+#[test]
+fn agents_and_artifacts_error_on_unknown_runs() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agents = ost(&["--db", db.to_str().expect("db"), "agents", "nope"]);
+    assert!(!agents.status.success());
+    assert!(String::from_utf8_lossy(&agents.stderr).contains("run not found"));
+    let artifacts = ost(&["--db", db.to_str().expect("db"), "artifacts", "nope"]);
+    assert!(!artifacts.status.success());
+    assert!(String::from_utf8_lossy(&artifacts.stderr).contains("run not found"));
+}
+
+#[test]
+fn resume_extraction_namespaces_replayed_traces_by_id() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let flag = directory.path().join("go");
+    let agent = directory.path().join("agent.sh");
+    write(
+        &agent,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'report\\n' > report.txt\necho '{\"score\":1}'\n",
+    );
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"], artifacts: ["report.txt"]}}}}
+workflow: {{
+    name: "resume-artifacts"
+    steps: {{
+        a: {{kind: "agent", agent: {{use: "a", prompt: "x"}}}}
+        b: {{kind: "exec", exec: {{cmd: ["sh", "-c", "test -f {flag} || exit 7"]}}}}
+    }}
+}}
+"#,
+            agent = agent.display(),
+            flag = flag.display()
+        ),
+    );
+    let first = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(!first.status.success());
+    let run = run_id(&db);
+    std::fs::write(&flag, "go").expect("flag");
+    let resumed = ost(&["--db", db.to_str().expect("db"), "resume", &run]);
+    assert!(
+        resumed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let extract = directory.path().join("out");
+    let extracted = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "artifacts",
+        &run,
+        "--extract",
+        extract.to_str().expect("extract"),
+    ]);
+    assert!(
+        extracted.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&extracted.stderr)
+    );
+    let namespaces: Vec<String> = std::fs::read_dir(extract.join("a"))
+        .expect("namespaces")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(namespaces.len(), 2, "{namespaces:?}");
+    assert!(
+        namespaces.iter().all(|name| name.contains("-t")),
+        "{namespaces:?}"
+    );
+}
+
+#[test]
+fn deleting_a_trace_row_is_detected_from_step_outputs() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agent = directory.path().join("agent.sh");
+    write(&agent, "#!/bin/sh\ncat >/dev/null\necho '{\"score\":1}'\n");
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"]}}}}
+workflow: {{name: "del", steps: {{s: {{kind: "agent", agent: {{use: "a", prompt: "x"}}}}}}}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(output.status.success());
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("db");
+    connection
+        .execute("DELETE FROM agent_traces WHERE run_id = ?1", [&run])
+        .expect("delete");
+    let verified = ost(&["--db", db.to_str().expect("db"), "agents", &run, "--verify"]);
+    assert!(!verified.status.success());
+    assert!(
+        String::from_utf8_lossy(&verified.stderr).contains("references missing trace"),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+}
+
+#[test]
+fn filtered_agents_verify_still_checks_the_whole_run() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agent = directory.path().join("agent.sh");
+    write(&agent, "#!/bin/sh\ncat >/dev/null\necho '{\"score\":1}'\n");
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{command: ["{agent}"]}}}}
+workflow: {{
+    name: "multi"
+    steps: {{
+        a: {{kind: "agent", agent: {{use: "a", prompt: "a"}}}}
+        b: {{kind: "agent", agent: {{use: "a", prompt: "b"}}}}
+    }}
+}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(output.status.success());
+    let run = run_id(&db);
+    let connection = rusqlite::Connection::open(&db).expect("db");
+    connection
+        .execute(
+            "UPDATE agent_traces SET trace_json = '{}' WHERE run_id = ?1 AND step = 'a'",
+            [&run],
+        )
+        .expect("tamper");
+    let verified = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "agents",
+        &run,
+        "--step",
+        "b",
+        "--verify",
+    ]);
+    assert!(!verified.status.success());
+    assert!(
+        String::from_utf8_lossy(&verified.stderr).contains("TRACE FAILED"),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+}

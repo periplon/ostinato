@@ -1,6 +1,6 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.noT9mMjGnW/gateway-expression.sqlite --cue cue run examples/gateway_expression.cue
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/gateway-expression.sqlite --cue cue run examples/gateway_expression.cue
 
-run=004d1997-2457-40ec-a46c-57bb2b7b2e32 workflow=expression status=succeeded durationMs=2
+run=524086a8-80ff-4e2f-9608-bb5effddf48e workflow=expression status=succeeded durationMs=2
 STEP                     STATUS     VISITS ATTEMPTS
 fast                     succeeded  1      1
 merge                    succeeded  1      0

@@ -26,6 +26,36 @@ Gateway phase 2: quorum, complex joins, cycles and analysis.
   `gateway_quorum_short`; `status` shows a `ROUND` column for gateway cycles.
 - `docs/GATEWAYS.md` is updated from the original plan to implemented status;
   `docs/GATEWAYS-REMAINING-PLAN.md` records the phase-2 design and review.
+## v0.24.0
+
+Named agent definitions, external agent CLIs, traces and isolation.
+
+- Top-level `agents` definitions are referenced with `agent.use` (or the
+  `agent: "name"` shorthand) and merged into steps; unknown/missing definitions
+  and unsafe fields fail at load time under both evaluators.
+- Built-in providers `command`, `claude`, `codex` and `opencode`; JSONL transcript
+  scores drive `until` conditions; `command`
+  always overrides the provider template, and `promptDelivery` selects stdin or
+  argv delivery.
+- Every attempt records an `AgentTrace` (prompt hash, argv, env hashes,
+  stdout/stderr, transcript, exit code/signal, timing, artifacts) and an
+  `agent.traced` audit event in one transaction. `ostinato agents --verify`
+  and `ostinato audit verify` detect trace/artifact tampering.
+- Artifact blobs are stored in SQLite with per-file/trace limits; symlinks,
+  hard links and traversal are rejected. `ostinato artifacts` lists, filters
+  and safely extracts them.
+- Optional `isolation: "worktree"` runs each attempt in a fresh git worktree,
+  captures changed/untracked files plus a patch, and removes the worktree
+  unless `keep: true`.
+- `improve` agent calls are traced too; `doctor` reports provider paths.
+- Docs: `docs/AGENTS.md`, README/LANGUAGE updates and `examples/agents.cue`.
+- 393 tests (82 CLI E2E, 1 conformance, 242 language, 6 language agents, 3 language unit,
+  18 application, 19 domain, 6 store, 8 workspace, 8 adapters unit).
+- Security hardening from review: filter/hook-neutralised git capture, base-aware
+  patch/diff (sees agent commits), non-symlink-following bounded glob walk,
+  bounded patch reads, hardlink-safe extraction, arg prompt injection refusal,
+  partial output from escaped descendants, cross-checks for deleted trace rows.
+
 ## v0.23.2
 
 Tool-command reference, helper and parenthesis parity.

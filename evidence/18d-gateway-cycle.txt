@@ -1,6 +1,6 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.noT9mMjGnW/gateway-cycle.sqlite --cue cue run examples/gateway_cycle.cue
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/gateway-cycle.sqlite --cue cue run examples/gateway_cycle.cue
 
-run=0ff62ca2-586c-41c5-a273-76874c19e726 workflow=gateway-cycle status=succeeded durationMs=7
+run=1719d44b-46d5-4e74-8d7a-92194d8ff264 workflow=gateway-cycle status=succeeded durationMs=7
 STEP                     STATUS     VISITS ATTEMPTS ROUND
 idle                     succeeded  2      1        1
 loop                     succeeded  2      1        1

@@ -12,9 +12,10 @@ pub mod ports;
 
 pub use engine::{Engine, EngineDeps, EngineOptions, run_loaded};
 pub use error::{EngineError, Result};
-pub use improve::{ImproveRequest, params_patch, propose_improvement};
+pub use improve::{ImproveRequest, ImprovementRun, params_patch, propose_improvement};
 pub use ports::{
-    AgentOutcome, AgentRequest, AgentRunner, Clock, CommandExecutor, Completion, ExecOutcome,
-    ExecRequest, IdGenerator, LoadRequest, LoadedWorkflow, MetricsSummary, NoTelemetry, PortError,
-    PortResult, RunSnapshot, SpecLoader, Store, Telemetry,
+    AgentOutcome, AgentRequest, AgentRunner, CaptureOutcome, CaptureRequest, Clock,
+    CommandExecutor, Completion, ExecOutcome, ExecRequest, IdGenerator, IsolationRequest,
+    LoadRequest, LoadedWorkflow, MetricsSummary, NoTelemetry, PortError, PortResult, RunSnapshot,
+    SpecLoader, Store, Telemetry, WorkspaceHandle, WorkspaceProvider,
 };

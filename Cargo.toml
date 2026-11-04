@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.23.2"
+version = "0.24.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -34,7 +34,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+glob = "0.3"
+libc = "0.2"
 tempfile = "3"
+walkdir = "2"
 stacker = "0.1"
 num-bigint = "0.4"
 

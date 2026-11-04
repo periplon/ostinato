@@ -78,7 +78,7 @@ The Rust evaluator handles package selection, same-package sibling files, import
 | `retry.jitter` | `bool` | `true` | Deterministic jitter in `[0.5, 1.5)` |
 | `cycle` | `{max: int 1..=1000, until?: string}` | none | Bounded cycle policy (default `max: 3` if omitted) |
 | `exec` | object | none | Required for `kind: "exec"` |
-| `agent` | object | none | Required for `kind: "agent"` |
+| `agent` | object or string | none | Required for `kind: "agent"`; inline fields, `{use: "<name>"}`, or `"<name>"` shorthand |
 | `improve` | object | none | Required for `kind: "improve"` |
 | `continueOnError` | `bool` | `false` | Keep the run going after this step fails |
 | `timeoutMs` | `int >= 0` | `600000` for exec, 300000 for agent | Per-attempt timeout |
@@ -99,22 +99,52 @@ The command runs in `exec.cwd` when set, otherwise in **the workflow file's dire
 
 ### `agent`
 
+Agent steps either carry an inline specification or reference a reusable
+top-level definition:
+
 ```cue
-agent: {
-	prompt:  "Review {{ steps.build.stdout }} for {{ params.repo }}"
-	system?: "You are a strict reviewer. Return JSON with a score."
-	model?:  "my-model"
-	command?: ["./scripts/agent.sh"]   // per-step override
+agents: {
+	reviewer: {
+		provider:  "claude"                  // command | claude | codex | opencode
+		model:     "claude-sonnet-4-5"
+		system:    "You are a strict reviewer. Return JSON with a score."
+		isolation: {mode: "worktree"}        // none (default) | worktree
+		artifacts: ["reports/*.md"]
+	}
+}
+
+workflow: {
+	steps: {
+		review: {
+			kind: "agent"
+			agent: {
+				use:    "reviewer"             // optional definition reference
+				prompt: "Review {{ steps.build.stdout }}"
+			}
+		}
+	}
 }
 ```
 
-The agent command receives the prompt on **stdin**, runs in the workflow file's directory (or the global engine cwd), and must print the result to stdout. The command comes from, in order:
+A definition supports `provider`, `command`, `model`, `system`, `prompt`,
+`promptDelivery`, `env`, `timeoutMs`, `isolation` and `artifacts`. A step
+overrides those fields; `env` maps merge. `agent: "reviewer"` is shorthand
+when the definition supplies the prompt. Unknown definitions, providers,
+isolation modes, unsafe env names, absolute/`..` artifact globs and malformed
+fields are rejected at load time.
 
-1. `agent.command` (per step);
-2. `--agent-cmd` / `OSTINATO_AGENT` (global);
-3. otherwise the step fails with a configuration error.
+Prompt delivery is `stdin` for `command`/`claude` and `arg` for
+`codex`/`opencode`; `promptDelivery` overrides it. A string `command` always
+uses stdin. Command precedence is: step/definition `command`, then the
+provider template, then `--agent-cmd` / `OSTINATO_AGENT` for
+`provider: "command"`, then a configuration error.
 
-If stdout parses as JSON and contains a numeric `score` (or `confidence`), that value is clamped to `[0, 1]` and becomes `steps.<name>.score`. If no score is present the score is `0.0`, so a score-based `until` cannot terminate early on malformed agent output. This is how agent loops express quality.
+Every attempt is traced (prompt, argv, stdout/stderr, exit code, signal,
+timing, environment hashes, artifacts and worktree metadata) and anchored in
+the audit chain. See [AGENTS.md](AGENTS.md) for the full trace/isolation
+contract and `ostinato agents` / `ostinato artifacts`.
+
+If stdout parses as JSON and contains a numeric `score` (or `confidence`), that value is clamped to `[0, 1]` and becomes `steps.<name>.score`. JSONL provider output (Claude stream-json, Codex `--json`, OpenCode `--format json`) is searched line by line, including JSON encoded inside a string field; the last event is exposed as `steps.<name>.json` with a normalized `score` key. If no score is present the score is `0.0`, so a score-based `until` cannot terminate early on malformed agent output. This is how agent loops express quality.
 
 ### `improve`
 

@@ -1,0 +1,13 @@
+### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/agents.sqlite doctor
+
+ostinato 0.24.0
+evaluator rust (required CUE workflow semantics; default)
+oracle cue version v0.17.1
+db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/agents.sqlite
+agent not configured (command steps need agent.command)
+agent provider claude /Users/joanmarc/.local/bin/claude
+agent provider codex /Users/joanmarc/.local/bin/codex
+agent provider opencode /Users/joanmarc/.opencode/bin/opencode
+store OK
+
+exit=0
