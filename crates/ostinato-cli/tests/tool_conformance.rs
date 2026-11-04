@@ -109,6 +109,7 @@ fn tool_commands_match_cue_on_the_conformance_corpus() {
             .expect("run cue cmd");
         let actual = Command::new(bin())
             .args(["cmd", &command, rust_dir.to_str().expect("path")])
+            .current_dir(&rust_dir)
             .output()
             .expect("run ostinato cmd");
 

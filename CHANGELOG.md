@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.35.0
+
+Invocation-cwd tool paths.
+
+- Relative `exec.Run` working directories (including the default cwd) and
+  relative `file.Append`/`Create` filenames resolve against the invocation
+  working directory, matching `cue cmd` instead of the package directory.
+- Tool conformance and e2e harnesses run commands from their fixture
+  directories, matching the oracle invocation.
+- Added an e2e differential test that runs both tools from a parent directory
+  with a `./pkg` package and checks cwd-dependent output and artifacts.
+- 440 tests (103 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.34.2
 
 Nested field-path definition reads.

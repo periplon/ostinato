@@ -21,10 +21,15 @@ fn cue_command() -> Option<String> {
 }
 
 fn ost(args: &[&str]) -> Output {
-    Command::new(bin())
-        .args(args)
-        .output()
-        .expect("run ostinato")
+    let mut command = Command::new(bin());
+    command.args(args);
+    if args.first() == Some(&"cmd")
+        && let Some(path) = args.last()
+        && Path::new(path).is_dir()
+    {
+        command.current_dir(path);
+    }
+    command.output().expect("run ostinato")
 }
 
 fn write(path: &Path, contents: &str) {
@@ -6682,6 +6687,60 @@ command: c: {
     assert_eq!(
         std::fs::read(cue_dir.path().join("order.txt")).expect("cue order"),
         std::fs::read(rust_dir.path().join("order.txt")).expect("rust order")
+    );
+}
+
+#[test]
+fn tool_command_relative_paths_use_invocation_cwd() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let source = r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"tool/file"
+)
+command: c: {
+	where: exec.Run & {cmd: ["sh", "-c", "pwd"], stdout: string}
+	r: exec.Run & {cmd: ["sh", "-c", "pwd; ls"], dir: "work", stdout: string}
+	q: cli.Print & {text: "D=\(where.stdout)R=\(r.stdout)"}
+	w: file.Create & {filename: "out.txt", contents: "hello"}
+}
+"#;
+    let root = tempfile::tempdir().expect("tempdir");
+    let pkg = root.path().join("pkg");
+    std::fs::create_dir_all(pkg.join("work")).expect("pkg work");
+    std::fs::create_dir_all(root.path().join("work")).expect("root work");
+    write(&pkg.join("a_tool.cue"), source);
+    write(&pkg.join("work/PKG"), "");
+    write(&root.path().join("work/ROOT"), "");
+    let expected = Command::new(&cue)
+        .args(["cmd", "c", "./pkg"])
+        .current_dir(root.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = Command::new(bin())
+        .args(["cmd", "c", "./pkg"])
+        .current_dir(root.path())
+        .output()
+        .expect("run ostinato cmd");
+    assert_eq!(actual.status.code(), expected.status.code());
+    let normalize = |output: &[u8]| {
+        String::from_utf8_lossy(output)
+            .replace(&root.path().display().to_string(), "<root>")
+            .replace(&pkg.display().to_string(), "<pkg>")
+    };
+    assert_eq!(normalize(&actual.stdout), normalize(&expected.stdout));
+    assert!(
+        root.path().join("out.txt").exists(),
+        "file task must write relative to the invocation cwd"
+    );
+    assert!(
+        !pkg.join("out.txt").exists(),
+        "file task must not write relative to the package dir"
     );
 }
 
