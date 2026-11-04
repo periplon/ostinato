@@ -1,6 +1,9 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/agents.sqlite artifacts a1ab00e7-4ae6-4e8e-b6ab-58533299de58 --extract /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/agent-extract
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/agents.sqlite artifacts 6c3d79ca-312b-4613-8b62-82bbc62edecb --extract /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/agent-extract
 
 TRACE    STEP                 ROUND   ATTEMPT   KIND      SIZE      NAME
-no artifacts matched
+1        review               0       0         patch     334       _isolation/changes.patch
+1        review               0       0         declared  173       reports/review.md
+extracted /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/agent-extract/_isolation/changes.patch
+extracted /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/agent-extract/reports/review.md
 
 exit=0

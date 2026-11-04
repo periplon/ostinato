@@ -1869,7 +1869,124 @@ impl<'a> Frame<'a> {
         match &*self.incomplete_mode.borrow() {
             IncompleteMode::Forbid => false,
             IncompleteMode::AllowAll => true,
-            IncompleteMode::AllowOnly(allowed) => expr_references_task_output(expr, allowed),
+            IncompleteMode::AllowOnly(allowed) => {
+                let mut seen = HashSet::new();
+                self.expr_reaches_task_output(expr, allowed, &mut seen)
+            }
+        }
+    }
+
+    fn expr_reaches_task_output(
+        &self,
+        expr: &Expr,
+        allowed: &HashSet<String>,
+        seen: &mut HashSet<String>,
+    ) -> bool {
+        match expr {
+            Expr::Select(base, field, _, _) => {
+                if matches!(field.as_str(), "stdout" | "success")
+                    && matches!(
+                        unwrap_interp_base(base),
+                        Expr::Ident(name, _) if allowed.contains(name)
+                    )
+                {
+                    return true;
+                }
+                self.expr_reaches_task_output(base, allowed, seen)
+            }
+            Expr::Ident(name, _) => {
+                let local = if let Some(value) = self.lets.borrow().get(name).cloned() {
+                    Some(vec![value])
+                } else {
+                    let fields = self.fields.borrow();
+                    let prefixed = prefixed_field(name);
+                    fields
+                        .get(name)
+                        .or_else(|| fields.get(&prefixed))
+                        .map(|definition| definition.exprs.clone())
+                };
+                match local {
+                    Some(exprs) => {
+                        if !seen.insert(name.clone()) {
+                            return false;
+                        }
+                        let result = exprs
+                            .iter()
+                            .any(|expr| self.expr_reaches_task_output(expr, allowed, seen));
+                        seen.remove(name);
+                        result
+                    }
+                    None => self
+                        .parent
+                        .is_some_and(|parent| parent.expr_reaches_task_output(expr, allowed, seen)),
+                }
+            }
+            Expr::Unify(left, right, _)
+            | Expr::Disjunction(left, right, _)
+            | Expr::Binary(_, left, right, _) => {
+                self.expr_reaches_task_output(left, allowed, seen)
+                    || self.expr_reaches_task_output(right, allowed, seen)
+            }
+            Expr::Bound(_, inner, _)
+            | Expr::Default(inner, _)
+            | Expr::Paren(inner, _)
+            | Expr::Unary(_, inner, _) => self.expr_reaches_task_output(inner, allowed, seen),
+            Expr::Index(base, index, _) => {
+                self.expr_reaches_task_output(base, allowed, seen)
+                    || self.expr_reaches_task_output(index, allowed, seen)
+            }
+            Expr::Call(callee, arguments, _) => {
+                self.expr_reaches_task_output(callee, allowed, seen)
+                    || arguments
+                        .iter()
+                        .any(|argument| self.expr_reaches_task_output(argument, allowed, seen))
+            }
+            Expr::Str(parts, _) => parts.iter().any(|part| match part {
+                StrPart::Interp(inner) => self.expr_reaches_task_output(inner, allowed, seen),
+                StrPart::Text(_) => false,
+            }),
+            Expr::BytesInterp(parts, _) => parts.iter().any(|part| match part {
+                crate::ast::BytePart::Interp(inner) => {
+                    self.expr_reaches_task_output(inner, allowed, seen)
+                }
+                crate::ast::BytePart::Text(_) => false,
+            }),
+            Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => items
+                .iter()
+                .any(|item| self.expr_reaches_task_output(item, allowed, seen)),
+            Expr::OpenList(Some(inner), _) => self.expr_reaches_task_output(inner, allowed, seen),
+            Expr::ListComp { body, .. } => self.expr_reaches_task_output(body, allowed, seen),
+            Expr::Struct(items, _) => items
+                .iter()
+                .any(|item| self.item_reaches_task_output(item, allowed, seen)),
+            _ => false,
+        }
+    }
+
+    fn item_reaches_task_output(
+        &self,
+        item: &StructItem,
+        allowed: &HashSet<String>,
+        seen: &mut HashSet<String>,
+    ) -> bool {
+        match item {
+            StructItem::Field(field) => self.expr_reaches_task_output(&field.value, allowed, seen),
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                self.expr_reaches_task_output(value, allowed, seen)
+            }
+            StructItem::For { source, body, .. } => {
+                self.expr_reaches_task_output(source, allowed, seen)
+                    || body
+                        .iter()
+                        .any(|item| self.item_reaches_task_output(item, allowed, seen))
+            }
+            StructItem::If { cond, body, .. } => {
+                self.expr_reaches_task_output(cond, allowed, seen)
+                    || body
+                        .iter()
+                        .any(|item| self.item_reaches_task_output(item, allowed, seen))
+            }
+            StructItem::Ellipsis(_) => false,
         }
     }
 
@@ -3233,49 +3350,6 @@ fn unwrap_interp_base(expr: &Expr) -> &Expr {
             unwrap_interp_base(inner)
         }
         other => other,
-    }
-}
-
-fn expr_references_task_output(expr: &Expr, allowed: &HashSet<String>) -> bool {
-    match expr {
-        Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success")
-                && matches!(unwrap_interp_base(base), Expr::Ident(name, _) if allowed.contains(name))
-            {
-                return true;
-            }
-            expr_references_task_output(base, allowed)
-        }
-        Expr::Unify(left, right, _)
-        | Expr::Disjunction(left, right, _)
-        | Expr::Binary(_, left, right, _) => {
-            expr_references_task_output(left, allowed)
-                || expr_references_task_output(right, allowed)
-        }
-        Expr::Bound(_, inner, _)
-        | Expr::Default(inner, _)
-        | Expr::Paren(inner, _)
-        | Expr::Unary(_, inner, _) => expr_references_task_output(inner, allowed),
-        Expr::Index(base, index, _) => {
-            expr_references_task_output(base, allowed)
-                || expr_references_task_output(index, allowed)
-        }
-        Expr::Call(callee, arguments, _) => {
-            expr_references_task_output(callee, allowed)
-                || arguments
-                    .iter()
-                    .any(|argument| expr_references_task_output(argument, allowed))
-        }
-        Expr::Str(parts, _) => parts.iter().any(|part| match part {
-            StrPart::Interp(inner) => expr_references_task_output(inner, allowed),
-            StrPart::Text(_) => false,
-        }),
-        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => items
-            .iter()
-            .any(|item| expr_references_task_output(item, allowed)),
-        Expr::OpenList(Some(inner), _) => expr_references_task_output(inner, allowed),
-        Expr::ListComp { body, .. } => expr_references_task_output(body, allowed),
-        _ => false,
     }
 }
 

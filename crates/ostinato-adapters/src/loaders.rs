@@ -1279,11 +1279,8 @@ fn command_task_items(
                 continue;
             }
             found = true;
-            if let Some(Expr::Struct(task_items, _)) =
-                resolve_command_expr(items, &command_field.value)
-            {
-                tasks.extend(task_items.iter().cloned());
-            }
+            let mut visited = std::collections::BTreeSet::new();
+            resolve_command_items(items, &command_field.value, &mut visited, &mut tasks);
         }
     }
     if !found {
@@ -1294,36 +1291,59 @@ fn command_task_items(
     Ok(tasks)
 }
 
-/// Follow identifier/parenthesised references to the declaration expression.
-fn resolve_command_expr<'a>(items: &'a [StructItem], expr: &'a Expr) -> Option<&'a Expr> {
+/// Resolve a command value into the union of its struct operands.
+fn resolve_command_items(
+    items: &[StructItem],
+    expr: &Expr,
+    visited: &mut std::collections::BTreeSet<String>,
+    out: &mut Vec<StructItem>,
+) {
     match expr {
         Expr::Ident(name, _) => {
-            named_field(items, name).and_then(|value| resolve_command_expr(items, value))
+            if !visited.insert(name.clone()) {
+                return;
+            }
+            if let Some(value) = local_definition(items, items, name) {
+                resolve_command_items(items, value, visited, out);
+            }
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            resolve_command_expr(items, inner)
+            resolve_command_items(items, inner, visited, out);
         }
-        other => Some(other),
+        Expr::Unify(left, right, _) => {
+            resolve_command_items(items, left, visited, out);
+            resolve_command_items(items, right, visited, out);
+        }
+        Expr::Struct(task_items, _) => out.extend(task_items.iter().cloned()),
+        _ => {}
     }
 }
 
-/// Name of the top-level field that holds a referenced command value, if any.
-fn command_target<'a>(items: &'a [StructItem], expr: &'a Expr) -> Option<String> {
-    let mut current = expr;
-    loop {
-        match current {
-            Expr::Ident(name, _) => match named_field(items, name) {
-                Some(next @ Expr::Ident(_, _)) => current = next,
-                _ => return Some(name.clone()),
-            },
-            Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-                current = inner;
+/// Names of the declarations (fields or lets) reachable from a command value.
+fn command_targets(
+    items: &[StructItem],
+    expr: &Expr,
+    visited: &mut std::collections::BTreeSet<String>,
+    out: &mut Vec<String>,
+) {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return;
             }
-            Expr::Unify(left, right, _) => {
-                return command_target(items, left).or_else(|| command_target(items, right));
+            out.push(name.clone());
+            if let Some(value) = local_definition(items, items, name) {
+                command_targets(items, value, visited, out);
             }
-            _ => return None,
         }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            command_targets(items, inner, visited, out);
+        }
+        Expr::Unify(left, right, _) => {
+            command_targets(items, left, visited, out);
+            command_targets(items, right, visited, out);
+        }
+        _ => {}
     }
 }
 
@@ -1391,7 +1411,10 @@ fn collect_schedule(
         };
         let item = ast.and_then(|items| field_item(items, key));
         if fields.contains_key("$id") {
-            let dependencies = item.map(after_names).transpose()?.unwrap_or_default();
+            let dependencies = match ast {
+                Some(items) => after_names_union(items, key)?,
+                None => Vec::new(),
+            };
             out.push((key.clone(), dependencies, fields.clone()));
             continue;
         }
@@ -1405,6 +1428,27 @@ fn collect_schedule(
         collect_schedule(fields, sub_ast, out)?;
     }
     Ok(())
+}
+
+fn after_names_union(
+    items: &[StructItem],
+    name: &str,
+) -> Result<Vec<String>, ostinato_lang::LangError> {
+    let mut dependencies = Vec::new();
+    for item in items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        if !matches!(&field.label, Label::Name(label, _) if label == name) {
+            continue;
+        }
+        for dependency in after_names(item)? {
+            if !dependencies.contains(&dependency) {
+                dependencies.push(dependency);
+            }
+        }
+    }
+    Ok(dependencies)
 }
 
 fn field_item<'a>(items: &'a [StructItem], name: &str) -> Option<&'a StructItem> {
@@ -1799,6 +1843,36 @@ fn add_output_dependencies(
     }
 }
 
+fn inject_into_named(
+    items: &mut [StructItem],
+    name: &str,
+    task_name: &str,
+    outputs: &[(String, Value)],
+) -> bool {
+    for item in items.iter_mut() {
+        match item {
+            StructItem::Field(field) => {
+                if matches!(&field.label, Label::Name(label, _) if label == name)
+                    && inject_task_outputs_in_expr(&mut field.value, task_name, outputs)
+                {
+                    return true;
+                }
+            }
+            StructItem::Let {
+                name: let_name,
+                value,
+                ..
+            } => {
+                if let_name == name && inject_task_outputs_in_expr(value, task_name, outputs) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn inject_command_outputs(
     items: &mut [StructItem],
     command_name: &str,
@@ -1824,9 +1898,8 @@ fn inject_command_outputs(
             if !matches!(&command_field.label, Label::Name(name, _) if name == command_name) {
                 continue;
             }
-            if let Some(found) = command_target(items, &command_field.value) {
-                targets.push(found);
-            }
+            let mut visited = std::collections::BTreeSet::new();
+            command_targets(items, &command_field.value, &mut visited, &mut targets);
         }
     }
 
@@ -1854,18 +1927,10 @@ fn inject_command_outputs(
             }
         }
     }
-    // Inject into referenced declarations (`command: c: base`).
+    // Inject into referenced declarations (`command: c: base`, lets, unified bases).
     for target in targets {
-        for item in items.iter_mut() {
-            let StructItem::Field(field) = item else {
-                continue;
-            };
-            if matches!(&field.label, Label::Name(name, _) if name == &target) {
-                if inject_task_outputs_in_expr(&mut field.value, task_name, outputs) {
-                    injected = true;
-                }
-                break;
-            }
+        if inject_into_named(items, &target, task_name, outputs) {
+            injected = true;
         }
     }
     injected

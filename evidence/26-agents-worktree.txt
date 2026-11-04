@@ -1,91 +1,54 @@
 ### git status --porcelain (checkout must stay clean)
-M  ARCHITECTURE.md
-M  CHANGELOG.md
-M  Cargo.lock
-M  Cargo.toml
-M  README.md
-M  crates/ostinato-adapters/Cargo.toml
-M  crates/ostinato-adapters/src/lib.rs
+UU CHANGELOG.md
+UU Cargo.lock
+UU Cargo.toml
+UU README.md
 M  crates/ostinato-adapters/src/loaders.rs
-M  crates/ostinato-adapters/src/process.rs
-M  crates/ostinato-adapters/src/store.rs
-A  crates/ostinato-adapters/src/workspace.rs
-M  crates/ostinato-adapters/tests/store.rs
-A  crates/ostinato-adapters/tests/workspace.rs
-M  crates/ostinato-application/src/engine.rs
-M  crates/ostinato-application/src/error.rs
-M  crates/ostinato-application/src/improve.rs
-M  crates/ostinato-application/src/lib.rs
-M  crates/ostinato-application/src/ports.rs
-M  crates/ostinato-cli/Cargo.toml
-M  crates/ostinato-cli/src/main.rs
-M  crates/ostinato-cli/tests/e2e.rs
-A  crates/ostinato-domain/src/agent.rs
-M  crates/ostinato-domain/src/lib.rs
-M  crates/ostinato-domain/src/workflow.rs
-M  crates/ostinato-domain/tests/domain.rs
-M  crates/ostinato-lang/Cargo.toml
-M  crates/ostinato-lang/src/compile.rs
-A  crates/ostinato-lang/tests/agents.rs
-A  docs/AGENT-DEFINITIONS-DESIGN.md
-A  docs/AGENTS.md
-M  docs/COMPLIANCE.md
-M  docs/EVIDENCE.md
-M  docs/LANGUAGE.md
-M  docs/RELEASE.md
-M  docs/REVIEW.md
+UU crates/ostinato-cli/tests/e2e.rs
+M  crates/ostinato-lang/src/eval.rs
+UU docs/COMPLIANCE.md
+UU docs/EVIDENCE.md
+UU docs/RELEASE.md
 M  docs/SCOPE.md
-M  evidence/00-environment.txt
-MM evidence/01-quality.txt
-MM evidence/02-validate-rust.txt
-MM evidence/02b-validate-oracle.txt
-MM evidence/02c-conformance.txt
-MM evidence/03-run-hello.txt
-MM evidence/04-run-retry.txt
-MM evidence/05-run-cycle.txt
-MM evidence/06-status.txt
-MM evidence/07-logs.txt
-MM evidence/08-trials.txt
-MM evidence/09-audit.txt
-MM evidence/10-metrics.txt
-MM evidence/11-resume-fail.txt
-MM evidence/12-resume-ok.txt
-MM evidence/13-resume-trials.txt
-MM evidence/14-agentic.txt
-MM evidence/15-improve.txt
-MM evidence/16-children.txt
-MD evidence/17-tamper.txt
-MM evidence/18-gateways-audit.txt
-MM evidence/18-gateways-logs.txt
-MM evidence/18-gateways-metrics.txt
-MM evidence/18-gateways-run.txt
-MM evidence/18-gateways-status.txt
-MM evidence/18-gateways-trials.txt
- M evidence/18b-gateway-nof-audit.txt
- M evidence/18b-gateway-nof-metrics.txt
- M evidence/18b-gateway-nof-run.txt
- M evidence/18b-gateway-nof-status.txt
- M evidence/18c-gateway-expression.txt
- M evidence/18d-gateway-cycle-audit.txt
- M evidence/18d-gateway-cycle.txt
-AM evidence/19-agents-validate.txt
-AM evidence/20-agents-run.txt
-AM evidence/21-agents-traces.txt
-AM evidence/22-agents-verify.txt
-AM evidence/23-agents-artifacts.txt
-AM evidence/24-agents-extract.txt
-AM evidence/25-agents-audit.txt
-AM evidence/26-agents-worktree.txt
-AD evidence/27-agents-doctor.txt
-AD evidence/28-agents-tamper.txt
-M  examples/README.md
-M  examples/agentic.cue
-A  examples/agents.cue
-A  examples/agents/fake-agent.sh
-M  scripts/evidence.sh
+UU evidence/00-environment.txt
+UU evidence/01-quality.txt
+UU evidence/02-validate-rust.txt
+UU evidence/02b-validate-oracle.txt
+UU evidence/02c-conformance.txt
+UU evidence/03-run-hello.txt
+UU evidence/04-run-retry.txt
+UU evidence/05-run-cycle.txt
+UU evidence/06-status.txt
+UU evidence/07-logs.txt
+UU evidence/08-trials.txt
+UU evidence/09-audit.txt
+UU evidence/10-metrics.txt
+UU evidence/11-resume-fail.txt
+UU evidence/12-resume-ok.txt
+UU evidence/13-resume-trials.txt
+UU evidence/14-agentic.txt
+UU evidence/15-improve.txt
+UU evidence/16-children.txt
+UU evidence/17-tamper.txt
+UU evidence/18-gateways-audit.txt
+UU evidence/18-gateways-logs.txt
+UU evidence/18-gateways-metrics.txt
+UU evidence/18-gateways-run.txt
+UU evidence/18-gateways-status.txt
+UU evidence/18-gateways-trials.txt
+ M evidence/19-agents-validate.txt
+ M evidence/20-agents-run.txt
+ M evidence/21-agents-traces.txt
+ M evidence/22-agents-verify.txt
+ M evidence/23-agents-artifacts.txt
+ M evidence/24-agents-extract.txt
+ M evidence/25-agents-audit.txt
+ M evidence/26-agents-worktree.txt
+ D evidence/27-agents-doctor.txt
+ D evidence/28-agents-tamper.txt
 
 ### git worktree list
-/Users/joanmarc/dailywork/jmca/ostinato                              5885d0c [fix/v0.23.3-unified-refs-transitive]
+/Users/joanmarc/dailywork/jmca/ostinato                              adf9344 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato-gateways                     668e12f [feat/gateways]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions cb3a2ae [feat/agent-definitions]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan     2411d13 [feat/gateways-r0-r4]

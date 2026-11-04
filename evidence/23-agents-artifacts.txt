@@ -1,9 +1,34 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/agents.sqlite --json artifacts a1ab00e7-4ae6-4e8e-b6ab-58533299de58
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/agents.sqlite --json artifacts 6c3d79ca-312b-4613-8b62-82bbc62edecb
 
 {
-  "artifacts": [],
+  "artifacts": [
+    {
+      "attempt": 0,
+      "kind": "patch",
+      "name": "_isolation/changes.patch",
+      "round": 0,
+      "sha256": "ee8459b07182fdbc0f789c415ac9bf2936c8f4fed550c02b4746f6cc8aa82475",
+      "size": 334,
+      "step": "review",
+      "storedSize": 334,
+      "traceId": 1,
+      "truncated": false
+    },
+    {
+      "attempt": 0,
+      "kind": "declared",
+      "name": "reports/review.md",
+      "round": 0,
+      "sha256": "e67b117e4c5b941e4ec725412f9eb23262e581323314253d970f9bead3628c18",
+      "size": 173,
+      "step": "review",
+      "storedSize": 173,
+      "traceId": 1,
+      "truncated": false
+    }
+  ],
   "extracted": [],
-  "run": "a1ab00e7-4ae6-4e8e-b6ab-58533299de58"
+  "run": "6c3d79ca-312b-4613-8b62-82bbc62edecb"
 }
 
 exit=0

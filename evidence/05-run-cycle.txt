@@ -1,9 +1,9 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/db.sqlite run examples/cycle.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/db.sqlite run examples/cycle.cue
 
-run=a9f49735-020a-4772-995d-97d17416b24f workflow=cycle status=succeeded durationMs=84
-STEP                     STATUS     VISITS ATTEMPTS ROUND
-refine                   succeeded  3      1        2
-review                   succeeded  3      1        2
-setup                    succeeded  1      1        0
+run=987a42a1-5185-4964-9a55-85db072997a0 workflow=cycle status=succeeded durationMs=91
+STEP                     STATUS     VISITS ATTEMPTS
+refine                   succeeded  3      1       
+review                   succeeded  3      1       
+setup                    succeeded  1      1       
 
 exit=0

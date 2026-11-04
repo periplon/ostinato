@@ -1,8 +1,8 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/agents.sqlite run examples/agents.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/agents.sqlite run examples/agents.cue
 
-run=a1ab00e7-4ae6-4e8e-b6ab-58533299de58 workflow=agents status=failed durationMs=206
-error: cannot spawn agent `./agents/fake-agent.sh`: No such file or directory (os error 2)
+run=6c3d79ca-312b-4613-8b62-82bbc62edecb workflow=agents status=succeeded durationMs=433
 STEP                     STATUS     VISITS ATTEMPTS
-review                   failed     0      1
+report                   succeeded  1      1       
+review                   succeeded  1      1       
 
-exit=1
+exit=0

@@ -1,9 +1,9 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/resume.sqlite run /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/resume.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/resume.sqlite run /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/resume.cue
 
-run=0f84e63e-1e12-475f-a852-64bc803db4dd workflow=resume-evidence status=failed durationMs=10
-error: command exited with 7:
+run=65650ee3-f6cf-4dc0-91e2-0e50e7eae59f workflow=resume-evidence status=failed durationMs=10
+error: command exited with 7: 
 STEP                     STATUS     VISITS ATTEMPTS
-a                        succeeded  1      1
-b                        failed     0      1
+a                        succeeded  1      1       
+b                        failed     0      1       
 
 exit=1

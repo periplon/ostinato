@@ -1,8 +1,8 @@
-### /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan/target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.NkYEYQdD7d/resume.sqlite resume 0f84e63e-1e12-475f-a852-64bc803db4dd
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.bDgb979Zhd/resume.sqlite resume 65650ee3-f6cf-4dc0-91e2-0e50e7eae59f
 
-run=0f84e63e-1e12-475f-a852-64bc803db4dd workflow=resume-evidence status=succeeded durationMs=5
+run=65650ee3-f6cf-4dc0-91e2-0e50e7eae59f workflow=resume-evidence status=succeeded durationMs=5
 STEP                     STATUS     VISITS ATTEMPTS
-a                        succeeded  1      1
-b                        succeeded  1      1
+a                        succeeded  1      1       
+b                        succeeded  1      1       
 
 exit=0
