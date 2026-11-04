@@ -1144,6 +1144,7 @@ pub fn run_tool_command(
             &mut scopes,
             &combined.items,
             &mut external_paths,
+            &mut std::collections::BTreeSet::new(),
         );
     }
     external_paths.retain(|path| {
@@ -1959,6 +1960,7 @@ fn collect_output_task_paths<'a>(
     scopes: &mut Vec<&'a [StructItem]>,
     root: &'a [StructItem],
     out: &mut std::collections::BTreeSet<Vec<String>>,
+    visited: &mut std::collections::BTreeSet<String>,
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
@@ -1973,31 +1975,48 @@ fn collect_output_task_paths<'a>(
             {
                 out.insert(path);
             }
-            collect_output_task_paths(base, scopes, root, out);
+            collect_output_task_paths(base, scopes, root, out, visited);
+        }
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return;
+            }
+            if let Some(item) = local_binding(scopes, root, name) {
+                match item {
+                    StructItem::Let { value, .. } => {
+                        collect_output_task_paths(value, scopes, root, out, visited);
+                    }
+                    StructItem::Field(field) if !field.definition => {
+                        collect_output_task_paths(&field.value, scopes, root, out, visited);
+                    }
+                    _ => {}
+                }
+            }
+            visited.remove(name);
         }
         Expr::Struct(items, _) => {
             scopes.push(items);
             for item in items {
                 match item {
                     StructItem::Field(field) => {
-                        collect_output_task_paths(&field.value, scopes, root, out);
+                        collect_output_task_paths(&field.value, scopes, root, out, visited);
                     }
                     StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                        collect_output_task_paths(value, scopes, root, out);
+                        collect_output_task_paths(value, scopes, root, out, visited);
                     }
                     StructItem::For { source, body, .. } => {
-                        collect_output_task_paths(source, scopes, root, out);
+                        collect_output_task_paths(source, scopes, root, out, visited);
                         for body_item in body {
                             if let StructItem::Field(field) = body_item {
-                                collect_output_task_paths(&field.value, scopes, root, out);
+                                collect_output_task_paths(&field.value, scopes, root, out, visited);
                             }
                         }
                     }
                     StructItem::If { cond, body, .. } => {
-                        collect_output_task_paths(cond, scopes, root, out);
+                        collect_output_task_paths(cond, scopes, root, out, visited);
                         for body_item in body {
                             if let StructItem::Field(field) = body_item {
-                                collect_output_task_paths(&field.value, scopes, root, out);
+                                collect_output_task_paths(&field.value, scopes, root, out, visited);
                             }
                         }
                     }
@@ -2009,43 +2028,45 @@ fn collect_output_task_paths<'a>(
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            collect_output_task_paths(left, scopes, root, out);
-            collect_output_task_paths(right, scopes, root, out);
+            collect_output_task_paths(left, scopes, root, out, visited);
+            collect_output_task_paths(right, scopes, root, out, visited);
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
-        | Expr::Unary(_, inner, _) => collect_output_task_paths(inner, scopes, root, out),
+        | Expr::Unary(_, inner, _) => collect_output_task_paths(inner, scopes, root, out, visited),
         Expr::Index(base, index, _) => {
-            collect_output_task_paths(base, scopes, root, out);
-            collect_output_task_paths(index, scopes, root, out);
+            collect_output_task_paths(base, scopes, root, out, visited);
+            collect_output_task_paths(index, scopes, root, out, visited);
         }
         Expr::Call(callee, arguments, _) => {
-            collect_output_task_paths(callee, scopes, root, out);
+            collect_output_task_paths(callee, scopes, root, out, visited);
             for argument in arguments {
-                collect_output_task_paths(argument, scopes, root, out);
+                collect_output_task_paths(argument, scopes, root, out, visited);
             }
         }
         Expr::Str(parts, _) => {
             for part in parts {
                 if let ostinato_lang::ast::StrPart::Interp(inner) = part {
-                    collect_output_task_paths(inner, scopes, root, out);
+                    collect_output_task_paths(inner, scopes, root, out, visited);
                 }
             }
         }
         Expr::BytesInterp(parts, _) => {
             for part in parts {
                 if let ostinato_lang::ast::BytePart::Interp(inner) = part {
-                    collect_output_task_paths(inner, scopes, root, out);
+                    collect_output_task_paths(inner, scopes, root, out, visited);
                 }
             }
         }
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
             for item in items {
-                collect_output_task_paths(item, scopes, root, out);
+                collect_output_task_paths(item, scopes, root, out, visited);
             }
         }
-        Expr::OpenList(Some(inner), _) => collect_output_task_paths(inner, scopes, root, out),
+        Expr::OpenList(Some(inner), _) => {
+            collect_output_task_paths(inner, scopes, root, out, visited)
+        }
         _ => {}
     }
 }
@@ -4199,105 +4220,213 @@ fn definition_key_order(
 ) -> std::collections::BTreeMap<String, (Option<usize>, Option<usize>)> {
     let scopes: [&[StructItem]; 1] = [command_items];
     let mut info = std::collections::BTreeMap::new();
-    for (index, item) in command_items.iter().enumerate() {
+    let mut counter = 0usize;
+    let mut visited = std::collections::BTreeSet::new();
+    for item in command_items {
         let StructItem::Field(field) = item else {
             continue;
         };
-        scan_order_expr(&field.value, index, &scopes, root, imports, &mut info);
+        let Label::Name(name, _) = &field.label else {
+            continue;
+        };
+        if field.definition || field.optional || name.starts_with('_') {
+            continue;
+        }
+        let index = counter;
+        counter += 1;
+        let allow_read = !is_direct_output_read(&field.value);
+        scan_order_expr(
+            &field.value,
+            allow_read,
+            true,
+            index,
+            &scopes,
+            root,
+            imports,
+            &mut info,
+            &mut counter,
+            &mut visited,
+        );
     }
     info
 }
 
+fn is_direct_output_read(expr: &Expr) -> bool {
+    let mut value = expr;
+    while let Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) = value {
+        value = inner;
+    }
+    matches!(value, Expr::Select(_, field, _, _) if matches!(field.as_str(), "stdout" | "success"))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn scan_order_expr(
     expr: &Expr,
+    allow_read: bool,
+    allow_decl: bool,
     index: usize,
     scopes: &[&[StructItem]],
     root: &[StructItem],
     imports: &ImportKinds,
     info: &mut std::collections::BTreeMap<String, (Option<usize>, Option<usize>)>,
+    counter: &mut usize,
+    visited: &mut std::collections::BTreeSet<String>,
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
             if matches!(field.as_str(), "stdout" | "success") {
-                if let Some(path) = resolved_path(
-                    base,
-                    scopes,
-                    root,
-                    &mut std::collections::BTreeSet::new(),
-                    false,
-                ) {
+                if allow_read
+                    && let Some(path) = resolved_path(
+                        base,
+                        scopes,
+                        root,
+                        &mut std::collections::BTreeSet::new(),
+                        false,
+                    )
+                {
                     let path = canonical_definition_path(root, &path);
-                    if !path.first().is_some_and(|segment| segment.starts_with('#')) {
-                        scan_order_expr(base, index, scopes, root, imports, info);
-                        return;
+                    if path.first().is_some_and(|segment| segment.starts_with('#')) {
+                        let entry = info.entry(path_key(&path)).or_insert((None, None));
+                        entry.1 = Some(entry.1.map_or(index, |existing| existing.min(index)));
                     }
-                    let entry = info.entry(path_key(&path)).or_insert((None, None));
-                    entry.1 = Some(entry.1.map_or(index, |existing| existing.min(index)));
                 }
-            } else if let Some(key) = task_value_key(expr, scopes, root, imports)
+            } else if allow_decl
+                && let Some(key) = task_value_key(expr, scopes, root, imports)
                 && key.starts_with("def:")
             {
                 let entry = info.entry(key).or_insert((None, None));
                 entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
             }
-            scan_order_expr(base, index, scopes, root, imports, info);
+            scan_order_expr(
+                base, false, false, index, scopes, root, imports, info, counter, visited,
+            );
         }
-        Expr::Ident(..) | Expr::Index(..) => {
-            if let Some(key) = task_value_key(expr, scopes, root, imports)
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return;
+            }
+            match local_binding(scopes, root, name) {
+                Some(StructItem::Let { value, .. })
+                | Some(StructItem::Field(Field { value, .. }))
+                    if !matches!(
+                        local_binding(scopes, root, name),
+                        Some(StructItem::Field(field)) if field.definition
+                    ) =>
+                {
+                    scan_order_expr(
+                        value, allow_read, allow_decl, index, scopes, root, imports, info, counter,
+                        visited,
+                    );
+                }
+                _ => {
+                    if allow_decl
+                        && let Some(key) = task_value_key(expr, scopes, root, imports)
+                        && key.starts_with("def:")
+                    {
+                        let entry = info.entry(key).or_insert((None, None));
+                        entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
+                    }
+                }
+            }
+            visited.remove(name);
+        }
+        Expr::Index(base, _, _) => {
+            if allow_decl
+                && let Some(key) = task_value_key(expr, scopes, root, imports)
                 && key.starts_with("def:")
             {
                 let entry = info.entry(key).or_insert((None, None));
                 entry.0 = Some(entry.0.map_or(index, |existing| existing.min(index)));
             }
-            if let Expr::Index(base, _, _) = expr {
-                scan_order_expr(base, index, scopes, root, imports, info);
-            }
+            scan_order_expr(
+                base, false, false, index, scopes, root, imports, info, counter, visited,
+            );
         }
         Expr::Struct(items, _) => {
             let mut nested = scopes.to_vec();
             nested.push(items);
             for item in items {
-                if let StructItem::Field(field) = item {
-                    scan_order_expr(&field.value, index, &nested, root, imports, info);
+                let StructItem::Field(field) = item else {
+                    continue;
+                };
+                let Label::Name(name, _) = &field.label else {
+                    continue;
+                };
+                if field.definition || field.optional || name.starts_with('_') {
+                    continue;
                 }
+                let field_index = *counter;
+                *counter += 1;
+                let field_read = !is_direct_output_read(&field.value);
+                scan_order_expr(
+                    &field.value,
+                    field_read,
+                    true,
+                    field_index,
+                    &nested,
+                    root,
+                    imports,
+                    info,
+                    counter,
+                    visited,
+                );
             }
         }
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            scan_order_expr(left, index, scopes, root, imports, info);
-            scan_order_expr(right, index, scopes, root, imports, info);
+            scan_order_expr(
+                left, allow_read, allow_decl, index, scopes, root, imports, info, counter, visited,
+            );
+            scan_order_expr(
+                right, allow_read, allow_decl, index, scopes, root, imports, info, counter, visited,
+            );
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
-        | Expr::Unary(_, inner, _) => scan_order_expr(inner, index, scopes, root, imports, info),
+        | Expr::Unary(_, inner, _) => scan_order_expr(
+            inner, allow_read, allow_decl, index, scopes, root, imports, info, counter, visited,
+        ),
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
             for item in items {
-                scan_order_expr(item, index, scopes, root, imports, info);
+                scan_order_expr(
+                    item, allow_read, allow_decl, index, scopes, root, imports, info, counter,
+                    visited,
+                );
             }
         }
-        Expr::OpenList(Some(inner), _) => {
-            scan_order_expr(inner, index, scopes, root, imports, info)
-        }
+        Expr::OpenList(Some(inner), _) => scan_order_expr(
+            inner, allow_read, allow_decl, index, scopes, root, imports, info, counter, visited,
+        ),
         Expr::Str(parts, _) => {
             for part in parts {
                 if let ostinato_lang::ast::StrPart::Interp(inner) = part {
-                    scan_order_expr(inner, index, scopes, root, imports, info);
+                    scan_order_expr(
+                        inner, true, true, index, scopes, root, imports, info, counter, visited,
+                    );
                 }
             }
         }
         Expr::BytesInterp(parts, _) => {
             for part in parts {
                 if let ostinato_lang::ast::BytePart::Interp(inner) = part {
-                    scan_order_expr(inner, index, scopes, root, imports, info);
+                    scan_order_expr(
+                        inner, true, true, index, scopes, root, imports, info, counter, visited,
+                    );
                 }
             }
         }
         Expr::Call(callee, arguments, _) => {
-            scan_order_expr(callee, index, scopes, root, imports, info);
+            scan_order_expr(
+                callee, allow_read, allow_decl, index, scopes, root, imports, info, counter,
+                visited,
+            );
             for argument in arguments {
-                scan_order_expr(argument, index, scopes, root, imports, info);
+                scan_order_expr(
+                    argument, allow_read, allow_decl, index, scopes, root, imports, info, counter,
+                    visited,
+                );
             }
         }
         _ => {}
