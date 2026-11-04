@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.32.1
+
+Alias target requirements.
+
+- Definitions that alias a non-definition field/let (`#a: base`) are no
+  longer treated as injectable task declarations, matching CUE; aliases to
+  other definitions (`#a: #b`, including chains through a field) still work.
+- Added e2e cases for both forms.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.32.0
 
 Definition container and alias output reads.

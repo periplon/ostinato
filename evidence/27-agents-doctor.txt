@@ -1,9 +1,9 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-def4/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.70ZOkauwUV/agents.sqlite doctor
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-def4/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.hl6eG8ol6s/agents.sqlite doctor
 
-ostinato 0.32.0
+ostinato 0.32.1
 evaluator rust (required CUE workflow semantics; default)
 oracle cue version v0.17.1
-db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.70ZOkauwUV/agents.sqlite
+db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.hl6eG8ol6s/agents.sqlite
 agent not configured (command steps need agent.command)
 agent provider claude /Users/joanmarc/.local/bin/claude
 agent provider codex /Users/joanmarc/.local/bin/codex

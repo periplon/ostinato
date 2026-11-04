@@ -6968,6 +6968,41 @@ command: defcontainertaskref: {
             false,
         ),
         (
+            "defaliasfield",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+#a: base
+command: defaliasfield: {
+	x: p1: #a
+	q: cli.Print & {text: "R=\(x.p1.stdout)"}
+}
+"#,
+            false,
+        ),
+        (
+            "defaliasdefchain",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+base: lib.run
+#a: #b
+#b: base
+command: defaliasdefchain: {
+	x: p1: #a
+	q: cli.Print & {text: "R=\(x.p1.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
             "readrootmodule",
             r#"
 package foo
