@@ -2928,7 +2928,15 @@ fn collect_task_decl_ids_items<'a>(
                     // Plain field references are not injected by CUE; only
                     // `let` bindings receive captured outputs.
                     Expr::Ident(name, _) => {
-                        is_let_binding(scopes, root, name)
+                        let import_task = ident_import_key(
+                            &field.value,
+                            scopes,
+                            root,
+                            non_task_imports,
+                            &mut std::collections::BTreeSet::new(),
+                        )
+                        .is_some();
+                        (is_let_binding(scopes, root, name) || import_task)
                             && is_task_expr(
                                 &field.value,
                                 scopes,
@@ -3128,6 +3136,55 @@ fn is_task_leaf(expr: &Expr) -> bool {
     }
 }
 
+fn local_binding<'a>(
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    name: &str,
+) -> Option<&'a StructItem> {
+    let matches = |item: &&StructItem| match item {
+        StructItem::Field(field) => {
+            matches!(&field.label, Label::Name(label, _) if label == name)
+        }
+        StructItem::Let { name: label, .. } => label == name,
+        _ => false,
+    };
+    scopes
+        .iter()
+        .rev()
+        .find_map(|scope| scope.iter().find(matches))
+        .or_else(|| root.iter().find(matches))
+}
+
+fn ident_import_key<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    imports: &ImportKinds,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<String> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return None;
+            }
+            match local_binding(scopes, root, name)? {
+                StructItem::Let { value, .. } => {
+                    ident_import_key(value, scopes, root, imports, visited)
+                }
+                StructItem::Field(field) => {
+                    ident_import_key(&field.value, scopes, root, imports, visited)
+                }
+                _ => None,
+            }
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            ident_import_key(inner, scopes, root, imports, visited)
+        }
+        Expr::Unify(..) => None,
+        _ => import_task_alias(expr, imports).map(|alias| format!("import:{alias}")),
+    }
+}
+
 /// Identity of the value a task declaration draws its outputs from.
 ///
 /// Imports are shared by alias and let bindings by name, matching CUE's
@@ -3139,13 +3196,13 @@ fn task_value_key<'a>(
     imports: &ImportKinds,
 ) -> Option<String> {
     match expr {
-        Expr::Ident(name, _) => {
-            if local_definition_scopes(scopes, root, name).is_some() {
-                Some(format!("ident:{name}"))
-            } else {
-                None
-            }
-        }
+        Expr::Ident(..) => ident_import_key(
+            expr,
+            scopes,
+            root,
+            imports,
+            &mut std::collections::BTreeSet::new(),
+        ),
         // Composed task values (`lib.run & {...}`) are distinct per
         // declaration, so CUE injects them independently.
         Expr::Unify(..) => None,

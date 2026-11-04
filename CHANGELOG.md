@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.30.1
+
+Let-task identity corrections.
+
+- Suppression keys resolve `let`/field chains to their imported task source, so
+  two module lets, a let plus a direct module use, and chained lets reject
+  like CUE. Inline lets remain distinct values and can be used twice.
+- Field-bound module tasks (`base: lib.run; a: p1: base`) are injected once
+  and suppressed when referenced twice, matching CUE.
+- Added e2e cases for inline/inline-twice, module-let pairs/chains and
+  field-bound module tasks, plus two conformance cases.
+- 438 tests (101 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.30.0
 
 Let-bound task output injection.
