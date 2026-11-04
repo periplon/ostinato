@@ -269,7 +269,14 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             Ok(exit_for_status(report.status))
         }
         Command::Cmd { name, path, params } => {
-            let code = ostinato_adapters::run_tool_command(&path, &name, &parse_params(&params)?)?;
+            let code =
+                match ostinato_adapters::run_tool_command(&path, &name, &parse_params(&params)?) {
+                    Ok(code) => code,
+                    Err(err) => {
+                        eprintln!("error: {err}");
+                        return Ok(ExitCode::from(1));
+                    }
+                };
             Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
         }
         Command::Cancel { run } => {

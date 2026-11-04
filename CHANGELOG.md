@@ -1,13 +1,26 @@
 # Changelog
 
+## v0.21.1
+
+Tool-command review corrections.
+
+- `$after` is extracted through unification, merged `command:` declarations are
+  all visible, helper fields are not treated as tasks, and failures skip
+  `$after` dependents while independent tasks continue.
+- `tool/exec.Run` matches CUE more closely: string `cmd` splits without a shell,
+  `env` maps replace the environment (lists append), `stdout`/`stderr: null`
+  stream, `mustSucceed: false` accepts failure, captured output uses a writer
+  thread (large stdin no longer deadlocks) and bytes `stdin` is supported.
+- Unknown `-p` tags error like `cue cmd`; command errors exit 1.
+- 351 tests (66 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
 ## v0.21.0
 
 CUE tool commands (`_tool.cue`).
 
 - New `ostinato cmd <name> <path>` runs `command: <name>:` tasks declared in
-  `_tool.cue` files with `tool/exec.Run`: `cmd` string/argv, `env`, `dir`,
-  `stdin`, `stdout`/`stderr` capture fields, `$after` ordering and `@tag`
-  injection, matching `cue cmd` stdout/stderr/exit behavior.
+  `_tool.cue` files with `tool/exec.Run`.
 - Workflow loading still excludes `_tool.cue` files.
 - Other tool packages, tasks consuming other task outputs, `$usage`/`$short`/
   `$long`, multi-instance inputs and `@cmd` attributes remain documented

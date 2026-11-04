@@ -3492,12 +3492,116 @@ command: fail: {
 package foo
 import "tool/exec"
 command: after: {
-	one: exec.Run & {cmd: ["sh", "-c", "echo one"]}
 	two: exec.Run & {
 		$after: one
 		cmd: ["sh", "-c", "echo two"]
 	}
+	one: exec.Run & {cmd: ["sh", "-c", "echo one"]}
 }
+"#,
+            false,
+        ),
+        (
+            "helper",
+            r#"
+package foo
+import "tool/exec"
+command: helper: {
+	message: "hi there"
+	run: exec.Run & {cmd: ["echo", message]}
+}
+"#,
+            false,
+        ),
+        (
+            "strmeta",
+            r#"
+package foo
+import "tool/exec"
+command: strmeta: {run: exec.Run & {cmd: "echo $HOME; echo meta >&2"}}
+"#,
+            false,
+        ),
+        (
+            "envreplace",
+            r#"
+package foo
+import "tool/exec"
+command: envreplace: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "printf '<%s>' \"$HOME\""]
+		env: FOO: "bar"
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "envlist",
+            r#"
+package foo
+import "tool/exec"
+command: envlist: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "printf '%s-%s' \"$FOO\" \"$BAZ\""]
+		env: ["FOO=bar", "BAZ=qux"]
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "nullcap",
+            r#"
+package foo
+import "tool/exec"
+command: nullcap: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "echo OUT; echo ERR >&2"]
+		stdout: null
+		stderr: null
+	}
+}
+"#,
+            false,
+        ),
+        (
+            "failstop",
+            r#"
+package foo
+import "tool/exec"
+command: failstop: {
+	a: exec.Run & {cmd: ["sh", "-c", "exit 3"]}
+	b: exec.Run & {$after: a, cmd: ["sh", "-c", "echo B"]}
+}
+"#,
+            false,
+        ),
+        (
+            "mustfalse",
+            r#"
+package foo
+import "tool/exec"
+command: mustfalse: {run: exec.Run & {cmd: ["sh", "-c", "exit 7"], mustSucceed: false}}
+"#,
+            false,
+        ),
+        (
+            "bytesstdin",
+            r#"
+package foo
+import "tool/exec"
+command: bytesstdin: {run: exec.Run & {cmd: ["cat"], stdin: 'bytes-in'}}
+"#,
+            false,
+        ),
+        (
+            "g",
+            r#"
+package foo
+import "tool/exec"
+command: f: {run: exec.Run & {cmd: ["echo", "F"]}}
+command: g: {run: exec.Run & {cmd: ["echo", "G"]}}
 "#,
             false,
         ),
@@ -3568,4 +3672,69 @@ command: nope: {run: {cmd: ["false"]}}
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(json(&output)["workflow"]["name"], "plain");
+}
+
+#[test]
+fn tool_command_handles_large_stdin_and_capture() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let big = "x".repeat(200_000);
+    let source = format!(
+        r#"
+package foo
+import "tool/exec"
+command: bigstdin: {{
+	run: exec.Run & {{
+		cmd: ["wc", "-c"]
+		stdin: "{big}"
+		stdout: string
+	}}
+}}
+"#
+    );
+    write(&directory.path().join("big_tool.cue"), &source);
+    let expected = Command::new(&cue)
+        .args(["cmd", "bigstdin"])
+        .current_dir(directory.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&["cmd", "bigstdin", directory.path().to_str().expect("path")]);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert_eq!(actual.stderr, expected.stderr);
+}
+
+#[test]
+fn tool_command_unknown_tag_matches_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("tag_tool.cue"),
+        r#"
+package foo
+import "tool/exec"
+command: tagged: {run: exec.Run & {cmd: ["echo", "x"]}}
+"#,
+    );
+    let expected = Command::new(&cue)
+        .args(["cmd", "-t", "nope=1", "tagged"])
+        .current_dir(directory.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&[
+        "cmd",
+        "-p",
+        "nope=1",
+        "tagged",
+        directory.path().to_str().expect("path"),
+    ]);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert_eq!(actual.stderr, expected.stderr);
 }
