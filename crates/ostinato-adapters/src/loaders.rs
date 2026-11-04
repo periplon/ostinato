@@ -1842,15 +1842,43 @@ fn resolved_definition_alias_path<'a>(
             name.starts_with('#').then(|| vec![name.clone()])
         }
         Expr::Select(base, field, _, _) => {
-            let mut path = resolved_definition_alias_path(base, scopes, root, visited)?;
-            path.push(field.clone());
-            Some(path)
+            if let Some(mut path) = resolved_definition_alias_path(base, scopes, root, visited) {
+                path.push(field.clone());
+                return Some(path);
+            }
+            let value =
+                resolve_local_value(scopes, root, base, &mut std::collections::BTreeSet::new())?;
+            let value = select_field_value(
+                scopes,
+                root,
+                value,
+                field,
+                &mut std::collections::BTreeSet::new(),
+            )?;
+            resolved_definition_alias_path(value, scopes, root, visited)
         }
         Expr::Index(base, index, _) => {
             let segment = index_field_name(index)?;
-            let mut path = resolved_definition_alias_path(base, scopes, root, visited)?;
-            path.push(segment);
-            Some(path)
+            if let Some(mut path) = resolved_definition_alias_path(base, scopes, root, visited) {
+                path.push(segment);
+                return Some(path);
+            }
+            let value =
+                resolve_local_value(scopes, root, base, &mut std::collections::BTreeSet::new())?;
+            let value = if let Expr::List(items, _) = value
+                && let Ok(position) = segment.parse::<usize>()
+            {
+                items.get(position)?
+            } else {
+                select_field_value(
+                    scopes,
+                    root,
+                    value,
+                    &segment,
+                    &mut std::collections::BTreeSet::new(),
+                )?
+            };
+            resolved_definition_alias_path(value, scopes, root, visited)
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             resolved_definition_alias_path(inner, scopes, root, visited)
@@ -4386,7 +4414,13 @@ fn definition_declaration_key(
     {
         return Some(key);
     }
-    let path = resolved_read_path(expr, scopes, root, &mut std::collections::BTreeSet::new())?;
+    let (base, field) = match expr {
+        Expr::Select(base, field, _, _) => (base, field.clone()),
+        Expr::Index(base, index, _) => (base, index_field_name(index)?),
+        _ => return None,
+    };
+    let mut path = resolved_read_path(base, scopes, root, &mut std::collections::BTreeSet::new())?;
+    path.push(field);
     let path = canonical_definition_path(root, &path);
     path.first()
         .is_some_and(|segment| segment.starts_with('#'))
@@ -4503,7 +4537,7 @@ fn scan_order_expr(
                 scan_order_expr(
                     &field.value,
                     field_read,
-                    true,
+                    allow_decl,
                     field_index,
                     &nested,
                     root,

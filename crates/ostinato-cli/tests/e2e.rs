@@ -7466,6 +7466,55 @@ command: defrootnestedread: {
             false,
         ),
         (
+            "defstructfieldtask",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+r: {run: #G.run}
+command: defstructfieldtask: {
+	q: cli.Print & {text: "R=\(r.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defstructfieldtaskdecl",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+r: {run: #G.run}
+command: defstructfieldtaskdecl: {
+	d: p: r.run
+	q: cli.Print & {text: "R=\(r.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
+            "defnestedaliascontainer",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+#G: {run: lib.run}
+n: r: #G
+command: defnestedaliascontainer: {
+	q: cli.Print & {text: "R=\(n.r.run.stdout)"}
+}
+"#,
+            true,
+        ),
+        (
             "readrootmodule",
             r#"
 package foo
