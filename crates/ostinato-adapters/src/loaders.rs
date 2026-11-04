@@ -1174,55 +1174,7 @@ pub fn run_tool_command(
                 .is_some_and(|fields| fields.contains_key("$id"))
         })
     });
-    // CUE rejects direct module task-output reads inside task inputs; fail
-    // before evaluation so no task executes.
-    let module_backed = |path: &[String]| {
-        if path.first().is_some_and(|root| imports.contains_key(root)) {
-            return true;
-        }
-        let Some(first) = path.first() else {
-            return false;
-        };
-        if matches!(
-            local_binding_location(&[task_items.as_slice()], &combined.items, first),
-            Some((false, _))
-        ) {
-            return false;
-        }
-        match local_binding_location(&[combined.items.as_slice()], &combined.items, first) {
-            Some((true, StructItem::Field(field))) if field.definition => return false,
-            Some((true, _)) => {}
-            _ => return false,
-        }
-        // Composing the field with a struct literal makes CUE schedule the
-        // instance instead of deadlocking on a bare module reference.
-        if root_field_composed(&combined.items, first) {
-            return false;
-        }
-        // A field aliasing another local field is its own instance.
-        if find_field_expr_at_path_in_root(&combined.items, path, &combined.items)
-            .is_some_and(|value| expr_roots_local_binding(&combined.items, value))
-        {
-            return false;
-        }
-        find_field_expr_at_path_in_root(&combined.items, path, &combined.items).is_some_and(
-            |value| {
-                module_task_path_scoped(
-                    value,
-                    &[combined.items.as_slice()],
-                    &combined.items,
-                    &imports,
-                    &mut std::collections::BTreeSet::new(),
-                )
-                .is_some()
-            },
-        )
-    };
-    if external_paths.iter().any(|path| module_backed(path)) {
-        return Err(ostinato_lang::LangError::Workflow(
-            "tool task inputs cannot read module task outputs".to_owned(),
-        ));
-    }
+    let module_input_candidates = external_paths.clone();
     external_paths.retain(|path| {
         let Some(leaf) = path.last() else {
             return false;
@@ -1307,7 +1259,21 @@ pub fn run_tool_command(
     // `p2: prep; r: p2` executes twice while `r: prep` executes once.
     let alias_instance_paths: std::collections::BTreeSet<Vec<String>> = command_aliases
         .values()
-        .filter(|target| target.depth == 0)
+        .filter(|target| {
+            target.depth == 0
+                || target.local.as_ref().is_some_and(|local| {
+                    !local.first().is_some_and(|first| {
+                        matches!(
+                            local_binding_location(
+                                &[combined.items.as_slice()],
+                                &combined.items,
+                                first,
+                            ),
+                            Some((true, StructItem::Field(field))) if field.definition
+                        )
+                    })
+                })
+        })
         .filter_map(|target| {
             target
                 .local
@@ -1315,8 +1281,74 @@ pub fn run_tool_command(
                 .filter(|local| package_alias_instance(&combined.items, local))
                 .cloned()
         })
+        .filter(|local| {
+            alias_instance_root(&combined.items, local).is_none_or(|root| {
+                !external_paths.contains(&root) || module_root(&combined.items, &imports, &root)
+            })
+        })
         .collect();
+    let alias_instance_roots: std::collections::BTreeSet<Vec<String>> = alias_instance_paths
+        .iter()
+        .filter_map(|local| alias_instance_root(&combined.items, local))
+        .collect();
+    plain_read_paths.extend(alias_instance_roots.iter().cloned());
     external_paths.extend(alias_instance_paths.iter().cloned());
+
+    // CUE rejects direct module task-output reads inside task inputs; fail
+    // before evaluation so no task executes.
+    let module_backed = |path: &[String]| {
+        if path.first().is_some_and(|root| imports.contains_key(root)) {
+            return true;
+        }
+        let Some(first) = path.first() else {
+            return false;
+        };
+        if alias_instance_roots.contains(path) {
+            return false;
+        }
+        if matches!(
+            local_binding_location(&[task_items.as_slice()], &combined.items, first),
+            Some((false, _))
+        ) {
+            return false;
+        }
+        match local_binding_location(&[combined.items.as_slice()], &combined.items, first) {
+            Some((true, StructItem::Field(field))) if field.definition => return false,
+            Some((true, _)) => {}
+            _ => return false,
+        }
+        // Composing the field with a struct literal makes CUE schedule the
+        // instance instead of deadlocking on a bare module reference.
+        if root_field_composed(&combined.items, first) {
+            return false;
+        }
+        // A field aliasing another local field is its own instance.
+        if find_field_expr_at_path_in_root(&combined.items, path, &combined.items)
+            .is_some_and(|value| expr_roots_local_binding(&combined.items, value))
+        {
+            return false;
+        }
+        find_field_expr_at_path_in_root(&combined.items, path, &combined.items).is_some_and(
+            |value| {
+                module_task_path_scoped(
+                    value,
+                    &[combined.items.as_slice()],
+                    &combined.items,
+                    &imports,
+                    &mut std::collections::BTreeSet::new(),
+                )
+                .is_some()
+            },
+        )
+    };
+    if module_input_candidates
+        .iter()
+        .any(|path| module_backed(path))
+    {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool task inputs cannot read module task outputs".to_owned(),
+        ));
+    }
 
     // Package-level tasks reachable from command `$after` operands or package
     // output reads (top-level fields, definitions, nested containers).
@@ -1553,7 +1585,17 @@ pub fn run_tool_command(
                     progress = true;
                     let mut injected_ok = if let Some(path) = external_by_key.get(name) {
                         if alias_instance_paths.contains(path) {
-                            inject_named_outputs_any(&mut combined.items, name, path, &outputs)
+                            let mut injected =
+                                inject_named_outputs_any(&mut combined.items, name, path, &outputs);
+                            if let Some(root) = alias_instance_root(&combined.items, path) {
+                                injected |= inject_named_outputs_any(
+                                    &mut combined.items,
+                                    root.last().map_or(name, String::as_str),
+                                    &root,
+                                    &outputs,
+                                );
+                            }
+                            injected
                         } else {
                             inject_named_outputs(
                                 &mut combined.items,
@@ -1579,12 +1621,21 @@ pub fn run_tool_command(
                         {
                             let target_name = local.last().cloned().unwrap_or_default();
                             let injected = if alias_instance_paths.contains(local) {
-                                inject_named_outputs_any(
+                                let mut injected = inject_named_outputs_any(
                                     &mut combined.items,
                                     &target_name,
                                     local,
                                     &outputs,
-                                )
+                                );
+                                if let Some(root) = alias_instance_root(&combined.items, local) {
+                                    injected |= inject_named_outputs_any(
+                                        &mut combined.items,
+                                        root.last().map_or(&target_name, String::as_str),
+                                        &root,
+                                        &outputs,
+                                    );
+                                }
+                                injected
                             } else {
                                 inject_named_outputs(
                                     &mut combined.items,
@@ -4562,6 +4613,47 @@ fn package_alias_instance(items: &[StructItem], path: &[String]) -> bool {
         return false;
     };
     expr_roots_local_binding(items, value)
+}
+
+fn module_root(
+    items: &[StructItem],
+    module_values: &BTreeMap<String, Value>,
+    path: &[String],
+) -> bool {
+    find_field_expr_at_path_in_root(items, path, items).is_some_and(|value| {
+        module_task_path_scoped(
+            value,
+            &[items],
+            items,
+            module_values,
+            &mut std::collections::BTreeSet::new(),
+        )
+        .is_some()
+    })
+}
+
+fn alias_instance_root(items: &[StructItem], local: &[String]) -> Option<Vec<String>> {
+    let value = find_field_expr_at_path_in_root(items, local, items)?;
+    expr_local_root_path(value)
+}
+
+fn expr_local_root_path(expr: &Expr) -> Option<Vec<String>> {
+    match expr {
+        Expr::Ident(name, _) => Some(vec![name.clone()]),
+        Expr::Select(base, label, _, _) => {
+            let mut path = expr_local_root_path(base)?;
+            path.push(label.clone());
+            Some(path)
+        }
+        Expr::Index(base, _, _) => expr_local_root_path(base),
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            expr_local_root_path(left).or_else(|| expr_local_root_path(right))
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            expr_local_root_path(inner)
+        }
+        _ => None,
+    }
 }
 
 fn expr_roots_local_binding(items: &[StructItem], expr: &Expr) -> bool {

@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.41.1
+
+Second-hop chain corrections.
+
+- Task-input reads of an underlying task (`base.stdout` or `group.base.stdout`)
+  no longer schedule the intermediate alias instance a second time; the
+  externally scheduled task and the command alias match CUE's two executions.
+- Nested command alias chains (`x: { r: p2 }`) get their intermediate instance
+  unless the target roots a definition, restoring nested task-input reads while
+  keeping `defaliasfield`-style rejections.
+- Module-rooted intermediate alias reads in task inputs
+  (`prep: lib.run; p2: prep; r: p2; t: cli.Print & {text: "\\(prep.stdout)"}`)
+  execute twice and resolve like CUE.
+- Documented the remaining three-or-more-hop alias-chain instance limit in
+  `docs/SCOPE.md`.
+- Extended the differential e2e test to 22 shapes.
+
+- 446 tests (109 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.41.0
 
 Second-hop package alias chains.
