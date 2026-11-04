@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ostinato_domain::{
-    AuditEvent, Improvement, NewEvent, NewTrial, PlanNode, RunRecord, RunReport, RunStatus,
-    StepKind, StepRecord, StepSpec, StepStatus, TrialStatus, audit, build_plan,
+    AgentSpec, AgentTrace, AuditEvent, CapturedArtifact, Improvement, IsolationMode, NewEvent,
+    NewTrial, PlanNode, RunRecord, RunReport, RunStatus, StepKind, StepRecord, StepSpec,
+    StepStatus, TrialStatus, audit, build_plan, sha256_hex,
 };
 use ostinato_lang::{eval_condition, render};
 use serde_json::{Map, Value as Json, json};
@@ -15,8 +16,9 @@ use crate::activation::{self, Activation, ActivationError};
 use crate::error::{EngineError, Result};
 use crate::improve::{ImproveRequest, propose_improvement};
 use crate::ports::{
-    AgentRequest, AgentRunner, Clock, CommandExecutor, Completion, ExecRequest, IdGenerator,
-    LoadedWorkflow, MetricsSummary, PortError, SpecLoader, Store, Telemetry,
+    AgentOutcome, AgentRequest, AgentRunner, CaptureRequest, Clock, CommandExecutor, Completion,
+    ExecRequest, IdGenerator, IsolationRequest, LoadedWorkflow, MetricsSummary, PortError,
+    SpecLoader, Store, Telemetry, WorkspaceProvider,
 };
 
 /// Dependencies injected into the engine (hexagonal ports).
@@ -25,6 +27,7 @@ pub struct EngineDeps {
     pub store: Arc<dyn Store>,
     pub executor: Arc<dyn CommandExecutor>,
     pub agent: Arc<dyn AgentRunner>,
+    pub workspace: Arc<dyn WorkspaceProvider>,
     pub clock: Arc<dyn Clock>,
     pub ids: Arc<dyn IdGenerator>,
     pub telemetry: Arc<dyn Telemetry>,
@@ -44,6 +47,7 @@ impl std::fmt::Debug for EngineDeps {
             .field("store", &"dyn Store")
             .field("executor", &"dyn CommandExecutor")
             .field("agent", &"dyn AgentRunner")
+            .field("workspace", &"dyn WorkspaceProvider")
             .field("clock", &"dyn Clock")
             .field("ids", &"dyn IdGenerator")
             .field("telemetry", &"dyn Telemetry")
@@ -65,6 +69,7 @@ pub struct Engine {
     store: Arc<dyn Store>,
     executor: Arc<dyn CommandExecutor>,
     agent: Arc<dyn AgentRunner>,
+    workspace: Arc<dyn WorkspaceProvider>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
     telemetry: Arc<dyn Telemetry>,
@@ -110,6 +115,7 @@ impl Engine {
             store: deps.store,
             executor: deps.executor,
             agent: deps.agent,
+            workspace: deps.workspace,
             clock: deps.clock,
             ids: deps.ids,
             telemetry: deps.telemetry,
@@ -285,15 +291,73 @@ impl Engine {
 
     /// Ask the agent for a recursive-improvement proposal.
     ///
+    /// A trace is persisted for every attempt, including failed ones.
+    ///
     /// # Errors
-    /// Fails when trials cannot be read or the agent fails.
+    /// Fails when trials cannot be read, the trace cannot be stored, or the
+    /// agent fails.
     pub fn improve(&self, request: &ImproveRequest) -> Result<Improvement> {
-        propose_improvement(
+        let run = propose_improvement(
             self.store.as_ref(),
             self.agent.as_ref(),
             self.clock.as_ref(),
             request,
-        )
+        )?;
+        let outcome = &run.outcome;
+        let trace = AgentTrace {
+            run_id: request.run_id.clone(),
+            step: "improve".to_owned(),
+            round: request.round,
+            attempt: request.attempt,
+            definition: None,
+            provider: outcome.provider.clone(),
+            model: None,
+            prompt: run.prompt.clone(),
+            prompt_sha256: sha256_hex(run.prompt.as_bytes()),
+            system: Some(run.system.clone()),
+            argv: outcome.argv.clone(),
+            env_keys: outcome.env_keys.clone(),
+            env_hashes: outcome.env_hashes.clone(),
+            cwd: request
+                .cwd
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            isolation: "none".to_owned(),
+            isolation_path: None,
+            isolation_base: None,
+            started_at: run.started_at.clone(),
+            finished_at: run.finished_at.clone(),
+            duration_ms: run.duration_ms,
+            success: outcome.success,
+            exit_code: outcome.exit_code,
+            timed_out: outcome.timed_out,
+            signal: outcome.signal,
+            pid: outcome.pid,
+            program: outcome.argv.first().cloned(),
+            ostinato_version: env!("CARGO_PKG_VERSION").to_owned(),
+            stdout_truncated: outcome.stdout_truncated,
+            stderr_truncated: outcome.stderr_truncated,
+            stdin_sha256: outcome.stdin_sha256.clone(),
+            error: outcome.error.clone(),
+            stdout: outcome.stdout.clone(),
+            stderr: outcome.stderr.clone(),
+            transcript: parse_transcript(&outcome.stdout),
+            artifacts: Vec::new(),
+            capture_warnings: Vec::new(),
+            capture_error: None,
+            cleanup_error: None,
+        };
+        self.store.record_agent_trace(&trace, &[])?;
+        match run.improvement {
+            Some(improvement) => Ok(improvement),
+            None => Err(EngineError::Agent(
+                outcome
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "improvement agent failed".to_owned()),
+            )),
+        }
     }
 
     /// Metrics aggregated from the durable store.
@@ -1141,7 +1205,7 @@ impl Engine {
         let mut last: Option<AttemptOutcome> = None;
         for attempt in 0..max_attempts {
             let started = Instant::now();
-            let outcome = self.execute_attempt(run, node, spec, context)?;
+            let outcome = self.execute_attempt(run, node, spec, context, attempt)?;
             let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let trial = NewTrial {
                 run_id: run.id.clone(),
@@ -1190,6 +1254,7 @@ impl Engine {
         node: &PlanNode,
         spec: &StepSpec,
         context: &Json,
+        attempt: u32,
     ) -> Result<AttemptOutcome> {
         match spec.kind {
             StepKind::Noop => Ok(AttemptOutcome {
@@ -1201,8 +1266,8 @@ impl Engine {
                 score: 1.0,
             }),
             StepKind::Exec => self.execute_exec(run, node, spec, context),
-            StepKind::Agent => self.execute_agent(run, node, spec, context),
-            StepKind::Improve => self.execute_improve(run, node, spec),
+            StepKind::Agent => self.execute_agent(run, node, spec, context, attempt),
+            StepKind::Improve => self.execute_improve(run, node, spec, attempt),
             StepKind::Gateway => Err(EngineError::Internal(format!(
                 "gateway `{}` reached the execution pass; gateways must be evaluated during activation",
                 node.step
@@ -1345,6 +1410,7 @@ impl Engine {
         node: &PlanNode,
         spec: &StepSpec,
         context: &Json,
+        attempt: u32,
     ) -> Result<AttemptOutcome> {
         let Some(agent) = &spec.agent else {
             return Err(EngineError::InvalidState(format!(
@@ -1385,51 +1451,204 @@ impl Engine {
             }
             None => None,
         };
+        let mut env = BTreeMap::new();
+        for (key, value) in &agent.env {
+            match render(value, context) {
+                Ok(value) => {
+                    env.insert(key.clone(), value);
+                }
+                Err(err) => {
+                    return Ok(failure(
+                        json!({"kind": "agent", "renderError": err.to_string()}),
+                        err.to_string(),
+                        0.0,
+                    ));
+                }
+            }
+        }
+        let isolation = agent.isolation.clone().unwrap_or_default();
+        let base_dir = workflow_dir(run);
         let input = json!({
             "kind": "agent",
-            "prompt": prompt,
-            "system": system,
+            "prompt": prompt.clone(),
+            "system": system.clone(),
             "model": agent.model,
             "run": run.id.clone(),
+            "provider": agent.provider.as_str(),
+            "definition": agent.definition,
+            "isolation": isolation.mode.as_str(),
+            "artifacts": agent.artifacts,
+            "envKeys": env.keys().collect::<Vec<&String>>(),
         });
-        match self.agent.run(&AgentRequest {
+        let started_at = self.clock.now();
+        let started = Instant::now();
+        let prepared = self.workspace.prepare(&IsolationRequest {
+            run_id: run.id.clone(),
             step: node.step.clone(),
-            prompt,
-            system,
-            model: agent.model.clone(),
-            command,
-            timeout: Some(
-                spec.timeout_ms
-                    .map(Duration::from_millis)
-                    .unwrap_or(self.options.agent_timeout),
-            ),
-            cwd: workflow_dir(run),
-        }) {
-            Ok(outcome) => {
-                let parsed = parse_json_maybe(&outcome.text);
-                let score = parsed
-                    .as_ref()
-                    .and_then(extract_score_from_json)
-                    .unwrap_or(0.0);
-                let mut output = Map::new();
-                output.insert("text".to_owned(), Json::String(outcome.text.clone()));
-                output.insert("stdout".to_owned(), Json::String(outcome.text.clone()));
-                output.insert("score".to_owned(), json!(score));
-                output.insert("exitCode".to_owned(), json!(0));
-                output.insert("provider".to_owned(), Json::String(outcome.provider));
-                if let Some(parsed) = parsed {
-                    output.insert("json".to_owned(), parsed);
-                }
-                Ok(AttemptOutcome {
-                    success: true,
-                    output: Json::Object(output),
-                    input,
-                    error: None,
-                    trial_status: TrialStatus::Succeeded,
-                    score,
-                })
+            round: node.round,
+            attempt,
+            mode: isolation.mode,
+            base: isolation.base.clone(),
+            keep: isolation.keep,
+            base_dir: base_dir.clone(),
+        });
+        let (handle, mut preparation_error) = match prepared {
+            Ok(handle) => (Some(handle), None),
+            Err(err) => (None, Some(err.to_string())),
+        };
+        let mut outcome = None;
+        if let Some(handle) = &handle {
+            match self.agent.run(&AgentRequest {
+                run_id: run.id.clone(),
+                step: node.step.clone(),
+                definition: agent.definition.clone(),
+                provider: agent.provider,
+                prompt,
+                system,
+                model: agent.model.clone(),
+                command,
+                prompt_delivery: agent.prompt_delivery,
+                env,
+                timeout: Some(
+                    spec.timeout_ms
+                        .or(agent.timeout_ms)
+                        .map(Duration::from_millis)
+                        .unwrap_or(self.options.agent_timeout),
+                ),
+                cwd: Some(handle.dir.clone()),
+            }) {
+                Ok(value) => outcome = Some(value),
+                Err(err) => preparation_error = Some(err.to_string()),
             }
-            Err(err) => Ok(failure(input, err.to_string(), 0.0)),
+        }
+        let mut capture_warnings = Vec::new();
+        let mut capture_error = None;
+        let mut artifacts: Vec<CapturedArtifact> = Vec::new();
+        if let Some(handle) = &handle {
+            match self.workspace.capture(&CaptureRequest {
+                cwd: handle.dir.clone(),
+                patterns: agent.artifacts.clone(),
+                include_git_changes: handle.mode == IsolationMode::Worktree,
+            }) {
+                Ok(captured) => {
+                    artifacts = captured.artifacts;
+                    capture_warnings = captured.warnings;
+                }
+                Err(err) => capture_error = Some(err.to_string()),
+            }
+        }
+        let mut cleanup_error = None;
+        if let Some(handle) = &handle
+            && let Err(err) = self.workspace.finish(handle)
+        {
+            cleanup_error = Some(err.to_string());
+        }
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let finished_at = self.clock.now();
+
+        let outcome = outcome.unwrap_or_else(|| empty_agent_outcome(agent));
+        let combined_error = join_errors([
+            preparation_error.clone(),
+            outcome.error.clone(),
+            capture_error.clone(),
+        ]);
+        let success = preparation_error.is_none() && outcome.success && capture_error.is_none();
+        let cwd = handle
+            .as_ref()
+            .map(|handle| handle.dir.display().to_string())
+            .or_else(|| base_dir.as_ref().map(|path| path.display().to_string()))
+            .unwrap_or_default();
+        let program = outcome.argv.first().cloned();
+        let trace = AgentTrace {
+            run_id: run.id.clone(),
+            step: node.step.clone(),
+            round: node.round,
+            attempt,
+            definition: agent.definition.clone(),
+            provider: agent.provider.as_str().to_owned(),
+            model: agent.model.clone(),
+            prompt: input
+                .get("prompt")
+                .and_then(Json::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            prompt_sha256: sha256_hex(
+                input
+                    .get("prompt")
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            ),
+            system: agent.system.clone().and_then(|_| {
+                input
+                    .get("system")
+                    .and_then(Json::as_str)
+                    .map(ToOwned::to_owned)
+            }),
+            argv: outcome.argv.clone(),
+            env_keys: outcome.env_keys.clone(),
+            env_hashes: outcome.env_hashes.clone(),
+            cwd,
+            isolation: handle.as_ref().map_or_else(
+                || isolation.mode.as_str().to_owned(),
+                |handle| handle.mode.as_str().to_owned(),
+            ),
+            isolation_path: handle
+                .as_ref()
+                .and_then(|handle| handle.path.as_ref().map(|path| path.display().to_string())),
+            isolation_base: handle.as_ref().and_then(|handle| handle.base.clone()),
+            started_at,
+            finished_at,
+            duration_ms,
+            success,
+            exit_code: outcome.exit_code,
+            timed_out: outcome.timed_out,
+            signal: outcome.signal,
+            pid: outcome.pid,
+            program: program.clone(),
+            ostinato_version: env!("CARGO_PKG_VERSION").to_owned(),
+            stdout_truncated: outcome.stdout_truncated,
+            stderr_truncated: outcome.stderr_truncated,
+            stdin_sha256: outcome.stdin_sha256.clone(),
+            error: combined_error.clone(),
+            stdout: outcome.stdout.clone(),
+            stderr: outcome.stderr.clone(),
+            transcript: parse_transcript(&outcome.stdout),
+            artifacts: artifacts.iter().map(CapturedArtifact::meta).collect(),
+            capture_warnings,
+            capture_error,
+            cleanup_error,
+        };
+        let trace_hash = trace.trace_hash();
+        let record = self.store.record_agent_trace(&trace, &artifacts)?;
+
+        let parsed = parse_json_maybe(&outcome.stdout);
+        let score = parsed
+            .as_ref()
+            .and_then(extract_score_from_json)
+            .unwrap_or(0.0);
+        let output = agent_output(&trace, &record, &trace_hash, &outcome, parsed, score);
+        if success {
+            Ok(AttemptOutcome {
+                success: true,
+                output,
+                input,
+                error: None,
+                trial_status: TrialStatus::Succeeded,
+                score,
+            })
+        } else {
+            Ok(failure_output(
+                input,
+                output,
+                combined_error.unwrap_or_else(|| "agent attempt failed".to_owned()),
+                score,
+                if outcome.timed_out {
+                    TrialStatus::TimedOut
+                } else {
+                    TrialStatus::Failed
+                },
+            ))
         }
     }
 
@@ -1438,6 +1657,7 @@ impl Engine {
         run: &RunRecord,
         node: &PlanNode,
         spec: &StepSpec,
+        attempt: u32,
     ) -> Result<AttemptOutcome> {
         let Some(improve) = &spec.improve else {
             return Err(EngineError::InvalidState(format!(
@@ -1454,6 +1674,7 @@ impl Engine {
             run_id: run.id.clone(),
             parent_id: None,
             round: node.round,
+            attempt,
             prompt: improve.prompt.clone(),
             max_samples: improve.max_samples,
             command: None,
@@ -1508,13 +1729,153 @@ fn workflow_dir(run: &RunRecord) -> Option<PathBuf> {
 }
 
 fn failure(input: Json, error: String, score: f64) -> AttemptOutcome {
+    failure_output(
+        input,
+        json!({"error": error, "score": score}),
+        error,
+        score,
+        TrialStatus::Failed,
+    )
+}
+
+fn failure_output(
+    input: Json,
+    output: Json,
+    error: String,
+    score: f64,
+    status: TrialStatus,
+) -> AttemptOutcome {
     AttemptOutcome {
         success: false,
-        output: json!({"error": error, "score": score}),
+        output,
         input,
         error: Some(error),
-        trial_status: TrialStatus::Failed,
+        trial_status: status,
         score,
+    }
+}
+
+fn join_errors(errors: [Option<String>; 3]) -> Option<String> {
+    let messages: Vec<String> = errors.into_iter().flatten().collect();
+    if messages.is_empty() {
+        None
+    } else {
+        Some(messages.join("; "))
+    }
+}
+
+fn empty_agent_outcome(agent: &AgentSpec) -> AgentOutcome {
+    AgentOutcome {
+        text: String::new(),
+        stdout: String::new(),
+        stderr: String::new(),
+        provider: agent.provider.as_str().to_owned(),
+        argv: Vec::new(),
+        exit_code: None,
+        timed_out: false,
+        success: false,
+        error: None,
+        signal: None,
+        pid: None,
+        env_keys: Vec::new(),
+        env_hashes: BTreeMap::new(),
+        stdout_truncated: false,
+        stderr_truncated: false,
+        stdin_sha256: None,
+    }
+}
+
+fn agent_output(
+    trace: &AgentTrace,
+    record: &ostinato_domain::AgentTraceRecord,
+    trace_hash: &str,
+    outcome: &AgentOutcome,
+    parsed: Option<Json>,
+    score: f64,
+) -> Json {
+    let mut output = Map::new();
+    output.insert("kind".to_owned(), json!("agent"));
+    output.insert("text".to_owned(), Json::String(outcome.stdout.clone()));
+    output.insert("stdout".to_owned(), Json::String(outcome.stdout.clone()));
+    output.insert("stderr".to_owned(), Json::String(outcome.stderr.clone()));
+    output.insert("score".to_owned(), json!(score));
+    output.insert("exitCode".to_owned(), json!(trace.exit_code.unwrap_or(-1)));
+    // Backwards compatibility: this flat field has always been the executable.
+    output.insert(
+        "provider".to_owned(),
+        Json::String(
+            trace
+                .program
+                .clone()
+                .unwrap_or_else(|| trace.provider.clone()),
+        ),
+    );
+    output.insert("program".to_owned(), json!(trace.program));
+    output.insert("definition".to_owned(), json!(trace.definition));
+    output.insert(
+        "isolation".to_owned(),
+        Json::String(trace.isolation.clone()),
+    );
+    output.insert("traceHash".to_owned(), Json::String(trace_hash.to_owned()));
+    output.insert(
+        "agent".to_owned(),
+        json!({
+            "traceId": record.id,
+            "traceHash": trace_hash,
+            "provider": trace.provider,
+            "program": trace.program,
+            "model": trace.model,
+            "definition": trace.definition,
+            "isolation": trace.isolation,
+            "isolationPath": trace.isolation_path,
+            "isolationBase": trace.isolation_base,
+            "promptSha256": trace.prompt_sha256,
+            "stdinSha256": trace.stdin_sha256,
+            "envKeys": trace.env_keys,
+            "startedAt": trace.started_at,
+            "finishedAt": trace.finished_at,
+            "durationMs": trace.duration_ms,
+            "exitCode": trace.exit_code,
+            "signal": trace.signal,
+            "pid": trace.pid,
+            "timedOut": trace.timed_out,
+            "stdoutTruncated": trace.stdout_truncated,
+            "stderrTruncated": trace.stderr_truncated,
+            "artifacts": trace.artifacts,
+            "captureWarnings": trace.capture_warnings,
+            "captureError": trace.capture_error,
+            "cleanupError": trace.cleanup_error,
+        }),
+    );
+    if let Some(parsed) = parsed {
+        output.insert("json".to_owned(), parsed);
+    }
+    Json::Object(output)
+}
+
+fn parse_transcript(text: &str) -> Option<Json> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<Json>(trimmed) {
+        return Some(value);
+    }
+    let mut events = Vec::new();
+    for line in trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        match serde_json::from_str::<Json>(line) {
+            Ok(value) => events.push(value),
+            Err(_) => return None,
+        }
+    }
+    if events.len() > 1 {
+        Some(Json::Array(events))
+    } else {
+        None
     }
 }
 

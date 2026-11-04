@@ -108,6 +108,41 @@ section 18-gateways-trials "$BIN" --db "$WORK/gateway.sqlite" trials "$GATEWAY_R
 section 18-gateways-metrics "$BIN" --db "$WORK/gateway.sqlite" metrics --run "$GATEWAY_RUN" --format prometheus
 section 18-gateways-audit "$BIN" --db "$WORK/gateway.sqlite" audit verify "$GATEWAY_RUN"
 
+# Named agents: definitions, provider invocation, traces, artifacts, worktree
+# isolation, verification and doctor provider discovery.
+chmod +x examples/agents/fake-agent.sh
+section 19-agents-validate "$BIN" --db "$WORK/agents.sqlite" validate examples/agents.cue
+section 20-agents-run "$BIN" --db "$WORK/agents.sqlite" run examples/agents.cue
+AGENTS_RUN=$("$BIN" --db "$WORK/agents.sqlite" --json runs | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
+section 21-agents-traces "$BIN" --db "$WORK/agents.sqlite" agents "$AGENTS_RUN"
+section 22-agents-verify "$BIN" --db "$WORK/agents.sqlite" agents "$AGENTS_RUN" --verify
+section 23-agents-artifacts "$BIN" --db "$WORK/agents.sqlite" --json artifacts "$AGENTS_RUN"
+rm -rf "$WORK/agent-extract"
+section 24-agents-extract "$BIN" --db "$WORK/agents.sqlite" artifacts "$AGENTS_RUN" --extract "$WORK/agent-extract"
+section 25-agents-audit "$BIN" --db "$WORK/agents.sqlite" audit verify "$AGENTS_RUN"
+{
+  echo "### git status --porcelain (checkout must stay clean)"
+  git -C "$ROOT" status --porcelain
+  echo
+  echo "### git worktree list"
+  git -C "$ROOT" worktree list
+} >evidence/26-agents-worktree.txt 2>&1 || true
+section 27-agents-doctor "$BIN" --db "$WORK/agents.sqlite" doctor
+python3 - "$BIN" "$WORK/agents.sqlite" "$AGENTS_RUN" <<'PY' >evidence/28-agents-tamper.txt 2>&1 || true
+import sqlite3, subprocess, sys
+bin_path, db, run = sys.argv[1:4]
+conn = sqlite3.connect(db)
+conn.execute("UPDATE agent_traces SET trace_json=? WHERE run_id=?", ('{"tampered":true}', run))
+conn.commit()
+for args in (["agents", run, "--verify"], ["audit", "verify", run]):
+    proc = subprocess.run([bin_path, "--db", db, *args], capture_output=True, text=True)
+    print("###", " ".join(args))
+    print(proc.stdout, end="")
+    print(proc.stderr, end="")
+    print("exit=%d" % proc.returncode)
+    print()
+PY
+
 # Tamper detection: mutate an audit payload and prove verification fails.
 python3 - "$BIN" "$WORK/agent.sqlite" "$AGENT_RUN" <<'PY' >evidence/17-tamper.txt 2>&1 || true
 import sqlite3, subprocess, sys

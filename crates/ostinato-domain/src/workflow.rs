@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::{AgentProvider, IsolationSpec, PromptDelivery};
+
 /// The kind of work a step performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -192,6 +194,10 @@ pub struct ExecSpec {
 }
 
 /// Agent invocation. The adapter decides how to reach the model.
+///
+/// Every field added after the original inline schema is optional with a
+/// serialization skip, so existing workflow specs keep the same JSON bytes and
+/// therefore the same persisted state digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentSpec {
     pub prompt: String,
@@ -199,6 +205,25 @@ pub struct AgentSpec {
     pub model: Option<String>,
     /// Per-step override of the agent command (argv form).
     pub command: Option<Vec<String>>,
+    /// Name of the top-level `agents` definition this step uses, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default_provider")]
+    pub provider: AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_delivery: Option<PromptDelivery>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<IsolationSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<String>,
+}
+
+fn is_default_provider(provider: &AgentProvider) -> bool {
+    *provider == AgentProvider::Command
 }
 
 /// Recursive-improvement primitive.

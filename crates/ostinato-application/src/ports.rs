@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ostinato_domain::{
-    AuditEvent, Improvement, NewEvent, NewImprovement, NewTrial, RunRecord, RunStatus, StepRecord,
-    Trial, WorkflowSpec,
+    AgentProvider, AgentTrace, AgentTraceRecord, AuditEvent, CapturedArtifact, Improvement,
+    IsolationMode, NewEvent, NewImprovement, NewTrial, PromptDelivery, RunRecord, RunStatus,
+    StepRecord, Trial, WorkflowSpec,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -86,24 +87,105 @@ pub trait CommandExecutor: Send + Sync {
 /// Agent invocation request. The runner decides which provider to call.
 #[derive(Debug, Clone)]
 pub struct AgentRequest {
+    pub run_id: String,
     pub step: String,
+    /// Name of the top-level `agents` definition, when one was referenced.
+    pub definition: Option<String>,
+    pub provider: AgentProvider,
     pub prompt: String,
     pub system: Option<String>,
     pub model: Option<String>,
     pub command: Option<Vec<String>>,
+    pub prompt_delivery: Option<PromptDelivery>,
+    pub env: BTreeMap<String, String>,
     pub timeout: Option<Duration>,
-    /// Default working directory (the workflow file's directory).
+    /// Working directory: the workflow directory or an isolation worktree.
     pub cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AgentOutcome {
+    /// Captured stdout (the agent's result).
     pub text: String,
+    pub stdout: String,
+    pub stderr: String,
+    /// Provider name (`command`, `claude`, `codex`, `opencode`).
     pub provider: String,
+    /// Exact argv that was executed.
+    pub argv: Vec<String>,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub success: bool,
+    pub error: Option<String>,
+    /// Unix signal that terminated the process, when any.
+    pub signal: Option<i32>,
+    pub pid: Option<u32>,
+    /// Final environment variable names and value hashes.
+    pub env_keys: Vec<String>,
+    pub env_hashes: BTreeMap<String, String>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    /// SHA-256 of the exact stdin bytes, when the prompt was delivered on stdin.
+    pub stdin_sha256: Option<String>,
 }
 
 pub trait AgentRunner: Send + Sync {
     fn run(&self, request: &AgentRequest) -> PortResult<AgentOutcome>;
+}
+
+/// Where an agent attempt runs.
+#[derive(Debug, Clone)]
+pub struct IsolationRequest {
+    pub run_id: String,
+    pub step: String,
+    pub round: u32,
+    pub attempt: u32,
+    pub mode: IsolationMode,
+    pub base: Option<String>,
+    pub keep: bool,
+    /// Workflow directory used for `none` isolation and git discovery.
+    pub base_dir: Option<PathBuf>,
+}
+
+/// A prepared workspace for one attempt.
+#[derive(Debug, Clone)]
+pub struct WorkspaceHandle {
+    pub dir: PathBuf,
+    pub mode: IsolationMode,
+    /// Worktree path when `mode == worktree`.
+    pub path: Option<PathBuf>,
+    /// Git top-level when `mode == worktree`.
+    pub git_root: Option<PathBuf>,
+    /// Resolved commit the worktree was created from.
+    pub base: Option<String>,
+    pub keep: bool,
+}
+
+/// Files to capture after an attempt.
+#[derive(Debug, Clone)]
+pub struct CaptureRequest {
+    pub cwd: PathBuf,
+    /// Glob patterns declared by the workflow.
+    pub patterns: Vec<String>,
+    /// Capture git status/diff artifacts (worktree isolation).
+    pub include_git_changes: bool,
+}
+
+/// Captured artifacts plus non-fatal warnings (skipped symlinks/hardlinks).
+#[derive(Debug, Clone, Default)]
+pub struct CaptureOutcome {
+    pub artifacts: Vec<CapturedArtifact>,
+    pub warnings: Vec<String>,
+}
+
+/// Workspace lifecycle and artifact capture. Implemented by the git/glob
+/// adapter; the engine only sees this port.
+pub trait WorkspaceProvider: Send + Sync {
+    fn prepare(&self, request: &IsolationRequest) -> PortResult<WorkspaceHandle>;
+    fn capture(&self, request: &CaptureRequest) -> PortResult<CaptureOutcome>;
+    /// Remove the worktree when `keep` is false. Errors are recorded on the
+    /// trace but never invalidate captured artifacts.
+    fn finish(&self, handle: &WorkspaceHandle) -> PortResult<()>;
 }
 
 /// Time and identity ports keep the core deterministic in tests.
@@ -180,6 +262,13 @@ pub trait Store: Send + Sync {
     fn events(&self, run_id: &str) -> PortResult<Vec<AuditEvent>>;
     fn record_trial(&self, trial: &NewTrial) -> PortResult<i64>;
     fn trials(&self, run_id: &str) -> PortResult<Vec<Trial>>;
+    /// Persist one agent trace and its artifacts, and append the anchoring
+    /// `agent.traced` audit event in a single transaction.
+    fn record_agent_trace(
+        &self,
+        trace: &AgentTrace,
+        artifacts: &[CapturedArtifact],
+    ) -> PortResult<AgentTraceRecord>;
     fn record_improvement(&self, improvement: &NewImprovement) -> PortResult<i64>;
     fn improvements(&self, run_id: &str) -> PortResult<Vec<Improvement>>;
     fn cancel(&self, run_id: &str, updated_at: &str) -> PortResult<AuditEvent>;

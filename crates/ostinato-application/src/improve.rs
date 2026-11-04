@@ -1,10 +1,10 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use ostinato_domain::{Improvement, NewImprovement, Trial};
+use ostinato_domain::{AgentProvider, Improvement, NewImprovement, Trial};
 use serde_json::{Map, Value as Json};
 
 use crate::error::EngineError;
-use crate::ports::{AgentRequest, AgentRunner, Clock, PortError, Store};
+use crate::ports::{AgentOutcome, AgentRequest, AgentRunner, Clock, PortError, Store};
 
 /// Input for the recursive-improvement primitive.
 #[derive(Debug, Clone)]
@@ -12,6 +12,8 @@ pub struct ImproveRequest {
     pub run_id: String,
     pub parent_id: Option<i64>,
     pub round: u32,
+    /// Attempt number within the current retry loop (0-based).
+    pub attempt: u32,
     pub prompt: Option<String>,
     pub max_samples: usize,
     pub command: Option<Vec<String>>,
@@ -19,57 +21,97 @@ pub struct ImproveRequest {
     pub timeout: Option<Duration>,
 }
 
+/// One agent invocation for improvement, including the full outcome so the
+/// engine can persist a trace even when the agent fails.
+#[derive(Debug, Clone)]
+pub struct ImprovementRun {
+    pub improvement: Option<Improvement>,
+    pub outcome: AgentOutcome,
+    pub prompt: String,
+    pub system: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub duration_ms: u64,
+}
+
 /// Summarise trials, ask an agent for an improvement proposal, persist it.
 ///
+/// The returned [`ImprovementRun`] always carries the agent outcome. A failed
+/// agent yields `improvement: None`; the caller records the trace and decides
+/// how to fail.
+///
 /// # Errors
-/// Fails when the store or the agent fails.
+/// Fails when the store cannot be read/written or the agent cannot be spawned.
 pub fn propose_improvement(
     store: &dyn Store,
     agent: &dyn AgentRunner,
     clock: &dyn Clock,
     request: &ImproveRequest,
-) -> Result<Improvement, EngineError> {
+) -> Result<ImprovementRun, EngineError> {
     let trials = store.trials(&request.run_id).map_err(EngineError::from)?;
     let prompt = build_prompt(request, &trials);
-    let outcome = agent
-        .run(&AgentRequest {
-            step: "improve".to_owned(),
+    let system =
+        "You are an expert workflow reliability engineer. Return strict JSON only.".to_owned();
+    let started_at = clock.now();
+    let started = Instant::now();
+    let outcome = agent.run(&AgentRequest {
+        run_id: request.run_id.clone(),
+        step: "improve".to_owned(),
+        definition: None,
+        provider: AgentProvider::Command,
+        prompt: prompt.clone(),
+        system: Some(system.clone()),
+        model: None,
+        command: request.command.clone(),
+        prompt_delivery: None,
+        env: std::collections::BTreeMap::new(),
+        timeout: Some(request.timeout.unwrap_or(Duration::from_secs(300))),
+        cwd: request.cwd.clone(),
+    })?;
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let finished_at = clock.now();
+    if !outcome.success {
+        return Ok(ImprovementRun {
+            improvement: None,
+            outcome,
             prompt,
-            system: Some(
-                "You are an expert workflow reliability engineer. Return strict JSON only."
-                    .to_owned(),
-            ),
-            model: None,
-            command: request.command.clone(),
-            timeout: Some(request.timeout.unwrap_or(Duration::from_secs(300))),
-            cwd: request.cwd.clone(),
-        })
-        .map_err(EngineError::from)?;
-
+            system,
+            started_at,
+            finished_at,
+            duration_ms,
+        });
+    }
     let proposal = parse_proposal(&outcome.text);
     let diagnosis = proposal
         .get("diagnosis")
         .and_then(Json::as_str)
         .unwrap_or("agent did not provide a diagnosis")
         .to_owned();
-    let now = clock.now();
     let new = NewImprovement {
         run_id: request.run_id.clone(),
         parent_id: request.parent_id,
         round: request.round,
         diagnosis: diagnosis.clone(),
         proposal: proposal.clone(),
-        created_at: now,
+        created_at: finished_at.clone(),
     };
     let id = store.record_improvement(&new).map_err(EngineError::from)?;
-    Ok(Improvement {
-        id,
-        run_id: new.run_id,
-        parent_id: new.parent_id,
-        round: new.round,
-        diagnosis,
-        proposal,
-        created_at: new.created_at,
+    Ok(ImprovementRun {
+        improvement: Some(Improvement {
+            id,
+            run_id: new.run_id,
+            parent_id: new.parent_id,
+            round: new.round,
+            diagnosis,
+            proposal,
+            created_at: new.created_at,
+        }),
+        outcome,
+        prompt,
+        system,
+        started_at,
+        finished_at,
+        duration_ms,
     })
 }
 

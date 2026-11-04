@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.23.0
+
+Named agent definitions, external agent CLIs, traces and isolation.
+
+- Top-level `agents` definitions are referenced with `agent.use` (or the
+  `agent: "name"` shorthand) and merged into steps; unknown/missing definitions
+  and unsafe fields fail at load time under both evaluators.
+- Built-in providers `command`, `claude`, `codex` and `opencode`; `command`
+  always overrides the provider template, and `promptDelivery` selects stdin or
+  argv delivery.
+- Every attempt records an `AgentTrace` (prompt hash, argv, env hashes,
+  stdout/stderr, transcript, exit code/signal, timing, artifacts) and an
+  `agent.traced` audit event in one transaction. `ostinato agents --verify`
+  and `ostinato audit verify` detect trace/artifact tampering.
+- Artifact blobs are stored in SQLite with per-file/trace limits; symlinks,
+  hard links and traversal are rejected. `ostinato artifacts` lists, filters
+  and safely extracts them.
+- Optional `isolation: "worktree"` runs each attempt in a fresh git worktree,
+  captures changed/untracked files plus a patch, and removes the worktree
+  unless `keep: true`.
+- `improve` agent calls are traced too; `doctor` reports provider paths.
+- Docs: `docs/AGENTS.md`, README/LANGUAGE updates and `examples/agents.cue`.
+
 ## v0.22.3
 
 Pending-output and disjunction tool inputs.

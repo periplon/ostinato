@@ -12,6 +12,13 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.23.0
+
+- Named CUE agent definitions (`agents` + `agent.use`), external CLI providers
+  (`claude`, `codex`, `opencode`, `command`), durable agent traces/artifacts
+  with `agents --verify`, and optional git-worktree isolation.
+- Test counts are recorded in `CHANGELOG.md` and `docs/EVIDENCE.md`.
+
 ## v0.22.3
 
 - Pending-output env/stdin/cmd handling and disjunction-aware tool input

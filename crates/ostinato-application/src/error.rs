@@ -19,6 +19,8 @@ pub enum EngineError {
     Cancelled(String),
     #[error("invalid run state: {0}")]
     InvalidState(String),
+    #[error("agent failed: {0}")]
+    Agent(String),
     #[error("internal error: {0}")]
     Internal(String),
 }

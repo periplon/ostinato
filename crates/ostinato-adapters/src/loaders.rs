@@ -850,6 +850,15 @@ impl SpecLoader for CueCliLoader {
         let (directory, instance) = cue_instance(&absolute)?;
 
         let workflow = self.export(&directory, &instance, "workflow", &request.params)?;
+        let agents = match self.export(&directory, &instance, "agents", &request.params) {
+            Ok(agents) => agents,
+            Err(PortError::Loader(message))
+                if message.contains("reference \"agents\" not found") =>
+            {
+                json!({})
+            }
+            Err(err) => return Err(err),
+        };
         let params = match self.export(&directory, &instance, "params", &request.params) {
             Ok(params) => params,
             Err(PortError::Loader(message))
@@ -871,8 +880,12 @@ impl SpecLoader for CueCliLoader {
                 json_type_name(&params)
             )));
         }
-        let spec = compile_json(&json!({ "workflow": workflow, "params": params }))
-            .map_err(|err| PortError::Loader(err.to_string()))?;
+        let spec = compile_json(&json!({
+            "workflow": workflow,
+            "params": params,
+            "agents": agents,
+        }))
+        .map_err(|err| PortError::Loader(err.to_string()))?;
         Ok(LoadedWorkflow {
             spec,
             params,
