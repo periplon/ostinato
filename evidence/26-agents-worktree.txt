@@ -1,7 +1,7 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-af3bc91
+64d95cb
 
 ### git worktree list
 /Users/joanmarc/dailywork/jmca/ostinato                               16a10c5 [main]
@@ -9,7 +9,7 @@ af3bc91
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions  cb3a2ae [feat/agent-definitions]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan      99e7541 [feat/gateways-r0-r4]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection      e071d4e (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps af3bc91 [fix/v0.28.0-nested-output-deps-2]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps 64d95cb [fix/v0.28.1-nested-import-concrete]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let       aab750d [fix/v0.24.5-let-rejection-scope]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/unused-imports     698ef6d (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244       768b178 (detached HEAD)

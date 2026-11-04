@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.28.1
+
+Nested-output inference correctness.
+
+- Import-rooted concrete values (`a: producer: lib.val`, including through
+  `let` and deeper paths) are no longer classified as tasks during
+  output-dependency inference, so they do not add a false dependency edge or
+  create a cycle.
+- The concrete-import set now covers every non-tool import (builtins and
+  local modules) and is threaded through dependency scanning; tool imports
+  remain task-bearing.
+- Tool-conformance directory copying is recursive, enabling module-backed
+  cases; added `task-nested-import-concrete` plus an e2e regression with
+  `cue.mod`/`lib` and an `order.txt` artifact.
+- 435 tests (98 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.28.0
 
 Nested task-output dependencies.

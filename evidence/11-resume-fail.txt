@@ -1,6 +1,6 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nested/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.OOfDJVyXCO/resume.sqlite run /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.OOfDJVyXCO/resume.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-nested/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.nX59PSVNM6/resume.sqlite run /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.nX59PSVNM6/resume.cue
 
-run=b6cb6bd8-df38-4737-9a56-21b71c7df79d workflow=resume-evidence status=failed durationMs=11
+run=0eac8c59-0590-4e13-a41a-5ab0264e96ec workflow=resume-evidence status=failed durationMs=11
 error: command exited with 7: 
 STEP                     STATUS     VISITS ATTEMPTS
 a                        succeeded  1      1       
