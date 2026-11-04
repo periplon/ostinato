@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.24.7
+
+Binding-aware task output detection.
+
+- The let-rooted rejection scan resolves each `stdout`/`success` base binding
+  and treats it as a task only when the nearest binding is a tool task
+  (selector/unification/alias), not a concrete struct.
+- A concrete field named like a scheduled task no longer causes a false
+  rejection (`pipeline.producer: {stdout: "concrete"}`).
+- Added e2e and tool conformance regressions.
+- 430 tests (95 CLI E2E, 1 conformance, 1 tool conformance, 245 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.24.6
 
 Ancestor-scoped helper rejection.

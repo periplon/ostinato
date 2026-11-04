@@ -1,8 +1,8 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.Cb1eAf7RPj/gateway.sqlite status c5de7f9c-414b-41d6-b547-48eb6942f649
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-wt/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.pHyIzBb9Fq/gateway.sqlite status b6b80873-ee5d-4720-b8d3-abd3f27b0fd0
 
-run=c5de7f9c-414b-41d6-b547-48eb6942f649 workflow=release-decision status=succeeded resumeIndex=6
+run=b6b80873-ee5d-4720-b8d3-abd3f27b0fd0 workflow=release-decision status=succeeded resumeIndex=6
 source=/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244/examples/gateway.cue
-created=2026-11-04T08:40:45.575Z updated=2026-11-04T08:40:45.593Z
+created=2026-11-04T08:51:56.621Z updated=2026-11-04T08:51:56.638Z
 STEP                     STATUS     VISITS ATTEMPTS
 deployFast               succeeded  1      1       
 deploySlow               skipped    0      0       
