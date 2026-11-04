@@ -351,8 +351,9 @@ impl Parser {
                 } else {
                     None
                 };
-                let quoted = matches!(self.peek_tok(), Tok::Str(_) | Tok::Bytes(_));
+                let quoted = matches!(self.peek_tok(), Tok::Str(_) | Tok::Bytes(..));
                 let bytes_label_runes = self.bytes_label_runes();
+                let bytes_label_multiline = self.bytes_label_multiline();
                 let definition = matches!(
                     self.peek_tok(),
                     Tok::Ident(name) if name.starts_with('#')
@@ -373,6 +374,7 @@ impl Parser {
                     alias,
                     quoted,
                     bytes_label_runes,
+                    bytes_label_multiline,
                     attributes,
                     span,
                 })))
@@ -412,17 +414,14 @@ impl Parser {
     }
 
     fn bytes_label_runes(&self) -> Option<usize> {
-        let Tok::Bytes(parts) = self.peek_tok() else {
+        let Tok::Bytes(_, units, _) = self.peek_tok() else {
             return None;
         };
-        let mut bytes = Vec::new();
-        for part in parts {
-            match part {
-                LexBytePart::Text(value) => bytes.extend_from_slice(value),
-                LexBytePart::Interp(_) => return None,
-            }
-        }
-        Some(String::from_utf8_lossy(&bytes).chars().count())
+        *units
+    }
+
+    fn bytes_label_multiline(&self) -> bool {
+        matches!(self.peek_tok(), Tok::Bytes(_, _, true))
     }
 
     fn parse_label(&mut self) -> Result<Label, LangError> {
@@ -449,7 +448,7 @@ impl Parser {
                     Ok(Label::Name(text, span))
                 }
             }
-            Tok::Bytes(raw) => {
+            Tok::Bytes(raw, _, _) => {
                 self.bump();
                 let mut bytes = Vec::new();
                 for part in raw {
@@ -548,7 +547,7 @@ impl Parser {
         match self.peek_tok() {
             Tok::Let | Tok::For | Tok::If | Tok::Ellipsis => true,
             Tok::LBracket => self.bracket_closes_a_label(),
-            Tok::Ident(_) | Tok::Str(_) | Tok::Bytes(_) => matches!(
+            Tok::Ident(_) | Tok::Str(_) | Tok::Bytes(..) => matches!(
                 self.tokens.get(self.pos + 1).map(|token| &token.tok),
                 Some(Tok::Colon | Tok::Equals | Tok::Question)
             ),
@@ -599,15 +598,18 @@ impl Parser {
             None
         };
         let nested = alias.is_some()
-            || (matches!(self.peek_tok(), Tok::Ident(_) | Tok::Str(_) | Tok::Bytes(_))
-                && matches!(
-                    self.tokens.get(self.pos + 1).map(|token| &token.tok),
-                    Some(Tok::Colon)
-                ));
+            || (matches!(
+                self.peek_tok(),
+                Tok::Ident(_) | Tok::Str(_) | Tok::Bytes(..)
+            ) && matches!(
+                self.tokens.get(self.pos + 1).map(|token| &token.tok),
+                Some(Tok::Colon)
+            ));
         if nested {
             let span = self.span();
-            let quoted = matches!(self.peek_tok(), Tok::Str(_) | Tok::Bytes(_));
+            let quoted = matches!(self.peek_tok(), Tok::Str(_) | Tok::Bytes(..));
             let bytes_label_runes = self.bytes_label_runes();
+            let bytes_label_multiline = self.bytes_label_multiline();
             let definition = matches!(
                 self.peek_tok(),
                 Tok::Ident(name) if name.starts_with('#')
@@ -630,6 +632,7 @@ impl Parser {
                     alias,
                     quoted,
                     bytes_label_runes,
+                    bytes_label_multiline,
                     attributes,
                     span,
                 })],
@@ -876,7 +879,7 @@ impl Parser {
                 self.bump();
                 Ok(Expr::Str(parse_str_parts(&raw, span)?, span))
             }
-            Tok::Bytes(raw) => {
+            Tok::Bytes(raw, _, _) => {
                 self.bump();
                 let mut parts = Vec::new();
                 for part in raw {

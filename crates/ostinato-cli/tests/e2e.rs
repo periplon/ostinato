@@ -3343,6 +3343,38 @@ params: {l: [for i in [1] {a: string | *"v" @tag(a)}]}
 workflow: {name: "t", steps: {s: {kind: "noop"}}}
 "#,
         ),
+        (
+            "struct-for.cue",
+            r#"
+package demo
+params: {for i in [1] {"k": string | *"v" @tag(k)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "pattern.cue",
+            r#"
+package demo
+params: {[string]: {p: string | *"v" @tag(p)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "dynamic-label.cue",
+            r#"
+package demo
+params: {k: "a", "\(k)": {x: string | *"v" @tag(t)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
+        (
+            "combined-hex.cue",
+            r#"
+package demo
+params: {x: {'\xc3\xa9': string | *"v" @tag(e)}}
+workflow: {name: "t", steps: {s: {kind: "noop"}}}
+"#,
+        ),
     ];
     for (name, body) in cases {
         let workflow = directory.path().join(name);

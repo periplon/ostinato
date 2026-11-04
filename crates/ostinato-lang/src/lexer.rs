@@ -21,7 +21,7 @@ pub enum Tok {
     BigInt(BigInt),
     Float(BigDecimal),
     Str(String),
-    Bytes(Vec<LexBytePart>),
+    Bytes(Vec<LexBytePart>, Option<usize>, bool),
     Package,
     Import,
     For,
@@ -201,9 +201,9 @@ impl Lexer {
                     });
                 }
                 '\'' => {
-                    let raw = self.read_bytes(line, col)?;
+                    let (parts, units, multiline) = self.read_bytes(line, col)?;
                     out.push(Token {
-                        tok: Tok::Bytes(raw),
+                        tok: Tok::Bytes(parts, units, multiline),
                         line,
                         col,
                     });
@@ -420,7 +420,11 @@ impl Lexer {
         }
     }
 
-    fn read_bytes(&mut self, line: u32, col: u32) -> Result<Vec<LexBytePart>, LangError> {
+    fn read_bytes(
+        &mut self,
+        line: u32,
+        col: u32,
+    ) -> Result<(Vec<LexBytePart>, Option<usize>, bool), LangError> {
         self.bump(); // opening quote
         let multiline = self.peek() == Some('\'') && self.peek_n(1) == Some('\'');
         if multiline {
@@ -463,7 +467,8 @@ impl Lexer {
                         self.bump();
                         self.bump();
                         let content = dedent_multiline_literal(&raw, &indent, line, col, "bytes")?;
-                        return decode_bytes_parts(&content, line, col);
+                        return decode_bytes_parts(&content, line, col)
+                            .map(|parts| (parts, None, true));
                     }
                     raw.push_str(&indent);
                     at_line_start = false;
@@ -523,7 +528,8 @@ impl Lexer {
                 }
             }
         }
-        decode_bytes_parts(&raw, line, col)
+        let units = byte_rune_units(&raw);
+        decode_bytes_parts(&raw, line, col).map(|parts| (parts, Some(units), false))
     }
 
     /// Consume the remainder of an interpolation started by `\(`.
@@ -993,6 +999,39 @@ fn dedent_multiline_literal(
         }
     }
     Ok(out)
+}
+
+/// Count CUE rune-literal units in single-line bytes source.
+///
+/// Each raw character and each escape sequence counts as one unit; this is the
+/// `strconv.Unquote` rule CUE uses to decide whether a bytes label may carry
+/// `@tag`.
+fn byte_rune_units(source: &str) -> usize {
+    let chars: Vec<char> = source.chars().collect();
+    let mut index = 0usize;
+    let mut count = 0usize;
+    while index < chars.len() {
+        if chars[index] == '\\' {
+            index += 1;
+            if index >= chars.len() {
+                break;
+            }
+            let escape = chars[index];
+            index += 1;
+            let extra = match escape {
+                'x' => 2,
+                'u' => 4,
+                'U' => 8,
+                '0'..='7' => 2,
+                _ => 0,
+            };
+            index = (index + extra).min(chars.len());
+        } else {
+            index += 1;
+        }
+        count += 1;
+    }
+    count
 }
 
 fn decode_bytes_parts(source: &str, line: u32, col: u32) -> Result<Vec<LexBytePart>, LangError> {

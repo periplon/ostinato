@@ -74,8 +74,10 @@ pub struct Field {
     pub definition: bool,
     pub alias: Option<String>,
     pub quoted: bool,
-    /// Set when the label came from a bytes literal: the decoded rune count.
+    /// Set when the label came from a bytes literal: the rune-literal units.
     pub bytes_label_runes: Option<usize>,
+    /// Whether the bytes label used the `'''...'''` form.
+    pub bytes_label_multiline: bool,
     pub attributes: Vec<Attribute>,
     pub span: Span,
 }
