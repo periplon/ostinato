@@ -4729,3 +4729,61 @@ workflow: {{
     let verified = ost(&["--db", db.to_str().expect("db"), "agents", &run, "--verify"]);
     assert!(verified.status.success());
 }
+
+#[test]
+fn jsonl_provider_output_drives_until_conditions() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let agent = directory.path().join("agent.sh");
+    write(
+        &agent,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"assistant\",\"text\":\"working\"}' '{\"type\":\"result\",\"score\":0.95}'\n",
+    );
+    make_executable(&agent);
+    let workflow = directory.path().join("workflow.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+agents: {{a: {{provider: "codex", command: ["{agent}"], promptDelivery: "stdin"}}}}
+workflow: {{
+    name: "jsonl"
+    steps: {{
+        review: {{
+            kind: "agent"
+            needs: ["review"]
+            cycle: {{max: 3, until: "steps.review.score >= 0.9"}}
+            agent: {{use: "a", prompt: "x"}}
+        }}
+    }}
+}}
+"#,
+            agent = agent.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = run_id(&db);
+    let traces = ost(&["--db", db.to_str().expect("db"), "--json", "agents", &run]);
+    let traces = json(&traces);
+    let traces = traces["traces"].as_array().expect("traces");
+    assert_eq!(
+        traces.len(),
+        1,
+        "score from JSONL must stop the cycle: {traces:?}"
+    );
+    assert_eq!(traces[0]["trace"]["round"], 0);
+    assert!(traces[0]["trace"]["transcript"].is_array());
+}

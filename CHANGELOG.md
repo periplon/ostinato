@@ -7,7 +7,8 @@ Named agent definitions, external agent CLIs, traces and isolation.
 - Top-level `agents` definitions are referenced with `agent.use` (or the
   `agent: "name"` shorthand) and merged into steps; unknown/missing definitions
   and unsafe fields fail at load time under both evaluators.
-- Built-in providers `command`, `claude`, `codex` and `opencode`; `command`
+- Built-in providers `command`, `claude`, `codex` and `opencode`; JSONL transcript
+  scores drive `until` conditions; `command`
   always overrides the provider template, and `promptDelivery` selects stdin or
   argv delivery.
 - Every attempt records an `AgentTrace` (prompt hash, argv, env hashes,
@@ -22,8 +23,8 @@ Named agent definitions, external agent CLIs, traces and isolation.
   unless `keep: true`.
 - `improve` agent calls are traced too; `doctor` reports provider paths.
 - Docs: `docs/AGENTS.md`, README/LANGUAGE updates and `examples/agents.cue`.
-- 384 tests (77 CLI E2E, 1 conformance, 242 language, 6 language agents, 3 language unit,
-  18 application, 19 domain, 6 store, 6 workspace, 6 adapters unit).
+- 386 tests (78 CLI E2E, 1 conformance, 242 language, 6 language agents, 3 language unit,
+  18 application, 19 domain, 6 store, 7 workspace, 6 adapters unit).
 
 ## v0.22.3
 

@@ -366,6 +366,8 @@ fn git_changes(cwd: &Path) -> PortResult<Vec<(String, String)>> {
             "-z",
             "--untracked-files=all",
             "--no-renames",
+            "--",
+            ".",
         ])
         .output()
         .map_err(|err| PortError::Io(format!("cannot run git status: {err}")))?;
@@ -375,6 +377,7 @@ fn git_changes(cwd: &Path) -> PortResult<Vec<(String, String)>> {
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
+    let prefix = git_prefix(cwd)?;
     let mut changes = Vec::new();
     for record in output.stdout.split(|byte| *byte == 0) {
         if record.len() < 4 {
@@ -382,6 +385,10 @@ fn git_changes(cwd: &Path) -> PortResult<Vec<(String, String)>> {
         }
         let status = &record[..2];
         let path = String::from_utf8_lossy(&record[3..]).into_owned();
+        let Some(path) = path.strip_prefix(&prefix) else {
+            continue;
+        };
+        let path = path.to_owned();
         if !safe_relative(&path) || is_internal_path(&path) {
             continue;
         }
@@ -453,6 +460,7 @@ fn git_patch(cwd: &Path, budget: u64) -> PortResult<Option<(Vec<u8>, bool, u64)>
                 "--binary",
                 "--no-ext-diff",
                 "--no-textconv",
+                "--relative",
                 base_tree,
                 "--",
                 ".",
@@ -619,6 +627,11 @@ fn read_regular_file(
         truncated,
         mode,
     }))
+}
+
+fn git_prefix(cwd: &Path) -> PortResult<String> {
+    let output = git_output(cwd, &["rev-parse", "--show-prefix"])?;
+    Ok(String::from_utf8_lossy(&output).trim().to_owned())
 }
 
 fn safe_relative(path: &str) -> bool {

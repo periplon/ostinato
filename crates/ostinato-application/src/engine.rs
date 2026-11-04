@@ -1626,6 +1626,7 @@ impl Engine {
         let score = parsed
             .as_ref()
             .and_then(extract_score_from_json)
+            .or_else(|| transcript_score(&outcome.stdout))
             .unwrap_or(0.0);
         let output = agent_output(&trace, &record, &trace_hash, &outcome, parsed, score);
         if success {
@@ -1900,6 +1901,38 @@ fn extract_score_from_text(text: &str) -> Option<f64> {
     parse_json_maybe(text)
         .as_ref()
         .and_then(extract_score_from_json)
+}
+
+fn transcript_score(text: &str) -> Option<f64> {
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if let Ok(value) = serde_json::from_str::<Json>(line)
+            && let Some(score) = find_score(&value)
+        {
+            return Some(score);
+        }
+    }
+    None
+}
+
+fn find_score(value: &Json) -> Option<f64> {
+    if let Some(score) = value
+        .get("score")
+        .or_else(|| value.get("confidence"))
+        .and_then(Json::as_f64)
+    {
+        return Some(score.clamp(0.0, 1.0));
+    }
+    if let Some(text) = value.as_str()
+        && let Ok(parsed) = serde_json::from_str::<Json>(text)
+        && let Some(score) = find_score(&parsed)
+    {
+        return Some(score);
+    }
+    match value {
+        Json::Object(map) => map.values().find_map(find_score),
+        Json::Array(items) => items.iter().find_map(find_score),
+        _ => None,
+    }
 }
 
 fn extract_score_from_json(value: &Json) -> Option<f64> {

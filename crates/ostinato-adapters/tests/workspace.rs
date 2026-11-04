@@ -210,3 +210,55 @@ fn worktree_base_injection_and_non_repos_fail_cleanly() {
         .expect_err("non-repo");
     assert!(error.to_string().contains("git repository"), "{error}");
 }
+
+#[test]
+fn worktree_capture_is_relative_to_a_subdirectory_workflow() {
+    let repo = git_repo();
+    std::fs::create_dir_all(repo.path().join("sub")).expect("sub");
+    write(&repo.path().join("sub/before.txt"), "before\n");
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-qm", "sub"]);
+    let workspace = LocalWorkspace::default();
+    let handle = workspace
+        .prepare(&IsolationRequest {
+            run_id: "run-sub".to_owned(),
+            step: "step".to_owned(),
+            round: 0,
+            attempt: 0,
+            mode: IsolationMode::Worktree,
+            base: None,
+            keep: false,
+            base_dir: Some(repo.path().join("sub")),
+        })
+        .expect("prepare");
+    assert_eq!(handle.dir, handle.path.as_ref().expect("path").join("sub"));
+    write(&handle.dir.join("created.txt"), "new\n");
+    write(&handle.dir.join("before.txt"), "before\nchanged\n");
+    let captured = workspace
+        .capture(&CaptureRequest {
+            cwd: handle.dir.clone(),
+            patterns: Vec::new(),
+            include_git_changes: true,
+        })
+        .expect("capture");
+    let names: Vec<&str> = captured
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.name.as_str())
+        .collect();
+    assert!(names.contains(&"created.txt"), "{names:?}");
+    assert!(names.contains(&"before.txt"), "{names:?}");
+    assert!(
+        !names.iter().any(|name| name.starts_with("sub/")),
+        "{names:?}"
+    );
+    let patch = captured
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "patch")
+        .expect("patch");
+    let patch = String::from_utf8_lossy(&patch.bytes);
+    assert!(patch.contains("a/before.txt"), "{patch}");
+    assert!(!patch.contains("a/sub/"), "{patch}");
+    workspace.finish(&handle).expect("finish");
+}
