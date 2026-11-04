@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.22.3
+
+Pending-output and disjunction tool inputs.
+
+- Pending task outputs in `env` (map/list) and defaulted `stdin` remain not-ready and run after injection; `cmd` disjunction elements resolve after injection.
+- Input validation classifies disjunction alternatives, rejecting all-invalid whole-field disjunctions before any sibling task runs while keeping defaulted/disjunction-compatible values.
+- 355 tests (70 CLI E2E, 1 conformance, 242 language, 3 language unit,
+  18 application, 17 domain, 3 store, 1 adapters unit).
+
+
 ## v0.22.2
 
 Complete tool-task pre-validation.

@@ -3767,6 +3767,30 @@ command: printfirst: {
 "#,
             false,
         ),
+        (
+            "envpending",
+            r#"
+package foo
+import "tool/exec"
+command: envpending: {
+	a: exec.Run & {cmd: ["sh", "-c", "printf '%s' \"$FOO\""], env: {FOO: z.stdout}}
+	z: exec.Run & {cmd: ["sh", "-c", "printf bar"], stdout: string}
+}
+"#,
+            false,
+        ),
+        (
+            "stdinpending",
+            r#"
+package foo
+import "tool/exec"
+command: stdinpending: {
+	a: exec.Run & {cmd: ["cat"], stdin: *z.stdout | string}
+	z: exec.Run & {cmd: ["sh", "-c", "printf payload"], stdout: string}
+}
+"#,
+            false,
+        ),
     ];
     for (name, source, injected) in fixtures {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -3972,6 +3996,22 @@ import (
 command: baddir: {
 	print: cli.Print & {text: "SIBLING"}
 	run: exec.Run & {$after: print, cmd: ["echo", "R"], dir: 5}
+}
+"#,
+        ),
+        (
+            "baddir-d",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"tool/file"
+)
+command: baddir-d: {
+	print: cli.Print & {text: "SIBLING"}
+	write: file.Create & {filename: "side.txt", contents: "S"}
+	run: exec.Run & {$after: [print, write], cmd: ["sh", "-c", "echo RAN"], dir: 5 | 6}
 }
 "#,
         ),
