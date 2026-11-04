@@ -1129,10 +1129,42 @@ pub fn run_tool_command(
         &mut probe_scopes,
         &mut probe_scheduled,
     )?;
-    let task_name_set: std::collections::HashSet<String> = probe_scheduled
+    let mut task_name_set: std::collections::HashSet<String> = probe_scheduled
         .iter()
         .map(|(name, _, _)| name.clone())
         .collect();
+    // Tasks declared outside the command but referenced through output reads
+    // (e.g. `let t = base` or `#base`) are scheduled too.
+    let mut external_names = std::collections::BTreeSet::new();
+    {
+        let mut scopes = Vec::new();
+        collect_output_task_labels(
+            &Expr::Struct(task_items.clone(), Span::default()),
+            &mut scopes,
+            &combined.items,
+            &mut external_names,
+        );
+    }
+    external_names.retain(|name| {
+        task_name_set.contains(name)
+            || find_field_expr(&combined.items, name).is_some_and(|value| {
+                is_task_expr(
+                    value,
+                    &[combined.items.as_slice()],
+                    &combined.items,
+                    &mut std::collections::BTreeSet::new(),
+                    &non_task_imports,
+                )
+            })
+    });
+    external_names.retain(|name| {
+        !probe_scheduled
+            .iter()
+            .any(|(scheduled_name, _, _)| scheduled_name == name)
+    });
+    for name in &external_names {
+        task_name_set.insert(name.clone());
+    }
     let value = eval_file_with_imports_mode_allow_outputs(
         &combined,
         &imports,
@@ -1155,6 +1187,37 @@ pub fn run_tool_command(
         return Err(ostinato_lang::LangError::Workflow(format!(
             "tool command `{command_name}` has no tasks"
         )));
+    }
+    let mut external_scheduled: Vec<(String, Vec<String>, BTreeMap<String, Value>)> = Vec::new();
+    if !external_names.is_empty() {
+        let has_definitions = external_names.iter().any(|name| name.starts_with('#'));
+        let full = if has_definitions {
+            Some(eval_file_with_imports_mode_allow_outputs(
+                &combined,
+                &imports,
+                &injected,
+                true,
+                &task_name_set,
+            )?)
+        } else {
+            None
+        };
+        let source = full.as_ref().unwrap_or(&value);
+        for name in &external_names {
+            if scheduled
+                .iter()
+                .any(|(scheduled_name, _, _)| scheduled_name == name)
+            {
+                continue;
+            }
+            let fields = value_find_named(source, name).and_then(value_fields);
+            if let Some(fields) = fields
+                && fields.contains_key("$id")
+            {
+                external_scheduled.push((name.clone(), Vec::new(), fields.clone()));
+            }
+        }
+        scheduled.extend(external_scheduled.iter().cloned());
     }
     let mut task_names = std::collections::BTreeSet::new();
     for (name, _, _) in &scheduled {
@@ -1213,15 +1276,24 @@ pub fn run_tool_command(
                 ToolTaskOutcome::Done { outputs } => {
                     done.insert(name.clone());
                     progress = true;
-                    if !outputs.is_empty()
-                        && inject_command_outputs(
+                    let injected_ok = if external_names.contains(name) {
+                        inject_named_outputs(
                             &mut combined.items,
                             command_name,
                             name,
                             &outputs,
                             &non_task_imports,
                         )
-                    {
+                    } else {
+                        inject_command_outputs(
+                            &mut combined.items,
+                            command_name,
+                            name,
+                            &outputs,
+                            &non_task_imports,
+                        )
+                    };
+                    if !outputs.is_empty() && injected_ok {
                         let value = eval_file_with_imports_mode_allow_outputs(
                             &combined,
                             &imports,
@@ -1239,6 +1311,7 @@ pub fn run_tool_command(
                             &mut reschedule_scopes,
                             &mut rescheduled,
                         )?;
+                        rescheduled.extend(external_scheduled.iter().cloned());
                         add_output_dependencies(
                             &combined.items,
                             &mut rescheduled,
@@ -1667,6 +1740,258 @@ fn command_targets(
         }
         _ => {}
     }
+}
+
+/// Resolve a selector base to the field label it ultimately denotes.
+fn resolved_label<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    visited: &mut std::collections::BTreeSet<String>,
+    allow_field: bool,
+) -> Option<String> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return None;
+            }
+            if let Some((_, item)) = local_binding_location(scopes, root, name) {
+                return match item {
+                    StructItem::Let { value, .. } => {
+                        resolved_label(value, scopes, root, visited, true)
+                    }
+                    StructItem::Field(field) if field.definition => match &field.label {
+                        Label::Name(label, _) => Some(label.clone()),
+                        _ => None,
+                    },
+                    StructItem::Field(field) if allow_field => match &field.label {
+                        Label::Name(label, _) => Some(label.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+            }
+            name.starts_with('#').then(|| name.clone())
+        }
+        Expr::Select(_, field, _, _) => Some(field.clone()),
+        Expr::Index(_, index, _) => index_field_name(index),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            resolved_label(inner, scopes, root, visited, allow_field)
+        }
+        _ => None,
+    }
+}
+
+/// Labels of task values whose outputs the command reads.
+fn collect_output_task_labels<'a>(
+    expr: &'a Expr,
+    scopes: &mut Vec<&'a [StructItem]>,
+    root: &'a [StructItem],
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match expr {
+        Expr::Select(base, field, _, _) => {
+            if matches!(field.as_str(), "stdout" | "success")
+                && let Some(label) = resolved_label(
+                    base,
+                    scopes,
+                    root,
+                    &mut std::collections::BTreeSet::new(),
+                    false,
+                )
+            {
+                out.insert(label);
+            }
+            collect_output_task_labels(base, scopes, root, out);
+        }
+        Expr::Struct(items, _) => {
+            scopes.push(items);
+            for item in items {
+                match item {
+                    StructItem::Field(field) => {
+                        collect_output_task_labels(&field.value, scopes, root, out);
+                    }
+                    StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                        collect_output_task_labels(value, scopes, root, out);
+                    }
+                    StructItem::For { source, body, .. } => {
+                        collect_output_task_labels(source, scopes, root, out);
+                        for body_item in body {
+                            if let StructItem::Field(field) = body_item {
+                                collect_output_task_labels(&field.value, scopes, root, out);
+                            }
+                        }
+                    }
+                    StructItem::If { cond, body, .. } => {
+                        collect_output_task_labels(cond, scopes, root, out);
+                        for body_item in body {
+                            if let StructItem::Field(field) = body_item {
+                                collect_output_task_labels(&field.value, scopes, root, out);
+                            }
+                        }
+                    }
+                    StructItem::Ellipsis(_) => {}
+                }
+            }
+            scopes.pop();
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            collect_output_task_labels(left, scopes, root, out);
+            collect_output_task_labels(right, scopes, root, out);
+        }
+        Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Bound(_, inner, _)
+        | Expr::Unary(_, inner, _) => collect_output_task_labels(inner, scopes, root, out),
+        Expr::Index(base, index, _) => {
+            collect_output_task_labels(base, scopes, root, out);
+            collect_output_task_labels(index, scopes, root, out);
+        }
+        Expr::Call(callee, arguments, _) => {
+            collect_output_task_labels(callee, scopes, root, out);
+            for argument in arguments {
+                collect_output_task_labels(argument, scopes, root, out);
+            }
+        }
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let ostinato_lang::ast::StrPart::Interp(inner) = part {
+                    collect_output_task_labels(inner, scopes, root, out);
+                }
+            }
+        }
+        Expr::BytesInterp(parts, _) => {
+            for part in parts {
+                if let ostinato_lang::ast::BytePart::Interp(inner) = part {
+                    collect_output_task_labels(inner, scopes, root, out);
+                }
+            }
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                collect_output_task_labels(item, scopes, root, out);
+            }
+        }
+        Expr::OpenList(Some(inner), _) => collect_output_task_labels(inner, scopes, root, out),
+        _ => {}
+    }
+}
+
+fn value_find_named<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
+    match value {
+        Value::Struct(fields) | Value::Definition { fields, .. } => {
+            if let Some(found) = fields.get(name) {
+                return Some(found);
+            }
+            for field in fields.values() {
+                if let Some(found) = value_find_named(field, name) {
+                    return Some(found);
+                }
+            }
+            if let Value::Definition { definitions, .. } = value
+                && let Some(found) = definitions.get(name)
+            {
+                return Some(found);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn find_field_id_by_label(items: &[StructItem], name: &str) -> Option<usize> {
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                if matches!(&field.label, Label::Name(label, _) if label == name) {
+                    return Some(field.id);
+                }
+                if let Some(id) = find_field_id_by_label_expr(&field.value, name) {
+                    return Some(id);
+                }
+            }
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                if let Some(id) = find_field_id_by_label_expr(value, name) {
+                    return Some(id);
+                }
+            }
+            StructItem::For { body, .. } | StructItem::If { body, .. } => {
+                if let Some(id) = find_field_id_by_label(body, name) {
+                    return Some(id);
+                }
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+    None
+}
+
+fn find_field_expr<'a>(items: &'a [StructItem], name: &str) -> Option<&'a Expr> {
+    for item in items {
+        match item {
+            StructItem::Field(field) => {
+                if matches!(&field.label, Label::Name(label, _) if label == name) {
+                    return Some(&field.value);
+                }
+                if let Some(found) = find_field_expr_in(&field.value, name) {
+                    return Some(found);
+                }
+            }
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                if let Some(found) = find_field_expr_in(value, name) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_field_expr_in<'a>(expr: &'a Expr, name: &str) -> Option<&'a Expr> {
+    match expr {
+        Expr::Struct(items, _) => find_field_expr(items, name),
+        Expr::Unify(left, right, _) => {
+            find_field_expr_in(left, name).or_else(|| find_field_expr_in(right, name))
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            find_field_expr_in(inner, name)
+        }
+        _ => None,
+    }
+}
+
+fn find_field_id_by_label_expr(expr: &Expr, name: &str) -> Option<usize> {
+    match expr {
+        Expr::Struct(items, _) => find_field_id_by_label(items, name),
+        Expr::Unify(left, right, _) => find_field_id_by_label_expr(left, name)
+            .or_else(|| find_field_id_by_label_expr(right, name)),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            find_field_id_by_label_expr(inner, name)
+        }
+        _ => None,
+    }
+}
+
+fn inject_named_outputs(
+    items: &mut [StructItem],
+    command_name: &str,
+    name: &str,
+    outputs: &[(String, Value)],
+    imports: &ImportKinds,
+) -> bool {
+    let Some(id) = find_field_id_by_label(items, name) else {
+        return false;
+    };
+    if !active_task_decl_ids(items, command_name, imports).contains(&id) {
+        return false;
+    }
+    let Some(wrapper) = task_output_struct(outputs, Span::default()) else {
+        return false;
+    };
+    inject_field(items, id, &wrapper)
 }
 
 fn named_field<'a>(items: &'a [StructItem], name: &str) -> Option<&'a Expr> {
@@ -2494,6 +2819,53 @@ fn selector_resolves_to_task<'a>(
     )
 }
 
+/// Resolve an identifier chain (lets and fields) to a scheduled task name.
+fn ident_task_name<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    names: &std::collections::BTreeSet<String>,
+    imports: &ImportKinds,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<String> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return None;
+            }
+            match local_binding(scopes, root, name) {
+                Some(StructItem::Let { value, .. }) => {
+                    ident_task_name(value, scopes, root, names, imports, visited)
+                }
+                Some(StructItem::Field(field)) => match &field.label {
+                    Label::Name(label, _)
+                        if names.contains(label)
+                            && is_task_expr(
+                                &field.value,
+                                scopes,
+                                root,
+                                &mut std::collections::BTreeSet::new(),
+                                imports,
+                            ) =>
+                    {
+                        Some(label.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+        Expr::Select(..) | Expr::Index(..) => {
+            let leaf = selector_leaf(expr)?;
+            names.contains(&leaf).then_some(leaf)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            ident_task_name(inner, scopes, root, names, imports, visited)
+        }
+        _ => None,
+    }
+}
+
 fn collect_output_refs<'a>(
     expr: &'a Expr,
     scopes: &mut Vec<&'a [StructItem]>,
@@ -2518,6 +2890,15 @@ fn collect_output_refs<'a>(
                             )
                         {
                             out.insert(name.clone());
+                        } else if let Some(task) = ident_task_name(
+                            unwrap_ref_base(base),
+                            scopes,
+                            root,
+                            names,
+                            non_task_imports,
+                            &mut std::collections::BTreeSet::new(),
+                        ) {
+                            out.insert(task);
                         }
                     }
                     nested => {
@@ -3256,6 +3637,35 @@ fn ident_import_key<'a>(
     }
 }
 
+fn definition_binding_name<'a>(
+    expr: &'a Expr,
+    scopes: &[&'a [StructItem]],
+    root: &'a [StructItem],
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<String> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if !visited.insert(name.clone()) {
+                return None;
+            }
+            match local_binding(scopes, root, name)? {
+                StructItem::Let { value, .. } => {
+                    definition_binding_name(value, scopes, root, visited)
+                }
+                StructItem::Field(field) if field.definition => match &field.label {
+                    Label::Name(label, _) => Some(label.clone()),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            definition_binding_name(inner, scopes, root, visited)
+        }
+        _ => None,
+    }
+}
+
 /// Identity of the value a task declaration draws its outputs from.
 ///
 /// Imports are shared by alias and let bindings by name, matching CUE's
@@ -3267,7 +3677,11 @@ fn task_value_key<'a>(
     imports: &ImportKinds,
 ) -> Option<String> {
     match expr {
-        Expr::Ident(..) => reference_import_key(expr, scopes, root, imports),
+        Expr::Ident(..) => {
+            definition_binding_name(expr, scopes, root, &mut std::collections::BTreeSet::new())
+                .map(|label| format!("def:{label}"))
+                .or_else(|| reference_import_key(expr, scopes, root, imports))
+        }
         // Composed task values (`lib.run & {...}`) are distinct per
         // declaration, so CUE injects them independently.
         Expr::Unify(..) => None,
@@ -3293,13 +3707,19 @@ fn collect_import_task_fields<'a>(
                 let StructItem::Field(field) = item else {
                     continue;
                 };
-                if field.definition
-                    || field.optional
-                    || matches!(&field.label, Label::Name(name, _) if name.starts_with('#') || name.starts_with('_'))
+                if field.optional
+                    || matches!(&field.label, Label::Name(name, _) if name.starts_with('_'))
                 {
                     continue;
                 }
-                if is_task_leaf(&field.value)
+                let key = if field.definition {
+                    match &field.label {
+                        Label::Name(name, _) if name.starts_with('#') => {
+                            Some(format!("def:{name}"))
+                        }
+                        _ => None,
+                    }
+                } else if is_task_leaf(&field.value)
                     && is_task_expr(
                         &field.value,
                         scopes,
@@ -3307,11 +3727,17 @@ fn collect_import_task_fields<'a>(
                         &mut std::collections::BTreeSet::new(),
                         imports,
                     )
-                    && let Some(key) = task_value_key(&field.value, scopes, root, imports)
                 {
+                    task_value_key(&field.value, scopes, root, imports)
+                } else {
+                    None
+                };
+                if let Some(key) = key {
                     ids.entry(key).or_default().push(field.id);
                 }
-                collect_import_task_fields(&field.value, scopes, root, imports, visited, ids);
+                if !field.definition {
+                    collect_import_task_fields(&field.value, scopes, root, imports, visited, ids);
+                }
             }
             scopes.pop();
         }
@@ -3334,13 +3760,59 @@ fn collect_import_task_fields<'a>(
     }
 }
 
-fn inject_command_outputs(
-    items: &mut [StructItem],
+fn collect_definition_fields(
+    items: &[StructItem],
+    ids: &mut std::collections::BTreeMap<String, Vec<usize>>,
+) {
+    for item in items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        if matches!(&field.label, Label::Name(name, _) if name == "command") {
+            continue;
+        }
+        if field.definition
+            && let Label::Name(name, _) = &field.label
+            && name.starts_with('#')
+        {
+            ids.entry(format!("def:{name}")).or_default().push(field.id);
+        }
+        collect_definition_fields_expr(&field.value, ids);
+    }
+}
+
+fn collect_definition_fields_expr(
+    expr: &Expr,
+    ids: &mut std::collections::BTreeMap<String, Vec<usize>>,
+) {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                if let StructItem::Field(field) = item
+                    && field.definition
+                    && let Label::Name(name, _) = &field.label
+                    && name.starts_with('#')
+                {
+                    ids.entry(format!("def:{name}")).or_default().push(field.id);
+                }
+            }
+        }
+        Expr::Unify(left, right, _) => {
+            collect_definition_fields_expr(left, ids);
+            collect_definition_fields_expr(right, ids);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            collect_definition_fields_expr(inner, ids);
+        }
+        _ => {}
+    }
+}
+
+fn active_task_decl_ids(
+    items: &[StructItem],
     command_name: &str,
-    task_name: &str,
-    outputs: &[(String, Value)],
     non_task_imports: &ImportKinds,
-) -> bool {
+) -> std::collections::BTreeSet<usize> {
     let task_decls = collect_task_decl_ids(items, items, non_task_imports);
     // CUE injects outputs for an imported task only when the import alias
     // provides a single task value; multiple task declarations from the same
@@ -3385,16 +3857,27 @@ fn inject_command_outputs(
             }
         }
     }
+    collect_definition_fields(items, &mut import_task_fields);
     let mut suppressed = std::collections::BTreeSet::new();
     for ids in import_task_fields.values() {
         if ids.len() > 1 {
             suppressed.extend(ids.iter().copied());
         }
     }
-    let task_decls: std::collections::BTreeSet<usize> = task_decls
+    task_decls
         .into_iter()
         .filter(|id| !suppressed.contains(id))
-        .collect();
+        .collect()
+}
+
+fn inject_command_outputs(
+    items: &mut [StructItem],
+    command_name: &str,
+    task_name: &str,
+    outputs: &[(String, Value)],
+    non_task_imports: &ImportKinds,
+) -> bool {
+    let task_decls = active_task_decl_ids(items, command_name, non_task_imports);
     // Collect referenced declarations before taking a mutable borrow.
     let mut targets: Vec<Vec<String>> = Vec::new();
     for item in items.iter() {
@@ -3510,15 +3993,6 @@ fn inject_task_outputs_value(
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             inject_task_outputs_value(inner, outputs, imports)
         }
-        Expr::Ident(..) => {
-            let span = expr.span();
-            let Some(wrapper) = task_output_struct(outputs, span) else {
-                return false;
-            };
-            let current = expr.clone();
-            *expr = Expr::Unify(Box::new(current), Box::new(wrapper), span);
-            true
-        }
         Expr::Select(..) | Expr::Index(..) => {
             if !is_import_task_expr(expr, imports) {
                 return false;
@@ -3558,8 +4032,24 @@ fn inject_task_outputs(
             StructItem::Field(field) => {
                 let is_task = matches!(&field.label, Label::Name(name, _) if name == task_name)
                     && task_decls.contains(&field.id);
-                if is_task && inject_task_outputs_value(&mut field.value, outputs, imports) {
-                    return true;
+                if is_task {
+                    let injected = if matches!(&field.value, Expr::Ident(..)) {
+                        let span = field.value.span();
+                        match task_output_struct(outputs, span) {
+                            Some(wrapper) => {
+                                let current = field.value.clone();
+                                field.value =
+                                    Expr::Unify(Box::new(current), Box::new(wrapper), span);
+                                true
+                            }
+                            None => false,
+                        }
+                    } else {
+                        inject_task_outputs_value(&mut field.value, outputs, imports)
+                    };
+                    if injected {
+                        return true;
+                    }
                 }
                 if inject_task_outputs_in_expr(
                     &mut field.value,

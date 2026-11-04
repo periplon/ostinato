@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.31.0
+
+Let-over-field and definition output reads.
+
+- Tasks referenced through a `let` bound to a field now receive injected
+  outputs and are scheduled before consumers (`let t = base; \(t.stdout)`),
+  including root inline/module fields, command-local fields, chained lets and
+  consumer-first declaration order.
+- Definition tasks read directly by a command (`#base: lib.run;
+  \(#base.stdout)`, at package or command scope) are scheduled and injected,
+  matching CUE; definition references used as task declarations
+  (`a: p1: #base`) remain non-concrete, including when also read directly.
+- Added an e2e differential test (ten shapes) and three conformance cases.
+- 439 tests (102 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
+
 ## v0.30.3
 
 Definition alias chains.
