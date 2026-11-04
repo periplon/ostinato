@@ -57,6 +57,7 @@ workflow outside the Rust surface has a supported escape hatch.
 
 | Feature | Why |
 |---|---|
+| Non-UTF-8 bytes-label identity | Bytes labels decode lossily to U+FFFD, so `{'\xff': 1}` shares identity with `"\uFFFD"` and selection differs from CUE, which preserves the raw label bytes (its own JSON export also emits duplicate keys) |
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
 | `math` transcendental precision | `Pow`/`Exp`/`Log` and other transcendental helpers use native floating-point conversion where CUE uses its 34-digit decimal context; JSON export matches, but string interpolation can show fewer digits |

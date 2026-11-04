@@ -532,7 +532,7 @@ impl Parser {
         match self.peek_tok() {
             Tok::Let | Tok::For | Tok::If | Tok::Ellipsis => true,
             Tok::LBracket => self.bracket_closes_a_label(),
-            Tok::Ident(_) | Tok::Str(_) => matches!(
+            Tok::Ident(_) | Tok::Str(_) | Tok::Bytes(_) => matches!(
                 self.tokens.get(self.pos + 1).map(|token| &token.tok),
                 Some(Tok::Colon | Tok::Equals | Tok::Question)
             ),
@@ -891,6 +891,7 @@ impl Parser {
                     let clauses = self.parse_comprehension_clauses()?;
                     self.skip_newlines();
                     self.expect(&Tok::LBrace, "`{`")?;
+                    self.skip_newlines();
                     let body = if self.starts_struct_item() {
                         Expr::Struct(self.parse_struct_body()?, span)
                     } else {
