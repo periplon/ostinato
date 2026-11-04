@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.36.2
+
+Package alias dependencies and read-order corrections.
+
+- Command aliases to package tasks keep the target's own `$after`
+  prerequisites: `alias: prep` schedules `prep`'s dependencies without
+  re-running the target, and container targets resolve sibling dependencies
+  in their enclosing scopes.
+- Hidden, optional and definition fields no longer count as alias
+  declarations in package read ordering.
+- Package output-read selectors are retained by full path, so
+  `\(group.prep.stdout)` still resolves when a command task shares the
+  `prep` leaf; single-segment reads keep CUE's shadowing.
+- Added e2e cases and four conformance cases.
+
+- 442 tests (105 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.36.1
 
 Package `$after` resolution and scheduling corrections.

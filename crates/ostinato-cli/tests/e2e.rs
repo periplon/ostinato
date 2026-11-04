@@ -7051,6 +7051,96 @@ command: pkgaliasreaddecl: {
             None,
         ),
         (
+            "pkghiddenread",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+prep: exec.Run & {cmd: ["sh", "-c", "printf P"], stdout: string}
+command: pkghiddenread: {
+	_r: prep
+	r?: prep
+	#r: prep
+	x: {_h: prep}
+	q: cli.Print & {text: "R=\(prep.stdout)"}
+	s: prep
+}
+"#,
+            None,
+        ),
+        (
+            "pkgaliastargetafter",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf B >> order.txt"]}
+prep: exec.Run & {$after: base, cmd: ["sh", "-c", "printf P >> order.txt"]}
+command: pkgaliastargetafter: {
+	alias: prep
+	a: exec.Run & {$after: alias, cmd: ["sh", "-c", "printf A >> order.txt"]}
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgaliastargetonly",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf B >> order.txt"]}
+prep: exec.Run & {$after: base, cmd: ["sh", "-c", "printf P >> order.txt"]}
+command: pkgaliastargetonly: {
+	alias: prep
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgaliastargetcontainer",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+group: {
+	one: exec.Run & {cmd: ["sh", "-c", "printf 1 >> order.txt"]}
+	two: exec.Run & {$after: one, cmd: ["sh", "-c", "printf 2 >> order.txt"]}
+}
+command: pkgaliastargetcontainer: {
+	alias: group.two
+	q: cli.Print & {text: "ok"}
+}
+"#,
+            Some("order.txt"),
+        ),
+        (
+            "pkgreadselectorshadow",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+group: {prep: exec.Run & {cmd: ["sh", "-c", "printf G"], stdout: string}}
+command: pkgreadselectorshadow: {
+	prep: exec.Run & {cmd: ["sh", "-c", "printf C"], stdout: string}
+	q: cli.Print & {text: "R=\(group.prep.stdout)"}
+}
+"#,
+            None,
+        ),
+        (
             "pkgunknownafter",
             r#"
 package foo

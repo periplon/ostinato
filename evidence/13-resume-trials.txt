@@ -1,4 +1,4 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-pkgafter/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.MXvGnJA6fv/resume.sqlite trials c995c3cf-6f73-4342-a2f5-c17e4693f2fa
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-pkgafter/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.qgGhkssc9p/resume.sqlite trials 86907ff4-3e8f-4678-ae70-e9c20720b6c6
 
 STEP                 ROUND ATTEMPT STATUS   SCORE      DUR(ms)  ERROR
 a                    0     0      succeeded 1.000      4        
