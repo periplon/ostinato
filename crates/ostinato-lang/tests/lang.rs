@@ -8766,6 +8766,47 @@ def_form: #D & {a?: 7}
 }
 
 #[test]
+fn disjunction_alternatives_recompute_nested_list_dependents() {
+    let source = r#"
+package demo
+lx: ({l: [{a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [{a: 3}]}
+nested: ({l: [[{a: *1 | int, b: a}]]} | {l: [[{a: string}]]}) & {l: [[{a: 4}]]}
+listcomp: ({l: [for i in [1] {a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [{a: 5}]}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse list disjunction narrowing");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval list disjunction narrowing")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["lx"]["l"][0], serde_json::json!({"a": 3, "b": 3}));
+    assert_eq!(
+        json["nested"]["l"][0][0],
+        serde_json::json!({"a": 4, "b": 4})
+    );
+    assert_eq!(
+        json["listcomp"]["l"][0],
+        serde_json::json!({"a": 5, "b": 5})
+    );
+}
+
+#[test]
+fn let_mediated_self_default_cycles_fail_closed() {
+    for source in [
+        "package demo\nlet X = x.a + 0\nx: {a: X + 1} & {a: *2 | int}\n",
+        "package demo\nlet X = x.a\nx: {a: X + 1} & {a: *2 | int}\n",
+        "package demo\nlet X = x.o.a + 0\nx: {o: {a: X + 1}} & {o: {a: *2 | int}}\n",
+        "package demo\nlet X = x.l[0].a + 0\nx: {l: [{a: X + 1}]} & {l: [{a: *2 | int}]}\n",
+        "package demo\nlet X = #D.a + 0\n#D: {a: X + 1}\nx: #D\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse let-mediated self-default");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "let-mediated self-default must fail closed: {source:?}"
+        );
+    }
+}
+
+#[test]
 fn optional_narrowing_keeps_optional_only_fields_omitted() {
     let source = r#"
 package demo

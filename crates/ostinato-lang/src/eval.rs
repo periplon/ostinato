@@ -2678,6 +2678,7 @@ impl<'a> Frame<'a> {
                     ));
                 }
                 self.evaluating.borrow_mut().insert(key.to_owned());
+                let _field_guard = push_evaluating_field(&name);
                 let result = match items {
                     Some(items) => self.eval_params_struct(&items, &exprs, span),
                     None => Err(LangError::eval(
@@ -2703,6 +2704,7 @@ impl<'a> Frame<'a> {
                 .clone();
             self.clear_field_path_peers(key);
             self.evaluating.borrow_mut().insert(key.to_owned());
+            let _field_guard = push_evaluating_field(&name);
             let previous_next = self
                 .next_definition
                 .replace(Some(display_field_name(key).into_owned()));
@@ -2779,6 +2781,7 @@ impl<'a> Frame<'a> {
         }
         self.clear_field_path_peers(key);
         self.evaluating.borrow_mut().insert(key.to_owned());
+        let _field_guard = push_evaluating_field(&name);
         let previous_next = self
             .next_definition
             .replace(Some(display_field_name(key).into_owned()));
@@ -2993,6 +2996,7 @@ impl<'a> Frame<'a> {
         let Some(key) = self.any_field_key(name) else {
             return Ok(false);
         };
+        let _field_guard = push_evaluating_field(name);
         let exprs = {
             let fields = self.fields.borrow();
             let Some(field) = fields.get(&key) else {
@@ -3466,6 +3470,13 @@ impl<'a> Frame<'a> {
                 format!("undefined let binding `{name}`"),
             ));
         };
+        if let_expr_may_cycle(&expr, self) {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("cyclic let reference while evaluating `{name}`"),
+            ));
+        }
         self.evaluating.borrow_mut().insert(name.to_owned());
         let previous = self.self_rhs.replace(Some(name.to_owned()));
         let previous_cache = self.skip_cache.replace(true);
@@ -4141,6 +4152,13 @@ impl<'a> Frame<'a> {
                 format!("undefined let binding `{name}`"),
             ));
         };
+        if let_expr_may_cycle(&expr, self) {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("cyclic let reference while evaluating `{name}`"),
+            ));
+        }
         self.evaluating.borrow_mut().insert(name.to_owned());
         let previous = self.self_rhs.replace(Some(name.to_owned()));
         let result = eval_expr(&expr, self);
@@ -4300,6 +4318,26 @@ thread_local! {
     /// Soundness guard: a local selector shortcut must agree with the full
     /// declaration-level projection with shortcuts disabled.
     static DISABLE_LOCAL_SHORTCUT: Cell<bool> = const { Cell::new(false) };
+    /// Bindings currently expanded while checking whether a declaration
+    /// references the selected path. Guards non-identity let aliases.
+    static CHECKED_SELF_BINDINGS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Field names currently being evaluated (innermost last).
+    static EVALUATING_FIELD_NAMES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+struct EvaluatingFieldGuard;
+
+impl Drop for EvaluatingFieldGuard {
+    fn drop(&mut self) {
+        EVALUATING_FIELD_NAMES.with(|names| {
+            names.borrow_mut().pop();
+        });
+    }
+}
+
+fn push_evaluating_field(name: &str) -> EvaluatingFieldGuard {
+    EVALUATING_FIELD_NAMES.with(|names| names.borrow_mut().push(name.to_owned()));
+    EvaluatingFieldGuard
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4400,6 +4438,120 @@ fn selector_path(expr: &Expr) -> Option<(String, Vec<SelectSegment>)> {
     }
 }
 
+fn let_expr_may_cycle(expr: &Expr, frame: &Frame<'_>) -> bool {
+    match strip_expr_parens(expr) {
+        // Struct/list values are split-base and self-selection forms that the
+        // field-granular fixpoint resolves (or rejects) on its own.
+        Expr::Struct(_, _)
+        | Expr::List(_, _)
+        | Expr::OpenList(_, _)
+        | Expr::OpenListPrefix(_, _, _)
+        | Expr::Unify(_, _, _)
+        | Expr::Disjunction(_, _, _)
+        | Expr::ListComp { .. } => false,
+        other => expr_contains_evaluating_selector(other, frame),
+    }
+}
+
+/// Whether `expr` contains a selector rooted at a field that is currently
+/// being evaluated. Let bindings that read the field under definition must
+/// fail closed rather than being cached and reused after a cycle is resolved.
+fn expr_contains_evaluating_selector(expr: &Expr, frame: &Frame<'_>) -> bool {
+    if let Some((root, path)) = selector_path(expr)
+        && !path.is_empty()
+        && let Some(SelectSegment::Field(field, _)) = path.last()
+    {
+        let root = frame.resolve_transparent_let(&root);
+        if root != "params" {
+            let evaluating = EVALUATING_FIELD_NAMES.with(|names| names.borrow().contains(field));
+            if evaluating {
+                return true;
+            }
+        }
+    }
+    match expr {
+        Expr::Select(base, _, _, _) => expr_contains_evaluating_selector(base, frame),
+        Expr::Index(base, index, _) => {
+            expr_contains_evaluating_selector(base, frame)
+                || expr_contains_evaluating_selector(index, frame)
+        }
+        Expr::Call(callee, arguments, _) => {
+            expr_contains_evaluating_selector(callee, frame)
+                || arguments
+                    .iter()
+                    .any(|arg| expr_contains_evaluating_selector(arg, frame))
+        }
+        Expr::Bound(_, operand, _)
+        | Expr::Paren(operand, _)
+        | Expr::Default(operand, _)
+        | Expr::Unary(_, operand, _) => expr_contains_evaluating_selector(operand, frame),
+        Expr::Binary(_, left, right, _)
+        | Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _) => {
+            expr_contains_evaluating_selector(left, frame)
+                || expr_contains_evaluating_selector(right, frame)
+        }
+        Expr::Struct(items, _) => items.iter().any(|item| match item {
+            StructItem::Field(field) => expr_contains_evaluating_selector(&field.value, frame),
+            StructItem::Pattern { value, .. } | StructItem::Let { value, .. } => {
+                expr_contains_evaluating_selector(value, frame)
+            }
+            StructItem::If { cond, body, .. } => {
+                expr_contains_evaluating_selector(cond, frame)
+                    || body.iter().any(|item| match item {
+                        StructItem::Field(field) => {
+                            expr_contains_evaluating_selector(&field.value, frame)
+                        }
+                        _ => false,
+                    })
+            }
+            StructItem::For { source, body, .. } => {
+                expr_contains_evaluating_selector(source, frame)
+                    || body.iter().any(|item| match item {
+                        StructItem::Field(field) => {
+                            expr_contains_evaluating_selector(&field.value, frame)
+                        }
+                        _ => false,
+                    })
+            }
+            StructItem::Ellipsis(_) => false,
+        }),
+        Expr::List(items, _) => items
+            .iter()
+            .any(|item| expr_contains_evaluating_selector(item, frame)),
+        Expr::OpenListPrefix(items, tail, _) => {
+            items
+                .iter()
+                .any(|item| expr_contains_evaluating_selector(item, frame))
+                || tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_contains_evaluating_selector(tail, frame))
+        }
+        Expr::OpenList(Some(item), _) => expr_contains_evaluating_selector(item, frame),
+        Expr::OpenList(None, _) => false,
+        Expr::Str(parts, _) => parts.iter().any(|part| match part {
+            crate::ast::StrPart::Interp(expr) => expr_contains_evaluating_selector(expr, frame),
+            crate::ast::StrPart::Text(_) => false,
+        }),
+        Expr::BytesInterp(parts, _) => parts.iter().any(|part| match part {
+            crate::ast::BytePart::Interp(expr) => expr_contains_evaluating_selector(expr, frame),
+            crate::ast::BytePart::Text(_) => false,
+        }),
+        Expr::ListComp { clauses, body, .. } => {
+            expr_contains_evaluating_selector(body, frame)
+                || clauses.iter().any(|clause| match clause {
+                    crate::ast::CompClause::For { source, .. } => {
+                        expr_contains_evaluating_selector(source, frame)
+                    }
+                    crate::ast::CompClause::If { cond, .. } => {
+                        expr_contains_evaluating_selector(cond, frame)
+                    }
+                })
+        }
+        _ => false,
+    }
+}
+
 fn expr_contains_selector_path(
     expr: &Expr,
     frame: &Frame<'_>,
@@ -4496,6 +4648,46 @@ fn expr_contains_selector_path(
                         expr_contains_selector_path(cond, frame, name, segments)
                     }
                 })
+        }
+        Expr::Ident(target, _) => {
+            let resolved = frame.resolve_transparent_let(target);
+            let repeat = CHECKED_SELF_BINDINGS.with(|bindings| {
+                let mut bindings = bindings.borrow_mut();
+                if bindings.contains(&resolved) {
+                    true
+                } else {
+                    bindings.insert(resolved.clone());
+                    false
+                }
+            });
+            if repeat {
+                return false;
+            }
+            let mut found = false;
+            let mut cursor = Some(frame);
+            while let Some(current) = cursor {
+                if let Some(let_expr) = current.lets.borrow().get(&resolved).cloned() {
+                    found = expr_contains_selector_path(&let_expr, current, name, segments);
+                    break;
+                }
+                if let Some(key) = current.any_field_key(&resolved) {
+                    let exprs = current
+                        .fields
+                        .borrow()
+                        .get(&key)
+                        .map(|definition| definition.exprs.clone())
+                        .unwrap_or_default();
+                    found = exprs
+                        .iter()
+                        .any(|expr| expr_contains_selector_path(expr, current, name, segments));
+                    break;
+                }
+                cursor = current.parent;
+            }
+            CHECKED_SELF_BINDINGS.with(|bindings| {
+                bindings.borrow_mut().remove(&resolved);
+            });
+            found
         }
         _ => false,
     }
@@ -5995,6 +6187,35 @@ fn expr_sibling_dependency_names(
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) => {
             expr_sibling_dependency_names(frame, inner, out, visited);
+        }
+        Expr::List(items, _) => {
+            for item in items {
+                expr_sibling_dependency_names(frame, item, out, visited);
+            }
+        }
+        Expr::OpenListPrefix(items, tail, _) => {
+            for item in items {
+                expr_sibling_dependency_names(frame, item, out, visited);
+            }
+            if let Some(tail) = tail {
+                expr_sibling_dependency_names(frame, tail, out, visited);
+            }
+        }
+        Expr::OpenList(Some(item), _) => {
+            expr_sibling_dependency_names(frame, item, out, visited);
+        }
+        Expr::ListComp { body, clauses, .. } => {
+            expr_sibling_dependency_names(frame, body, out, visited);
+            for clause in clauses {
+                match clause {
+                    crate::ast::CompClause::For { source, .. } => {
+                        expr_sibling_dependency_names(frame, source, out, visited);
+                    }
+                    crate::ast::CompClause::If { cond, .. } => {
+                        expr_sibling_dependency_names(frame, cond, out, visited);
+                    }
+                }
+            }
         }
         _ => {}
     }
