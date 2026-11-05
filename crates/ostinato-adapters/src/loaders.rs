@@ -46,10 +46,8 @@ impl DocumentEvaluator for NativeLoader {
             },
         )?;
         if expressions.is_empty() {
-            let value = root.to_json().ok_or_else(|| {
-                PortError::Loader(
-                    "cannot export the root value: it contains incomplete fields".to_owned(),
-                )
+            let value = root.to_json_checked().map_err(|error| {
+                PortError::Loader(format!("cannot export the root value: {error}"))
             })?;
             return Ok(vec![value]);
         }
@@ -69,8 +67,8 @@ impl DocumentEvaluator for NativeLoader {
                     return Err(PortError::Loader(error.to_string()));
                 }
             };
-            let value = selected.to_json().ok_or_else(|| {
-                PortError::Loader(format!("cannot export `{expression}`: value is incomplete"))
+            let value = selected.to_json_checked().map_err(|error| {
+                PortError::Loader(format!("cannot export `{expression}`: {error}"))
             })?;
             out.push(value);
         }
@@ -2786,6 +2784,7 @@ fn tool_module(path: &str) -> Option<Value> {
             exports.insert("Post".to_owned(), http_task_marker(Some("POST")));
             exports.insert("Put".to_owned(), http_task_marker(Some("PUT")));
             exports.insert("Delete".to_owned(), http_task_marker(Some("DELETE")));
+            exports.insert("Serve".to_owned(), marker("tool/http.Serve"));
         }
         _ => return None,
     }
@@ -8325,7 +8324,7 @@ fn output_expr(value: &Value) -> Option<Expr> {
             value.with_scale(0).as_bigint_and_exponent().0,
             Span::default(),
         )),
-        Value::Float(value) => Some(Expr::Float(value.clone(), Span::default())),
+        Value::Float(value) => Some(Expr::Float(value.value().clone(), Span::default())),
         Value::Bytes(value) => Some(Expr::Bytes(value.clone(), Span::default())),
         Value::Null => Some(Expr::Null(Span::default())),
         Value::List(items) => {
@@ -10887,6 +10886,12 @@ fn execute_tool_task(
         "tool/os.Getenv" => execute_os_getenv(task),
         "tool/os.Environ" => execute_os_environ(task),
         "tool/http.Do" => execute_http(task),
+        "tool/http.Serve" => Err(ostinato_lang::LangError::Workflow(
+            "tool/http.Serve is a long-running service task, which is not supported by the \
+             CLI runner; `cue cmd` does not terminate either (the oracle hangs). Use a \
+             finite `tool/http.Do`/`Get`/`Post` task or run the server outside Ostinato"
+                .to_owned(),
+        )),
         other => Err(ostinato_lang::LangError::Workflow(format!(
             "tool task `{other}` is not implemented"
         ))),
@@ -11248,7 +11253,7 @@ fn env_number_value(name: &str, text: &str, number: EnvNumber, kinds: u8) -> Res
     }
     number
         .float
-        .map(Value::Float)
+        .map(|value| Value::Float(ostinato_lang::numeric::Decimal::new(value)))
         .ok_or_else(|| format!("invalid number for injection tag \"{name}\": {text:?}"))
 }
 
@@ -11660,6 +11665,23 @@ fn execute_http(
             Some(reason) => format!("{status_code} {reason}"),
             None => status_code.to_string(),
         };
+        // reqwest 0.12's blocking API has no trailer accessor: hyper consumes
+        // HTTP/1.1 chunked trailers and HTTP/2 `trailers` frames before the
+        // blocking `Response` is exposed. A server that declares trailers via
+        // `Trailer:` is therefore rejected explicitly instead of returning a
+        // silently empty `response.trailer` map. Trailers sent without a
+        // declaration are not observable through this client; that residual is
+        // documented in SCOPE.md.
+        if let Some(declared) = response.headers().get(reqwest::header::TRAILER) {
+            let declared = declared
+                .to_str()
+                .map_or_else(|_| utf8_lossy_go(declared.as_bytes()), str::to_owned);
+            return Err(HttpInputError::Invalid(format!(
+                "tool/http response trailers are not supported by the blocking HTTP client \
+                 (server declared `Trailer: {declared}`); CUE exposes `response.trailer`, \
+                 but reqwest consumes trailers before exposing the response"
+            )));
+        }
         let response_headers = response.headers().clone();
         let bytes = match response.bytes() {
             Ok(bytes) => bytes,

@@ -105,6 +105,9 @@ impl LocalHttpServer {
                                     vec![("Content-Encoding", "gzip")],
                                 ),
                                 "/redirect" => (302, Vec::new(), vec![("Location", "/ok")]),
+                                "/trailer" => {
+                                    (299, b"hello".to_vec(), vec![("Trailer", "X-Checksum")])
+                                }
                                 "/status404" => {
                                     (404, b"missing".to_vec(), vec![("X-Test", "nope")])
                                 }
@@ -118,6 +121,17 @@ impl LocalHttpServer {
                                 }
                                 _ => (404, b"unknown".to_vec(), Vec::new()),
                             };
+                        if status == 299 {
+                            // Actual HTTP/1.1 chunked response with a trailer.
+                            let raw = "HTTP/1.1 200 OK\r\n\
+                                       Trailer: X-Checksum\r\n\
+                                       Transfer-Encoding: chunked\r\n\
+                                       Connection: close\r\n\r\n\
+                                       5\r\nhello\r\n\
+                                       0\r\nX-Checksum: abc123\r\n\r\n";
+                            let _ = stream.write_all(raw.as_bytes());
+                            continue;
+                        }
                         let reason = match status {
                             200 => "OK",
                             302 => "Found",
@@ -15255,6 +15269,184 @@ command: gzip: {
     assert!(!expected.status.success(), "connfail");
     assert_eq!(actual.status.code(), expected.status.code(), "connfail");
     assert_eq!(actual.stdout, expected.stdout, "connfail");
+}
+
+#[test]
+fn tool_command_http_trailer_and_serve_fail_closed() {
+    let server = LocalHttpServer::start();
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("x_tool.cue"),
+        &r#"
+package foo
+import "tool/http"
+command: trailer: {
+	r: http.Get & {url: "__BASE__/trailer", response: {body: string}}
+}
+command: requesttrailer: {
+	r: http.Post & {
+		url: "__BASE__/ok"
+		request: {body: "hello", trailer: "X-Checksum": "abc"}
+		response: {body: string}
+	}
+}
+command: serve: http.Serve & {address: ":0"}
+"#
+        .replace("__BASE__", &server.base),
+    );
+    let run = |command: &str| {
+        Command::new(bin())
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .output()
+            .expect("run command")
+    };
+
+    let trailer = run("trailer");
+    assert!(!trailer.status.success(), "trailer must fail closed");
+    let stderr = String::from_utf8_lossy(&trailer.stderr);
+    assert!(
+        stderr.contains("response trailers are not supported"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Trailer: X-Checksum"), "{stderr}");
+
+    let request_trailer = run("requesttrailer");
+    assert!(
+        !request_trailer.status.success(),
+        "request trailers must fail closed"
+    );
+    let stderr = String::from_utf8_lossy(&request_trailer.stderr);
+    assert!(
+        stderr.contains("request trailers are not supported"),
+        "{stderr}"
+    );
+
+    let serve = run("serve");
+    assert!(!serve.status.success(), "Serve must fail closed");
+    let stderr = String::from_utf8_lossy(&serve.stderr);
+    assert!(stderr.contains("long-running service task"), "{stderr}");
+    assert!(stderr.contains("tool/http.Serve"), "{stderr}");
+    assert!(
+        !stderr.contains("not implemented"),
+        "Serve needs a typed diagnosis, got: {stderr}"
+    );
+
+    // Document the oracle behaviour: CUE succeeds and exposes the trailer
+    // value. Ostinato's typed failure above is the deliberate divergence.
+    if let Some(cue) = cue_command() {
+        let expected = Command::new(cue)
+            .args(["cmd", "trailer"])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue");
+        assert!(expected.status.success(), "cue trailer should succeed");
+        assert!(expected.stdout.is_empty());
+    }
+}
+
+#[test]
+fn export_negative_zero_and_numeric_lexical_form_match_cue() {
+    let source = r#"
+package negativezero
+import "math"
+a: 0.0 * -1
+b: -0.0
+c: 0 * -1.0
+d: math.Mod(-1, 1)
+e: math.Remainder(-1, 1)
+f: -0 + 0
+g: 0 * -1
+h: 0.0 * -1.0
+i: -0
+j: 0 / -1
+k: (1.0 + 0) & 1.00
+l: 1.0 & 1.00
+m: 1.00 & 1.0
+n: x & 1.00
+x: 1.0
+"#;
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("negative_zero.cue");
+    write(&path, source);
+    let output = ost(&["export", "--out", "json", path.to_str().expect("path")]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let actual = String::from_utf8(output.stdout).expect("utf8");
+    let compact = |text: &str| {
+        text.chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>()
+    };
+    let json = compact(&actual);
+    for snippet in [
+        "\"a\":-0.0",
+        "\"b\":0.0",
+        "\"c\":-0.0",
+        "\"d\":-0",
+        "\"e\":-0",
+        "\"f\":0",
+        "\"g\":-0",
+        "\"h\":-0.00",
+        "\"i\":0",
+        "\"j\":0",
+        "\"k\":1.00",
+        "\"l\":1.0",
+        "\"m\":1.00",
+        "\"n\":1.00",
+    ] {
+        assert!(json.contains(snippet), "missing {snippet} in {json}");
+    }
+
+    let yaml = ost(&["export", "--out", "yaml", path.to_str().expect("path")]);
+    assert!(
+        yaml.status.success(),
+        "{}",
+        String::from_utf8_lossy(&yaml.stderr)
+    );
+    let yaml = String::from_utf8(yaml.stdout).expect("utf8");
+    for snippet in [
+        "\"a\": -0.0",
+        "\"c\": -0.0",
+        "\"d\": -0.",
+        "\"g\": -0.",
+        "\"h\": -0.00",
+    ] {
+        assert!(yaml.contains(snippet), "missing {snippet} in {yaml}");
+    }
+
+    if let Some(cue) = cue_command() {
+        let expected = Command::new(cue)
+            .args(["export", "--out", "json", path.to_str().expect("path")])
+            .output()
+            .expect("run cue");
+        assert!(expected.status.success());
+        assert_eq!(
+            compact(&String::from_utf8_lossy(&expected.stdout)),
+            json,
+            "JSON number tokens and lexical forms"
+        );
+    }
+}
+
+#[test]
+fn export_colliding_raw_labels_names_the_collision() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("collision.cue");
+    write(&path, "package collision\nx: {'\\xff': 1, '\\xfe': 2}\n");
+    for out in ["json", "yaml"] {
+        let output = ost(&["export", "--out", out, path.to_str().expect("path")]);
+        assert!(!output.status.success(), "{out} must fail closed");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("distinct labels"), "{stderr}");
+        assert!(stderr.contains("'\\xfe'"), "{stderr}");
+        assert!(stderr.contains("'\\xff'"), "{stderr}");
+        assert!(stderr.contains("duplicate JSON keys"), "{stderr}");
+        assert!(!stderr.contains("incomplete fields"), "{stderr}");
+    }
 }
 
 #[test]

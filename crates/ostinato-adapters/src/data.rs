@@ -344,7 +344,24 @@ pub fn unify_values(left: &Json, right: &Json, origin: &Path) -> Result<Json, Da
 /// # Errors
 /// Returns [`DataError::Encode`] if the YAML emitter fails.
 pub fn to_yaml(value: &Json) -> Result<String, DataError> {
-    let normalized = normalize_number_signs(value);
+    to_yaml_with_policy(value, true)
+}
+
+/// Encode JSON as YAML without canonicalizing negative zero. Workflow `export`
+/// uses this so arithmetic results such as `0.0 * -1` retain CUE's `-0.0`.
+///
+/// # Errors
+/// Returns [`DataError::Encode`] if the YAML emitter fails.
+pub fn to_yaml_preserving_negative_zero(value: &Json) -> Result<String, DataError> {
+    to_yaml_with_policy(value, false)
+}
+
+fn to_yaml_with_policy(value: &Json, canonicalize_zero: bool) -> Result<String, DataError> {
+    let normalized = if canonicalize_zero {
+        normalize_number_signs(value)
+    } else {
+        value.clone()
+    };
     let yaml = json_to_yaml(&normalized);
     let mut out = String::new();
     {
@@ -365,7 +382,24 @@ pub fn to_yaml(value: &Json) -> Result<String, DataError> {
 /// # Errors
 /// Returns [`DataError::Encode`] if serialization fails.
 pub fn to_json(value: &Json) -> Result<String, DataError> {
-    let normalized = normalize_number_signs(value);
+    to_json_with_policy(value, true)
+}
+
+/// Encode JSON without canonicalizing negative zero. Workflow `export` uses
+/// this so arithmetic results such as `0.0 * -1` retain CUE's `-0.0`.
+///
+/// # Errors
+/// Returns [`DataError::Encode`] if serialization fails.
+pub fn to_json_preserving_negative_zero(value: &Json) -> Result<String, DataError> {
+    to_json_with_policy(value, false)
+}
+
+fn to_json_with_policy(value: &Json, canonicalize_zero: bool) -> Result<String, DataError> {
+    let normalized = if canonicalize_zero {
+        normalize_number_signs(value)
+    } else {
+        value.clone()
+    };
     let mut out = String::new();
     write_pretty_json(&normalized, 0, &mut out)?;
     out.push('\n');
@@ -1467,11 +1501,12 @@ fn json_to_yaml(value: &Json) -> Yaml<'static> {
     match value {
         Json::Null => Yaml::Representation(Cow::Owned("null".to_owned()), ScalarStyle::Plain, None),
         Json::Bool(value) => Yaml::Value(Scalar::Boolean(*value)),
-        Json::Number(number) => Yaml::Representation(
-            Cow::Owned(cue_number_text(number)),
-            ScalarStyle::Plain,
-            None,
-        ),
+        Json::Number(number) => {
+            let text = cue_number_text(number);
+            // CUE renders integer-kind signed zero as `-0.` in YAML.
+            let text = if text == "-0" { "-0.".to_owned() } else { text };
+            Yaml::Representation(Cow::Owned(text), ScalarStyle::Plain, None)
+        }
         Json::String(value) => yaml_quoted(value),
         Json::Array(values) => Yaml::Sequence(values.iter().map(json_to_yaml).collect()),
         Json::Object(fields) => {
@@ -2742,5 +2777,23 @@ mod tests {
             message.contains("cyclic") || message.contains("alias"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn workflow_encoding_can_preserve_computed_negative_zero() {
+        let value: Json = serde_json::from_str(r#"{"a":-0.0,"b":-0,"c":0.0}"#).expect("json");
+        let canonical_json = to_json(&value).expect("json");
+        assert!(!canonical_json.contains("-0"), "{canonical_json}");
+        let canonical_yaml = to_yaml(&value).expect("yaml");
+        assert!(!canonical_yaml.contains("-0"), "{canonical_yaml}");
+
+        let preserved_json = to_json_preserving_negative_zero(&value).expect("json");
+        assert!(preserved_json.contains("\"a\": -0.0"), "{preserved_json}");
+        assert!(preserved_json.contains("\"b\": -0"), "{preserved_json}");
+        assert!(preserved_json.contains("\"c\": 0.0"), "{preserved_json}");
+        let preserved_yaml = to_yaml_preserving_negative_zero(&value).expect("yaml");
+        assert!(preserved_yaml.contains("\"a\": -0.0"), "{preserved_yaml}");
+        assert!(preserved_yaml.contains("\"b\": -0."), "{preserved_yaml}");
+        assert!(preserved_yaml.contains("\"c\": 0.0"), "{preserved_yaml}");
     }
 }

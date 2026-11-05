@@ -484,7 +484,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     "evaluator": loaded.evaluator,
                     "source": loaded.source_file,
                 });
-                write_values(output.as_deref(), out, &[value], force, &protected)?;
+                write_values(output.as_deref(), out, &[value], force, &protected, false)?;
                 return Ok(ExitCode::SUCCESS);
             }
             let (engine, _) = build_runtime(&cli, agent_cmd, max_parallel)?;
@@ -493,7 +493,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             if out.is_some() || output.is_some() {
                 let value =
                     serde_json::to_value(&report).context("cannot encode run report as data")?;
-                write_values(output.as_deref(), out, &[value], force, &protected)?;
+                write_values(output.as_deref(), out, &[value], force, &protected, false)?;
             } else {
                 print_report(&report, json)?;
             }
@@ -515,6 +515,9 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             }
             let mut protected = sources.clone();
             protected.extend(inputs.iter().cloned());
+            let preserve_negative_zero = !sources
+                .iter()
+                .all(|source| data::DataFormat::is_data_path(source));
             let values = if sources
                 .iter()
                 .all(|source| data::DataFormat::is_data_path(source))
@@ -634,7 +637,14 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     }
                 }
             };
-            write_values(output.as_deref(), out, &values, force, &protected)?;
+            write_values(
+                output.as_deref(),
+                out,
+                &values,
+                force,
+                &protected,
+                preserve_negative_zero,
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Import {
@@ -1690,12 +1700,30 @@ fn write_values(
     values: &[serde_json::Value],
     force: bool,
     protected: &[PathBuf],
+    preserve_negative_zero: bool,
 ) -> Result<()> {
     let format = resolve_output_format(out, output);
-    let codec = JsonYamlCodec;
-    let content = codec
-        .encode_stream(format, values)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let content = if preserve_negative_zero {
+        let mut encoded = Vec::with_capacity(values.len());
+        for value in values {
+            encoded.push(
+                match format {
+                    DocumentFormat::Json => data::to_json_preserving_negative_zero(value),
+                    DocumentFormat::Yaml => data::to_yaml_preserving_negative_zero(value),
+                }
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            );
+        }
+        match format {
+            DocumentFormat::Json => encoded.concat(),
+            DocumentFormat::Yaml => encoded.join("---\n"),
+        }
+    } else {
+        let codec = JsonYamlCodec;
+        codec
+            .encode_stream(format, values)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?
+    };
     let sink = FileOutputSink;
     sink.write(
         output,

@@ -58,3 +58,16 @@ fn matches_arm64_go_f64_expectations() {
         );
     }
 }
+
+#[test]
+fn f64_model_is_pinned_and_fused_across_platforms() {
+    assert_eq!(ostinato_lang::GO_F64_MODEL, "arm64-go-fma");
+    // Distinguishes a fused multiply-add from separate multiply+add. `mul_add`
+    // is fused on every Rust target (software `fma` where the CPU lacks FMA),
+    // which is what pins the ported Go/arm64 arithmetic.
+    let left = 1.0 + f64::EPSILON;
+    let right = 1.0 - f64::EPSILON;
+    let fused = left.mul_add(right, -1.0);
+    let separate = left * right - 1.0;
+    assert_ne!(fused, separate, "fused={fused:?} separate={separate:?}");
+}

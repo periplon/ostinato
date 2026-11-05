@@ -202,7 +202,8 @@ The e2e suite compares Ostinato with CUE v0.17.1 for:
 | Maximum JSON values/nodes | 1,000,000 (`MAX_JSON_NODES`) |
 | JSON number precision | arbitrary precision (no f64 rounding) |
 
-* Duplicate mapping keys are errors in both formats.
+* Duplicate mapping keys are errors in both formats. Distinct raw-bytes CUE labels that render as the same U+FFFD JSON key also fail closed with a typed error naming the labels; CUE instead emits duplicate JSON keys.
+* CUE value exports preserve arithmetic signed zero (`0.0 * -1` -> `-0.0`, `math.Mod(-1, 1)` -> `-0`) in JSON and YAML. Data-file exports canonicalize signed zero to `0`/`0.0`, matching the data codec's merge semantics.
 * Custom YAML tags (`!foo`) are rejected. Core tags (`!!str`, `!!int`,
   `!!bool`, `!!null`, `!!float`) are accepted.
 * YAML 1.2 `yes`/`no`/`on`/`off` are strings, matching CUE's YAML decoder.

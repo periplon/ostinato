@@ -3,8 +3,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
-use bigdecimal::{BigDecimal, RoundingMode};
-use num_bigint::BigInt;
+use bigdecimal::{BigDecimal, RoundingMode, Zero};
+use num_bigint::{BigInt, Sign};
 use serde_json::{Map, Number, Value as Json};
 
 use crate::ast::{
@@ -85,8 +85,8 @@ pub enum Value {
     /// An integer-kind decimal result of arithmetic (`10^40 + 0`, rounding
     /// beyond 34 digits). CUE keeps the decimal exponent, so `1E+35` is not
     /// the same representation as the literal `100000000000000000000000000000000000`.
-    DecimalInt(BigDecimal),
-    Float(BigDecimal),
+    DecimalInt(numeric::Decimal),
+    Float(numeric::Decimal),
     String(String),
     Bytes(Vec<u8>),
     List(Vec<Value>),
@@ -192,6 +192,39 @@ pub enum TypeKind {
     Bool,
     Bytes,
 }
+
+/// Typed failure from JSON export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsonExportError {
+    /// The value contains fields that are not concrete.
+    Incomplete,
+    /// Distinct raw labels render as the same JSON object key. CUE emits
+    /// duplicate JSON keys in this case; a `serde_json` map cannot, so the
+    /// export fails closed instead of silently dropping a field.
+    LabelCollision {
+        /// The rendered JSON key shared by the labels.
+        rendered: String,
+        /// The colliding labels, formatted with their raw bytes.
+        labels: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for JsonExportError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Incomplete => formatter.write_str("value contains incomplete fields"),
+            Self::LabelCollision { rendered, labels } => write!(
+                formatter,
+                "cannot export JSON: distinct labels {} both render as {rendered:?}; \
+                 CUE emits duplicate JSON keys for this collision, which this exporter \
+                 cannot represent without dropping a field",
+                labels.join(" and ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for JsonExportError {}
 
 impl Value {
     #[must_use]
@@ -319,74 +352,102 @@ impl Value {
         }
     }
 
-    /// Convert to JSON, returning `None` for incomplete values.
+    /// Convert to JSON, returning `None` for incomplete or lossy values.
     #[must_use]
     pub fn to_json(&self) -> Option<Json> {
+        self.to_json_checked().ok()
+    }
+
+    /// Convert to JSON, distinguishing incomplete values from lossy label
+    /// collisions.
+    ///
+    /// # Errors
+    /// Returns [`JsonExportError::Incomplete`] for non-concrete values and
+    /// [`JsonExportError::LabelCollision`] when distinct raw labels would map
+    /// to the same JSON object key.
+    pub fn to_json_checked(&self) -> Result<Json, JsonExportError> {
         self.to_json_inner(&mut Vec::new())
     }
 
-    fn to_json_inner(&self, stack: &mut Vec<*const RecursiveSlot>) -> Option<Json> {
+    fn to_json_inner(
+        &self,
+        stack: &mut Vec<*const RecursiveSlot>,
+    ) -> Result<Json, JsonExportError> {
         stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
             self.to_json_inner_impl(stack)
         })
     }
 
-    fn to_json_inner_impl(&self, stack: &mut Vec<*const RecursiveSlot>) -> Option<Json> {
+    fn to_json_inner_impl(
+        &self,
+        stack: &mut Vec<*const RecursiveSlot>,
+    ) -> Result<Json, JsonExportError> {
         match self {
-            Self::Null => Some(Json::Null),
-            Self::Bool(value) => Some(Json::Bool(*value)),
-            Self::Int(value) => Some(Json::Number(Number::from(*value))),
-            Self::BigInt(value) => value.to_string().parse::<Number>().ok().map(Json::Number),
-            Self::DecimalInt(value) | Self::Float(value) => numeric::cue_decimal_string(value)
+            Self::Null => Ok(Json::Null),
+            Self::Bool(value) => Ok(Json::Bool(*value)),
+            Self::Int(value) => Ok(Json::Number(Number::from(*value))),
+            Self::BigInt(value) => value
+                .to_string()
                 .parse::<Number>()
-                .ok()
-                .map(Json::Number),
-            Self::String(value) => Some(Json::String(value.clone())),
-            Self::Bytes(value) => Some(Json::String(base64_encode(value))),
+                .map(Json::Number)
+                .map_err(|_| JsonExportError::Incomplete),
+            Self::DecimalInt(value) | Self::Float(value) => numeric::decimal_display(value)
+                .parse::<Number>()
+                .map(Json::Number)
+                .map_err(|_| JsonExportError::Incomplete),
+            Self::String(value) => Ok(Json::String(value.clone())),
+            Self::Bytes(value) => Ok(Json::String(base64_encode(value))),
             Self::List(values) => {
                 let mut out = Vec::with_capacity(values.len());
                 for value in values {
                     out.push(value.to_json_inner(stack)?);
                 }
-                Some(Json::Array(out))
+                Ok(Json::Array(out))
             }
             Self::Struct(values) | Self::Definition { fields: values, .. } => {
                 let mut out = Map::new();
+                let mut labels: BTreeMap<String, String> = BTreeMap::new();
                 for (key, value) in values {
                     if is_hidden_key(key) {
                         continue;
                     }
+                    let diagnostic = json_label_diagnostic(key);
                     let key = key.strip_prefix(ESCAPED_PREFIX).unwrap_or(key);
                     let key = crate::ast::decode_label_for_output(key);
                     let value = value.to_json_inner(stack)?;
-                    if out.insert(key, value).is_some() {
-                        // Distinct raw bytes labels can decode to the same
-                        // U+FFFD JSON key. CUE emits duplicate JSON keys; the
-                        // map representation used by `to_json` cannot, so
-                        // reject the lossy export instead of dropping a field.
-                        return None;
+                    if let Some(previous) = labels.get(&key) {
+                        return Err(JsonExportError::LabelCollision {
+                            rendered: key,
+                            labels: vec![previous.clone(), diagnostic],
+                        });
                     }
+                    labels.insert(key.clone(), diagnostic);
+                    out.insert(key, value);
                 }
-                Some(Json::Object(out))
+                Ok(Json::Object(out))
             }
             Self::Disjunction(alternatives, defaults) => {
-                disjunction_to_json(alternatives, defaults)
+                disjunction_to_json(alternatives, defaults).ok_or(JsonExportError::Incomplete)
             }
-            Self::Bounds(_) => None,
+            Self::Bounds(_) => Err(JsonExportError::Incomplete),
             Self::OpenListPrefix(prefix, _) => {
                 let mut out = Vec::with_capacity(prefix.len());
                 for value in prefix {
                     out.push(value.to_json_inner(stack)?);
                 }
-                Some(Json::Array(out))
+                Ok(Json::Array(out))
             }
-            Self::OpenList(_) => Some(Json::Array(Vec::new())),
+            Self::OpenList(_) => Ok(Json::Array(Vec::new())),
             Self::Recursive(slot) => {
                 let pointer = Rc::as_ptr(slot);
                 if stack.contains(&pointer) {
-                    return None;
+                    return Err(JsonExportError::Incomplete);
                 }
-                let resolved = slot.value.borrow().clone()?;
+                let resolved = slot
+                    .value
+                    .borrow()
+                    .clone()
+                    .ok_or(JsonExportError::Incomplete)?;
                 stack.push(pointer);
                 let result = resolved.to_json_inner(stack);
                 stack.pop();
@@ -395,18 +456,21 @@ impl Value {
             Self::Deferred(slot, constraint) => {
                 let pointer = Rc::as_ptr(slot);
                 if stack.contains(&pointer) {
-                    return None;
+                    return Err(JsonExportError::Incomplete);
                 }
                 let Some(resolved) = slot.value.borrow().clone() else {
                     return constraint.to_json_inner(stack);
                 };
-                let unified = unify_values(&resolved, constraint, Span::default()).ok()?;
+                let unified = unify_values(&resolved, constraint, Span::default())
+                    .map_err(|_| JsonExportError::Incomplete)?;
                 stack.push(pointer);
                 let result = unified.to_json_inner(stack);
                 stack.pop();
                 result
             }
-            Self::Builtin(_) | Self::Conflict(_) | Self::Type(_) | Self::Bottom => None,
+            Self::Builtin(_) | Self::Conflict(_) | Self::Type(_) | Self::Bottom => {
+                Err(JsonExportError::Incomplete)
+            }
         }
     }
 
@@ -458,7 +522,7 @@ impl Value {
             Self::Bool(value) => value.to_string(),
             Self::Int(value) => value.to_string(),
             Self::BigInt(value) => value.to_string(),
-            Self::DecimalInt(value) | Self::Float(value) => numeric::cue_decimal_string(value),
+            Self::DecimalInt(value) | Self::Float(value) => numeric::decimal_display(value),
             Self::String(value) => value.clone(),
             Self::Bytes(value) => format!("'{}'", String::from_utf8_lossy(value)),
             Self::Type(kind) => match kind {
@@ -887,7 +951,7 @@ fn json_to_value(value: &Json) -> Option<Value> {
                 {
                     i64::try_from(&value).map_or(Value::BigInt(value), Value::Int)
                 } else {
-                    Value::Float(text.parse::<BigDecimal>().ok()?)
+                    Value::Float(numeric::Decimal::new(text.parse::<BigDecimal>().ok()?))
                 }
             }
         }
@@ -968,6 +1032,32 @@ fn display_field_name(key: &str) -> Cow<'_, str> {
     } else {
         Cow::Borrowed(stripped)
     }
+}
+
+/// Format a stored label for diagnostics, keeping raw bytes visible (for
+/// example `'\xfe'`) instead of collapsing them to U+FFFD.
+fn json_label_diagnostic(key: &str) -> String {
+    let stripped = key.strip_prefix(ESCAPED_PREFIX).unwrap_or(key);
+    let Some(encoded) = stripped.strip_prefix(crate::ast::RAW_LABEL_PREFIX) else {
+        return format!("`{stripped}`");
+    };
+    let mut bytes = Vec::with_capacity(encoded.len() / 2);
+    let mut index = 0;
+    while index + 1 < encoded.len() {
+        if let Ok(byte) = u8::from_str_radix(&encoded[index..index + 2], 16) {
+            bytes.push(byte);
+        }
+        index += 2;
+    }
+    let mut rendered = String::new();
+    for byte in bytes {
+        if byte.is_ascii_graphic() || byte == b' ' {
+            rendered.push(char::from(byte));
+        } else {
+            rendered.push_str(&format!("\\x{byte:02x}"));
+        }
+    }
+    format!("'{rendered}'")
 }
 
 #[derive(Debug)]
@@ -3564,6 +3654,24 @@ fn expr_is_struct_literal(expr: &Expr) -> bool {
     matches!(strip_expr_parens(expr), Expr::Struct(_, _))
 }
 
+fn is_numeric_literal_expr(expr: &Expr) -> bool {
+    match strip_expr_parens(expr) {
+        Expr::Int(_, _) | Expr::BigInt(_, _) | Expr::Float(_, _) => true,
+        Expr::Unary(UnOp::Neg, inner, _) => matches!(
+            strip_expr_parens(inner),
+            Expr::Int(_, _) | Expr::BigInt(_, _) | Expr::Float(_, _)
+        ),
+        _ => false,
+    }
+}
+
+fn numeric_values_share_kind(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Float(a), Value::Float(b)) | (Value::DecimalInt(a), Value::DecimalInt(b)) => a == b,
+        _ => false,
+    }
+}
+
 fn selector_root(expr: &Expr) -> Option<&str> {
     match strip_expr_parens(expr) {
         Expr::Ident(name, _) => Some(name),
@@ -5719,7 +5827,7 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         Expr::Bool(value, _) => Ok(Value::Bool(*value)),
         Expr::Int(value, _) => Ok(Value::Int(*value)),
         Expr::BigInt(value, _) => Ok(Value::BigInt(value.clone())),
-        Expr::Float(value, _) => Ok(Value::Float(value.clone())),
+        Expr::Float(value, _) => Ok(Value::Float(numeric::Decimal::new(value.clone()))),
         Expr::Bytes(value, _) => Ok(Value::Bytes(value.clone())),
         Expr::BytesInterp(parts, span) => {
             let mut out = Vec::new();
@@ -6167,9 +6275,22 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             if let Some(value) = try_definition_unify(right, left, frame, *span)? {
                 return Ok(value);
             }
-            let left = eval_expr(left, frame)?;
-            let right = eval_expr(right, frame)?;
-            unify_values(&left, &right, *span)
+            let left_value = eval_expr(left, frame)?;
+            let right_value = eval_expr(right, frame)?;
+            // CUE keeps the lexical representation of the first syntactically
+            // literal numeric operand of a flattened `&` chain; computed
+            // operands contribute their numerical value but not their scale.
+            if numeric_values_share_kind(&left_value, &right_value)
+                && let Some(literal) = operands
+                    .iter()
+                    .find(|operand| is_numeric_literal_expr(operand))
+            {
+                let literal_value = eval_expr(literal, frame)?;
+                if numeric_values_share_kind(&literal_value, &left_value) {
+                    return Ok(literal_value);
+                }
+            }
+            unify_values(&left_value, &right_value, *span)
         }
         Expr::Disjunction(_, _, span) => {
             let mut ast_alternatives = Vec::new();
@@ -6350,9 +6471,9 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 (UnOp::Neg, Value::DecimalInt(value)) => Ok(decimal_int_value(
                     numeric::negate(&value).map_err(|error| numeric_error(error, *span))?,
                 )),
-                (UnOp::Neg, Value::Float(value)) => Ok(Value::Float(
+                (UnOp::Neg, Value::Float(value)) => Ok(Value::Float(numeric::Decimal::new(
                     numeric::negate(&value).map_err(|error| numeric_error(error, *span))?,
-                )),
+                ))),
                 (UnOp::Neg, other) => Err(LangError::conflict(
                     span.line,
                     span.col,
@@ -7438,7 +7559,7 @@ pub fn builtin_module(path: &str) -> Option<Value> {
             ),
         ] {
             if let Ok(value) = literal.parse::<BigDecimal>() {
-                values.insert(name.to_owned(), Value::Float(value));
+                values.insert(name.to_owned(), Value::Float(numeric::Decimal::new(value)));
             }
         }
     }
@@ -7874,7 +7995,7 @@ fn numeric_f64(value: &Value) -> Option<f64> {
         Value::Int(value) => Some(*value as f64),
         Value::BigInt(value) => value.to_string().parse::<f64>().ok(),
         Value::DecimalInt(value) | Value::Float(value) => {
-            numeric::cue_decimal_string(value).parse::<f64>().ok()
+            numeric::decimal_display(value).parse::<f64>().ok()
         }
         _ => None,
     }
@@ -7896,7 +8017,7 @@ fn numeric_value_decimal(value: &Value) -> Option<BigDecimal> {
     match value {
         Value::Int(value) => Some(BigDecimal::from(*value)),
         Value::BigInt(value) => Some(BigDecimal::from(value.clone())),
-        Value::DecimalInt(value) | Value::Float(value) => Some(value.clone()),
+        Value::DecimalInt(value) | Value::Float(value) => Some(value.value().clone()),
         _ => None,
     }
 }
@@ -7914,7 +8035,7 @@ fn math_decimal(arguments: &[Value], index: usize, span: Span) -> Result<BigDeci
 fn math_decimal_result(value: BigDecimal, span: Span) -> Result<Value, LangError> {
     match numeric::expand_integral(&value) {
         Ok(Some(expanded)) => Ok(decimal_int_value(expanded)),
-        Ok(None) => Ok(Value::Float(value)),
+        Ok(None) => Ok(Value::Float(numeric::Decimal::new(value))),
         Err(error) => Err(numeric_error(error, span)),
     }
 }
@@ -8043,10 +8164,10 @@ fn apply_math_builtin(
                 value.clone()
             })),
             Some(Value::DecimalInt(value) | Value::Float(value)) => {
-                let magnitude = if value < &BigDecimal::from(0) {
+                let magnitude = if value.value().sign() == Sign::Minus {
                     numeric::negate(value).map_err(|error| numeric_error(error, span))?
                 } else {
-                    value.clone()
+                    value.value().clone()
                 };
                 math_decimal_result(magnitude, span)
             }
@@ -8801,7 +8922,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                 } else if let Ok(value) = text.parse::<BigInt>() {
                     out.push(Value::BigInt(value));
                 } else {
-                    out.push(Value::Float(current.clone()));
+                    out.push(Value::Float(numeric::Decimal::new(current.clone())));
                 }
                 current += &step;
             }
@@ -8876,15 +8997,18 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
     match op {
         BinOp::Add => {
             if let (Some(a), Some(b)) = (integer_decimal(left), integer_decimal(right)) {
-                return Ok(decimal_int_value(
-                    numeric::add(&a, &b).map_err(|error| numeric_error(error, span))?,
-                ));
+                let value = numeric::add(&a, &b).map_err(|error| numeric_error(error, span))?;
+                // IEEE-style signed-zero addition: only -0 + -0 stays -0.
+                let negative_zero =
+                    value.is_zero() && numeric_is_negative(left) && numeric_is_negative(right);
+                return Ok(decimal_int_value_signed(value, negative_zero));
             }
             if let (Some(a), Some(b)) = (numeric_value_decimal(left), numeric_value_decimal(right))
             {
-                return Ok(Value::Float(
-                    numeric::add(&a, &b).map_err(|error| numeric_error(error, span))?,
-                ));
+                let value = numeric::add(&a, &b).map_err(|error| numeric_error(error, span))?;
+                let negative_zero =
+                    value.is_zero() && numeric_is_negative(left) && numeric_is_negative(right);
+                return Ok(numeric_float_value(value, negative_zero));
             }
             match (left, right) {
                 (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
@@ -8921,22 +9045,28 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
         }
         BinOp::Sub => {
             if let (Some(a), Some(b)) = (integer_decimal(left), integer_decimal(right)) {
-                return Ok(decimal_int_value(
-                    numeric::sub(&a, &b).map_err(|error| numeric_error(error, span))?,
-                ));
+                let value = numeric::sub(&a, &b).map_err(|error| numeric_error(error, span))?;
+                // -0 - +0 stays -0; -0 - -0 becomes +0.
+                let negative_zero =
+                    value.is_zero() && numeric_is_negative(left) && !numeric_is_negative(right);
+                return Ok(decimal_int_value_signed(value, negative_zero));
             }
             match (numeric_value_decimal(left), numeric_value_decimal(right)) {
-                (Some(a), Some(b)) => Ok(Value::Float(
-                    numeric::sub(&a, &b).map_err(|error| numeric_error(error, span))?,
-                )),
+                (Some(a), Some(b)) => {
+                    let value = numeric::sub(&a, &b).map_err(|error| numeric_error(error, span))?;
+                    let negative_zero =
+                        value.is_zero() && numeric_is_negative(left) && !numeric_is_negative(right);
+                    Ok(numeric_float_value(value, negative_zero))
+                }
                 _ => type_error("subtract", left, right, span),
             }
         }
         BinOp::Mul => {
             if let (Some(a), Some(b)) = (integer_decimal(left), integer_decimal(right)) {
-                return Ok(decimal_int_value(
-                    numeric::mul(&a, &b).map_err(|error| numeric_error(error, span))?,
-                ));
+                let value = numeric::mul(&a, &b).map_err(|error| numeric_error(error, span))?;
+                let negative_zero =
+                    value.is_zero() && (numeric_is_negative(left) != numeric_is_negative(right));
+                return Ok(decimal_int_value_signed(value, negative_zero));
             }
             match (left, right) {
                 (Value::String(text), Value::Int(count))
@@ -8944,9 +9074,13 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
                 (Value::Bytes(bytes), Value::Int(count))
                 | (Value::Int(count), Value::Bytes(bytes)) => repeat_bytes(bytes, *count, span),
                 _ => match (numeric_value_decimal(left), numeric_value_decimal(right)) {
-                    (Some(a), Some(b)) => Ok(Value::Float(
-                        numeric::mul(&a, &b).map_err(|error| numeric_error(error, span))?,
-                    )),
+                    (Some(a), Some(b)) => {
+                        let value =
+                            numeric::mul(&a, &b).map_err(|error| numeric_error(error, span))?;
+                        let negative_zero = value.is_zero()
+                            && (numeric_is_negative(left) != numeric_is_negative(right));
+                        Ok(numeric_float_value(value, negative_zero))
+                    }
                     _ => type_error("multiply", left, right, span),
                 },
             }
@@ -8961,7 +9095,7 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
                 return Err(LangError::conflict(span.line, span.col, "division by zero"));
             }
             match numeric::divide(&left_value, &right_value) {
-                Ok(value) => Ok(Value::Float(value)),
+                Ok(value) => Ok(Value::Float(numeric::Decimal::new(value))),
                 Err(error) => Err(numeric_error(error, span)),
             }
         }
@@ -9053,6 +9187,14 @@ fn repeat_bytes(bytes: &[u8], count: i64, span: Span) -> Result<Value, LangError
 /// `i64` and have no fractional/exponent representation become `Int`;
 /// everything else preserves CUE's decimal exponent in `DecimalInt`.
 fn decimal_int_value(value: BigDecimal) -> Value {
+    decimal_int_value_signed(value, false)
+}
+
+fn decimal_int_value_signed(value: BigDecimal, negative_zero: bool) -> Value {
+    if negative_zero && value.is_zero() {
+        let scale = value.as_bigint_and_exponent().1;
+        return Value::DecimalInt(numeric::Decimal::negative_zero(scale));
+    }
     let (coefficient, scale) = value.as_bigint_and_exponent();
     if scale >= 0 {
         let integral = value.with_scale(0);
@@ -9062,14 +9204,31 @@ fn decimal_int_value(value: BigDecimal) -> Value {
         }
         return Value::BigInt(coefficient);
     }
-    Value::DecimalInt(BigDecimal::new(coefficient, scale))
+    Value::DecimalInt(numeric::Decimal::new(BigDecimal::new(coefficient, scale)))
+}
+
+fn numeric_float_value(value: BigDecimal, negative_zero: bool) -> Value {
+    if negative_zero && value.is_zero() {
+        let scale = value.as_bigint_and_exponent().1;
+        return Value::Float(numeric::Decimal::negative_zero(scale));
+    }
+    Value::Float(numeric::Decimal::new(value))
+}
+
+fn numeric_is_negative(value: &Value) -> bool {
+    match value {
+        Value::Int(value) => *value < 0,
+        Value::BigInt(value) => value.sign() == Sign::Minus,
+        Value::DecimalInt(value) | Value::Float(value) => value.is_negative(),
+        _ => false,
+    }
 }
 
 fn integer_decimal(value: &Value) -> Option<BigDecimal> {
     match value {
         Value::Int(value) => Some(BigDecimal::from(*value)),
         Value::BigInt(value) => Some(BigDecimal::from(value.clone())),
-        Value::DecimalInt(value) => Some(value.clone()),
+        Value::DecimalInt(value) => Some(value.value().clone()),
         _ => None,
     }
 }
@@ -9938,7 +10097,7 @@ fn unify_disjunctions(
 /// zero, which would turn unrepresentable values into concrete data.
 fn float_value_or_token(text: &str) -> Value {
     match text.parse::<BigDecimal>() {
-        Ok(value) => Value::Float(value),
+        Ok(value) => Value::Float(numeric::Decimal::new(value)),
         Err(_) => Value::String(text.to_owned()),
     }
 }

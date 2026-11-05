@@ -8,6 +8,14 @@
 //! so matching the oracle requires the same algorithms.  The functions here
 //! are direct translations of the Go 1.26 sources (BSD licensed), including
 //! the Payne-Hanek argument reduction used by `Sin`/`Cos`/`Tan`.
+//!
+//! Determinism: every fused multiply-add in the translation uses Rust's
+//! [`f64::mul_add`], which is fused on all targets (software `fma` where the
+//! hardware lacks it). The result therefore does not depend on the host CPU.
+//! The pinned model is Go/arm64 (`ostinato_lang::GO_F64_MODEL`); a Go/amd64
+//! oracle may still differ in the last bit because Go does not fuse there.
+//! The known 1-ulp `Asinh`/`Acosh`/`Atanh` residuals are listed in
+//! `docs/SCOPE.md`.
 
 const PI: f64 = 3.14159265358979323846264338327950288419716939937510582097494459;
 const PI4A: f64 = 7.85398125648498535156e-1;
