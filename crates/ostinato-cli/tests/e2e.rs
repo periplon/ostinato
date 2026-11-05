@@ -13409,8 +13409,14 @@ import (
 	"tool/cli"
 	"tool/exec"
 )
-command: a: {run: exec.Run & {cmd: ["sh", "-c", "echo A"], stdout: string}}
-command: b: {brun: exec.Run & {cmd: ["sh", "-c", "echo B"], stdout: string}}
+command: a: {
+	run: exec.Run & {cmd: ["sh", "-c", "echo A"], stdout: string}
+	print: cli.Print & {text: "A=\(run.stdout)"}
+}
+command: b: {
+	run: exec.Run & {cmd: ["sh", "-c", "echo B"], stdout: string}
+	print: cli.Print & {text: "B=\(run.stdout)"}
+}
 command: good: {print: cli.Print & {text: "good"}}
 command: bad1: {v: "a" | "b"}
 command: bad2: {x: 1 & 2}
@@ -13424,20 +13430,30 @@ command: bad3: {q: cli.Print & {text: "\(1/0)"}}
             .output()
             .expect("run command")
     };
-    for command in ["a", "b", "good"] {
+    let mut seen = std::collections::BTreeSet::new();
+    for (command, prefix) in [("a", "A="), ("b", "B="), ("good", "good")] {
         let expected = run(Path::new(&cue), command);
         let actual = run(&bin(), command);
         assert!(expected.status.success(), "{command}");
         assert_eq!(actual.status.code(), expected.status.code(), "{command}");
         assert_eq!(actual.stdout, expected.stdout, "{command}");
         assert_eq!(actual.stderr, expected.stderr, "{command}");
+        let output = String::from_utf8_lossy(&actual.stdout).into_owned();
+        assert!(output.starts_with(prefix), "{command}: {output}");
+        assert!(seen.insert(output), "{command}: duplicate output");
     }
 
     let listing = ost(&["cmd", "-h", directory.path().to_str().expect("path")]);
     assert!(listing.status.success());
     let listing_stdout = String::from_utf8_lossy(&listing.stdout);
     for name in ["a", "b", "good", "bad1", "bad2", "bad3"] {
-        assert!(listing_stdout.contains(name), "{name}: {listing_stdout}");
+        assert!(
+            listing_stdout.lines().any(|line| {
+                let line = line.trim_start();
+                line == name || line.starts_with(&format!("{name} "))
+            }),
+            "{name}: {listing_stdout}"
+        );
     }
 }
 
@@ -13461,6 +13477,10 @@ basecmd2: {
 	env: os.Getenv & {REV_V: *5 | string}
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
+validcmd: {
+	env: os.Getenv & {REV_V: *"d" | string}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
 "#;
     let source = r#"
 package foo
@@ -13474,6 +13494,21 @@ command: importedstruct: {
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
 command: importedcmd: lib.basecmd2
+x: lib.basecmd2
+let y = lib.basecmd2
+g: {base: lib.basecmd2}
+command: viaroot: x
+command: vialet: y
+command: viafield: g
+command: viacond: {
+	if true {
+		base: lib.basecmd2
+	}
+}
+command: viasplit: {
+	base: lib.basecmd2
+}
+command: validcmd: lib.validcmd
 "#;
     for directory in [cue_dir.path(), rust_dir.path()] {
         std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
@@ -13482,7 +13517,15 @@ command: importedcmd: lib.basecmd2
         write(&directory.join("lib/lib.cue"), library);
         write(&directory.join("x_tool.cue"), source);
     }
-    for command in ["importedstruct", "importedcmd"] {
+    for command in [
+        "importedstruct",
+        "importedcmd",
+        "viaroot",
+        "vialet",
+        "viafield",
+        "viacond",
+        "viasplit",
+    ] {
         let expected = Command::new(&cue)
             .args(["cmd", command])
             .current_dir(cue_dir.path())
@@ -13502,4 +13545,121 @@ command: importedcmd: lib.basecmd2
         assert_eq!(actual.stdout, expected.stdout, "{command}");
         assert!(!actual.stderr.is_empty(), "{command}");
     }
+
+    // Valid imported command aliases are currently rejected as a documented
+    // fail-closed tradeoff; CUE runs them successfully.
+    let expected = Command::new(&cue)
+        .args(["cmd", "validcmd"])
+        .current_dir(cue_dir.path())
+        .env_remove("REV_V")
+        .output()
+        .expect("run cue cmd");
+    let actual = Command::new(bin())
+        .args(["cmd", "validcmd", rust_dir.path().to_str().expect("path")])
+        .env_remove("REV_V")
+        .output()
+        .expect("run ostinato cmd");
+    assert!(expected.status.success());
+    assert!(!actual.status.success());
+    assert!(String::from_utf8_lossy(&actual.stderr).contains("not supported"));
+}
+
+#[test]
+fn tool_command_pruning_preserves_definitions_and_exotic_let_uses() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("x_tool.cue"),
+        r#"
+package foo
+import "tool/cli"
+let k = "dyn"
+let n = 0
+let nums = [1, 2]
+let tail = [2, 3]
+let b = "x"
+command: dynlabel: {
+	"\(k)": "value"
+	p: cli.Print & {text: "ok"}
+}
+command: listcomp: {
+	xs: [for x in nums {x + n}]
+	p: cli.Print & {text: "ok"}
+}
+command: listcompif: {
+	xs: [for x in [1, 2] if x > n {x}]
+	p: cli.Print & {text: "ok"}
+}
+command: bytesinterp: {
+	bs: '\(b)'
+	p: cli.Print & {text: "ok"}
+}
+command: listtail: {
+	xs: [1, ...tail]
+	p: cli.Print & {text: "ok"}
+}
+command: definside: {
+	#base: {q: cli.Print & {text: "BASE"}}
+	a: #base
+}
+"#,
+    );
+    let run = |implementation: &Path, command: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .output()
+            .expect("run command")
+    };
+    for command in [
+        "dynlabel",
+        "listcomp",
+        "listcompif",
+        "bytesinterp",
+        "listtail",
+        "definside",
+    ] {
+        let expected = run(Path::new(&cue), command);
+        let actual = run(&bin(), command);
+        assert!(expected.status.success(), "{command}");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+}
+
+#[test]
+fn tool_command_pruning_ignores_shadowed_command_names() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("x_tool.cue"),
+        r#"
+package foo
+import "tool/exec"
+command: build: {
+	run: exec.Run & {cmd: ["sh", "-c", "printf BUILD > built.txt"]}
+}
+command: run: {x: 1 & 2}
+"#,
+    );
+    let expected = Command::new(&cue)
+        .args(["cmd", "build"])
+        .current_dir(directory.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&["cmd", "build", directory.path().to_str().expect("path")]);
+    assert!(expected.status.success());
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert_eq!(
+        std::fs::read(directory.path().join("built.txt")).expect("artifact"),
+        b"BUILD"
+    );
 }
