@@ -10430,6 +10430,46 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
             false,
         ),
         (
+            "secondhoptaskbase",
+            format!(
+                "{local_cli}{base}p2: base\ncommand: secondhoptaskbase: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(base.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhoptaskgroupbase",
+            "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\ngroup: {base: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}}\np2: group.base\ncommand: secondhoptaskgroupbase: {\n\tr: p2\n\tt: cli.Print & {text: \"R=\\(group.base.stdout)\"}\n}\n".to_owned(),
+            false,
+        ),
+        (
+            "secondhoptaskcomposed",
+            format!(
+                "{local_cli}{base}p2: base & {{stdout: string}}\ncommand: secondhoptaskcomposed: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(base.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhoptwonestedtask",
+            format!(
+                "{local_cli}{base}p2: base\ncommand: secondhoptwonestedtask: {{\n\tx: {{\n\t\tr: p2\n\t\tt: cli.Print & {{text: \"R=\\\\(p2.stdout)\"}}\n\t}}\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhopmoduletaskprep",
+            format!(
+                "{module_cli}prep: lib.run\np2: prep\ncommand: secondhopmoduletaskprep: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(prep.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "secondhopmoduletaskp2",
+            format!(
+                "{module_cli}prep: lib.run\np2: prep\ncommand: secondhopmoduletaskp2: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(p2.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ),
+        (
             "secondhopcommandlocal",
             format!("{local}command: secondhopcommandlocal: {{\n\tr: base\n\tr2: r\n}}\n"),
             false,
