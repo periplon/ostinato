@@ -6,6 +6,166 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
+struct LocalHttpServer {
+    base: String,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl LocalHttpServer {
+    fn start() -> Self {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind http server");
+        let address = listener.local_addr().expect("server address");
+        listener.set_nonblocking(true).expect("nonblocking server");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = stop.clone();
+        let handle = std::thread::spawn(move || {
+            while !stop_thread.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                        let mut data = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        while let Ok(read) = stream.read(&mut chunk) {
+                            if read == 0 {
+                                break;
+                            }
+                            data.extend_from_slice(&chunk[..read]);
+                            if data.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        let text = String::from_utf8_lossy(&data).into_owned();
+                        let (head, rest) = text
+                            .split_once(
+                                "
+
+",
+                            )
+                            .unwrap_or((&text, ""));
+                        let mut lines = head.lines();
+                        let request_line = lines.next().unwrap_or_default();
+                        let mut parts = request_line.split_whitespace();
+                        let method = parts.next().unwrap_or("GET").to_owned();
+                        let path = parts.next().unwrap_or("/").to_owned();
+                        let mut content_length = 0usize;
+                        let mut xreq = Vec::new();
+                        for line in lines {
+                            let Some((name, value)) = line.split_once(':') else {
+                                continue;
+                            };
+                            let name = name.trim();
+                            let value = value.trim();
+                            if name.eq_ignore_ascii_case("content-length") {
+                                content_length = value.parse().unwrap_or(0);
+                            } else if name.eq_ignore_ascii_case("x-req") {
+                                xreq.push(value.to_owned());
+                            }
+                        }
+                        let mut body = rest.as_bytes().to_vec();
+                        while body.len() < content_length {
+                            let read = match stream.read(&mut chunk) {
+                                Ok(read) => read,
+                                Err(_) => break,
+                            };
+                            if read == 0 {
+                                break;
+                            }
+                            body.extend_from_slice(&chunk[..read]);
+                        }
+                        let body_text = String::from_utf8_lossy(&body).into_owned();
+                        let (status, response_body, headers): (u16, Vec<u8>, Vec<(&str, &str)>) =
+                            match path.as_str() {
+                                "/ok" => (
+                                    200,
+                                    b"hello".to_vec(),
+                                    vec![("X-Test", "one"), ("X-Multi", "a"), ("X-Multi", "b")],
+                                ),
+                                "/redirect" => (302, Vec::new(), vec![("Location", "/ok")]),
+                                "/status404" => {
+                                    (404, b"missing".to_vec(), vec![("X-Test", "nope")])
+                                }
+                                "/echo" => {
+                                    let payload = serde_json::json!({
+                                        "method": method,
+                                        "body": body_text,
+                                        "xreq": xreq.join(","),
+                                    });
+                                    (200, payload.to_string().into_bytes(), Vec::new())
+                                }
+                                "/trailer" => (200, b"hello".to_vec(), Vec::new()),
+                                _ => (404, b"unknown".to_vec(), Vec::new()),
+                            };
+                        let reason = match status {
+                            200 => "OK",
+                            302 => "Found",
+                            404 => "Not Found",
+                            _ => "",
+                        };
+                        let mut response = format!(
+                            "HTTP/1.1 {status} {reason}
+"
+                        );
+                        for (name, value) in headers {
+                            response.push_str(&format!(
+                                "{name}: {value}
+"
+                            ));
+                        }
+                        if path == "/trailer" {
+                            response.push_str(
+                                "Transfer-Encoding: chunked
+Trailer: X-Trailer
+
+",
+                            );
+                            response.push_str(
+                                "5
+hello
+0
+X-Trailer: done
+
+",
+                            );
+                        } else {
+                            response.push_str(&format!(
+                                "Content-Length: {}
+Connection: close
+
+",
+                                response_body.len()
+                            ));
+                            response.push_str(&String::from_utf8_lossy(&response_body));
+                        }
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                    Err(_) => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+            }
+        });
+        Self {
+            base: format!("http://{address}"),
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for LocalHttpServer {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ostinato"))
 }
@@ -13473,6 +13633,7 @@ import (
 	"tool/os"
 )
 two: {REV_V: *5 | string}
+twovalid: {REV_V: *"d" | string}
 basecmd2: {
 	env: os.Getenv & {REV_V: *5 | string}
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
@@ -13491,6 +13652,10 @@ import (
 )
 command: importedstruct: {
 	env: os.Getenv & lib.two
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: importedvalidstruct: {
+	env: os.Getenv & lib.twovalid
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
 command: importedcmd: lib.basecmd2
@@ -13546,22 +13711,23 @@ command: validcmd: lib.validcmd
         assert!(!actual.stderr.is_empty(), "{command}");
     }
 
-    // Valid imported command aliases are currently rejected as a documented
-    // fail-closed tradeoff; CUE runs them successfully.
-    let expected = Command::new(&cue)
-        .args(["cmd", "validcmd"])
-        .current_dir(cue_dir.path())
-        .env_remove("REV_V")
-        .output()
-        .expect("run cue cmd");
-    let actual = Command::new(bin())
-        .args(["cmd", "validcmd", rust_dir.path().to_str().expect("path")])
-        .env_remove("REV_V")
-        .output()
-        .expect("run ostinato cmd");
-    assert!(expected.status.success());
-    assert!(!actual.status.success());
-    assert!(String::from_utf8_lossy(&actual.stderr).contains("not supported"));
+    for command in ["validcmd", "importedvalidstruct"] {
+        let expected = Command::new(&cue)
+            .args(["cmd", command])
+            .current_dir(cue_dir.path())
+            .env_remove("REV_V")
+            .output()
+            .expect("run cue cmd");
+        let actual = Command::new(bin())
+            .args(["cmd", command, rust_dir.path().to_str().expect("path")])
+            .env_remove("REV_V")
+            .output()
+            .expect("run ostinato cmd");
+        assert!(expected.status.success(), "{command}");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
 }
 
 #[test]
@@ -13833,4 +13999,113 @@ workflow: {
         std::fs::read_to_string(&output_file).expect("rendered output"),
         "123456789012345678901234567890"
     );
+}
+
+#[test]
+fn tool_command_http_tasks_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let server = LocalHttpServer::start();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("closed port");
+    let closed_port = closed.local_addr().expect("closed address").port();
+    drop(closed);
+
+    let source = r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"tool/http"
+)
+command: getok: {
+	r: http.Get & {url: "__BASE__/ok", response: {body: string}}
+	p: cli.Print & {text: "status=\(r.response.status) code=\(r.response.statusCode) body=[\(r.response.body)] test=\(r.response.header["X-Test"][0]) n=\(len(r.response.header["X-Multi"]))"}
+}
+command: get404: {
+	r: http.Get & {url: "__BASE__/status404", response: {body: string}}
+	p: cli.Print & {text: "status=\(r.response.status) code=\(r.response.statusCode) body=[\(r.response.body)]"}
+}
+command: redirect: {
+	r: http.Get & {url: "__BASE__/redirect", response: {body: string}}
+	p: cli.Print & {text: "status=\(r.response.status) body=[\(r.response.body)]"}
+}
+command: redirectfalse: {
+	r: http.Get & {
+		url: "__BASE__/redirect"
+		followRedirects: false
+		response: {body: string}
+	}
+	p: cli.Print & {text: "status=\(r.response.status) code=\(r.response.statusCode) loc=\(r.response.header["Location"][0])"}
+}
+command: postecho: {
+	r: http.Post & {
+		url: "__BASE__/echo"
+		request: {
+			body: "abc"
+			header: {"X-Req": ["v1", "v2"]}
+		}
+		response: {body: string}
+	}
+	p: cli.Print & {text: "body=\(r.response.body)"}
+}
+command: putecho: {
+	r: http.Put & {url: "__BASE__/echo", request: {body: "putbody"}, response: {body: string}}
+	p: cli.Print & {text: "body=\(r.response.body)"}
+}
+command: deleteecho: {
+	r: http.Delete & {url: "__BASE__/echo", response: {body: string}}
+	p: cli.Print & {text: "body=\(r.response.body)"}
+}
+command: doecho: {
+	r: http.Do & {method: "DELETE", url: "__BASE__/echo", response: {body: string}}
+	p: cli.Print & {text: "body=\(r.response.body)"}
+}
+command: consumed: {
+	r: http.Get & {url: "__BASE__/ok", response: {body: string}}
+	w: exec.Run & {cmd: ["cat"], stdin: r.response.body, stdout: string}
+	p: cli.Print & {text: "in=[\(w.stdout)]"}
+}
+command: connfail: {
+	r: http.Get & {url: "http://127.0.0.1:__CLOSED__/nope", response: {body: string}}
+	p: cli.Print & {text: "body=\(r.response.body)"}
+}
+"#
+    .replace("__BASE__", &server.base)
+    .replace("__CLOSED__", &closed_port.to_string());
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(&directory.path().join("x_tool.cue"), &source);
+    let run = |implementation: &Path, command: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .output()
+            .expect("run command")
+    };
+    for command in [
+        "getok",
+        "get404",
+        "redirect",
+        "redirectfalse",
+        "postecho",
+        "putecho",
+        "deleteecho",
+        "doecho",
+        "consumed",
+    ] {
+        let expected = run(Path::new(&cue), command);
+        let actual = run(&bin(), command);
+        assert!(expected.status.success(), "{command}");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+
+    let expected = run(Path::new(&cue), "connfail");
+    let actual = run(&bin(), "connfail");
+    assert!(!expected.status.success(), "connfail");
+    assert_eq!(actual.status.code(), expected.status.code(), "connfail");
+    assert_eq!(actual.stdout, expected.stdout, "connfail");
 }
