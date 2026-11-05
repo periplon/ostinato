@@ -7,42 +7,91 @@ use std::sync::Arc;
 
 use bigdecimal::BigDecimal;
 use num_bigint::{BigInt, ToBigInt};
-use ostinato_application::{LoadRequest, LoadedWorkflow, PortError, PortResult, SpecLoader};
+use ostinato_application::{
+    DataInput, DocumentEvaluator, LoadRequest, LoadedWorkflow, PortError, PortResult, SpecLoader,
+};
 use ostinato_lang::ast::{Expr, Field, Label, Span, StructItem};
 use ostinato_lang::{
     Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode,
     eval_file_with_imports_mode_allow_incomplete, eval_file_with_imports_mode_allow_outputs, parse,
-    rename_file_locals,
+    rename_file_locals, select_path,
 };
 use serde_json::{Value as Json, json};
+use std::collections::BTreeSet;
+
+use crate::data;
 
 /// Default Rust workflow-CUE loader. Implements the scope documented in
 /// `docs/SCOPE.md`; use [`CueCliLoader`] for the full official oracle.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NativeLoader;
 
-impl SpecLoader for NativeLoader {
+impl DocumentEvaluator for NativeLoader {
     fn evaluator(&self) -> &'static str {
         "rust"
     }
 
+    fn evaluate(
+        &self,
+        request: &LoadRequest,
+        expressions: &[String],
+        _list: bool,
+    ) -> PortResult<Vec<Json>> {
+        let (root, _) = evaluate_request(
+            request,
+            EvalOptions {
+                include_definitions: true,
+                allow_incomplete: false,
+                strip_hidden_fields: false,
+            },
+        )?;
+        if expressions.is_empty() {
+            let value = root.to_json().ok_or_else(|| {
+                PortError::Loader(
+                    "cannot export the root value: it contains incomplete fields".to_owned(),
+                )
+            })?;
+            return Ok(vec![value]);
+        }
+        let optional_paths =
+            collect_optional_paths(&canonical(&request.source)).unwrap_or_default();
+        let mut out = Vec::with_capacity(expressions.len());
+        for expression in expressions {
+            let trimmed = expression.trim();
+            let selected = match select_path(&root, expression) {
+                Ok(value) => value,
+                Err(error) => {
+                    if optional_paths.contains(trimmed) {
+                        return Err(PortError::Loader(format!(
+                            "cannot reference optional field: {trimmed}"
+                        )));
+                    }
+                    return Err(PortError::Loader(error.to_string()));
+                }
+            };
+            let value = selected.to_json().ok_or_else(|| {
+                PortError::Loader(format!("cannot export `{expression}`: value is incomplete"))
+            })?;
+            out.push(value);
+        }
+        Ok(out)
+    }
+}
+
+impl SpecLoader for NativeLoader {
     fn load(&self, request: &LoadRequest) -> PortResult<LoadedWorkflow> {
         let absolute = canonical(&request.source);
-        let mut cache = BTreeMap::new();
-        let mut stack = Vec::new();
-        let root = evaluate_path(
-            &absolute,
-            &request.params,
-            &mut cache,
-            &mut stack,
-            false,
-            false,
-        )
-        .map_err(|err| PortError::Loader(err.to_string()))?;
+        let (root, tags) = evaluate_request(
+            request,
+            EvalOptions {
+                include_definitions: false,
+                allow_incomplete: false,
+                strip_hidden_fields: false,
+            },
+        )?;
         let spec = compile_value(&root).map_err(|err| PortError::Loader(err.to_string()))?;
-        let tags =
-            collect_parameter_tags(&absolute).map_err(|err| PortError::Loader(err.to_string()))?;
-        let params = parameters_json(&root, &request.params, &tags)
+        let provided = provided_params(request);
+        let params = parameters_json(&root, &provided, &tags)
             .map_err(|err| PortError::Loader(err.to_string()))?;
         Ok(LoadedWorkflow {
             spec,
@@ -53,14 +102,84 @@ impl SpecLoader for NativeLoader {
     }
 }
 
+fn collect_optional_paths(path: &Path) -> Result<BTreeSet<String>, ostinato_lang::LangError> {
+    let files = collect_package_files(path, false)?;
+    let mut out = BTreeSet::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).map_err(|error| {
+            ostinato_lang::LangError::Workflow(format!("cannot read {}: {error}", file.display()))
+        })?;
+        let parsed = parse(&text)?;
+        collect_optional_items(&parsed.items, "", &mut out);
+    }
+    Ok(out)
+}
+
+fn collect_optional_items(items: &[StructItem], prefix: &str, out: &mut BTreeSet<String>) {
+    for item in items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        let Label::Name(name, _) = &field.label else {
+            continue;
+        };
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        if field.optional {
+            out.insert(path.clone());
+        }
+        if let Expr::Struct(nested, _) = &field.value {
+            collect_optional_items(nested, &path, out);
+        }
+    }
+}
+
+fn provided_params(request: &LoadRequest) -> BTreeSet<String> {
+    request.params.keys().cloned().collect()
+}
+
+fn evaluate_request(
+    request: &LoadRequest,
+    options: EvalOptions,
+) -> PortResult<(Value, BTreeMap<String, Vec<ostinato_lang::TagInfo>>)> {
+    let absolute = canonical(&request.source);
+    let mut cache = BTreeMap::new();
+    let mut stack = Vec::new();
+    evaluate_path(
+        &absolute,
+        &request.params,
+        EvalExtras {
+            inputs: &request.inputs,
+        },
+        options,
+        &mut cache,
+        &mut stack,
+    )
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct EvalExtras<'a> {
+    inputs: &'a [DataInput],
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct EvalOptions {
+    include_definitions: bool,
+    allow_incomplete: bool,
+    strip_hidden_fields: bool,
+}
+
 fn evaluate_path(
     path: &Path,
     overrides: &BTreeMap<String, String>,
+    extras: EvalExtras<'_>,
+    options: EvalOptions,
     cache: &mut BTreeMap<PathBuf, Value>,
     stack: &mut Vec<PathBuf>,
-    include_definitions: bool,
-    allow_incomplete: bool,
-) -> Result<Value, ostinato_lang::LangError> {
+) -> PortResult<(Value, BTreeMap<String, Vec<ostinato_lang::TagInfo>>)> {
     let canonical_path = canonical(path);
     let key = if canonical_path.is_dir() {
         canonical_path.clone()
@@ -70,17 +189,18 @@ fn evaluate_path(
             .map_or_else(|| canonical_path.clone(), Path::to_path_buf)
     };
     if let Some(cached) = cache.get(&key) {
-        return Ok(cached.clone());
+        return Ok((cached.clone(), BTreeMap::new()));
     }
     if stack.contains(&key) {
-        return Err(ostinato_lang::LangError::Workflow(format!(
+        return Err(PortError::Loader(format!(
             "import cycle involving {}",
             key.display()
         )));
     }
     stack.push(key.clone());
 
-    let files = collect_package_files(&canonical_path, false)?;
+    let files = collect_package_files(&canonical_path, false)
+        .map_err(|err| PortError::Loader(err.to_string()))?;
     let source_dir = if canonical_path.is_dir() {
         canonical_path.clone()
     } else {
@@ -94,11 +214,10 @@ fn evaluate_path(
         items: Vec::new(),
     };
     for (index, file) in files.iter().enumerate() {
-        let text = std::fs::read_to_string(file).map_err(|err| {
-            ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
-        })?;
-        let mut parsed = parse(&text)?;
-        rename_file_locals(&mut parsed, index)?;
+        let text = std::fs::read_to_string(file)
+            .map_err(|err| PortError::Loader(format!("cannot read {}: {err}", file.display())))?;
+        let mut parsed = parse(&text).map_err(|err| PortError::Loader(err.to_string()))?;
+        rename_file_locals(&mut parsed, index).map_err(|err| PortError::Loader(err.to_string()))?;
         if combined.package.is_none() {
             combined.package = parsed.package.clone();
         }
@@ -116,47 +235,129 @@ fn evaluate_path(
             imports.insert(import.alias.clone(), module);
             continue;
         }
-        let imported_path = resolve_import(&source_dir, &import.path)?;
-        let value = evaluate_path(&imported_path, &BTreeMap::new(), cache, stack, true, true)?;
+        let imported_path = resolve_import(&source_dir, &import.path)
+            .map_err(|err| PortError::Loader(err.to_string()))?;
+        let (value, _) = evaluate_path(
+            &imported_path,
+            &BTreeMap::new(),
+            EvalExtras::default(),
+            EvalOptions {
+                include_definitions: true,
+                allow_incomplete: true,
+                strip_hidden_fields: true,
+            },
+            cache,
+            stack,
+        )?;
         imports.insert(import.alias.clone(), value);
     }
 
+    if !extras.inputs.is_empty() {
+        let documents = read_input_documents(extras.inputs)?;
+        append_data_fields(&mut combined.items, &documents)?;
+    }
+
     ostinato_lang::assign_field_ids(&mut combined);
-    let tags = ostinato_lang::parameter_tags(&combined)?;
+    let tags = ostinato_lang::parameter_tags(&combined)
+        .map_err(|err| PortError::Loader(err.to_string()))?;
     let mut injected = BTreeMap::new();
     for (key, raw) in overrides {
         if let Some(infos) = tags.get(key) {
             for info in infos {
-                let value = parse_override_value(raw, Some(info.ty))?;
-                let expr = override_expr(value)?;
+                let value = parse_override_value(raw, Some(info.ty))
+                    .map_err(|err| PortError::Loader(err.to_string()))?;
+                let expr =
+                    override_expr(value).map_err(|err| PortError::Loader(err.to_string()))?;
                 if !inject_field(&mut combined.items, info.field_id, &expr) {
-                    return Err(ostinato_lang::LangError::Workflow(format!(
+                    return Err(PortError::Loader(format!(
                         "cannot inject @tag `{key}`: declaration not found"
                     )));
                 }
             }
         } else {
-            injected.insert(key.clone(), parse_override_value(raw, None)?);
+            let value = parse_override_value(raw, None)
+                .map_err(|err| PortError::Loader(err.to_string()))?;
+            injected.insert(key.clone(), value);
         }
     }
-    let value = if allow_incomplete {
+    let value = if options.allow_incomplete {
         eval_file_with_imports_mode_allow_incomplete(
             &combined,
             &imports,
             &injected,
-            include_definitions,
-        )?
+            options.include_definitions,
+        )
     } else {
-        eval_file_with_imports_mode(&combined, &imports, &injected, include_definitions)?
-    };
-    let value = if include_definitions {
+        eval_file_with_imports_mode(&combined, &imports, &injected, options.include_definitions)
+    }
+    .map_err(|err| PortError::Loader(err.to_string()))?;
+    let value = if options.strip_hidden_fields {
         ostinato_lang::strip_hidden(value)
     } else {
         value
     };
     cache.insert(key, value.clone());
     stack.pop();
-    Ok(value)
+    Ok((value, tags))
+}
+
+fn read_input_documents(inputs: &[DataInput]) -> PortResult<Vec<Json>> {
+    let mut documents = Vec::new();
+    for input in inputs {
+        let file = data::DataFile::read(&input.path)
+            .map_err(|error| PortError::Loader(error.to_string()))?;
+        for (index, document) in file.documents.into_iter().enumerate() {
+            if !document.is_object() {
+                return Err(PortError::Loader(format!(
+                    "{}: document {} must be an object to unify with the CUE root, found {}",
+                    input.path.display(),
+                    index + 1,
+                    json_type_name(&document)
+                )));
+            }
+            documents.push(document);
+        }
+    }
+    Ok(documents)
+}
+
+fn append_data_fields(items: &mut Vec<StructItem>, documents: &[Json]) -> PortResult<()> {
+    for document in documents {
+        let Json::Object(fields) = document else {
+            continue;
+        };
+        for (key, value) in fields {
+            let text = serde_json::to_string(value)
+                .map_err(|error| PortError::Loader(format!("cannot encode data value: {error}")))?;
+            let expr = ostinato_lang::parse_expr_fragment(&text)
+                .map_err(|error| PortError::Loader(error.to_string()))?;
+            items.push(StructItem::Field(Field {
+                id: 0,
+                label: Label::Name(key.clone(), Span::default()),
+                value: expr,
+                optional: false,
+                definition: false,
+                alias: None,
+                quoted: !is_cue_identifier(key),
+                bytes_label_runes: None,
+                bytes_label_multiline: false,
+                attributes: Vec::new(),
+                span: Span::default(),
+            }));
+        }
+    }
+    Ok(())
+}
+
+fn is_cue_identifier(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if first != '_' && !first.is_ascii_alphabetic() {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn collect_package_files(
@@ -686,37 +887,13 @@ fn inject_field_expr(expr: &mut Expr, id: usize, value: &Expr) -> bool {
     }
 }
 
-fn collect_parameter_tags(
-    path: &Path,
-) -> Result<BTreeMap<String, Vec<ostinato_lang::TagInfo>>, ostinato_lang::LangError> {
-    let files = collect_package_files(path, false)?;
-    let mut combined = ostinato_lang::ast::File {
-        package: None,
-        imports: Vec::new(),
-        items: Vec::new(),
-    };
-    for (index, file) in files.iter().enumerate() {
-        let text = std::fs::read_to_string(file).map_err(|err| {
-            ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
-        })?;
-        let mut parsed = ostinato_lang::parse(&text)?;
-        ostinato_lang::rename_file_locals(&mut parsed, index)?;
-        if combined.package.is_none() {
-            combined.package = parsed.package.clone();
-        }
-        combined.imports.extend(parsed.imports);
-        combined.items.extend(parsed.items);
-    }
-    ostinato_lang::parameter_tags(&combined)
-}
-
 fn parameters_json(
     root: &Value,
-    overrides: &BTreeMap<String, String>,
+    provided: &BTreeSet<String>,
     tags: &BTreeMap<String, Vec<ostinato_lang::TagInfo>>,
 ) -> Result<Json, ostinato_lang::LangError> {
     let Some(params_value) = root_value(root, "params") else {
-        if overrides.is_empty() {
+        if provided.is_empty() {
             return Ok(json!({}));
         }
         return Err(ostinato_lang::LangError::Workflow(
@@ -729,14 +906,12 @@ fn parameters_json(
             params_value.type_name()
         )));
     };
-    if !overrides.is_empty() {
-        for key in overrides.keys() {
-            let known = tags.contains_key(key);
-            if !known && !params.contains_key(key) {
-                return Err(ostinato_lang::LangError::Workflow(format!(
-                    "unknown parameter `{key}`; declare it under `params`"
-                )));
-            }
+    for key in provided {
+        let known = tags.contains_key(key);
+        if !known && !params.contains_key(key) {
+            return Err(ostinato_lang::LangError::Workflow(format!(
+                "unknown parameter `{key}`; declare it under `params`"
+            )));
         }
     }
     let mut out = serde_json::Map::new();
@@ -826,25 +1001,30 @@ impl CueCliLoader {
         &self.version
     }
 
-    fn export(
-        &self,
-        directory: &Path,
-        instance: &str,
-        expression: &str,
-        params: &std::collections::BTreeMap<String, String>,
-    ) -> PortResult<Json> {
+    fn cue_export(&self, request: CueExport<'_>) -> PortResult<Vec<Json>> {
         let mut command = Command::new(&self.executable);
         command
-            .current_dir(directory)
+            .current_dir(request.directory)
             .arg("export")
-            .arg(instance)
-            .arg("--out")
-            .arg("json")
-            .arg("-e")
-            .arg(expression);
-        for (key, value) in params {
+            .arg(request.instance);
+        for input in request.inputs {
+            command.arg(canonical(&input.path));
+        }
+        command.arg("--out").arg("json");
+        for expression in request.expressions {
+            command.arg("-e").arg(expression);
+        }
+        if request.list {
+            command.arg("--list");
+        }
+        for (key, value) in request.params {
             command.arg("-t").arg(format!("{key}={value}"));
         }
+        let label = if request.expressions.is_empty() {
+            "<root>".to_owned()
+        } else {
+            request.expressions.join(",")
+        };
         let output = command.output().map_err(|err| {
             PortError::Loader(format!("cannot run `{}`: {err}", self.executable.display()))
         })?;
@@ -857,26 +1037,83 @@ impl CueCliLoader {
             )));
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        serde_json::from_str(stdout.trim()).map_err(|err| {
-            PortError::Loader(format!(
-                "CUE produced invalid JSON for `{expression}`: {err}"
-            ))
+        let mut values = Vec::new();
+        let stream = serde_json::Deserializer::from_str(stdout.trim()).into_iter::<Json>();
+        for value in stream {
+            values.push(value.map_err(|err| {
+                PortError::Loader(format!("CUE produced invalid JSON for `{label}`: {err}"))
+            })?);
+        }
+        if values.is_empty() {
+            return Err(PortError::Loader(format!(
+                "CUE produced no JSON for `{label}`"
+            )));
+        }
+        Ok(values)
+    }
+}
+
+struct CueExport<'a> {
+    directory: &'a Path,
+    instance: &'a str,
+    expressions: &'a [String],
+    list: bool,
+    params: &'a BTreeMap<String, String>,
+    inputs: &'a [DataInput],
+}
+
+impl DocumentEvaluator for CueCliLoader {
+    fn evaluator(&self) -> &'static str {
+        "cue"
+    }
+
+    fn evaluate(
+        &self,
+        request: &LoadRequest,
+        expressions: &[String],
+        list: bool,
+    ) -> PortResult<Vec<Json>> {
+        let absolute = canonical(&request.source);
+        let (directory, instance) = cue_instance(&absolute)?;
+        self.cue_export(CueExport {
+            directory: &directory,
+            instance: &instance,
+            expressions,
+            list,
+            params: &request.params,
+            inputs: &request.inputs,
         })
     }
 }
 
 impl SpecLoader for CueCliLoader {
-    fn evaluator(&self) -> &'static str {
-        "cue"
-    }
-
     fn load(&self, request: &LoadRequest) -> PortResult<LoadedWorkflow> {
         let absolute = canonical(&request.source);
         let (directory, instance) = cue_instance(&absolute)?;
 
-        let workflow = self.export(&directory, &instance, "workflow", &request.params)?;
-        let agents = match self.export(&directory, &instance, "agents", &request.params) {
-            Ok(agents) => agents,
+        let workflow_expr = vec!["workflow".to_owned()];
+        let workflow = self
+            .cue_export(CueExport {
+                directory: &directory,
+                instance: &instance,
+                expressions: &workflow_expr,
+                list: false,
+                params: &request.params,
+                inputs: &request.inputs,
+            })?
+            .into_iter()
+            .next()
+            .ok_or_else(|| PortError::Loader("CUE produced no workflow value".to_owned()))?;
+        let agents_expr = vec!["agents".to_owned()];
+        let agents = match self.cue_export(CueExport {
+            directory: &directory,
+            instance: &instance,
+            expressions: &agents_expr,
+            list: false,
+            params: &request.params,
+            inputs: &request.inputs,
+        }) {
+            Ok(values) => values.into_iter().next().unwrap_or_else(|| json!({})),
             Err(PortError::Loader(message))
                 if message.contains("reference \"agents\" not found") =>
             {
@@ -884,8 +1121,16 @@ impl SpecLoader for CueCliLoader {
             }
             Err(err) => return Err(err),
         };
-        let params = match self.export(&directory, &instance, "params", &request.params) {
-            Ok(params) => params,
+        let params_expr = vec!["params".to_owned()];
+        let params = match self.cue_export(CueExport {
+            directory: &directory,
+            instance: &instance,
+            expressions: &params_expr,
+            list: false,
+            params: &request.params,
+            inputs: &request.inputs,
+        }) {
+            Ok(values) => values.into_iter().next().unwrap_or_else(|| json!({})),
             Err(PortError::Loader(message))
                 if message.contains("reference \"params\" not found") =>
             {
@@ -1176,11 +1421,17 @@ fn load_tool_package(paths: &[PathBuf]) -> Result<ToolPackage, ostinato_lang::La
         let value = evaluate_path(
             &imported_path,
             &BTreeMap::new(),
+            EvalExtras::default(),
+            EvalOptions {
+                include_definitions: true,
+                allow_incomplete: true,
+                strip_hidden_fields: true,
+            },
             &mut cache,
             &mut stack,
-            true,
-            true,
-        )?;
+        )
+        .map_err(|err| ostinato_lang::LangError::Workflow(err.to_string()))?
+        .0;
         imports.insert(import.alias.clone(), value);
     }
 

@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ostinato_domain::{
@@ -36,8 +36,124 @@ pub type PortResult<T> = Result<T, PortError>;
 /// Request to evaluate a workflow source file.
 #[derive(Debug, Clone)]
 pub struct LoadRequest {
+    /// CUE package file or directory to evaluate.
     pub source: PathBuf,
+    /// Scalar `-p key=value` parameter overrides.
     pub params: BTreeMap<String, String>,
+    /// Repeatable `--input` JSON/YAML files unified into the CUE root.
+    pub inputs: Vec<DataInput>,
+}
+
+impl LoadRequest {
+    /// Build a request with no extra inputs.
+    #[must_use]
+    pub fn new(source: PathBuf, params: BTreeMap<String, String>) -> Self {
+        Self {
+            source,
+            params,
+            inputs: Vec::new(),
+        }
+    }
+}
+
+/// A JSON/YAML file unified into a CUE root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataInput {
+    pub path: PathBuf,
+}
+
+impl DataInput {
+    /// Wrap a path as a data input.
+    #[must_use]
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+/// Data encoding supported by the CLI and codecs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentFormat {
+    Json,
+    Yaml,
+}
+
+impl DocumentFormat {
+    /// Human-readable name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Yaml => "yaml",
+        }
+    }
+}
+
+/// Decode and encode JSON/YAML documents.
+pub trait DocumentCodec: Send + Sync {
+    /// Read every document in a data file.
+    ///
+    /// # Errors
+    /// Returns a typed error for missing files, malformed documents, size or
+    /// nesting limits, duplicate keys or unsupported YAML tags.
+    fn read(&self, input: &DataInput) -> PortResult<Vec<Value>>;
+
+    /// Encode a value in the requested format.
+    ///
+    /// # Errors
+    /// Returns a typed error when the value cannot be represented.
+    fn encode(&self, format: DocumentFormat, value: &Value) -> PortResult<String>;
+
+    /// Encode one or more values as a stream.
+    ///
+    /// JSON values are separated by newlines; YAML values are separated by
+    /// `---` document markers.
+    ///
+    /// # Errors
+    /// Propagates [`DocumentCodec::encode`] errors.
+    fn encode_stream(&self, format: DocumentFormat, values: &[Value]) -> PortResult<String> {
+        let mut encoded = Vec::with_capacity(values.len());
+        for value in values {
+            encoded.push(self.encode(format, value)?);
+        }
+        Ok(match format {
+            DocumentFormat::Json => encoded.concat(),
+            DocumentFormat::Yaml => encoded.join("---\n"),
+        })
+    }
+}
+
+/// Options for writing an output document.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OutputOptions {
+    /// Replace an existing destination.
+    pub force: bool,
+    /// Skip an existing destination instead of failing.
+    pub skip_existing: bool,
+}
+
+/// Result of an output write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Written,
+    Skipped,
+}
+
+/// Write encoded output to stdout or a safe file destination.
+pub trait OutputSink: Send + Sync {
+    /// Write `content` to `target` (`None` means stdout).
+    ///
+    /// Implementations must refuse to overwrite a symlink, a hard-linked file
+    /// or any path in `protected` (the input files), and must write atomically.
+    ///
+    /// # Errors
+    /// Returns an I/O or safety error.
+    fn write(
+        &self,
+        target: Option<&Path>,
+        content: &str,
+        options: OutputOptions,
+        protected: &[PathBuf],
+    ) -> PortResult<WriteOutcome>;
 }
 
 /// Evaluated workflow plus the concrete parameters used.
@@ -49,10 +165,30 @@ pub struct LoadedWorkflow {
     pub evaluator: String,
 }
 
+/// Port for evaluating raw CUE/data roots for export.
+pub trait DocumentEvaluator: Send + Sync {
+    /// Evaluator name (`rust`, `cue`).
+    fn evaluator(&self) -> &'static str;
+
+    /// Evaluate the source and return one JSON value per expression.
+    ///
+    /// An empty `expressions` slice returns the root value. `list` requests
+    /// CUE's `--list` handling for data inputs.
+    ///
+    /// # Errors
+    /// Returns a loader error for invalid sources, conflicting data, incomplete
+    /// values or unsupported expressions.
+    fn evaluate(
+        &self,
+        request: &LoadRequest,
+        expressions: &[String],
+        list: bool,
+    ) -> PortResult<Vec<Value>>;
+}
+
 /// Port for the language front-end. The default adapter shells out to the
 /// official CUE implementation for full compliance.
-pub trait SpecLoader: Send + Sync {
-    fn evaluator(&self) -> &'static str;
+pub trait SpecLoader: DocumentEvaluator {
     fn load(&self, request: &LoadRequest) -> PortResult<LoadedWorkflow>;
 }
 

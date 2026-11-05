@@ -245,3 +245,95 @@ fn rust_and_official_cue_reject_invalid_corpus() {
         );
     }
 }
+
+#[test]
+fn rust_json_yaml_inputs_and_import_match_official_cue() {
+    let Some(cue) = cue_bin().expect("explicit CUE_BIN must be usable") else {
+        eprintln!("skipping: official CUE >= 0.17.1 not installed and CUE_BIN is unset");
+        return;
+    };
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("conformance")
+        .join("data");
+    let base = root.join("base.cue");
+    for data in ["data.json", "data.yaml"] {
+        let data_path = root.join(data);
+        let rust = Command::new(bin())
+            .args([
+                "--evaluator",
+                "rust",
+                "export",
+                base.to_str().expect("base"),
+                "--input",
+                data_path.to_str().expect("data"),
+                "--out",
+                "json",
+            ])
+            .output()
+            .expect("run rust export");
+        assert!(
+            rust.status.success(),
+            "rust export failed for {data}: {}",
+            String::from_utf8_lossy(&rust.stderr)
+        );
+        let oracle = Command::new(&cue)
+            .current_dir(&root)
+            .args(["export", "base.cue", data, "--out", "json"])
+            .output()
+            .expect("run cue export");
+        assert!(
+            oracle.status.success(),
+            "cue export failed for {data}: {}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+        let rust: Value = serde_json::from_slice(&rust.stdout).expect("rust json");
+        let oracle: Value = serde_json::from_slice(&oracle.stdout).expect("cue json");
+        assert_eq!(rust, oracle, "data input mismatch for {data}");
+    }
+
+    let scope = tempfile::tempdir().expect("tempdir");
+    for data in ["data.json", "data.yaml"] {
+        let data_path = root.join(data);
+        let imported = scope.path().join(format!("{data}.cue"));
+        let output = Command::new(bin())
+            .args([
+                "import",
+                data_path.to_str().expect("data"),
+                "-o",
+                imported.to_str().expect("imported"),
+                "--force",
+            ])
+            .output()
+            .expect("run import");
+        assert!(
+            output.status.success(),
+            "import failed for {data}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let imported_value = Command::new(&cue)
+            .args([
+                "export",
+                imported.to_str().expect("imported"),
+                "--out",
+                "json",
+            ])
+            .output()
+            .expect("cue export imported");
+        assert!(
+            imported_value.status.success(),
+            "cue export imported failed: {}",
+            String::from_utf8_lossy(&imported_value.stderr)
+        );
+        let direct = Command::new(&cue)
+            .current_dir(&root)
+            .args(["export", data, "--out", "json"])
+            .output()
+            .expect("cue export data");
+        assert!(direct.status.success());
+        let imported_value: Value =
+            serde_json::from_slice(&imported_value.stdout).expect("imported json");
+        let direct: Value = serde_json::from_slice(&direct.stdout).expect("direct json");
+        assert_eq!(imported_value, direct, "import mismatch for {data}");
+    }
+}

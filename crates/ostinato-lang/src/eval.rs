@@ -489,6 +489,153 @@ impl Value {
     }
 }
 
+/// Select a CUE-style path expression from an evaluated value.
+///
+/// Supports dotted fields, hidden fields (`_name`), definitions (`#Name`) and
+/// numeric indexes written as `[N]` or as a dotted segment. Optional fields
+/// cannot be referenced, matching `cue export -e`.
+///
+/// # Errors
+/// Returns [`LangError::Workflow`] for malformed expressions, missing
+/// references and optional fields.
+pub fn select_path(value: &Value, expression: &str) -> Result<Value, LangError> {
+    let segments = parse_selector(expression)?;
+    let mut current = value.clone();
+    for segment in segments {
+        current = select_segment(&current, &segment)?;
+    }
+    Ok(current)
+}
+
+fn select_segment(value: &Value, segment: &str) -> Result<Value, LangError> {
+    match value {
+        Value::Struct(fields) => lookup_field(fields, segment),
+        Value::Definition {
+            fields,
+            optional,
+            definitions,
+            ..
+        } => {
+            if segment.starts_with('#') {
+                return definitions.get(segment).cloned().ok_or_else(|| {
+                    LangError::Workflow(format!("reference \"{segment}\" not found"))
+                });
+            }
+            if optional.contains_key(segment) {
+                return Err(LangError::Workflow(format!(
+                    "cannot reference optional field: {segment}"
+                )));
+            }
+            lookup_field(fields, segment)
+        }
+        Value::List(items) | Value::OpenListPrefix(items, _) => {
+            let index = segment.parse::<usize>().map_err(|_| {
+                LangError::Workflow(format!("cannot use `{segment}` as a list index"))
+            })?;
+            items
+                .get(index)
+                .cloned()
+                .ok_or_else(|| LangError::Workflow(format!("list index {index} out of range")))
+        }
+        other => Err(LangError::Workflow(format!(
+            "cannot select `{segment}` from {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn lookup_field(fields: &BTreeMap<String, Value>, segment: &str) -> Result<Value, LangError> {
+    // Hidden fields are stored with an internal prefix (`\u{3}_name`) and
+    // escaped labels with another (`\u{4}`). `cue export -e _name` addresses
+    // the user-visible name, so try the prefixed forms too.
+    fields
+        .get(segment)
+        .or_else(|| fields.get(&format!("\u{3}{segment}")))
+        .or_else(|| fields.get(&format!("\u{4}{segment}")))
+        .cloned()
+        .ok_or_else(|| LangError::Workflow(format!("reference \"{segment}\" not found")))
+}
+
+fn parse_selector(expression: &str) -> Result<Vec<String>, LangError> {
+    let expression = expression.trim();
+    if expression.is_empty() {
+        return Err(LangError::Workflow("empty expression".to_owned()));
+    }
+    let mut segments = Vec::new();
+    let chars: Vec<char> = expression.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        match chars[index] {
+            '.' => {
+                index += 1;
+                if index >= chars.len() {
+                    return Err(LangError::Workflow("expression ends with `.`".to_owned()));
+                }
+            }
+            '[' => {
+                let Some(end) = chars[index + 1..].iter().position(|ch| *ch == ']') else {
+                    return Err(LangError::Workflow(
+                        "unterminated `[` in expression".to_owned(),
+                    ));
+                };
+                let inner: String = chars[index + 1..index + 1 + end].iter().collect();
+                let inner = inner.trim();
+                if inner.is_empty() {
+                    return Err(LangError::Workflow("empty `[]` index".to_owned()));
+                }
+                if inner.starts_with('"') {
+                    let key: String = serde_json::from_str(inner).map_err(|_| {
+                        LangError::Workflow(format!("invalid quoted selector {inner}"))
+                    })?;
+                    segments.push(key);
+                } else if inner.starts_with('\'') && inner.ends_with('\'') && inner.len() >= 2 {
+                    segments.push(inner[1..inner.len() - 1].to_owned());
+                } else {
+                    segments.push(inner.to_owned());
+                }
+                index += end + 2;
+            }
+            '"' => {
+                let start = index;
+                index += 1;
+                let mut escaped = false;
+                while index < chars.len() {
+                    let ch = chars[index];
+                    index += 1;
+                    if escaped {
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == '"' {
+                        break;
+                    }
+                }
+                let literal: String = chars[start..index].iter().collect();
+                let key: String = serde_json::from_str(&literal).map_err(|_| {
+                    LangError::Workflow(format!("invalid quoted selector {literal}"))
+                })?;
+                segments.push(key);
+            }
+            _ => {
+                let start = index;
+                while index < chars.len() && !matches!(chars[index], '.' | '[') {
+                    index += 1;
+                }
+                let segment: String = chars[start..index].iter().collect();
+                let segment = segment.trim();
+                if segment.is_empty() {
+                    return Err(LangError::Workflow("empty path segment".to_owned()));
+                }
+                segments.push(segment.to_owned());
+            }
+        }
+    }
+    if segments.is_empty() {
+        return Err(LangError::Workflow("empty expression".to_owned()));
+    }
+    Ok(segments)
+}
+
 /// Evaluate a parsed file into a concrete-ish value tree.
 ///
 /// # Errors
@@ -7180,13 +7327,23 @@ pub fn value_from_json(value: &Json) -> Value {
         Json::Null => Value::Null,
         Json::Bool(value) => Value::Bool(*value),
         Json::Number(number) => {
-            if let Some(int) = number.as_i64() {
-                Value::Int(int)
+            let text = number.to_string();
+            let integral = !text.contains(['.', 'e', 'E']);
+            if integral {
+                if let Some(int) = number.as_i64() {
+                    Value::Int(int)
+                } else {
+                    match text.parse::<BigInt>() {
+                        Ok(big) => Value::BigInt(big),
+                        Err(_) => Value::Float(
+                            text.parse::<BigDecimal>()
+                                .unwrap_or_else(|_| BigDecimal::from(0)),
+                        ),
+                    }
+                }
             } else {
                 Value::Float(
-                    number
-                        .to_string()
-                        .parse::<BigDecimal>()
+                    text.parse::<BigDecimal>()
                         .unwrap_or_else(|_| BigDecimal::from(0)),
                 )
             }
@@ -7199,4 +7356,15 @@ pub fn value_from_json(value: &Json) -> Value {
                 .collect(),
         ),
     }
+}
+
+/// Unify two evaluated values using CUE semantics.
+///
+/// This is the public entry point used by data-file inputs and by embedders.
+///
+/// # Errors
+/// Returns an evaluation error for incompatible types or conflicting concrete
+/// values.
+pub fn unify(left: &Value, right: &Value) -> Result<Value, LangError> {
+    unify_values(left, right, Span::default())
 }

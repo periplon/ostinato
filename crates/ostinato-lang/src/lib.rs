@@ -15,6 +15,7 @@ pub mod ast;
 pub mod attributes;
 pub mod compile;
 pub mod condition;
+pub mod cue_data;
 pub mod error;
 pub mod eval;
 mod gotime;
@@ -28,12 +29,13 @@ pub use compile::{
     CompiledWorkflow, ParamSpec, compile, compile_json, compile_value, compile_with_params,
 };
 pub use condition::{eval_condition, validate_condition};
+pub use cue_data::{is_valid_package, render_cue_data};
 pub use error::LangError;
 pub use eval::{
     Builtin, TypeKind, Value, builtin_module, eval_expr_with_json, eval_file,
     eval_file_with_imports, eval_file_with_imports_mode,
     eval_file_with_imports_mode_allow_incomplete, eval_file_with_imports_mode_allow_outputs,
-    eval_file_with_overrides, strip_hidden, value_from_json,
+    eval_file_with_overrides, select_path, strip_hidden, unify, value_from_json,
 };
 pub use parser::{parse, parse_expr_fragment};
 pub use scope::rename_file_locals;

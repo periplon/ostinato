@@ -10,7 +10,10 @@ description = "Infrastructure adapters for Ostinato: SQLite journal, processes, 
 ostinato-domain = { path = "../ostinato-domain" }
 ostinato-application = { path = "../ostinato-application" }
 ostinato-lang = { path = "../ostinato-lang" }
+serde = { workspace = true }
 serde_json = { workspace = true }
+saphyr = "0.3.3"
+saphyr-parser = "0.3.3"
 thiserror = { workspace = true }
 rusqlite = { workspace = true }
 wait-timeout = { workspace = true }
@@ -23,8 +26,6 @@ libc = { workspace = true }
 walkdir = { workspace = true }
 bigdecimal = "0.4.11"
 num-bigint = { workspace = true }
-
-[dev-dependencies]
 tempfile = { workspace = true }
 
 [lints]

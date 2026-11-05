@@ -18,6 +18,7 @@ path = "src/main.rs"
 ostinato-domain = { path = "../ostinato-domain" }
 ostinato-application = { path = "../ostinato-application" }
 ostinato-adapters = { path = "../ostinato-adapters" }
+ostinato-lang = { path = "../ostinato-lang" }
 serde_json = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

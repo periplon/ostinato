@@ -554,7 +554,7 @@ fn stringifies_plain_template_values() {
     );
     assert_eq!(
         render("{{steps.build.json}}", &context).expect("render"),
-        r#"{"items":["a","b","c"],"n":3,"ok":true}"#
+        r#"{"n":3,"ok":true,"items":["a","b","c"]}"#
     );
 }
 
@@ -7807,4 +7807,41 @@ workflow: {
 }
 "#;
     compile(source).expect("events are valid condition roots");
+}
+
+#[test]
+fn value_from_json_keeps_big_integers_and_large_exponents() {
+    let big: serde_json::Value =
+        serde_json::from_str("123456789012345678901234567890").expect("json");
+    let value = ostinato_lang::value_from_json(&big);
+    assert!(
+        matches!(value, ostinato_lang::Value::BigInt(_)),
+        "{value:?}"
+    );
+    assert_eq!(
+        value.to_json().expect("json").to_string(),
+        "123456789012345678901234567890"
+    );
+
+    let huge: serde_json::Value = serde_json::from_str("1e400").expect("json");
+    let value = ostinato_lang::value_from_json(&huge);
+    assert!(matches!(value, ostinato_lang::Value::Float(_)), "{value:?}");
+    assert!(value.to_json().is_some());
+}
+
+#[test]
+fn unify_merges_structs_and_rejects_conflicts() {
+    let left = ostinato_lang::value_from_json(&json!({"a": 1, "nested": {"x": 1}}));
+    let right = ostinato_lang::value_from_json(&json!({"b": 2, "nested": {"y": 2}}));
+    let merged = ostinato_lang::unify(&left, &right).expect("unify");
+    assert_eq!(
+        merged.to_json().expect("json"),
+        json!({"a": 1, "b": 2, "nested": {"x": 1, "y": 2}})
+    );
+    let conflict = ostinato_lang::unify(
+        &ostinato_lang::value_from_json(&json!({"a": 1})),
+        &ostinato_lang::value_from_json(&json!({"a": 2})),
+    )
+    .expect_err("conflict");
+    assert!(conflict.to_string().contains("conflicting") || conflict.is_conflict());
 }
