@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "ostinato"
-version = "0.46.0"
+version = "0.46.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "ostinato-adapters"
-version = "0.46.0"
+version = "0.46.1"
 dependencies = [
  "bigdecimal",
  "chrono",
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "ostinato-application"
-version = "0.46.0"
+version = "0.46.1"
 dependencies = [
  "hex",
  "ostinato-domain",
@@ -640,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "ostinato-domain"
-version = "0.46.0"
+version = "0.46.1"
 dependencies = [
  "hex",
  "serde",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "ostinato-lang"
-version = "0.46.0"
+version = "0.46.1"
 dependencies = [
  "bigdecimal",
  "chrono",
