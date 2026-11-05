@@ -4893,6 +4893,12 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         return Ok(Value::Bool(false));
                     }
                     let right_value = eval_expr(right, frame)?.concretize().clone();
+                    if frame.allows_incomplete(expr)
+                        && value_is_pending(&right_value)
+                        && let Some(value) = deferred_binary_value(op, &left_value, &right_value)
+                    {
+                        return Ok(value);
+                    }
                     let right_bool = require_bool(frame, &right_value, *span)?;
                     return Ok(Value::Bool(if matches!(op, BinOp::And) {
                         left_bool && right_bool

@@ -11408,6 +11408,48 @@ command: c: {
             .to_owned(),
         ),
         (
+            "boolrightok",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string, success: bool}
+command: c: {
+	t: cli.Print & {text: "a=\(true && run.success) b=\(false || run.success)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "boolrightinvalidand",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\(true && run.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "boolrightinvalidor",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\(false || run.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
             "boolshortcircuit",
             r#"package foo
 import "tool/cli"
@@ -11428,12 +11470,36 @@ command: c: {
             write(&directory.join("lib/lib.cue"), library);
             write(&directory.join("x_tool.cue"), &source);
         }
+        // Only `modpre` names its command after the case; every other fixture
+        // declares `command: c:`.
+        let command = if name == "modpre" { name } else { "c" };
         let expected = Command::new(&cue)
-            .args(["cmd", name])
+            .args(["cmd", command])
             .current_dir(cue_dir.path())
             .output()
             .expect("run cue cmd");
-        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        let actual = ost(&["cmd", command, rust_dir.path().to_str().expect("path")]);
+        for (implementation, output) in [("cue", &expected), ("ostinato", &actual)] {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !stderr.contains("not found") && !stderr.contains("no tasks"),
+                "{name}: {implementation} command did not resolve: {stderr}"
+            );
+        }
+        let expect_success = !matches!(
+            name,
+            "declfirst"
+                | "directaliasread"
+                | "forpending"
+                | "boolrightinvalidand"
+                | "boolrightinvalidor"
+        );
+        assert_eq!(
+            expected.status.success(),
+            expect_success,
+            "{name}: cue success mismatch: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
         assert_eq!(
             actual.status.code(),
             expected.status.code(),
