@@ -3807,6 +3807,7 @@ impl<'a> Frame<'a> {
         let mut values = Vec::new();
         let mut poisoned = false;
         let mut hard_cycle = false;
+        let mut hard_self_cycle = false;
         let mut soft = None;
         for expr in &exprs {
             let mut visited = BTreeSet::new();
@@ -3822,6 +3823,7 @@ impl<'a> Frame<'a> {
             if projection.hard_cycle {
                 hard_cycle = true;
             }
+            hard_self_cycle |= projection.hard_self_cycle;
             if projection.poisoned && projection.values.is_empty() {
                 poisoned = true;
                 continue;
@@ -3831,10 +3833,33 @@ impl<'a> Frame<'a> {
             }
             values.extend(projection.values);
         }
+        if hard_self_cycle {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("cyclic reference while evaluating `{name}`"),
+            ));
+        }
         if hard_cycle {
-            // A cycle in one declaration only resolves if another operand
-            // supplies a concrete plain value for the selected path.
-            values.retain(value_is_plain_concrete);
+            // A cross-field cycle only resolves when another declaration
+            // directly selects the same path (mutual selection) and supplies
+            // a concrete value or a usable default for it.
+            let mutual = exprs
+                .iter()
+                .any(|expr| expr_contains_direct_selector_path(expr, self, name, segments));
+            if !mutual {
+                values.clear();
+            } else {
+                values.retain(|value| value.to_json().is_some());
+            }
+        }
+        if values.is_empty()
+            && hard_cycle
+            && segments.len() == 1
+            && let Some(SelectSegment::Field(field, _)) = segments.last()
+            && let Some(value) = optional_field_default(self, &exprs, field)
+        {
+            values.push(value);
         }
         if values.is_empty() {
             if hard_cycle {
@@ -3903,6 +3928,8 @@ impl<'a> Frame<'a> {
                     PathProjection {
                         poisoned: true,
                         hard_cycle: !transparent,
+                        hard_self_cycle: !transparent
+                            && expr_contains_selector_path(expr, scope, name, segments),
                         ..PathProjection::default()
                     }
                 }
@@ -3935,6 +3962,7 @@ impl<'a> Frame<'a> {
                     return Ok(PathProjection {
                         poisoned: true,
                         hard_cycle: left.hard_cycle || right.hard_cycle,
+                        hard_self_cycle: left.hard_self_cycle || right.hard_self_cycle,
                         ..PathProjection::default()
                     });
                 }
@@ -4095,6 +4123,8 @@ impl<'a> Frame<'a> {
                 return Ok(PathProjection {
                     poisoned: true,
                     hard_cycle: !transparent,
+                    hard_self_cycle: !transparent
+                        && expr_contains_selector_path(expr, scope, name, segments),
                     ..PathProjection::default()
                 });
             }
@@ -4375,6 +4405,7 @@ struct PathProjection {
     values: Vec<Value>,
     poisoned: bool,
     hard_cycle: bool,
+    hard_self_cycle: bool,
     soft: Option<LangError>,
 }
 
@@ -4382,6 +4413,7 @@ fn merge_non_poisoned(parts: Vec<PathProjection>) -> PathProjection {
     let mut out = PathProjection::default();
     for part in parts {
         out.hard_cycle |= part.hard_cycle;
+        out.hard_self_cycle |= part.hard_self_cycle;
         if part.poisoned {
             continue;
         }
@@ -4579,6 +4611,88 @@ fn expr_contains_evaluating_selector(expr: &Expr, frame: &Frame<'_>) -> bool {
     }
 }
 
+fn expr_contains_direct_selector_path(
+    expr: &Expr,
+    frame: &Frame<'_>,
+    name: &str,
+    segments: &[SelectSegment],
+) -> bool {
+    if let Some((root, path)) = selector_path(expr)
+        && !path.is_empty()
+        && frame.resolve_transparent_let(&root) == name
+        && path == segments
+    {
+        return true;
+    }
+    match expr {
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+            expr_contains_direct_selector_path(base, frame, name, segments)
+        }
+        Expr::Paren(operand, _) | Expr::Default(operand, _) => {
+            expr_contains_direct_selector_path(operand, frame, name, segments)
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            expr_contains_direct_selector_path(left, frame, name, segments)
+                || expr_contains_direct_selector_path(right, frame, name, segments)
+        }
+        Expr::Struct(items, _) => items.iter().any(|item| match item {
+            StructItem::Field(field) => {
+                expr_contains_direct_selector_path(&field.value, frame, name, segments)
+            }
+            StructItem::Pattern { value, .. } | StructItem::Let { value, .. } => {
+                expr_contains_direct_selector_path(value, frame, name, segments)
+            }
+            StructItem::If { cond, body, .. } => {
+                expr_contains_direct_selector_path(cond, frame, name, segments)
+                    || body.iter().any(|item| match item {
+                        StructItem::Field(field) => {
+                            expr_contains_direct_selector_path(&field.value, frame, name, segments)
+                        }
+                        _ => false,
+                    })
+            }
+            StructItem::For { source, body, .. } => {
+                expr_contains_direct_selector_path(source, frame, name, segments)
+                    || body.iter().any(|item| match item {
+                        StructItem::Field(field) => {
+                            expr_contains_direct_selector_path(&field.value, frame, name, segments)
+                        }
+                        _ => false,
+                    })
+            }
+            StructItem::Ellipsis(_) => false,
+        }),
+        Expr::List(items, _) => items
+            .iter()
+            .any(|item| expr_contains_direct_selector_path(item, frame, name, segments)),
+        Expr::OpenListPrefix(items, tail, _) => {
+            items
+                .iter()
+                .any(|item| expr_contains_direct_selector_path(item, frame, name, segments))
+                || tail.as_deref().is_some_and(|tail| {
+                    expr_contains_direct_selector_path(tail, frame, name, segments)
+                })
+        }
+        Expr::OpenList(Some(item), _) => {
+            expr_contains_direct_selector_path(item, frame, name, segments)
+        }
+        Expr::OpenList(None, _) => false,
+        Expr::Str(parts, _) => parts.iter().any(|part| match part {
+            crate::ast::StrPart::Interp(expr) => {
+                expr_contains_direct_selector_path(expr, frame, name, segments)
+            }
+            crate::ast::StrPart::Text(_) => false,
+        }),
+        Expr::BytesInterp(parts, _) => parts.iter().any(|part| match part {
+            crate::ast::BytePart::Interp(expr) => {
+                expr_contains_direct_selector_path(expr, frame, name, segments)
+            }
+            crate::ast::BytePart::Text(_) => false,
+        }),
+        _ => false,
+    }
+}
+
 fn expr_contains_selector_path(
     expr: &Expr,
     frame: &Frame<'_>,
@@ -4678,6 +4792,9 @@ fn expr_contains_selector_path(
         }
         Expr::Ident(target, _) => {
             let resolved = frame.resolve_transparent_let(target);
+            if resolved == name {
+                return false;
+            }
             let repeat = CHECKED_SELF_BINDINGS.with(|bindings| {
                 let mut bindings = bindings.borrow_mut();
                 if bindings.contains(&resolved) {
@@ -4718,6 +4835,53 @@ fn expr_contains_selector_path(
         }
         _ => false,
     }
+}
+
+fn optional_field_default(frame: &Frame<'_>, exprs: &[Expr], field: &str) -> Option<Value> {
+    fn find(items: &[StructItem], frame: &Frame<'_>, field: &str) -> Option<Value> {
+        for item in items {
+            match item {
+                StructItem::Field(candidate) => {
+                    if let crate::ast::Label::Name(name, _) = &candidate.label
+                        && name == field
+                        && candidate.optional
+                    {
+                        let value = eval_expr(&candidate.value, frame).ok()?;
+                        if value.to_json().is_some() {
+                            return Some(value.concretize().clone());
+                        }
+                    }
+                }
+                StructItem::If { body, .. } | StructItem::For { body, .. } => {
+                    if let Some(value) = find(body, frame, field) {
+                        return Some(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    for expr in exprs {
+        match strip_expr_parens(expr) {
+            Expr::Struct(items, _) => {
+                if let Some(value) = find(items, frame, field) {
+                    return Some(value);
+                }
+            }
+            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+                for nested in [left.as_ref(), right.as_ref()] {
+                    if let Expr::Struct(items, _) = strip_expr_parens(nested)
+                        && let Some(value) = find(items, frame, field)
+                    {
+                        return Some(value);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn struct_field_values(

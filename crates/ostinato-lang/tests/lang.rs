@@ -8815,6 +8815,35 @@ x2: {a: x2.b} & {b: 1, b: x2.a}
 }
 
 #[test]
+fn mutual_cycles_closed_by_defaults_resolve() {
+    let source = r#"
+package demo
+s1: {a: s1.b, b: s1.a} & {b: *1 | int}
+s2: {a: s2.b, b: s2.a} & {b: int | *1}
+s3: {a: s3.b, b: s3.a} & {b: *3 | int}
+s4: {a: s4.b, b: s4.a} & {b?: *1 | int}
+dep: {a: dep.b, b: dep.a, c: dep.a * 2} & {b: *1 | int}
+let D = *1 | int
+let_def: {a: let_def.b, b: let_def.a} & {b: D}
+base: {a: 2}
+field_def: {a: field_def.b, b: field_def.a} & {b: base.a}
+#Def: *1 | int
+def_def: {a: def_def.b, b: def_def.a} & {b: #Def}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse default-closed mutual cycles");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval default-closed mutual cycles")
+        .to_json()
+        .expect("json");
+    for name in ["s1", "s2", "s4", "let_def", "def_def"] {
+        assert_eq!(json[name], serde_json::json!({"a": 1, "b": 1}), "{name}");
+    }
+    assert_eq!(json["s3"], serde_json::json!({"a": 3, "b": 3}));
+    assert_eq!(json["dep"], serde_json::json!({"a": 1, "b": 1, "c": 2}));
+    assert_eq!(json["field_def"], serde_json::json!({"a": 2, "b": 2}));
+}
+
+#[test]
 fn list_comprehension_selector_paths_see_narrowed_elements() {
     let source = r#"
 package demo

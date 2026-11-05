@@ -74,6 +74,9 @@ disj_nested_optional: ({o: {a: *1 | int, b: a}} | {o: {a: string}}) & {o: {a?: 4
 disj_list_optional: ({l: [{a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [{a?: 44}]}
 disj_listcomp_optional: ({l: [for i in [1] {a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [{a?: 45}]}
 
+default_cycle: {a: default_cycle.b, b: default_cycle.a} & {b: *1 | int}
+optional_default_cycle: {a: optional_default_cycle.b, b: optional_default_cycle.a} & {b?: *1 | int}
+
 #A: {bs: [...#B], u: len(bs)}
 #B: {as: [...#A], t: len(as)}
 mutual_lists_x: #A & {bs: [{as: [{}]}]}
@@ -118,6 +121,8 @@ params: {
 	r_disj_nested_optional: disj_nested_optional
 	r_disj_list_optional: disj_list_optional
 	r_disj_listcomp_optional: disj_listcomp_optional
+	r_default_cycle: default_cycle
+	r_optional_default_cycle: optional_default_cycle
 	r_mutual: mutual_x
 	r_alias_self: alias_x
 	r_deep_mutual: deep_mutual
