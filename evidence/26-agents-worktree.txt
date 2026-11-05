@@ -1,30 +1,38 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-878d7b2
+6d81a53
 
 ### git worktree list
-/Users/joanmarc/dailywork/jmca/ostinato                                    16a10c5 [main]
-/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/wt-v0391 301b5da (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato-gateways                           668e12f [feat/gateways]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions       cb3a2ae [feat/agent-definitions]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/alias-target-reads      75f9f27 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/definition-nested-reads c6e8f7b (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan           99e7541 [feat/gateways-r0-r4]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-def-output-refs     fabd011 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection           e071d4e (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection      2f4178f (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-alias-reads      9df3b61 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-definition-alias 1e9381d (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports     dda0eba (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after      747bce6 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps      fee7d72 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/order-scan              79704b8 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/package-after           628424d (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/path-keyed-reads        6653528 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/root-alias-repeat       eb961ad (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/second-hop-aliases      878d7b2 [fix/v0.41.2-definition-alias-read]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let            aab750d [fix/v0.24.5-let-rejection-scope]
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/stderr-injection        cea92a7 (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/unused-imports          698ef6d (detached HEAD)
-/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244            768b178 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato                                          6d81a53 [release/v0.46.0]
+/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/parity-9631626 9631626 (detached HEAD)
+/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/pr251-base     5f3413e (detached HEAD)
+/private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/wt-v0391       301b5da (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato-gateways                                 668e12f [feat/gateways]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/agent-definitions             cb3a2ae [feat/agent-definitions]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/alias-target-reads            75f9f27 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/cue-template-semantics        2c6bdc7 [fix/v0.45.1-optional-injection-soundness]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/definition-nested-reads       c6e8f7b (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-doc-edits            18b97ca (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/gateways-plan                 99e7541 [feat/gateways-r0-r4]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/json-yaml-io                  7a7f912 [fix/json-yaml-review-round2]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-def-output-refs           fabd011 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-injection                 e071d4e (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/let-task-injection            2f4178f (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-alias-reads            9df3b61 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-definition-alias       1e9381d (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports           dda0eba (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after            747bce6 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps            fee7d72 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/order-scan                    79704b8 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/package-after                 628424d (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/path-keyed-reads              6653528 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/root-alias-repeat             eb961ad (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/runtime-templates             4d879e5 [feat/v0.42.0-runtime-templates]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/second-hop-aliases            0050109 [fix/json-yaml-deep-review]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let                  aab750d [fix/v0.24.5-let-rejection-scope]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/stderr-injection              cea92a7 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/tool-template-parity          1992d2d [fix/v0.44.3-tool-os-schema-refs]
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/unused-imports                698ef6d (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244                  768b178 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/workflow-events               067ae44 [feat/v0.45.0-workflow-events]

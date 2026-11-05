@@ -1,18 +1,18 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-2hop/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.2L9Kx2n9DG/gateway.sqlite logs e418bc5d-5dd3-4625-8e7b-4650ef67e318
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-release/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.DixxUqSL5L/gateway.sqlite logs 1c4f214c-0337-4e95-9884-0ac78e75befe
 
-0 2026-11-05T00:13:58.967Z run.started step=- {"params":{"quality":"fast"},"stateHash":"6e75fcb7cdc3db885fd38114fe078423b26cd40719b0a166b94eee815fe468e5","workflow":"release-decision"}
-1 2026-11-05T00:13:58.974Z step.succeeded step=test {"attempts":1,"error":null,"outputHash":"b49800e7e1ff4e636a523d8c8d15acdb0a27d35a871987f8a8a0bb774a1d0540","round":0,"score":0.95}
-2 2026-11-05T00:13:58.974Z state.committed step=- {"resumeIndex":1,"stateHash":"82a0be19fba16c71243c32f93e9c22a45c61908a8a19542bc96b381c408dcb42"}
-3 2026-11-05T00:13:58.974Z gateway.evaluated step=route {"chosen":["deployFast"],"default":"deploySlow","evaluated":{"deployFast":{"condition":"steps.test.score >= 0.9 && params.quality == \"fast\"","result":true},"deploySlow":{"default":true,"result":true}},"gateway":"route","round":0,"split":"xor","usedDefault":false}
-4 2026-11-05T00:13:58.974Z state.committed step=- {"resumeIndex":2,"stateHash":"c226111a140aa1e058804da1224ef2071601795d8eb9c223d3859a1d3d096858"}
-5 2026-11-05T00:13:58.980Z step.succeeded step=deployFast {"attempts":1,"error":null,"outputHash":"ee0d753a9d044b6f11e644eec8d280f6a9f6231bf623315e23bc0766f8764e14","round":0,"score":1.0}
-6 2026-11-05T00:13:58.980Z step.skipped step=deploySlow {"branch":"deploySlow","gateway":"route","reason":"dead_path","round":0,"step":"deploySlow"}
-7 2026-11-05T00:13:58.980Z state.committed step=- {"resumeIndex":4,"stateHash":"aa526835ebcc228c4230e1314c255ca4a99b39a35008c4c35f74840beb1315d7"}
-8 2026-11-05T00:13:58.980Z gateway.joined step=merge {"active":["deployFast"],"dead":["deploySlow"],"decision":"taken","gateway":"merge","incoming":["deployFast","deploySlow"],"join":"or","round":0}
-9 2026-11-05T00:13:58.980Z state.committed step=- {"resumeIndex":5,"stateHash":"5fc470f28d29063672e9de5416f030e4378b9df61f095b1ec5abf176e9987a1c"}
-10 2026-11-05T00:13:58.986Z step.succeeded step=notify {"attempts":1,"error":null,"outputHash":"25a50fab20e90ead1f539bad84b2e17ef771f4716ae4aa99ace3c914c70b51e4","round":0,"score":1.0}
-11 2026-11-05T00:13:58.986Z state.committed step=- {"resumeIndex":6,"stateHash":"95e7450307814214cf84ab334d639d6087f5469354a9eaa7f6b06dc773ff6dd0"}
-12 2026-11-05T00:13:58.986Z run.succeeded step=- {"resumeIndex":6}
-13 2026-11-05T00:13:58.986Z state.committed step=- {"resumeIndex":6,"stateHash":"95e7450307814214cf84ab334d639d6087f5469354a9eaa7f6b06dc773ff6dd0"}
+0 2026-11-05T09:19:55.029Z run.started step=- {"workflow":"release-decision","params":{"quality":"fast"},"stateHash":"3dc9e507f5fee848cb11d0fdd0ec4ea02760b2dfad48872f3992b6a7e5d6b806"}
+1 2026-11-05T09:19:55.037Z step.succeeded step=test {"round":0,"attempts":1,"score":0.95,"outputHash":"0ffb1ac78e9a04d79eca177cc6ec31ef08ec70018eef528017864a4931339dcf","error":null}
+2 2026-11-05T09:19:55.037Z state.committed step=- {"stateHash":"f72cb8f62281e3d6f3543a7db0667f73d5b8549f5fe956153d5d9b49b5895306","resumeIndex":1}
+3 2026-11-05T09:19:55.037Z gateway.evaluated step=route {"gateway":"route","split":"xor","evaluated":{"deployFast":{"condition":"steps.test.score >= 0.9 && params.quality == \"fast\"","result":true},"deploySlow":{"default":true,"result":true}},"chosen":["deployFast"],"default":"deploySlow","usedDefault":false,"round":0}
+4 2026-11-05T09:19:55.037Z state.committed step=- {"stateHash":"bb2633321834a192acad1069809b6ad3c8337b587b150127984591a3eeac14f9","resumeIndex":2}
+5 2026-11-05T09:19:55.043Z step.succeeded step=deployFast {"round":0,"attempts":1,"score":1.0,"outputHash":"79470184246c94607a2348628ed294a9b4deea698c4db843d0e81794bf42e691","error":null}
+6 2026-11-05T09:19:55.043Z step.skipped step=deploySlow {"step":"deploySlow","reason":"dead_path","round":0,"gateway":"route","branch":"deploySlow"}
+7 2026-11-05T09:19:55.043Z state.committed step=- {"stateHash":"3614fcbf05d47dd64f11312f58b2e4ee5e13a90382af0e6482d113d6e97d07a7","resumeIndex":4}
+8 2026-11-05T09:19:55.044Z gateway.joined step=merge {"gateway":"merge","join":"or","incoming":["deployFast","deploySlow"],"active":["deployFast"],"dead":["deploySlow"],"decision":"taken","round":0}
+9 2026-11-05T09:19:55.044Z state.committed step=- {"stateHash":"0a236ce71bd1bb528795f310af608a09b361880a0d2b03117344a3af1ff4758e","resumeIndex":5}
+10 2026-11-05T09:19:55.049Z step.succeeded step=notify {"round":0,"attempts":1,"score":1.0,"outputHash":"dfcdc48efaf141f6d52cb3c30b216561507ee370a071af696d464f96f7dc7178","error":null}
+11 2026-11-05T09:19:55.049Z state.committed step=- {"stateHash":"fe7aca4779c691d92298a1741df76f9bb76153a0b52721b188767ea427a84a51","resumeIndex":6}
+12 2026-11-05T09:19:55.049Z run.succeeded step=- {"resumeIndex":6}
+13 2026-11-05T09:19:55.049Z state.committed step=- {"stateHash":"fe7aca4779c691d92298a1741df76f9bb76153a0b52721b188767ea427a84a51","resumeIndex":6}
 
 exit=0
