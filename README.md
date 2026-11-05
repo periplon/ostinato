@@ -32,12 +32,14 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 
 ## Status
 
-`v0.41.2` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
+`v0.46.0` is a complete, tested implementation of the scope below. It is intentionally small enough to audit. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the CUE compliance contract and [docs/EVIDENCE.md](docs/EVIDENCE.md) for reproducible proof.
 
 ## Features
 
 - **Rust CUE front-end (default)**: packages, imports/modules, `let`, comprehensions, nested field shorthand, closed definitions with `...`, comprehension-generated definitions and patterns, field aliases, bounds, exact decimals and arbitrary-precision integers, unification, disjunctions/defaults, optional fields, `strings`/`list`/`regexp`/`math`/`time` builtins, single-line/multiline/interpolated bytes literals, CUE-compatible multiline strings and nested multiline interpolation, `@tag` injection (top-level and nested), attributes, per-file unused-import rejection, the documented let-selector output-injection extension and `ostinato cmd` tool commands (`*_tool.cue` + `tool/exec.Run`/`tool/cli.Print`/`tool/file`, composed task values, referenced and selector commands, alias chains and helper/`let` interpolation) are implemented in Rust.
 - **Official CUE oracle**: `--evaluator cue` and the conformance suite compare the Rust evaluator against CUE v0.17.1.
+- **JSON/YAML document I/O**: `ostinato import`/`ostinato export`, workflow `--input` data files and `--out json|yaml`, with hardened YAML aliases/depth/numbers and CUE-compatible values. See [docs/JSON-YAML.md](docs/JSON-YAML.md).
+- **Durable workflow events**: internal step emission, external process injection (`ostinato event`), await steps with timeouts/cancellation/resume, per-consumer cursors, audit and `ostinato events --follow`. See [docs/EVENTS.md](docs/EVENTS.md).
 - **Durable**: SQLite WAL + `synchronous=FULL`; each parallel group commits atomically with its audit events.
 - **Resumable**: `ostinato resume <run>` skips completed work using a stable plan index.
 - **Retries**: bounded exponential backoff, deterministic jitter, per-attempt timeouts.
@@ -75,7 +77,7 @@ Verify:
 
 ```sh
 ostinato doctor
-# ostinato 0.41.2
+# ostinato 0.46.0
 # evaluator rust (required CUE workflow semantics; default)
 # oracle cue version v0.17.1
 # db .ostinato/ostinato.db
@@ -145,6 +147,10 @@ workflow: {
 | `ostinato artifacts <run> [--step S] [--trace N] [--round R] [--attempt A] [--extract DIR] [--force]` | List or extract agent artifacts |
 | `ostinato improve <run> --rounds N --agent-cmd CMD` | Recursive improvement proposals + child runs |
 | `ostinato metrics [--run <id>] [--format text\|prometheus\|json]` | Aggregated metrics |
+| `ostinato import <json\|yaml>...` | Import JSON/YAML documents as CUE source |
+| `ostinato export <file.cue>` | Export evaluated values as JSON or YAML (`--out json\|yaml`) |
+| `ostinato event <run> <name>` | Inject an external workflow event |
+| `ostinato events <run> [--follow]` | List or stream workflow events |
 | `ostinato doctor` | CUE, store and agent diagnostics |
 
 Global flags: `--db`, `--evaluator cue|native`, `--cue`, `--json`, `-v`.

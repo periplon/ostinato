@@ -12,7 +12,16 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.46.0
+
+- JSON/YAML import/export and workflow data I/O, durable internal/external
+  workflow events, Go-style runtime templates, compound optional-dependent
+  template semantics, and `cue cmd` tool-template parity (stderr, tool/os,
+  help metadata, multi-instance inputs, `@cmd`).
+- 627 tests; fmt/clippy/conformance green.
+
 ## v0.41.2
+
 
 - Definition-rooted alias reads in second-hop chains resolve and execute like
   CUE instead of failing before evaluation.

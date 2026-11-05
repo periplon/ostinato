@@ -1,34 +1,34 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-2hop/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.2L9Kx2n9DG/agents.sqlite --json artifacts d4306a00-552a-4d56-8a6f-a7bbc955fe5c
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-release/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.DixxUqSL5L/agents.sqlite --json artifacts 25372c4d-037c-4566-af32-6b8fa1ab77dc
 
 {
+  "run": "25372c4d-037c-4566-af32-6b8fa1ab77dc",
   "artifacts": [
     {
-      "attempt": 0,
-      "kind": "patch",
-      "name": "_isolation/changes.patch",
+      "traceId": 1,
+      "step": "review",
       "round": 0,
+      "attempt": 0,
+      "name": "_isolation/changes.patch",
+      "kind": "patch",
       "sha256": "ee8459b07182fdbc0f789c415ac9bf2936c8f4fed550c02b4746f6cc8aa82475",
       "size": 334,
-      "step": "review",
       "storedSize": 334,
-      "traceId": 1,
       "truncated": false
     },
     {
-      "attempt": 0,
-      "kind": "declared",
-      "name": "reports/review.md",
+      "traceId": 1,
+      "step": "review",
       "round": 0,
+      "attempt": 0,
+      "name": "reports/review.md",
+      "kind": "declared",
       "sha256": "e67b117e4c5b941e4ec725412f9eb23262e581323314253d970f9bead3628c18",
       "size": 173,
-      "step": "review",
       "storedSize": 173,
-      "traceId": 1,
       "truncated": false
     }
   ],
-  "extracted": [],
-  "run": "d4306a00-552a-4d56-8a6f-a7bbc955fe5c"
+  "extracted": []
 }
 
 exit=0
