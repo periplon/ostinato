@@ -12,7 +12,17 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.48.0
+
+- Close the remaining selection/narrowing, numeric-fidelity and tool-command
+  category gaps: recursive/optional/open-list materialization, 34-digit decimal
+  arithmetic and exact JSON decimals, raw-label identity, arbitrary-hop alias
+  chains, pending-output expressions, and `tool/http` hardening.
+- Precise residuals are recorded in `docs/SCOPE.md`.
+- 688 tests; fmt/clippy/conformance green.
+
 ## v0.47.0
+
 
 - `tool/http` task parity, imported `tool/os` alias expansion, exact mixed
   big-integer template comparisons, Go-compatible `%#g`, and optional

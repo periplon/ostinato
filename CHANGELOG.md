@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.48.0
+
+Remaining category gaps closed after the v0.47.0 reviews.
+
+- **Selection/narrowing**: recursive disjunction/optional/open-list/prefix-tail materialization with dependent recomputation, required and defaulted recursive open lists, multi-dependent and three-operand split operands, transparent let-alias splits, definition-valued and shadowing nested definition narrowing, generated declaration merges, comprehension-body self-selection, bare comprehension references, and field-mediated let cycles.
+- **Numeric fidelity**: CUE's 34-digit decimal arithmetic context (add/sub/mul/div, ties, >34-digit rounding), 34-digit division, apd-compatible `math` transcendentals with exponent limits, exact JSON export of high-precision decimals, raw non-UTF-8 and control-prefix bytes-label identity, Go-compatible f64 formatting, and `math` f64 parity for the tested surface.
+- **Tool commands**: arbitrary-hop package alias chains, derived expressions over pending outputs (unary, strings/bytes repetition, comparisons, indexing, comprehensions, `list.Concat`), pending boolean right operands, per-command pruning with comprehension bindings, imported `tool/os` aliases, `tool/http` non-UTF-8 bodies and gzip/HTTP-2, plus deterministic e2e matrices.
+- `docs/SCOPE.md` records the remaining precise residuals (nested cross-dependent split operands, nested selector self-selection, mutual let cycles, command-target alias chains, HTTP trailers/`Serve`, Go float64 last-bit drift, negative zero, colliding raw-label export, and a few pending-output side-effect differences).
+
+- 688 tests; fmt/clippy/conformance green.
+
+## v0.47.0
 ## v0.47.0
 
 Remaining category gaps from the v0.46.1 reviews.
