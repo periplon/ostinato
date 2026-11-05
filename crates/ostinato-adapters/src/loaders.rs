@@ -1829,7 +1829,6 @@ pub fn run_tool_command_paths(
             &combined.items,
             &non_task_imports,
             &imports,
-            0,
             &mut aliases,
         );
         aliases
@@ -1873,37 +1872,24 @@ pub fn run_tool_command_paths(
         }
     });
 
-    // CUE gives an intermediate package field alias its own task instance, so
-    // `p2: prep; r: p2` executes twice while `r: prep` executes once.
+    // A task-input output read materialises the concrete task it reaches
+    // through pure alias and `let` hops. CUE runs `\(p5.stdout)` once (at the
+    // underlying task), while a composed declaration (`p2: base & {...}`) is
+    // its own instance.
+    let task_input_read_paths = external_paths.clone();
+    let task_input_roots: std::collections::BTreeSet<Vec<String>> = external_paths
+        .iter()
+        .map(|path| task_read_root(&combined.items, path))
+        .collect();
+    external_paths = task_input_roots.clone();
+
+    // CUE materialises every other package alias hop as its own task instance,
+    // so `p5: p4; p4: p3; p3: p2; p2: base` runs `p4` and `p2` in addition to
+    // the command alias task itself.
     let alias_instance_paths: std::collections::BTreeSet<Vec<String>> = command_aliases
         .values()
-        .filter(|target| {
-            target.depth == 0
-                || target.local.as_ref().is_some_and(|local| {
-                    !local.first().is_some_and(|first| {
-                        matches!(
-                            local_binding_location(
-                                &[combined.items.as_slice()],
-                                &combined.items,
-                                first,
-                            ),
-                            Some((true, StructItem::Field(field))) if field.definition
-                        )
-                    })
-                })
-        })
-        .filter_map(|target| {
-            target
-                .local
-                .as_ref()
-                .filter(|local| package_alias_instance(&combined.items, local))
-                .cloned()
-        })
-        .filter(|local| {
-            alias_instance_root(&combined.items, local).is_none_or(|root| {
-                !external_paths.contains(&root) || module_root(&combined.items, &imports, &root)
-            })
-        })
+        .filter_map(|target| target.local.as_ref())
+        .flat_map(|local| alias_chain_instances(&combined.items, local))
         .collect();
     let alias_instance_roots: std::collections::BTreeSet<Vec<String>> = alias_instance_paths
         .iter()
@@ -1912,12 +1898,12 @@ pub fn run_tool_command_paths(
     let definition_alias_roots: std::collections::BTreeSet<Vec<String>> = alias_instance_paths
         .iter()
         .filter_map(|local| {
-            let value = find_field_expr_at_path_in_root(&combined.items, local, &combined.items)?;
-            let root = expr_local_root_path(value)?;
+            let root = alias_target_at_path(&combined.items, local)?;
             definition_root(&combined.items, &root).then_some(root)
         })
         .collect();
-    external_paths.retain(|path| !definition_alias_roots.contains(path));
+    external_paths
+        .retain(|path| !definition_alias_roots.contains(path) || task_input_roots.contains(path));
     plain_read_paths.extend(alias_instance_roots.iter().cloned());
     external_paths.extend(alias_instance_paths.iter().cloned());
 
@@ -2084,6 +2070,46 @@ pub fn run_tool_command_paths(
     {
         if let Some(leaf) = path.last() {
             task_name_set.insert(leaf.clone());
+        }
+    }
+    // A read such as `\(p2.stdout)` may be canonicalised to a definition-rooted
+    // path (`#base`). Allow interpolation through the alias hops that actually
+    // carry a read, so consumers wait for injection. Hops without a read keep
+    // CUE's eager non-concrete error (for example a declaration-first task
+    // input through a definition alias).
+    let mut package_paths = Vec::new();
+    collect_field_paths(&combined.items, &[], &mut package_paths);
+    for path in &package_paths {
+        let nodes = alias_chain_nodes(&combined.items, path);
+        if nodes.len() < 2 {
+            continue;
+        }
+        let carries_read = nodes.iter().any(|node| {
+            if plain_read_paths.contains(node) {
+                return true;
+            }
+            if !task_input_read_paths.contains(node) {
+                return false;
+            }
+            !read_through_definition_module(&combined.items, &imports, node)
+        });
+        if !carries_read {
+            continue;
+        }
+        for node in nodes {
+            if let Some(leaf) = node.last() {
+                task_name_set.insert(leaf.clone());
+            }
+        }
+    }
+    // Reads routed through a definition that aliases a plain module-backed
+    // field stay non-concrete in CUE; do not let a same-named nested task
+    // label keep the interpolation incomplete.
+    for path in &package_paths {
+        if read_through_definition_module(&combined.items, &imports, path)
+            && let Some(leaf) = path.last()
+        {
+            task_name_set.remove(leaf);
         }
     }
     let value = eval_file_with_imports_mode_allow_outputs(
@@ -6720,35 +6746,166 @@ fn record_package_declaration(
     }
 }
 
-/// A package field whose value aliases a local binding creates its own task
-/// instance when used as a command alias target.
-fn package_alias_instance(items: &[StructItem], path: &[String]) -> bool {
-    let Some(value) = find_field_expr_at_path_in_root(items, path, items) else {
-        return false;
-    };
-    expr_roots_local_binding(items, value)
+/// Collect every field path in a package, including nested structs.
+fn collect_field_paths(items: &[StructItem], prefix: &[String], out: &mut Vec<Vec<String>>) {
+    for item in items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        let Label::Name(name, _) = &field.label else {
+            continue;
+        };
+        let mut path = prefix.to_vec();
+        path.push(name.clone());
+        out.push(path.clone());
+        if let Some(nested) = struct_items_of(&field.value) {
+            collect_field_paths(nested, &path, out);
+        }
+    }
 }
 
-fn module_root(
-    items: &[StructItem],
-    module_values: &BTreeMap<String, Value>,
-    path: &[String],
-) -> bool {
-    find_field_expr_at_path_in_root(items, path, items).is_some_and(|value| {
-        module_task_path_scoped(
-            value,
-            &[items],
-            items,
-            module_values,
-            &mut std::collections::BTreeSet::new(),
-        )
-        .is_some()
-    })
+/// Resolve an expression to the package-local field path it aliases.
+///
+/// `let` bindings are transparent: `p2: l` with `let l = base` resolves to
+/// `base`. Unifications and disjunctions keep the first operand that reaches a
+/// local field, mirroring CUE's preference for task operands (`base & {...}`).
+fn alias_local_target_scoped(
+    expr: &Expr,
+    scopes: &[(&[StructItem], Vec<String>)],
+    root: &[StructItem],
+) -> Option<Vec<String>> {
+    match expr {
+        Expr::Ident(name, _) => {
+            let (scope_items, prefix) = scopes.last()?;
+            match local_binding_location(&[*scope_items], root, name) {
+                Some((_, StructItem::Let { value, .. })) => {
+                    alias_local_target_scoped(value, scopes, root)
+                }
+                Some((false, StructItem::Field(_))) => {
+                    let mut path = prefix.clone();
+                    path.push(name.clone());
+                    Some(path)
+                }
+                Some((true, StructItem::Field(_))) => Some(vec![name.clone()]),
+                _ => None,
+            }
+        }
+        Expr::Select(base, label, _, _) => {
+            let mut path = alias_local_target_scoped(base, scopes, root)?;
+            path.push(label.clone());
+            Some(path)
+        }
+        Expr::Index(base, _, _) => alias_local_target_scoped(base, scopes, root),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            alias_local_target_scoped(inner, scopes, root)
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            alias_local_target_scoped(left, scopes, root)
+                .or_else(|| alias_local_target_scoped(right, scopes, root))
+        }
+        _ => None,
+    }
+}
+
+/// Resolve the alias target of the field at `path`, honouring nested struct
+/// scopes (`group.p2: p1`).
+fn alias_target_at_path(items: &[StructItem], path: &[String]) -> Option<Vec<String>> {
+    let value = find_field_expr_at_path_in_root(items, path, items)?;
+    let scopes = scopes_for_path(items, path);
+    alias_local_target_scoped(value, &scopes, items)
+}
+
+/// Walk a package alias chain from `target` down to the field that declares
+/// the task (or the last field aliasing a module task).
+///
+/// Each entry is a package field path: `["p4", "p3", "p2", "base"]`.
+fn alias_chain_nodes(items: &[StructItem], target: &[String]) -> Vec<Vec<String>> {
+    let mut nodes = vec![target.to_vec()];
+    let mut current = target.to_vec();
+    let mut seen = std::collections::BTreeSet::new();
+    while seen.insert(current.clone()) {
+        let Some(value) = find_field_expr_at_path_in_root(items, &current, items) else {
+            break;
+        };
+        let scopes = scopes_for_path(items, &current);
+        let Some(next) = alias_local_target_scoped(value, &scopes, items) else {
+            break;
+        };
+        if next == current || find_field_expr_at_path_in_root(items, &next, items).is_none() {
+            break;
+        }
+        nodes.push(next.clone());
+        current = next;
+        if nodes.len() > 256 {
+            break;
+        }
+    }
+    nodes
+}
+
+/// Task instance paths CUE creates for a command alias target.
+///
+/// CUE materialises the alias field immediately below the target and then every
+/// other hop of the chain (`p5: p4; p4: p3; p3: p2; p2: base` yields `p4` and
+/// `p2`). The command alias task itself is scheduled separately.
+fn alias_chain_instances(items: &[StructItem], target: &[String]) -> Vec<Vec<String>> {
+    // `nodes[0]` is the command alias target, which the command task itself
+    // executes. CUE materialises the odd hops below it.
+    alias_chain_nodes(items, target)
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .cloned()
+        .collect()
+}
+
+/// A value that only references another binding (`p3: p2`, `p3: l`, `#a: #b`).
+/// Composed declarations (`base & {...}`, `lib.run & x.y`) are their own task
+/// instances.
+fn is_pure_alias_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Ident(..)
+            | Expr::Select(..)
+            | Expr::Index(..)
+            | Expr::Paren(..)
+            | Expr::Default(..)
+            | Expr::Bound(..)
+    )
+}
+
+/// The concrete task field reached by a task-input output read.
+///
+/// Pure alias hops (`p3: p2`) and `let` bindings are followed, but a composed
+/// declaration (`p2: base & {...}`) is its own task instance, matching CUE.
+fn task_read_root(items: &[StructItem], path: &[String]) -> Vec<String> {
+    let mut current = path.to_vec();
+    let mut seen = std::collections::BTreeSet::new();
+    while seen.insert(current.clone()) {
+        let Some(value) = find_field_expr_at_path_in_root(items, &current, items) else {
+            break;
+        };
+        if !is_pure_alias_expr(value) {
+            break;
+        }
+        let scopes = scopes_for_path(items, &current);
+        let Some(next) = alias_local_target_scoped(value, &scopes, items) else {
+            break;
+        };
+        if next == current || find_field_expr_at_path_in_root(items, &next, items).is_none() {
+            break;
+        }
+        current = next;
+        if seen.len() > 256 {
+            break;
+        }
+    }
+    current
 }
 
 fn alias_instance_root(items: &[StructItem], local: &[String]) -> Option<Vec<String>> {
-    let value = find_field_expr_at_path_in_root(items, local, items)?;
-    let root = expr_local_root_path(value)?;
+    let root = alias_target_at_path(items, local)?;
+    find_field_expr_at_path_in_root(items, &root, items)?;
     (!definition_root(items, &root)).then_some(root)
 }
 
@@ -6761,23 +6918,39 @@ fn definition_root(items: &[StructItem], path: &[String]) -> bool {
     })
 }
 
-fn expr_local_root_path(expr: &Expr) -> Option<Vec<String>> {
-    match expr {
-        Expr::Ident(name, _) => Some(vec![name.clone()]),
-        Expr::Select(base, label, _, _) => {
-            let mut path = expr_local_root_path(base)?;
-            path.push(label.clone());
-            Some(path)
+/// Whether a task-input read passes through a definition that aliases a plain
+/// module-backed field. CUE leaves such reads non-concrete (`#a: base` with
+/// `base: lib.run`), while a definition alias to another definition
+/// (`#a: #b`) still materialises.
+fn read_through_definition_module(
+    items: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+    path: &[String],
+) -> bool {
+    for node in alias_chain_nodes(items, path) {
+        if !node.first().is_some_and(|first| first.starts_with('#')) {
+            continue;
         }
-        Expr::Index(base, _, _) => expr_local_root_path(base),
-        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            expr_local_root_path(left).or_else(|| expr_local_root_path(right))
+        let Some(target) = alias_target_at_path(items, &node) else {
+            return false;
+        };
+        if target.first().is_some_and(|first| first.starts_with('#'))
+            || definition_root(items, &target)
+        {
+            return false;
         }
-        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            expr_local_root_path(inner)
-        }
-        _ => None,
+        return find_field_expr_at_path_in_root(items, &target, items).is_some_and(|value| {
+            module_task_path_scoped(
+                value,
+                &[items],
+                items,
+                imports,
+                &mut std::collections::BTreeSet::new(),
+            )
+            .is_some()
+        });
     }
+    false
 }
 
 fn expr_roots_local_binding(items: &[StructItem], expr: &Expr) -> bool {
@@ -6827,7 +7000,6 @@ fn external_task_key(path: &[String], root: &[StructItem]) -> String {
 struct CommandAliasTarget {
     module: Option<Vec<String>>,
     local: Option<Vec<String>>,
-    depth: usize,
 }
 
 fn resolve_command_alias_target(
@@ -6869,11 +7041,7 @@ fn resolve_command_alias_target(
             if local.is_none() && module.is_none() {
                 return None;
             }
-            Some(CommandAliasTarget {
-                module,
-                local,
-                depth: 0,
-            })
+            Some(CommandAliasTarget { module, local })
         }
     }
 }
@@ -6942,9 +7110,11 @@ fn local_alias_path(
         return None;
     }
     let value = find_field_expr_at_path(root, &path)?;
+    let scoped = scopes_for_path(root, &path);
+    let refs: Vec<&[StructItem]> = scoped.iter().map(|(items, _)| *items).collect();
     is_task_expr(
         value,
-        scopes,
+        &refs,
         root,
         &mut std::collections::BTreeSet::new(),
         imports,
@@ -7065,7 +7235,6 @@ fn collect_command_task_package_paths(
     root: &[StructItem],
     imports: &ImportKinds,
     module_values: &BTreeMap<String, Value>,
-    depth: usize,
     out: &mut std::collections::BTreeMap<String, CommandAliasTarget>,
 ) {
     match expr {
@@ -7092,7 +7261,7 @@ fn collect_command_task_package_paths(
                     imports,
                 );
                 if child_is_task
-                    && let Some(mut target) = resolve_command_alias_target(
+                    && let Some(target) = resolve_command_alias_target(
                         &field.value,
                         scopes,
                         root,
@@ -7100,7 +7269,6 @@ fn collect_command_task_package_paths(
                         module_values,
                     )
                 {
-                    target.depth = depth;
                     out.entry(label.clone()).or_insert(target);
                 }
                 collect_command_task_package_paths(
@@ -7109,41 +7277,16 @@ fn collect_command_task_package_paths(
                     root,
                     imports,
                     module_values,
-                    depth + usize::from(matches!(field.value, Expr::Struct(..))),
                     out,
                 );
             }
         }
         Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            collect_command_task_package_paths(
-                left,
-                scopes,
-                root,
-                imports,
-                module_values,
-                depth,
-                out,
-            );
-            collect_command_task_package_paths(
-                right,
-                scopes,
-                root,
-                imports,
-                module_values,
-                depth,
-                out,
-            );
+            collect_command_task_package_paths(left, scopes, root, imports, module_values, out);
+            collect_command_task_package_paths(right, scopes, root, imports, module_values, out);
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            collect_command_task_package_paths(
-                inner,
-                scopes,
-                root,
-                imports,
-                module_values,
-                depth,
-                out,
-            );
+            collect_command_task_package_paths(inner, scopes, root, imports, module_values, out);
         }
         _ => {}
     }
@@ -7820,6 +7963,19 @@ fn is_task_selection<'a>(
     visited: &mut std::collections::BTreeSet<String>,
     non_task_imports: &ImportKinds,
 ) -> bool {
+    // Nested package paths (`group.p4`) resolve inside the container scope,
+    // where sibling aliases such as `p3: p2` are visible.
+    if let Some(path) = selector_names(base, field)
+        && path.len() > 1
+        && path.first().is_some_and(|first| {
+            matches!(local_binding_location(scopes, root, first), Some((true, _)))
+        })
+        && let Some(value) = find_field_expr_at_path_in_root(root, &path, root)
+    {
+        let scoped = scopes_for_path(root, &path);
+        let refs: Vec<&[StructItem]> = scoped.iter().map(|(items, _)| *items).collect();
+        return is_task_expr(value, &refs, root, visited, non_task_imports);
+    }
     let Some(base_value) = resolve_local_value(scopes, root, base, visited) else {
         // Unresolvable selector chain: tool imports are task-bearing, while
         // builtin imports and import-rooted concrete values are not. Local
@@ -10419,6 +10575,41 @@ fn http_headers(value: &Value, what: &str) -> Result<Vec<(String, String)>, Http
     Ok(headers)
 }
 
+/// Decode bytes the way Go's `strings.ToValidUTF8(s, "\uFFFD")` does: each
+/// maximal run of invalid UTF-8 bytes becomes a single replacement character.
+///
+/// CUE stores `tool/http` response bodies as Go strings, so this matches its
+/// observable `len`/interpolation behaviour for non-UTF-8 payloads.
+fn utf8_lossy_go(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    let mut rest = bytes;
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(text) => {
+                out.push_str(text);
+                break;
+            }
+            Err(error) => {
+                let valid = error.valid_up_to();
+                if let Ok(text) = std::str::from_utf8(&rest[..valid]) {
+                    out.push_str(text);
+                }
+                out.push('\u{FFFD}');
+                let mut index = valid + 1;
+                while index < rest.len() {
+                    match std::str::from_utf8(&rest[index..]) {
+                        Ok(_) => break,
+                        Err(next) if next.valid_up_to() > 0 => break,
+                        Err(_) => index += 1,
+                    }
+                }
+                rest = &rest[index..];
+            }
+        }
+    }
+    out
+}
+
 fn http_canonical_header(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut upper = true;
@@ -10622,10 +10813,9 @@ fn execute_http(
         };
         let mut header_fields: BTreeMap<String, Value> = BTreeMap::new();
         for (name, value) in response_headers.iter() {
-            let text = value.to_str().map_or_else(
-                |_| String::from_utf8_lossy(value.as_bytes()).into_owned(),
-                str::to_owned,
-            );
+            let text = value
+                .to_str()
+                .map_or_else(|_| utf8_lossy_go(value.as_bytes()), str::to_owned);
             let entry = header_fields
                 .entry(http_canonical_header(name.as_str()))
                 .or_insert_with(|| Value::List(Vec::new()));
@@ -10636,10 +10826,7 @@ fn execute_http(
         let response_value = Value::Struct(BTreeMap::from([
             ("status".to_owned(), Value::String(status)),
             ("statusCode".to_owned(), Value::Int(status_code)),
-            (
-                "body".to_owned(),
-                Value::String(String::from_utf8_lossy(&bytes).into_owned()),
-            ),
+            ("body".to_owned(), Value::String(utf8_lossy_go(&bytes))),
             ("header".to_owned(), Value::Struct(header_fields)),
             ("trailer".to_owned(), Value::Struct(BTreeMap::new())),
         ]));
