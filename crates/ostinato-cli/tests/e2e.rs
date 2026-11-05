@@ -14089,3 +14089,155 @@ command: connfail: {
     assert_eq!(actual.status.code(), expected.status.code(), "connfail");
     assert_eq!(actual.stdout, expected.stdout, "connfail");
 }
+
+#[test]
+fn tool_command_http_tls_verify_and_ca_cert() {
+    let available = Command::new("openssl")
+        .arg("version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !available {
+        eprintln!("skipping: openssl not installed");
+        return;
+    }
+    let directory = tempfile::tempdir().expect("tempdir");
+    let ca_cert_path = directory.path().join("ca.pem");
+    let ca_key_path = directory.path().join("ca.key");
+    let cert_path = directory.path().join("server.pem");
+    let key_path = directory.path().join("server.key");
+    let csr_path = directory.path().join("server.csr");
+    let ext_path = directory.path().join("server.ext");
+    write(
+        &ext_path,
+        "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n",
+    );
+    let generated = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            ca_key_path.to_str().expect("ca key path"),
+            "-out",
+            ca_cert_path.to_str().expect("ca cert path"),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=TestCA",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+        ])
+        .output()
+        .expect("generate CA certificate");
+    let csr = Command::new("openssl")
+        .args([
+            "req",
+            "-new",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            key_path.to_str().expect("key path"),
+            "-out",
+            csr_path.to_str().expect("csr path"),
+            "-subj",
+            "/CN=127.0.0.1",
+        ])
+        .output()
+        .expect("generate server CSR");
+    let signed = Command::new("openssl")
+        .args([
+            "x509",
+            "-req",
+            "-in",
+            csr_path.to_str().expect("csr path"),
+            "-CA",
+            ca_cert_path.to_str().expect("ca cert path"),
+            "-CAkey",
+            ca_key_path.to_str().expect("ca key path"),
+            "-CAcreateserial",
+            "-out",
+            cert_path.to_str().expect("cert path"),
+            "-days",
+            "1",
+            "-extfile",
+            ext_path.to_str().expect("ext path"),
+        ])
+        .output()
+        .expect("sign server certificate");
+    if !(generated.status.success() && csr.status.success() && signed.status.success()) {
+        eprintln!("skipping: openssl cannot generate a CA/server certificate");
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("tls port");
+    let port = listener.local_addr().expect("tls address").port();
+    drop(listener);
+    let mut server = Command::new("openssl")
+        .args([
+            "s_server",
+            "-accept",
+            &format!("127.0.0.1:{port}"),
+            "-cert",
+            cert_path.to_str().expect("cert path"),
+            "-key",
+            key_path.to_str().expect("key path"),
+            "-www",
+            "-quiet",
+            "-naccept",
+            "10",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start tls server");
+    let mut ready = false;
+    for _ in 0..100 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(ready, "tls server did not start");
+
+    let cert_pem = std::fs::read_to_string(&ca_cert_path).expect("read CA certificate");
+    let cert_literal = serde_json::to_string(&cert_pem).expect("certificate literal");
+    let source = format!(
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/http"
+)
+command: verifyfalse: {{
+	r: http.Get & {{url: "https://127.0.0.1:{port}/", tls: {{verify: false}}, response: {{body: string}}}}
+	p: cli.Print & {{text: "body=\(r.response.body)"}}
+}}
+command: cacer: {{
+	r: http.Get & {{url: "https://127.0.0.1:{port}/", tls: {{caCert: {cert_literal}}}, response: {{body: string}}}}
+	p: cli.Print & {{text: "body=\(r.response.body)"}}
+}}
+"#
+    );
+    write(&directory.path().join("tls_tool.cue"), &source);
+    for command in ["verifyfalse", "cacer"] {
+        let actual = ost(&["cmd", command, directory.path().to_str().expect("path")]);
+        assert!(
+            actual.status.success(),
+            "{command}: {}",
+            String::from_utf8_lossy(&actual.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&actual.stdout).contains("body=<HTML>"),
+            "{command}: {}",
+            String::from_utf8_lossy(&actual.stdout)
+        );
+    }
+    let _ = server.kill();
+    let _ = server.wait();
+}
