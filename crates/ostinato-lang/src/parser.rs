@@ -473,10 +473,7 @@ impl Parser {
                         }
                     }
                 }
-                Ok(Label::Name(
-                    String::from_utf8_lossy(&bytes).into_owned(),
-                    span,
-                ))
+                Ok(Label::Name(crate::ast::encode_bytes_label(&bytes), span))
             }
             Tok::LBracket => {
                 self.bump();

@@ -10,6 +10,7 @@ use crate::ast::{
     BinOp, BoundOp, CompClause, Expr, File, Pattern, Span, StrPart, StructItem, UnOp,
 };
 use crate::error::LangError;
+use crate::numeric;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AliasTarget {
@@ -80,6 +81,10 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     BigInt(BigInt),
+    /// An integer-kind decimal result of arithmetic (`10^40 + 0`, rounding
+    /// beyond 34 digits). CUE keeps the decimal exponent, so `1E+35` is not
+    /// the same representation as the literal `100000000000000000000000000000000000`.
+    DecimalInt(BigDecimal),
     Float(BigDecimal),
     String(String),
     Bytes(Vec<u8>),
@@ -142,9 +147,28 @@ pub enum Builtin {
     MathRound,
     MathTrunc,
     MathSqrt,
+    MathCbrt,
     MathPow,
     MathExp,
+    MathExp2,
     MathLog,
+    MathLog10,
+    MathLog2,
+    MathSin,
+    MathCos,
+    MathTan,
+    MathAsin,
+    MathAcos,
+    MathAtan,
+    MathAtan2,
+    MathSinh,
+    MathCosh,
+    MathTanh,
+    MathAsinh,
+    MathAcosh,
+    MathAtanh,
+    MathMod,
+    MathRemainder,
     TimeUnix,
     TimeParse,
     TimeFormat,
@@ -174,7 +198,7 @@ impl Value {
         match self {
             Self::Null => "null",
             Self::Bool(_) => "bool",
-            Self::Int(_) | Self::BigInt(_) => "int",
+            Self::Int(_) | Self::BigInt(_) | Self::DecimalInt(_) => "int",
             Self::Float(_) => "float",
             Self::String(_) => "string",
             Self::Bytes(_) => "bytes",
@@ -228,6 +252,7 @@ impl Value {
             | Self::Bool(_)
             | Self::Int(_)
             | Self::BigInt(_)
+            | Self::DecimalInt(_)
             | Self::Float(_)
             | Self::String(_)
             | Self::Bytes(_) => true,
@@ -311,13 +336,10 @@ impl Value {
             Self::Bool(value) => Some(Json::Bool(*value)),
             Self::Int(value) => Some(Json::Number(Number::from(*value))),
             Self::BigInt(value) => value.to_string().parse::<Number>().ok().map(Json::Number),
-            Self::Float(value) => {
-                let (_, scale) = value.as_bigint_and_exponent();
-                float_text(value, scale)
-                    .parse::<Number>()
-                    .ok()
-                    .map(Json::Number)
-            }
+            Self::DecimalInt(value) | Self::Float(value) => numeric::cue_decimal_string(value)
+                .parse::<Number>()
+                .ok()
+                .map(Json::Number),
             Self::String(value) => Some(Json::String(value.clone())),
             Self::Bytes(value) => Some(Json::String(base64_encode(value))),
             Self::List(values) => {
@@ -334,7 +356,15 @@ impl Value {
                         continue;
                     }
                     let key = key.strip_prefix(ESCAPED_PREFIX).unwrap_or(key);
-                    out.insert(key.to_owned(), value.to_json_inner(stack)?);
+                    let key = crate::ast::decode_label_for_output(key);
+                    let value = value.to_json_inner(stack)?;
+                    if out.insert(key, value).is_some() {
+                        // Distinct raw bytes labels can decode to the same
+                        // U+FFFD JSON key. CUE emits duplicate JSON keys; the
+                        // map representation used by `to_json` cannot, so
+                        // reject the lossy export instead of dropping a field.
+                        return None;
+                    }
                 }
                 Some(Json::Object(out))
             }
@@ -393,7 +423,7 @@ impl Value {
             Self::Bool(value) => *value,
             Self::Int(value) => *value != 0,
             Self::BigInt(value) => value != &BigInt::from(0),
-            Self::Float(value) => value != &BigDecimal::from(0),
+            Self::DecimalInt(value) | Self::Float(value) => value != &BigDecimal::from(0),
             Self::String(value) => !value.is_empty(),
             Self::Bytes(value) => !value.is_empty(),
             Self::List(values) => !values.is_empty(),
@@ -427,10 +457,7 @@ impl Value {
             Self::Bool(value) => value.to_string(),
             Self::Int(value) => value.to_string(),
             Self::BigInt(value) => value.to_string(),
-            Self::Float(value) => {
-                let (_, scale) = value.as_bigint_and_exponent();
-                float_text(value, scale)
-            }
+            Self::DecimalInt(value) | Self::Float(value) => numeric::cue_decimal_string(value),
             Self::String(value) => value.clone(),
             Self::Bytes(value) => format!("'{}'", String::from_utf8_lossy(value)),
             Self::Type(kind) => match kind {
@@ -588,8 +615,10 @@ fn parse_selector(expression: &str) -> Result<Vec<String>, LangError> {
                         LangError::Workflow(format!("invalid quoted selector {inner}"))
                     })?;
                     segments.push(key);
-                } else if inner.starts_with('\'') && inner.ends_with('\'') && inner.len() >= 2 {
-                    segments.push(inner[1..inner.len() - 1].to_owned());
+                } else if inner.starts_with('\'') {
+                    return Err(LangError::Workflow(
+                        "invalid index: bytes labels cannot be selected".to_owned(),
+                    ));
                 } else {
                     segments.push(inner.to_owned());
                 }
@@ -3378,6 +3407,7 @@ fn value_is_plain_concrete(value: &Value) -> bool {
         | Value::Bool(_)
         | Value::Int(_)
         | Value::BigInt(_)
+        | Value::DecimalInt(_)
         | Value::Float(_)
         | Value::String(_)
         | Value::Bytes(_) => true,
@@ -4396,7 +4426,11 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         match &concrete {
                             Value::Bytes(bytes) => out.extend_from_slice(bytes),
                             Value::String(text) => out.extend_from_slice(text.as_bytes()),
-                            Value::Bool(_) | Value::Int(_) | Value::BigInt(_) | Value::Float(_) => {
+                            Value::Bool(_)
+                            | Value::Int(_)
+                            | Value::BigInt(_)
+                            | Value::DecimalInt(_)
+                            | Value::Float(_) => {
                                 out.extend_from_slice(concrete.display().as_bytes());
                             }
                             other => {
@@ -4441,6 +4475,7 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                             | Value::Bool(_)
                             | Value::Int(_)
                             | Value::BigInt(_)
+                            | Value::DecimalInt(_)
                             | Value::Float(_) => {
                                 out.push_str(&concrete.display());
                             }
@@ -4987,7 +5022,10 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     .map(Value::Int)
                     .ok_or_else(|| LangError::eval(span.line, span.col, "integer overflow")),
                 (UnOp::Neg, Value::BigInt(value)) => Ok(Value::BigInt(-value)),
-                (UnOp::Neg, Value::Float(value)) => Ok(Value::Float(-value)),
+                (UnOp::Neg, Value::DecimalInt(value)) => {
+                    Ok(decimal_int_value(numeric::negate(&value)))
+                }
+                (UnOp::Neg, Value::Float(value)) => Ok(Value::Float(numeric::negate(&value))),
                 (UnOp::Neg, other) => Err(LangError::conflict(
                     span.line,
                     span.col,
@@ -5427,7 +5465,9 @@ enum BoundClass {
 
 fn bound_class(bound: &Bound) -> Option<BoundClass> {
     match &bound.operand {
-        Value::Int(_) | Value::BigInt(_) | Value::Float(_) => Some(BoundClass::Numeric),
+        Value::Int(_) | Value::BigInt(_) | Value::DecimalInt(_) | Value::Float(_) => {
+            Some(BoundClass::Numeric)
+        }
         Value::String(_) => Some(BoundClass::String),
         Value::Null => Some(BoundClass::Null),
         Value::List(_) => Some(BoundClass::List),
@@ -5441,13 +5481,21 @@ fn validate_bound_operand(kind: BoundKind, operand: &Value, span: Span) -> Resul
         BoundKind::Ge | BoundKind::Gt | BoundKind::Le | BoundKind::Lt => {
             matches!(
                 operand,
-                Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::String(_)
+                Value::Int(_)
+                    | Value::BigInt(_)
+                    | Value::DecimalInt(_)
+                    | Value::Float(_)
+                    | Value::String(_)
             )
         }
         BoundKind::Match | BoundKind::NotMatch => {
             matches!(
                 operand,
-                Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::String(_)
+                Value::Int(_)
+                    | Value::BigInt(_)
+                    | Value::DecimalInt(_)
+                    | Value::Float(_)
+                    | Value::String(_)
             )
         }
         BoundKind::Ne => !matches!(operand, Value::Bool(_)),
@@ -5480,14 +5528,20 @@ fn bound_type_compatible(kind: BoundKind, ty: TypeKind, operand: &Value) -> bool
         BoundKind::Ge | BoundKind::Gt | BoundKind::Le | BoundKind::Lt => match ty {
             TypeKind::String => matches!(operand, Value::String(_)),
             TypeKind::Int | TypeKind::Float | TypeKind::Number => {
-                matches!(operand, Value::Int(_) | Value::BigInt(_) | Value::Float(_))
+                matches!(
+                    operand,
+                    Value::Int(_) | Value::BigInt(_) | Value::DecimalInt(_) | Value::Float(_)
+                )
             }
             TypeKind::Bool | TypeKind::Bytes => false,
         },
         BoundKind::Match | BoundKind::NotMatch => match ty {
             TypeKind::String => matches!(operand, Value::String(_)),
             TypeKind::Int | TypeKind::Float | TypeKind::Number => {
-                matches!(operand, Value::Int(_) | Value::BigInt(_) | Value::Float(_))
+                matches!(
+                    operand,
+                    Value::Int(_) | Value::BigInt(_) | Value::DecimalInt(_) | Value::Float(_)
+                )
             }
             TypeKind::Bool | TypeKind::Bytes => false,
         },
@@ -5496,7 +5550,11 @@ fn bound_type_compatible(kind: BoundKind, ty: TypeKind, operand: &Value) -> bool
             TypeKind::Int | TypeKind::Float | TypeKind::Number => {
                 matches!(
                     operand,
-                    Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Null
+                    Value::Int(_)
+                        | Value::BigInt(_)
+                        | Value::DecimalInt(_)
+                        | Value::Float(_)
+                        | Value::Null
                 )
             }
             TypeKind::Bool | TypeKind::Bytes => matches!(operand, Value::Null),
@@ -5510,7 +5568,10 @@ fn bound_matches(bound: &Bound, value: &Value, span: Span) -> Result<bool, LangE
             let compatible = match bound_class(bound) {
                 Some(BoundClass::Null) => !matches!(value, Value::Null),
                 Some(BoundClass::Numeric) => {
-                    matches!(value, Value::Int(_) | Value::BigInt(_) | Value::Float(_))
+                    matches!(
+                        value,
+                        Value::Int(_) | Value::BigInt(_) | Value::DecimalInt(_) | Value::Float(_)
+                    )
                 }
                 Some(BoundClass::String) => matches!(value, Value::String(_)),
                 Some(BoundClass::List) => matches!(value, Value::List(_)),
@@ -5573,16 +5634,10 @@ fn bound_matches(bound: &Bound, value: &Value, span: Span) -> Result<bool, LangE
 }
 
 fn ordered_compare(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+    if let (Some(a), Some(b)) = (numeric_value_decimal(left), numeric_value_decimal(right)) {
+        return a.partial_cmp(&b);
+    }
     match (left, right) {
-        (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
-        (Value::BigInt(a), Value::BigInt(b)) => a.partial_cmp(b),
-        (Value::Int(a), Value::BigInt(b)) => BigInt::from(*a).partial_cmp(b),
-        (Value::BigInt(a), Value::Int(b)) => a.partial_cmp(&BigInt::from(*b)),
-        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
-        (Value::Int(a), Value::Float(b)) => BigDecimal::from(*a).partial_cmp(b),
-        (Value::Float(a), Value::Int(b)) => a.partial_cmp(&BigDecimal::from(*b)),
-        (Value::BigInt(a), Value::Float(b)) => BigDecimal::from(a.clone()).partial_cmp(b),
-        (Value::Float(a), Value::BigInt(b)) => a.partial_cmp(&BigDecimal::from(b.clone())),
         (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
         _ => None,
     }
@@ -5707,12 +5762,7 @@ fn check_bound_interval(
 }
 
 fn bound_decimal(value: &Value) -> Option<BigDecimal> {
-    match value {
-        Value::Int(value) => Some(BigDecimal::from(*value)),
-        Value::BigInt(value) => Some(BigDecimal::from(value.clone())),
-        Value::Float(value) => Some(value.clone()),
-        _ => None,
-    }
+    numeric_value_decimal(value)
 }
 
 fn bound_smallest_integer(value: &Value, inclusive: bool) -> Option<BigDecimal> {
@@ -5786,13 +5836,14 @@ fn apply_bounds(bounds: &BoundSet, other: &Value, span: Span) -> Result<Value, L
 }
 
 fn numeric_kind_mismatch(left: &Value, right: &Value) -> bool {
-    matches!(
-        (left, right),
-        (Value::Int(_), Value::Float(_))
-            | (Value::Float(_), Value::Int(_))
-            | (Value::BigInt(_), Value::Float(_))
-            | (Value::Float(_), Value::BigInt(_))
-    )
+    let integer = |value: &Value| {
+        matches!(
+            value,
+            Value::Int(_) | Value::BigInt(_) | Value::DecimalInt(_)
+        )
+    };
+    let float = |value: &Value| matches!(value, Value::Float(_));
+    (integer(left) && float(right)) || (float(left) && integer(right))
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -5827,12 +5878,14 @@ fn list_prefix(value: &Value) -> Option<&[Value]> {
     }
 }
 
+#[allow(clippy::cmp_owned)]
 fn values_identical(left: &Value, right: &Value) -> bool {
     stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
         values_identical_impl(left, right)
     })
 }
 
+#[allow(clippy::cmp_owned)]
 fn values_identical_impl(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (Value::Recursive(_) | Value::Deferred(_, _), _)
@@ -5867,6 +5920,14 @@ fn values_identical_impl(left: &Value, right: &Value) -> bool {
         }
         (Value::Int(a), Value::BigInt(b)) => BigInt::from(*a) == *b,
         (Value::BigInt(a), Value::Int(b)) => *a == BigInt::from(*b),
+        (Value::DecimalInt(a), Value::DecimalInt(b)) => a == b,
+        (Value::DecimalInt(a), Value::Int(b)) | (Value::Int(b), Value::DecimalInt(a)) => {
+            *a == BigDecimal::from(*b)
+        }
+        (Value::DecimalInt(a), Value::BigInt(b)) | (Value::BigInt(b), Value::DecimalInt(a)) => {
+            *a == BigDecimal::from(b.clone())
+        }
+        (Value::DecimalInt(a), Value::Float(b)) | (Value::Float(b), Value::DecimalInt(a)) => a == b,
         (Value::Conflict(_), _) | (_, Value::Conflict(_)) => false,
         _ => left == right,
     }
@@ -5874,15 +5935,10 @@ fn values_identical_impl(left: &Value, right: &Value) -> bool {
 
 #[allow(clippy::cmp_owned)]
 fn values_equal(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
-            BigDecimal::from(*a) == *b
-        }
-        (Value::BigInt(a), Value::Float(b)) | (Value::Float(b), Value::BigInt(a)) => {
-            BigDecimal::from(a.clone()) == *b
-        }
-        _ => values_identical(left, right),
+    if let (Some(a), Some(b)) = (numeric_value_decimal(left), numeric_value_decimal(right)) {
+        return a == b;
     }
+    values_identical(left, right)
 }
 
 fn go_case(text: &str, upper: bool) -> String {
@@ -5953,9 +6009,28 @@ pub fn builtin_module(path: &str) -> Option<Value> {
             ("Round", Builtin::MathRound),
             ("Trunc", Builtin::MathTrunc),
             ("Sqrt", Builtin::MathSqrt),
+            ("Cbrt", Builtin::MathCbrt),
             ("Pow", Builtin::MathPow),
             ("Exp", Builtin::MathExp),
+            ("Exp2", Builtin::MathExp2),
             ("Log", Builtin::MathLog),
+            ("Log10", Builtin::MathLog10),
+            ("Log2", Builtin::MathLog2),
+            ("Sin", Builtin::MathSin),
+            ("Cos", Builtin::MathCos),
+            ("Tan", Builtin::MathTan),
+            ("Asin", Builtin::MathAsin),
+            ("Acos", Builtin::MathAcos),
+            ("Atan", Builtin::MathAtan),
+            ("Atan2", Builtin::MathAtan2),
+            ("Sinh", Builtin::MathSinh),
+            ("Cosh", Builtin::MathCosh),
+            ("Tanh", Builtin::MathTanh),
+            ("Asinh", Builtin::MathAsinh),
+            ("Acosh", Builtin::MathAcosh),
+            ("Atanh", Builtin::MathAtanh),
+            ("Mod", Builtin::MathMod),
+            ("Remainder", Builtin::MathRemainder),
         ],
         "time" => &[
             ("Unix", Builtin::TimeUnix),
@@ -6471,7 +6546,9 @@ fn numeric_f64(value: &Value) -> Option<f64> {
     match value {
         Value::Int(value) => Some(*value as f64),
         Value::BigInt(value) => value.to_string().parse::<f64>().ok(),
-        Value::Float(value) => value.to_string().parse::<f64>().ok(),
+        Value::DecimalInt(value) | Value::Float(value) => {
+            numeric::cue_decimal_string(value).parse::<f64>().ok()
+        }
         _ => None,
     }
 }
@@ -6492,55 +6569,104 @@ fn numeric_value_decimal(value: &Value) -> Option<BigDecimal> {
     match value {
         Value::Int(value) => Some(BigDecimal::from(*value)),
         Value::BigInt(value) => Some(BigDecimal::from(value.clone())),
-        Value::Float(value) => Some(value.clone()),
+        Value::DecimalInt(value) | Value::Float(value) => Some(value.clone()),
         _ => None,
     }
 }
 
 fn math_decimal(arguments: &[Value], index: usize, span: Span) -> Result<BigDecimal, LangError> {
-    match arguments.get(index) {
-        Some(Value::Int(value)) => Ok(BigDecimal::from(*value)),
-        Some(Value::BigInt(value)) => Ok(BigDecimal::from(value.clone())),
-        Some(Value::Float(value)) => Ok(value.clone()),
-        _ => Err(LangError::conflict(
-            span.line,
-            span.col,
-            "math function requires a number",
-        )),
-    }
+    arguments
+        .get(index)
+        .and_then(numeric_value_decimal)
+        .ok_or_else(|| LangError::conflict(span.line, span.col, "math function requires a number"))
 }
 
-fn math_decimal_number(value: BigDecimal) -> Value {
-    let text = value.to_string();
-    if let Ok(int) = text.parse::<i64>() {
-        Value::Int(int)
-    } else {
-        Value::Float(value)
-    }
+/// Convert a decimal `math` result exactly like CUE's `fromGoValue` does for
+/// `*apd.Decimal`: an integral result becomes an integer (expanded to exponent
+/// zero), otherwise it stays a float-kind decimal.
+fn math_decimal_result(value: BigDecimal) -> Value {
+    numeric::expand_integral(&value).map_or(Value::Float(value), decimal_int_value)
 }
 
-fn math_float_number(value: f64) -> Value {
-    format!("{value}")
-        .parse::<BigDecimal>()
-        .map(|value| Value::Float(value.normalized()))
-        .unwrap_or(Value::Bottom)
-}
-
-fn math_number(value: f64) -> Value {
-    if value.is_finite() && value.fract() == 0.0 && value.abs() < 9.0e15 {
-        #[allow(clippy::cast_possible_truncation)]
-        return Value::Int(value as i64);
-    }
-    format!("{value}")
-        .parse::<BigDecimal>()
-        .map_or(Value::Bottom, Value::Float)
+fn math_float_result(value: f64) -> Value {
+    numeric::decimal_from_f64(value).map_or(Value::Bottom, Value::Float)
 }
 
 fn math_arg(arguments: &[Value], index: usize, span: Span) -> Result<f64, LangError> {
-    arguments
-        .get(index)
-        .and_then(numeric_f64)
-        .ok_or_else(|| LangError::conflict(span.line, span.col, "math function requires a number"))
+    let value = arguments.get(index).and_then(numeric_f64).ok_or_else(|| {
+        LangError::conflict(span.line, span.col, "math function requires a number")
+    })?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(LangError::conflict(
+            span.line,
+            span.col,
+            "math function argument cannot be represented as a float64",
+        ))
+    }
+}
+
+fn math_float_builtin(
+    builtin: Builtin,
+    arguments: &[Value],
+    span: Span,
+) -> Result<Value, LangError> {
+    let first = math_arg(arguments, 0, span)?;
+    let value = match builtin {
+        Builtin::MathSqrt => first.sqrt(),
+        Builtin::MathSin => crate::gomath::sin(first),
+        Builtin::MathCos => crate::gomath::cos(first),
+        Builtin::MathTan => crate::gomath::tan(first),
+        Builtin::MathAsin => crate::gomath::asin(first),
+        Builtin::MathAcos => crate::gomath::acos(first),
+        Builtin::MathAtan => crate::gomath::atan(first),
+        Builtin::MathAtan2 => crate::gomath::atan2(first, math_arg(arguments, 1, span)?),
+        Builtin::MathSinh => crate::gomath::sinh(first),
+        Builtin::MathCosh => crate::gomath::cosh(first),
+        Builtin::MathTanh => crate::gomath::tanh(first),
+        Builtin::MathAsinh => crate::gomath::asinh(first),
+        Builtin::MathAcosh => crate::gomath::acosh(first),
+        Builtin::MathAtanh => crate::gomath::atanh(first),
+        Builtin::MathMod => {
+            let divisor = math_arg(arguments, 1, span)?;
+            crate::gomath::modulo(first, divisor)
+        }
+        Builtin::MathRemainder => {
+            let divisor = math_arg(arguments, 1, span)?;
+            crate::gomath::remainder(first, divisor)
+        }
+        _ => unreachable!("float math builtin"),
+    };
+    if !value.is_finite() {
+        return Err(LangError::conflict(
+            span.line,
+            span.col,
+            "math function result is not a number",
+        ));
+    }
+    Ok(math_float_result(value))
+}
+
+fn math_decimal_builtin(
+    builtin: Builtin,
+    arguments: &[Value],
+    span: Span,
+) -> Result<Value, LangError> {
+    let first = math_decimal(arguments, 0, span)?;
+    let result = match builtin {
+        Builtin::MathCbrt => numeric::cbrt(&first),
+        Builtin::MathExp => numeric::exp(&first),
+        Builtin::MathExp2 => numeric::exp2(&first),
+        Builtin::MathLog => numeric::ln(&first),
+        Builtin::MathLog10 => numeric::log10(&first),
+        Builtin::MathLog2 => numeric::log2(&first),
+        _ => unreachable!("decimal math builtin"),
+    }
+    .ok_or_else(|| {
+        LangError::conflict(span.line, span.col, "math function result is not a number")
+    })?;
+    Ok(math_decimal_result(numeric::round_cue(&result)))
 }
 
 fn apply_math_builtin(
@@ -6549,22 +6675,50 @@ fn apply_math_builtin(
     span: Span,
 ) -> Result<Value, LangError> {
     match builtin {
+        Builtin::MathSqrt
+        | Builtin::MathSin
+        | Builtin::MathCos
+        | Builtin::MathTan
+        | Builtin::MathAsin
+        | Builtin::MathAcos
+        | Builtin::MathAtan
+        | Builtin::MathAtan2
+        | Builtin::MathSinh
+        | Builtin::MathCosh
+        | Builtin::MathTanh
+        | Builtin::MathAsinh
+        | Builtin::MathAcosh
+        | Builtin::MathAtanh
+        | Builtin::MathMod
+        | Builtin::MathRemainder => math_float_builtin(builtin, arguments, span),
+        Builtin::MathCbrt
+        | Builtin::MathExp
+        | Builtin::MathExp2
+        | Builtin::MathLog
+        | Builtin::MathLog10
+        | Builtin::MathLog2 => math_decimal_builtin(builtin, arguments, span),
         Builtin::MathAbs => match arguments.first() {
-            Some(Value::Int(value)) => value
-                .checked_abs()
-                .map(Value::Int)
-                .ok_or_else(|| overflow(span)),
+            Some(Value::Int(value)) => Ok(value.checked_abs().map_or_else(
+                || {
+                    Value::BigInt(if *value < 0 {
+                        -BigInt::from(*value)
+                    } else {
+                        BigInt::from(*value)
+                    })
+                },
+                Value::Int,
+            )),
             Some(Value::BigInt(value)) => Ok(Value::BigInt(if value < &BigInt::from(0) {
                 -value.clone()
             } else {
                 value.clone()
             })),
-            Some(Value::Float(value)) => {
-                let magnitude = value.abs();
-                match magnitude.normalized().to_string().parse::<i64>() {
-                    Ok(int) => Ok(Value::Int(int)),
-                    Err(_) => Ok(Value::Float(magnitude)),
-                }
+            Some(Value::DecimalInt(value) | Value::Float(value)) => {
+                Ok(math_decimal_result(if value < &BigDecimal::from(0) {
+                    numeric::negate(value)
+                } else {
+                    value.clone()
+                }))
             }
             _ => Err(LangError::conflict(
                 span.line,
@@ -6580,23 +6734,14 @@ fn apply_math_builtin(
                 Builtin::MathRound => RoundingMode::HalfUp,
                 _ => RoundingMode::Down,
             };
-            Ok(math_decimal_number(decimal.with_scale_round(0, rounding)))
-        }
-        Builtin::MathSqrt => {
-            let value = math_arg(arguments, 0, span)?.sqrt();
-            if !value.is_finite() {
-                return Err(LangError::conflict(
-                    span.line,
-                    span.col,
-                    "math function result is not a number",
-                ));
-            }
-            Ok(math_float_number(value))
+            let rounded = decimal.with_scale_round(0, rounding);
+            Ok(value_from_bigint(rounded.as_bigint_and_exponent().0))
         }
         Builtin::MathPow => {
-            if let (Some(base), Some(exponent)) = (arguments.first(), arguments.get(1))
-                && let Some(base) = integer_big(base)
-                && let Some(exponent) = integer_big(exponent)
+            if let (Some(Value::Int(_) | Value::BigInt(_)), Some(Value::Int(_) | Value::BigInt(_))) =
+                (arguments.first(), arguments.get(1))
+                && let (Some(base), Some(exponent)) =
+                    (integer_big(&arguments[0]), integer_big(&arguments[1]))
             {
                 if base == BigInt::from(0) && exponent == BigInt::from(0) {
                     return Err(LangError::conflict(
@@ -6605,11 +6750,11 @@ fn apply_math_builtin(
                         "math.Pow: invalid operation",
                     ));
                 }
-                if let Ok(exponent) = u32::try_from(&exponent) {
+                if exponent >= BigInt::from(0) {
                     let estimated_digits = base
                         .bits()
                         .saturating_sub(1)
-                        .saturating_mul(u64::from(exponent))
+                        .saturating_mul(u64::try_from(&exponent).unwrap_or(u64::MAX))
                         .saturating_mul(30_103)
                         / 100_000;
                     if estimated_digits > 100_000 {
@@ -6619,15 +6764,15 @@ fn apply_math_builtin(
                             "math.Pow: exponent out of range",
                         ));
                     }
-                    return Ok(value_from_bigint(base.pow(exponent)));
                 }
             }
-            Ok(math_number(
-                math_arg(arguments, 0, span)?.powf(math_arg(arguments, 1, span)?),
-            ))
+            let base = math_decimal(arguments, 0, span)?;
+            let exponent = math_decimal(arguments, 1, span)?;
+            let value = numeric::pow(&base, &exponent).ok_or_else(|| {
+                LangError::conflict(span.line, span.col, "math.Pow: invalid operation")
+            })?;
+            Ok(math_decimal_result(numeric::round_cue(&value)))
         }
-        Builtin::MathExp => Ok(math_number(math_arg(arguments, 0, span)?.exp())),
-        Builtin::MathLog => Ok(math_number(math_arg(arguments, 0, span)?.ln())),
         _ => unreachable!("math builtin"),
     }
 }
@@ -7125,9 +7270,28 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
         | Builtin::MathRound
         | Builtin::MathTrunc
         | Builtin::MathSqrt
+        | Builtin::MathCbrt
         | Builtin::MathPow
         | Builtin::MathExp
-        | Builtin::MathLog => apply_math_builtin(*builtin, arguments, span),
+        | Builtin::MathExp2
+        | Builtin::MathLog
+        | Builtin::MathLog10
+        | Builtin::MathLog2
+        | Builtin::MathSin
+        | Builtin::MathCos
+        | Builtin::MathTan
+        | Builtin::MathAsin
+        | Builtin::MathAcos
+        | Builtin::MathAtan
+        | Builtin::MathAtan2
+        | Builtin::MathSinh
+        | Builtin::MathCosh
+        | Builtin::MathTanh
+        | Builtin::MathAsinh
+        | Builtin::MathAcosh
+        | Builtin::MathAtanh
+        | Builtin::MathMod
+        | Builtin::MathRemainder => apply_math_builtin(*builtin, arguments, span),
         Builtin::TimeUnix
         | Builtin::TimeParse
         | Builtin::TimeFormat
@@ -7370,23 +7534,14 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
 fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
     match op {
         BinOp::Add => {
-            if let (Some(a), Some(b)) = (integer_big(left), integer_big(right)) {
-                return Ok(value_from_bigint(a + b));
+            if let (Some(a), Some(b)) = (integer_decimal(left), integer_decimal(right)) {
+                return Ok(decimal_int_value(numeric::add(&a, &b)));
+            }
+            if let (Some(a), Some(b)) = (numeric_value_decimal(left), numeric_value_decimal(right))
+            {
+                return Ok(Value::Float(numeric::add(&a, &b)));
             }
             match (left, right) {
-                (Value::Int(a), Value::Int(b)) => a
-                    .checked_add(*b)
-                    .map(Value::Int)
-                    .ok_or_else(|| overflow(span)),
-                (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-                (Value::Int(a), Value::Float(b)) => Ok(Value::Float(BigDecimal::from(*a) + b)),
-                (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + BigDecimal::from(*b))),
-                (Value::BigInt(a), Value::Float(b)) => {
-                    Ok(Value::Float(BigDecimal::from(a.clone()) + b))
-                }
-                (Value::Float(a), Value::BigInt(b)) => {
-                    Ok(Value::Float(a + BigDecimal::from(b.clone())))
-                }
                 (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
                 (Value::Bytes(a), Value::Bytes(b)) => {
                     let mut out = a.clone();
@@ -7420,33 +7575,41 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
             }
         }
         BinOp::Sub => {
-            if let (Some(a), Some(b)) = (integer_big(left), integer_big(right)) {
-                return Ok(value_from_bigint(a - b));
+            if let (Some(a), Some(b)) = (integer_decimal(left), integer_decimal(right)) {
+                return Ok(decimal_int_value(numeric::sub(&a, &b)));
             }
-            numeric(op, left, right, span, |a, b| a - b, |a, b| a - b)
+            match (numeric_value_decimal(left), numeric_value_decimal(right)) {
+                (Some(a), Some(b)) => Ok(Value::Float(numeric::sub(&a, &b))),
+                _ => type_error("subtract", left, right, span),
+            }
         }
         BinOp::Mul => {
-            if let (Some(a), Some(b)) = (integer_big(left), integer_big(right)) {
-                return Ok(value_from_bigint(a * b));
+            if let (Some(a), Some(b)) = (integer_decimal(left), integer_decimal(right)) {
+                return Ok(decimal_int_value(numeric::mul(&a, &b)));
             }
             match (left, right) {
                 (Value::String(text), Value::Int(count))
                 | (Value::Int(count), Value::String(text)) => repeat_string(text, *count, span),
                 (Value::Bytes(bytes), Value::Int(count))
                 | (Value::Int(count), Value::Bytes(bytes)) => repeat_bytes(bytes, *count, span),
-                _ => numeric(op, left, right, span, |a, b| a * b, |a, b| a * b),
+                _ => match (numeric_value_decimal(left), numeric_value_decimal(right)) {
+                    (Some(a), Some(b)) => Ok(Value::Float(numeric::mul(&a, &b))),
+                    _ => type_error("multiply", left, right, span),
+                },
             }
         }
         BinOp::Div => {
-            let zero = matches!(right, Value::Int(0))
-                || matches!(right, Value::BigInt(value) if value == &BigInt::from(0))
-                || matches!(right, Value::Float(value) if value == &BigDecimal::from(0));
-            if zero {
+            let (Some(left_value), Some(right_value)) =
+                (numeric_value_decimal(left), numeric_value_decimal(right))
+            else {
+                return type_error("divide", left, right, span);
+            };
+            if right_value == 0 {
                 return Err(LangError::conflict(span.line, span.col, "division by zero"));
             }
-            match (numeric_value_decimal(left), numeric_value_decimal(right)) {
-                (Some(left), Some(right)) => Ok(Value::Float(float_division(&left, &right))),
-                _ => type_error("divide", left, right, span),
+            match numeric::divide(&left_value, &right_value) {
+                Some(value) => Ok(Value::Float(value)),
+                None => Err(LangError::conflict(span.line, span.col, "division by zero")),
             }
         }
         BinOp::Mod => match (left, right) {
@@ -7454,8 +7617,16 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
                 Err(LangError::conflict(span.line, span.col, "modulo by zero"))
             }
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a % b)),
-            _ => match (integer_big(left), integer_big(right)) {
-                (Some(a), Some(b)) => Ok(value_from_bigint(a % b)),
+            _ => match (integer_decimal(left), integer_decimal(right)) {
+                (Some(a), Some(b)) => {
+                    let left = a.with_scale(0).as_bigint_and_exponent().0;
+                    let right = b.with_scale(0).as_bigint_and_exponent().0;
+                    if right == BigInt::from(0) {
+                        Err(LangError::conflict(span.line, span.col, "modulo by zero"))
+                    } else {
+                        Ok(value_from_bigint(left % right))
+                    }
+                }
                 _ => type_error("mod", left, right, span),
             },
         },
@@ -7525,154 +7696,41 @@ fn repeat_bytes(bytes: &[u8], count: i64, span: Span) -> Result<Value, LangError
     Ok(Value::Bytes(bytes.repeat(count)))
 }
 
-/// Largest number of fractional zeros materialized in plain notation. Larger
-/// scales use scientific notation so a short input such as `0e-100000000`
-/// cannot allocate a multi-megabyte string.
-const MAX_MATERIALIZED_SCALE: i64 = 1024;
-
-fn float_text(value: &BigDecimal, scale: i64) -> String {
-    if scale < 0 {
-        let (coefficient, _) = value.as_bigint_and_exponent();
-        let raw = coefficient.to_string();
-        let negative = raw.starts_with('-');
-        let digits = raw.trim_start_matches('-');
-        let exponent = -i128::from(scale) + i128::try_from(digits.len()).unwrap_or(i128::MAX) - 1;
-        let mantissa = if digits.len() > 1 {
-            format!("{}.{}", &digits[..1], &digits[1..])
-        } else {
-            digits.to_owned()
-        };
-        let sign = if negative { "-" } else { "" };
-        return format!("{sign}{mantissa}E{exponent:+}");
-    }
-    if scale > MAX_MATERIALIZED_SCALE {
-        let (coefficient, _) = value.as_bigint_and_exponent();
-        let raw = coefficient.to_string();
-        let negative = raw.starts_with('-');
-        let digits = raw.trim_start_matches('-');
-        if digits == "0" {
-            return format!("0e-{scale}");
+/// Convert an integer-kind decimal result into a value.  Values that fit an
+/// `i64` and have no fractional/exponent representation become `Int`;
+/// everything else preserves CUE's decimal exponent in `DecimalInt`.
+fn decimal_int_value(value: BigDecimal) -> Value {
+    let (coefficient, scale) = value.as_bigint_and_exponent();
+    if scale >= 0 {
+        let integral = value.with_scale(0);
+        let (coefficient, _) = integral.as_bigint_and_exponent();
+        if let Ok(small) = i64::try_from(&coefficient) {
+            return Value::Int(small);
         }
-        let exponent = i128::try_from(digits.len()).unwrap_or(i128::MAX) - 1 - i128::from(scale);
-        let mantissa = if digits.len() > 1 {
-            format!("{}.{}", &digits[..1], &digits[1..])
-        } else {
-            digits.to_owned()
-        };
-        let sign = if negative { "-" } else { "" };
-        return format!("{sign}{mantissa}E{exponent:+}");
+        return Value::BigInt(coefficient);
     }
-    if value == &BigDecimal::from(0) && scale > 0 {
-        return format!(
-            "0.{}",
-            "0".repeat(usize::try_from(scale).unwrap_or_default())
-        );
-    }
-    let mut text = value.to_string();
-    if scale != 0 && !text.contains(['.', 'e', 'E']) {
-        text.push_str(".0");
-    }
-    text
+    Value::DecimalInt(BigDecimal::new(coefficient, scale))
 }
 
-fn float_arithmetic(value: BigDecimal, desired_scale: i64) -> BigDecimal {
-    let (_, scale) = value.as_bigint_and_exponent();
-    if scale < desired_scale || (value.to_string() == "0" && scale != desired_scale) {
-        value.with_scale(desired_scale)
-    } else {
-        value
-    }
-}
-
-fn float_division(left: &BigDecimal, right: &BigDecimal) -> BigDecimal {
-    let quotient = left / right;
-    let (_, left_scale) = left.as_bigint_and_exponent();
-    let (_, right_scale) = right.as_bigint_and_exponent();
-    let reduced = quotient.normalized();
-    let (coefficient, reduced_scale) = reduced.as_bigint_and_exponent();
-    let coefficient_text = coefficient.to_string();
-    let old_exponent = if coefficient_text == "0" {
-        right_scale - left_scale
-    } else {
-        let digits =
-            i64::try_from(coefficient_text.trim_start_matches('-').len()).unwrap_or(i64::MAX);
-        digits - reduced_scale - 34
-    };
-    if old_exponent < 0 && reduced_scale <= 0 {
-        reduced.with_scale(reduced_scale + 1)
-    } else {
-        reduced
-    }
-}
-
-fn numeric(
-    op: &BinOp,
-    left: &Value,
-    right: &Value,
-    span: Span,
-    int_op: impl Fn(i64, i64) -> i64,
-    float_op: impl Fn(BigDecimal, BigDecimal) -> BigDecimal,
-) -> Result<Value, LangError> {
-    let scale = |value: &Value| match value {
-        Value::Float(value) => value.as_bigint_and_exponent().1,
-        _ => 0,
-    };
-    let desired_scale = match op {
-        BinOp::Mul => scale(left) + scale(right),
-        _ => scale(left).max(scale(right)),
-    };
-    match (left, right) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(*a, *b))),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_arithmetic(
-            float_op(a.clone(), b.clone()),
-            desired_scale,
-        ))),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(float_arithmetic(
-            float_op(BigDecimal::from(*a), b.clone()),
-            desired_scale,
-        ))),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(float_arithmetic(
-            float_op(a.clone(), BigDecimal::from(*b)),
-            desired_scale,
-        ))),
-        (Value::BigInt(a), Value::BigInt(b)) => Ok(Value::Float(float_arithmetic(
-            float_op(BigDecimal::from(a.clone()), BigDecimal::from(b.clone())),
-            desired_scale,
-        ))),
-        (Value::BigInt(a), Value::Int(b)) => Ok(Value::Float(float_arithmetic(
-            float_op(BigDecimal::from(a.clone()), BigDecimal::from(*b)),
-            desired_scale,
-        ))),
-        (Value::Int(a), Value::BigInt(b)) => Ok(Value::Float(float_arithmetic(
-            float_op(BigDecimal::from(*a), BigDecimal::from(b.clone())),
-            desired_scale,
-        ))),
-        (Value::BigInt(a), Value::Float(b)) => Ok(Value::Float(float_arithmetic(
-            float_op(BigDecimal::from(a.clone()), b.clone()),
-            desired_scale,
-        ))),
-        (Value::Float(a), Value::BigInt(b)) => Ok(Value::Float(float_arithmetic(
-            float_op(a.clone(), BigDecimal::from(b.clone())),
-            desired_scale,
-        ))),
-        _ => type_error(op_name(op), left, right, span),
+fn integer_decimal(value: &Value) -> Option<BigDecimal> {
+    match value {
+        Value::Int(value) => Some(BigDecimal::from(*value)),
+        Value::BigInt(value) => Some(BigDecimal::from(value.clone())),
+        Value::DecimalInt(value) => Some(value.clone()),
+        _ => None,
     }
 }
 
 fn compare(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
-    let ordering = match (left, right) {
-        (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
-        (Value::BigInt(a), Value::BigInt(b)) => a.partial_cmp(b),
-        (Value::Int(a), Value::BigInt(b)) => BigInt::from(*a).partial_cmp(b),
-        (Value::BigInt(a), Value::Int(b)) => a.partial_cmp(&BigInt::from(*b)),
-        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
-        (Value::Int(a), Value::Float(b)) => BigDecimal::from(*a).partial_cmp(b),
-        (Value::Float(a), Value::Int(b)) => a.partial_cmp(&BigDecimal::from(*b)),
-        (Value::BigInt(a), Value::Float(b)) => BigDecimal::from(a.clone()).partial_cmp(b),
-        (Value::Float(a), Value::BigInt(b)) => a.partial_cmp(&BigDecimal::from(b.clone())),
-        (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
-        _ => return type_error("compare", left, right, span),
-    };
+    let ordering =
+        if let (Some(a), Some(b)) = (numeric_value_decimal(left), numeric_value_decimal(right)) {
+            a.partial_cmp(&b)
+        } else {
+            match (left, right) {
+                (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
+                _ => return type_error("compare", left, right, span),
+            }
+        };
     let Some(ordering) = ordering else {
         return Ok(Value::Bool(false));
     };
@@ -7686,32 +7744,10 @@ fn compare(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value,
     Ok(Value::Bool(result))
 }
 
-fn op_name(op: &BinOp) -> &'static str {
-    match op {
-        BinOp::Add => "add",
-        BinOp::Sub => "subtract",
-        BinOp::Mul => "multiply",
-        BinOp::Div => "divide",
-        BinOp::Mod => "modulo",
-        BinOp::Eq => "==",
-        BinOp::Ne => "!=",
-        BinOp::Lt => "<",
-        BinOp::Le => "<=",
-        BinOp::Gt => ">",
-        BinOp::Ge => ">=",
-        BinOp::And => "&&",
-        BinOp::Or => "||",
-    }
-}
-
 fn params_cycle_error(error: &LangError) -> bool {
     let text = error.to_string();
     text.contains("cyclic reference while evaluating `params.")
         || text.contains("circular reference while evaluating `params.")
-}
-
-fn overflow(span: Span) -> LangError {
-    LangError::conflict(span.line, span.col, "integer overflow")
 }
 
 fn type_error(op: &str, left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
@@ -8275,9 +8311,15 @@ fn unify_types(left: TypeKind, right: TypeKind, span: Span) -> Result<Value, Lan
 fn type_matches(kind: TypeKind, value: &Value) -> bool {
     match kind {
         TypeKind::String => matches!(value, Value::String(_)),
-        TypeKind::Int => matches!(value, Value::Int(_) | Value::BigInt(_)),
+        TypeKind::Int => matches!(
+            value,
+            Value::Int(_) | Value::BigInt(_) | Value::DecimalInt(_)
+        ),
         TypeKind::Float => matches!(value, Value::Float(_)),
-        TypeKind::Number => matches!(value, Value::Int(_) | Value::BigInt(_) | Value::Float(_)),
+        TypeKind::Number => matches!(
+            value,
+            Value::Int(_) | Value::BigInt(_) | Value::DecimalInt(_) | Value::Float(_)
+        ),
         TypeKind::Bool => matches!(value, Value::Bool(_)),
         TypeKind::Bytes => matches!(value, Value::Bytes(_)),
     }

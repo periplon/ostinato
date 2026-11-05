@@ -31,7 +31,7 @@ This is a deliberate scope decision: the required semantics are implemented and 
 | Pattern constraints (`[string]: T`, `[=~"re"]: T`) | ✅ | String and regex patterns; other pattern expressions are out of scope |
 | Defaults and multi-branch disjunctions | ✅ | Alternatives, defaults, `&` narrowing, disjunction intersection and duplicate-default collapsing |
 | Numeric/string bounds | ✅ | `>=`, `>`, `<=`, `<`, `!=`, `=~`, `!~`; conjunction with values, types and disjunctions |
-| Exact numbers | ✅ | Decimal literals and arithmetic use arbitrary-precision `BigDecimal`; integer literals and arithmetic use `BigInt` (exact beyond CUE's 34-digit arithmetic context); division digit count and JSON export rounding may differ |
+| Exact numbers | ✅ | Literals are arbitrary-precision; arithmetic (integers and decimals) uses CUE's 34-significant-digit round-half-up context, including 34-digit division expansion, integer-kind exponent results and apd-compatible JSON/string formatting. `math` decimal builtins use the same context; float64-backed `math` functions port Go's algorithms (including arm64 FMA behaviour) |
 | Optional fields (`foo?:`) | ✅ | Omitted from the concrete export, matching `cue export` |
 | Open lists (`[...T]`, `[x, ...T]`) | ✅ | Prefix and element constraints are unified |
 | Type constraints (`string`, `int`, `number`, `bool`) | ✅ | Basic constraint checking; bounds intersect with numeric/string types |

@@ -366,12 +366,83 @@ pub fn to_yaml(value: &Json) -> Result<String, DataError> {
 /// Returns [`DataError::Encode`] if serialization fails.
 pub fn to_json(value: &Json) -> Result<String, DataError> {
     let normalized = normalize_number_signs(value);
-    let mut out = serde_json::to_string_pretty(&normalized).map_err(|error| DataError::Encode {
+    let mut out = String::new();
+    write_pretty_json(&normalized, 0, &mut out)?;
+    out.push('\n');
+    Ok(out)
+}
+
+/// Format a number token the way CUE's `apd.Decimal.String` does.  serde_json
+/// normalizes exponent markers to lowercase when it parses a number, so this
+/// restores the uppercase `E` used by CUE's JSON export.
+fn cue_number_text(number: &Number) -> String {
+    let text = number.to_string();
+    if text.contains('e') {
+        text.replace('e', "E")
+    } else {
+        text
+    }
+}
+
+fn write_json_string(value: &str, out: &mut String) -> Result<(), DataError> {
+    let encoded = serde_json::to_string(value).map_err(|error| DataError::Encode {
         path: "<output>".to_owned(),
         message: error.to_string(),
     })?;
-    out.push('\n');
-    Ok(out)
+    out.push_str(&encoded);
+    Ok(())
+}
+
+fn write_pretty_json(value: &Json, depth: usize, out: &mut String) -> Result<(), DataError> {
+    match value {
+        Json::Null => out.push_str("null"),
+        Json::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
+        Json::Number(number) => out.push_str(&cue_number_text(number)),
+        Json::String(value) => write_json_string(value, out)?,
+        Json::Array(values) => {
+            if values.is_empty() {
+                out.push_str("[]");
+                return Ok(());
+            }
+            out.push_str("[\n");
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(",\n");
+                }
+                push_indent(out, depth + 1);
+                write_pretty_json(value, depth + 1, out)?;
+            }
+            out.push('\n');
+            push_indent(out, depth);
+            out.push(']');
+        }
+        Json::Object(fields) => {
+            if fields.is_empty() {
+                out.push_str("{}");
+                return Ok(());
+            }
+            out.push_str("{\n");
+            for (index, (key, value)) in fields.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(",\n");
+                }
+                push_indent(out, depth + 1);
+                write_json_string(key, out)?;
+                out.push_str(": ");
+                write_pretty_json(value, depth + 1, out)?;
+            }
+            out.push('\n');
+            push_indent(out, depth);
+            out.push('}');
+        }
+    }
+    Ok(())
+}
+
+fn push_indent(out: &mut String, depth: usize) {
+    for _ in 0..depth {
+        out.push_str("  ");
+    }
 }
 
 /// Encode with the selected format.
@@ -1396,9 +1467,11 @@ fn json_to_yaml(value: &Json) -> Yaml<'static> {
     match value {
         Json::Null => Yaml::Representation(Cow::Owned("null".to_owned()), ScalarStyle::Plain, None),
         Json::Bool(value) => Yaml::Value(Scalar::Boolean(*value)),
-        Json::Number(number) => {
-            Yaml::Representation(Cow::Owned(number.to_string()), ScalarStyle::Plain, None)
-        }
+        Json::Number(number) => Yaml::Representation(
+            Cow::Owned(cue_number_text(number)),
+            ScalarStyle::Plain,
+            None,
+        ),
         Json::String(value) => yaml_quoted(value),
         Json::Array(values) => Yaml::Sequence(values.iter().map(json_to_yaml).collect()),
         Json::Object(fields) => {

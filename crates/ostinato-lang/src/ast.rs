@@ -42,6 +42,45 @@ pub enum UnOp {
     Not,
 }
 
+/// Prefix used internally to preserve non-UTF-8 bytes field labels. CUE keeps
+/// the raw label bytes, so `{'\xff': 1}` and `{"\uFFFD": 1}` are distinct
+/// fields even though both render as U+FFFD in JSON.
+pub const RAW_LABEL_PREFIX: char = '\u{7}';
+
+/// Encode a bytes field label, preserving raw bytes when they are not valid
+/// UTF-8. Valid UTF-8 labels keep their normal spelling.
+#[must_use]
+pub fn encode_bytes_label(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_owned(),
+        Err(_) => {
+            let mut out = String::from(RAW_LABEL_PREFIX);
+            for byte in bytes {
+                out.push_str(&format!("{byte:02x}"));
+            }
+            out
+        }
+    }
+}
+
+/// Decode an internal raw-bytes label for JSON/YAML export. Non-UTF-8 bytes
+/// become U+FFFD, matching CUE's JSON export.
+#[must_use]
+pub fn decode_label_for_output(name: &str) -> String {
+    let Some(encoded) = name.strip_prefix(RAW_LABEL_PREFIX) else {
+        return name.to_owned();
+    };
+    let mut bytes = Vec::with_capacity(encoded.len() / 2);
+    let mut index = 0;
+    while index + 1 < encoded.len() {
+        if let Ok(byte) = u8::from_str_radix(&encoded[index..index + 2], 16) {
+            bytes.push(byte);
+        }
+        index += 2;
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Label {
     Name(String, Span),

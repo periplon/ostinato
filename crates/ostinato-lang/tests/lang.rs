@@ -8349,11 +8349,27 @@ struct_comp: {for i in [1] {'k': i}}
     assert_eq!(json["list_comp_multiline"][0]["k"], 1);
     assert_eq!(json["struct_comp"]["k"], 1);
 
-    // Documented limit: non-UTF-8 label bytes decode lossily to U+FFFD.
-    let lossy = "package demo\nx: {'\\xff': 1}\ny: x[\"�\"]\n";
-    let file = ostinato_lang::parse(lossy).expect("parse lossy label identity");
-    let value = ostinato_lang::eval_file(&file).expect("eval lossy label identity");
-    assert_eq!(value.to_json().expect("json")["y"], 1);
+    // Raw bytes labels keep their own identity. JSON export renders them as
+    // U+FFFD, but a valid U+FFFD string label is a different field.
+    let raw = "package demo\nx: {'\\xff': 1}\n";
+    let file = ostinato_lang::parse(raw).expect("parse raw label");
+    let value = ostinato_lang::eval_file(&file).expect("eval raw label");
+    assert_eq!(value.to_json().expect("json")["x"]["�"], 1);
+
+    let unselectable = "package demo\nx: {'\\xff': 1}\ny: x[\"�\"]\n";
+    let file = ostinato_lang::parse(unselectable).expect("parse raw selection");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "raw bytes labels are not selectable by their rendered character"
+    );
+
+    let distinct = "package demo\nx: {'\\xff': 1, \"�\": 2}\n";
+    let file = ostinato_lang::parse(distinct).expect("parse distinct labels");
+    let value = ostinato_lang::eval_file(&file).expect("eval distinct labels");
+    assert!(
+        value.to_json().is_none(),
+        "two distinct labels that render as U+FFFD cannot be exported losslessly"
+    );
 
     let selection = r#"
 package demo
