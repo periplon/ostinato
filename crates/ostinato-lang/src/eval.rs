@@ -226,6 +226,49 @@ impl std::fmt::Display for JsonExportError {
 
 impl std::error::Error for JsonExportError {}
 
+fn resolve_export_value(current: Value, depth: usize) -> Value {
+    if depth > 1024 {
+        return current;
+    }
+    match current {
+        Value::Disjunction(alternatives, defaults) => {
+            let next = if alternatives.len() == 1 {
+                alternatives.first().cloned()
+            } else if defaults.len() == 1 {
+                defaults
+                    .first()
+                    .and_then(|index| alternatives.get(*index))
+                    .cloned()
+            } else {
+                None
+            };
+            match next {
+                Some(value) => resolve_export_value(value, depth + 1),
+                None => Value::Disjunction(alternatives, defaults),
+            }
+        }
+        Value::Recursive(slot) => {
+            let next = slot.value.borrow().clone();
+            match next {
+                Some(value) => resolve_export_value(value, depth + 1),
+                None => Value::Recursive(slot),
+            }
+        }
+        Value::Deferred(slot, constraint) => {
+            let next = slot.value.borrow().clone();
+            match next {
+                Some(value) => {
+                    let unified =
+                        unify_values(&value, &constraint, Span::default()).unwrap_or(value);
+                    resolve_export_value(unified, depth + 1)
+                }
+                None => resolve_export_value(*constraint, depth + 1),
+            }
+        }
+        other => other,
+    }
+}
+
 impl Value {
     #[must_use]
     pub fn type_name(&self) -> &'static str {
@@ -273,6 +316,73 @@ impl Value {
             }
             _ => self,
         }
+    }
+
+    /// Mark every numeric value reachable from this value as having been read
+    /// through a reference rather than written as a syntactic literal or
+    /// expression. Used only for CUE's representation choice in `&`.
+    #[must_use]
+    pub fn as_reference(self) -> Self {
+        match self {
+            Self::DecimalInt(value) => Self::DecimalInt(value.as_reference()),
+            Self::Float(value) => Self::Float(value.as_reference()),
+            Self::List(values) => Self::List(values.into_iter().map(Self::as_reference).collect()),
+            Self::Struct(fields) => Self::Struct(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (key, value.as_reference()))
+                    .collect(),
+            ),
+            Self::Definition {
+                fields,
+                optional,
+                definitions,
+                patterns,
+                closed,
+                open,
+                admissions,
+            } => Self::Definition {
+                fields: fields
+                    .into_iter()
+                    .map(|(key, value)| (key, value.as_reference()))
+                    .collect(),
+                optional: optional
+                    .into_iter()
+                    .map(|(key, value)| (key, value.as_reference()))
+                    .collect(),
+                definitions: definitions
+                    .into_iter()
+                    .map(|(key, value)| (key, value.as_reference()))
+                    .collect(),
+                patterns: patterns
+                    .into_iter()
+                    .map(|(pattern, value)| (pattern, value.as_reference()))
+                    .collect(),
+                closed,
+                open,
+                admissions,
+            },
+            Self::Disjunction(alternatives, defaults) => Self::Disjunction(
+                alternatives.into_iter().map(Self::as_reference).collect(),
+                defaults,
+            ),
+            Self::OpenList(element) => {
+                Self::OpenList(element.map(|value| Box::new(value.as_reference())))
+            }
+            Self::OpenListPrefix(prefix, tail) => Self::OpenListPrefix(
+                prefix.into_iter().map(Self::as_reference).collect(),
+                tail.map(|value| Box::new(value.as_reference())),
+            ),
+            other => other,
+        }
+    }
+
+    /// Resolve disjunction defaults and recursive/deferred wrappers for
+    /// export formatting, returning the selected concrete value. The caller
+    /// can then read its integer/float kind.
+    #[must_use]
+    pub fn export_unwrap(&self) -> Value {
+        resolve_export_value(self.clone(), 0)
     }
 
     #[must_use]
@@ -3691,13 +3801,20 @@ fn numeric_values_share_kind(left: &Value, right: &Value) -> bool {
     }
 }
 
-/// CUE keeps the literal operand's lexical form when a computed value is
-/// unified with an equal literal. Two literals (or two computed values) keep
-/// the left representation.
+/// CUE keeps the literal operand's lexical form when a computed or referenced
+/// value is unified with an equal syntactic literal. Two literals (or two
+/// non-literals) keep the left representation. Unifying signed zero with positive
+/// zero always selects the positive representation, regardless of operand order.
 fn prefer_decimal_representation(
     left: &numeric::Decimal,
     right: &numeric::Decimal,
 ) -> numeric::Decimal {
+    if left.is_negative_zero() && !right.is_negative_zero() {
+        return right.clone();
+    }
+    if right.is_negative_zero() && !left.is_negative_zero() {
+        return left.clone();
+    }
     if right.is_literal() && !left.is_literal() {
         right.clone()
     } else {
@@ -4372,6 +4489,7 @@ fn try_definition_unify(
     other: &Expr,
     frame: &Frame<'_>,
     span: Span,
+    reversed: bool,
 ) -> Result<Option<Value>, LangError> {
     let definition = strip_expr_parens(definition);
     let Expr::Ident(name, _) = definition else {
@@ -4388,7 +4506,12 @@ fn try_definition_unify(
         let previous = frame.next_injections.replace(Some(injections));
         let result = eval_expr(definition, frame);
         frame.next_injections.replace(previous);
-        return unify_values(&result?, &value, span).map(Some);
+        let result = result?;
+        return if reversed {
+            unify_values(&value, &result, span).map(Some)
+        } else {
+            unify_values(&result, &value, span).map(Some)
+        };
     };
     let value = eval_expr(other, frame)?;
     let Some(injections) = concrete_fields(&value) else {
@@ -5849,8 +5972,12 @@ fn params_select_path(expr: &Expr, frame: &Frame<'_>) -> Option<Vec<(String, boo
 }
 
 fn eval_expr(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
-    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+    let value = stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
         eval_expr_impl(expr, frame)
+    })?;
+    Ok(match strip_expr_parens(expr) {
+        Expr::Ident(_, _) | Expr::Select(_, _, _, _) | Expr::Index(_, _, _) => value.as_reference(),
+        _ => value,
     })
 }
 
@@ -6302,10 +6429,10 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     return Ok(result);
                 }
             }
-            if let Some(value) = try_definition_unify(left, right, frame, *span)? {
+            if let Some(value) = try_definition_unify(left, right, frame, *span, false)? {
                 return Ok(value);
             }
-            if let Some(value) = try_definition_unify(right, left, frame, *span)? {
+            if let Some(value) = try_definition_unify(right, left, frame, *span, true)? {
                 return Ok(value);
             }
             let left_value = eval_expr(left, frame)?;

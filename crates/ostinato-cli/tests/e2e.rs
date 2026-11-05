@@ -15378,6 +15378,12 @@ m: 1.00 & 1.0
 n: x & 1.00
 o: -1 * 0
 p: math.Sqrt(0)
+q: *(0 / -1) | 1
+r: *(math.Sqrt(4)) | 1
+s: {v: *(0 / -1) | 1}
+t: [*(0 / -1) | 1, *(math.Sqrt(4)) | 1]
+u: *(0 * -1) | 1
+v: *(math.Mod(-1, 1)) | 1
 x: 1.0
 "#;
     let directory = tempfile::tempdir().expect("tempdir");
@@ -15433,6 +15439,12 @@ x: 1.0
         "\"j\": 0.",
         "\"o\": -0",
         "\"p\": 0.",
+        "\"q\": 0.",
+        "\"r\": 2.",
+        "\"s\":\n  \"v\": 0.",
+        "\"t\":\n  - 0.\n  - 2.",
+        "\"u\": -0",
+        "\"v\": -0.",
     ] {
         assert!(yaml.contains(snippet), "missing {snippet} in {yaml}");
     }
@@ -15456,7 +15468,8 @@ x: 1.0
         assert!(expected_yaml.status.success());
         let expected_yaml = String::from_utf8(expected_yaml.stdout).expect("utf8");
         for key in [
-            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
+            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q",
+            "r", "u", "v",
         ] {
             assert_eq!(
                 yaml_scalar(&yaml, key),

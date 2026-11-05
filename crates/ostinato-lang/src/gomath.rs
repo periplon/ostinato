@@ -651,6 +651,9 @@ pub(crate) fn sinh(x: f64) -> f64 {
     const Q0: f64 = -0.6307673640497716991212077277e+6;
     const Q1: f64 = 0.1521517378790019070696485176e+5;
     const Q2: f64 = -0.173678953558233699533450911e+3;
+    if x == 0.0 {
+        return x;
+    }
     let sign = x < 0.0;
     let x = x.abs();
     let temp = if x > 21.0 {
@@ -721,6 +724,9 @@ pub(crate) fn asinh(x: f64) -> f64 {
     if x.is_nan() || x.is_infinite() {
         return x;
     }
+    if x == 0.0 {
+        return x;
+    }
     let sign = x < 0.0;
     let x = x.abs();
     let temp = if x > LARGE {
@@ -768,6 +774,9 @@ pub(crate) fn atanh(x: f64) -> f64 {
     }
     if x == -1.0 {
         return f64::NEG_INFINITY;
+    }
+    if x == 0.0 {
+        return x;
     }
     let sign = x < 0.0;
     let x = x.abs();

@@ -208,6 +208,15 @@ impl Decimal {
         self.literal
     }
 
+    /// Mark a value as having been read through a reference. CUE gives a
+    /// reference lower representation priority than a syntactic literal or
+    /// expression in `&` (`(1.0 + 0) & a` keeps `1.0`, not `a`'s `1.00`).
+    #[must_use]
+    pub fn as_reference(mut self) -> Self {
+        self.literal = false;
+        self
+    }
+
     /// Whether the value is negative for sign-propagation purposes (either a
     /// negative magnitude or negative zero).
     #[must_use]

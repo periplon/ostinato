@@ -9564,3 +9564,68 @@ d: {x: 1.00} & {x: (1.0 + 0)}
     assert_eq!(json["c"]["x"].to_string(), "1.00");
     assert_eq!(json["d"]["x"].to_string(), "1.00");
 }
+
+#[test]
+fn references_have_lower_representation_priority_than_expressions_and_literals() {
+    let source = r#"
+package representation
+a: 1.00
+b: (1.0 + 0) & a
+c: a & (1.0 + 0)
+d: {v: (1.0 + 0)} & {v: a}
+e: {v: a} & {v: (1.0 + 0)}
+n: 0.0 * -1
+f: n & (0.0 * 1)
+g: (0.0 * 1) & n
+h: {x: (0.0 * 1)} & {x: n}
+i: {x: n} & {x: (0.0 * 1)}
+j: n & 0.0
+k: 0.0 & n
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    for (field, expected) in [
+        ("a", "1.00"),
+        ("b", "1.0"),
+        ("c", "1.00"),
+        ("n", "-0.0"),
+        ("f", "0.0"),
+        ("g", "0.0"),
+        ("j", "0.0"),
+        ("k", "0.0"),
+    ] {
+        assert_eq!(json[field].to_string(), expected, "{field}");
+    }
+    assert_eq!(json["d"]["v"].to_string(), "1.0");
+    assert_eq!(json["e"]["v"].to_string(), "1.00");
+    assert_eq!(json["h"]["x"].to_string(), "0.0");
+    assert_eq!(json["i"]["x"].to_string(), "0.0");
+}
+
+#[test]
+fn hyperbolic_math_preserves_negative_zero() {
+    let source = r#"
+package hyperzero
+import "math"
+n: 0.0 * -1
+a: math.Sinh(n)
+b: math.Asinh(n)
+c: math.Atanh(n)
+d: math.Sinh(0.0 * -1.0)
+e: math.Asinh(0.0 * -1.0)
+f: math.Atanh(0.0 * -1.0)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "math".to_owned(),
+        ostinato_lang::builtin_module("math").expect("math builtin"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    for field in ["a", "b", "c", "d", "e", "f"] {
+        assert_eq!(json[field].to_string(), "-0", "{field}");
+    }
+}

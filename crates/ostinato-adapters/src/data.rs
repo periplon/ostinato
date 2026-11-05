@@ -405,6 +405,11 @@ pub fn to_yaml_with_cue_kinds(
 }
 
 fn json_to_yaml_with_kind(value: &Json, cue: Option<&CueValue>) -> Yaml<'static> {
+    // A disjunction default (or recursive/deferred wrapper) hides the
+    // selected value's kind; resolve it before inspecting containers or
+    // numbers so `*(0 / -1) | 1` keeps the float-kind `0.` in YAML.
+    let resolved = cue.map(CueValue::export_unwrap);
+    let cue = resolved.as_ref();
     match value {
         Json::Number(number) => {
             let text = cue_number_text(number);
