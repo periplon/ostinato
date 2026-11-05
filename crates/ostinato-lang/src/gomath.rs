@@ -580,7 +580,7 @@ pub(crate) fn log1p(x: f64) -> f64 {
     if k == 0 {
         return f - (hfsq - s * (hfsq + r));
     }
-    (f64::from(k) * LN2_HI - (hfsq - (s * (hfsq + r) + (f64::from(k) * LN2_LO + c)))) + f
+    f64::from(k) * LN2_HI - ((hfsq - (s * (hfsq + r) + (f64::from(k) * LN2_LO + c))) - f)
 }
 
 /// Go's `math.Exp`.
@@ -716,11 +716,11 @@ pub(crate) fn asinh(x: f64) -> f64 {
     let temp = if x > LARGE {
         log(x) + LN2
     } else if x > 2.0 {
-        log(2.0 * x + 1.0 / ((x * x + 1.0).sqrt() + x))
+        log(2.0 * x + 1.0 / (x.mul_add(x, 1.0).sqrt() + x))
     } else if x < NEAR_ZERO {
         x
     } else {
-        log1p(x + x * x / (1.0 + (1.0 + x * x).sqrt()))
+        log1p(x + x * x / (1.0 + x.mul_add(x, 1.0).sqrt()))
     };
     if sign { -temp } else { temp }
 }
@@ -739,8 +739,7 @@ pub(crate) fn acosh(x: f64) -> f64 {
         return log(x) + LN2;
     }
     if x > 2.0 {
-        let root = x.mul_add(x, -1.0).sqrt();
-        return log(2.0f64.mul_add(x, -(1.0 / (x + root))));
+        return log(2.0 * x - 1.0 / (x + (x * x - 1.0).sqrt()));
     }
     let t = x - 1.0;
     log1p(t + (2.0 * t + t * t).sqrt())

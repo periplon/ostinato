@@ -3,6 +3,13 @@ package mathf64boundaries
 import "math"
 
 params: {
+	// inverse-hyperbolic repro/boundary values
+	asinh_repro: math.Asinh(-0.4235484776947125)
+	acosh_repro: math.Acosh(1.0872864601667336)
+	atanh_pos_half: math.Atanh(0.5)
+	atanh_neg_half: math.Atanh(-0.5)
+	atanh_repro: math.Atanh(-0.7590061750891017)
+
 	// sinh/cosh overflow boundary
 	sinh_internal: math.Sinh(222.16198053852486)
 	sinh_negative_internal: math.Sinh(-35.16858567424799)
