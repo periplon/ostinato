@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
@@ -21,6 +21,14 @@ fn cue_bin() -> Option<String> {
 
 fn ost(args: &[&str]) -> Output {
     Command::new(bin())
+        .args(args)
+        .output()
+        .expect("run ostinato")
+}
+
+fn ost_in(directory: &Path, args: &[&str]) -> Output {
+    Command::new(bin())
+        .current_dir(directory)
         .args(args)
         .output()
         .expect("run ostinato")
@@ -694,7 +702,7 @@ fn export_reports_data_conflicts_and_array_struct_mismatches() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("conflicting"));
 
     let workflow = directory.path().join("wf.cue");
-    write(&workflow, "package demo\nroot: string\n");
+    write(&workflow, "package demo\nroot: string | *\"ok\"\n");
     let list = directory.path().join("list.json");
     write(&list, "[1,2]");
     let output = ost(&[
@@ -734,7 +742,7 @@ fn export_out_flag_beats_extension_and_dash_is_stdout() {
         String::from_utf8_lossy(&output.stderr)
     );
     let text = std::fs::read_to_string(&output_path).expect("yaml");
-    assert!(text.starts_with("a: 1"), "{text}");
+    assert!(text.starts_with("\"a\": 1"), "{text}");
 
     let output = ost(&[
         "export",
@@ -895,4 +903,483 @@ fn param_file_flag_is_rejected_and_inputs_feed_params() {
         let report: Value = serde_json::from_slice(&output.stdout).expect("json");
         assert_eq!(report["params"]["name"], "carol", "evaluator {evaluator}");
     }
+}
+
+#[test]
+fn yaml_output_escapes_controls_and_special_keys_roundtrip_through_cue() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data = directory.path().join("data.json");
+    write(
+        &data,
+        "{\"_id\":1,\"0B101\":2,\"0O17\":3,\"<<\":4,\"k\\u0085\":5,\"v\":\"a\\u0080b\\u0085c\\u009fd\\u2028e\\u2029f\\ufeffg\\ufffeh\\uffffi\"}\n",
+    );
+    let yaml = directory.path().join("out.yaml");
+    let output = ost(&[
+        "export",
+        data.to_str().expect("data"),
+        "--out",
+        "yaml",
+        "-o",
+        yaml.to_str().expect("yaml"),
+        "--force",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected: Value = serde_json::from_slice(
+        &ost(&["export", data.to_str().expect("data"), "--out", "json"]).stdout,
+    )
+    .expect("json");
+    assert_eq!(cue_export_json(&cue_bin, directory.path(), &yaml), expected);
+}
+
+#[test]
+fn yaml_numeric_underscore_imports_match_cue() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    for (name, text) in [
+        ("strings.yaml", "a: _\nb: __\nc: +_\nd: _1\ne: -_\n"),
+        (
+            "numbers.yaml",
+            "a: 1_000.5\nb: 1_0e5\nc: 1e1_0\nd: 1._5\ne: 01\nf: 1_000\n",
+        ),
+    ] {
+        let input = directory.path().join(name);
+        write(&input, text);
+        let ours = directory.path().join(format!("ours-{name}.cue"));
+        let theirs = directory.path().join(format!("theirs-{name}.cue"));
+        let output = ost(&[
+            "import",
+            input.to_str().expect("input"),
+            "-o",
+            ours.to_str().expect("ours"),
+            "--force",
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        run_cue(
+            &cue_bin,
+            directory.path(),
+            &[
+                "import",
+                input.to_str().expect("input"),
+                "-o",
+                theirs.to_str().expect("theirs"),
+                "-f",
+            ],
+        );
+        assert_eq!(
+            cue_export_json(&cue_bin, directory.path(), &ours),
+            cue_export_json(&cue_bin, directory.path(), &theirs),
+            "{name}"
+        );
+    }
+    for text in ["a: 1_\n", "a: 1__0\n", "a: 0_1\n"] {
+        let input = directory.path().join("bad.yaml");
+        write(&input, text);
+        let output = ost(&[
+            "import",
+            input.to_str().expect("input"),
+            "-o",
+            directory.path().join("bad.cue").to_str().expect("out"),
+            "--force",
+        ]);
+        assert!(!output.status.success(), "{text}");
+    }
+}
+
+#[test]
+fn quoted_merge_key_is_literal_in_import() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("merge.yaml");
+    write(
+        &input,
+        "\"<<\": {a: 1}\nbase: &b {x: 1}\nchild:\n  <<: *b\n  y: 2\n",
+    );
+    let ours = directory.path().join("ours.cue");
+    let theirs = directory.path().join("theirs.cue");
+    let output = ost(&[
+        "import",
+        input.to_str().expect("input"),
+        "-o",
+        ours.to_str().expect("ours"),
+        "--force",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    run_cue(
+        &cue_bin,
+        directory.path(),
+        &[
+            "import",
+            input.to_str().expect("input"),
+            "-o",
+            theirs.to_str().expect("theirs"),
+            "-f",
+        ],
+    );
+    assert_eq!(
+        cue_export_json(&cue_bin, directory.path(), &ours),
+        cue_export_json(&cue_bin, directory.path(), &theirs)
+    );
+}
+
+#[test]
+fn import_files_to_stdout_concatenates_all_documents() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("multi.yaml");
+    write(&input, "a: 1\n---\nb: 2\n");
+    let output = ost(&[
+        "import",
+        input.to_str().expect("input"),
+        "--files",
+        "-o",
+        "-",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "a: 1\nb: 2\n");
+}
+
+#[test]
+fn import_force_single_output_uses_last_input() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(&directory.path().join("a.json"), r#"{"a":1}"#);
+    write(&directory.path().join("b.yaml"), "b: 2\n");
+    let output_path = directory.path().join("out.cue");
+    let output = ost(&[
+        "import",
+        directory.path().join("a.json").to_str().expect("a"),
+        directory.path().join("b.yaml").to_str().expect("b"),
+        "-o",
+        output_path.to_str().expect("out"),
+        "--force",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        cue_export_json(&cue_bin, directory.path(), &output_path),
+        serde_json::json!({"b": 2})
+    );
+}
+
+#[test]
+fn utf8_bom_is_accepted_by_import_and_input() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("bom.json");
+    write(
+        &input,
+        "\u{feff}{\"params\":{\"name\":\"alice\",\"count\":3}}",
+    );
+    let output_path = directory.path().join("bom.cue");
+    let output = ost(&[
+        "import",
+        input.to_str().expect("input"),
+        "-o",
+        output_path.to_str().expect("out"),
+        "--force",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let workflow = directory.path().join("wf.cue");
+    write(&workflow, WORKFLOW);
+    let db = directory.path().join("db.sqlite");
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "validate",
+        workflow.to_str().expect("workflow"),
+        "--input",
+        input.to_str().expect("input"),
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(json_output(&output)["params"]["name"], "alice");
+}
+
+#[test]
+fn export_list_multiple_sources_zips_and_rejects_unequal_lengths() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let first = directory.path().join("first.yaml");
+    let second = directory.path().join("second.yaml");
+    write(&first, "a: 1\n---\na: 2\n");
+    write(&second, "b: 3\n---\nb: 4\n");
+    let output = ost(&[
+        "export",
+        first.to_str().expect("first"),
+        second.to_str().expect("second"),
+        "--list",
+        "--out",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(value, serde_json::json!([{"a":1,"b":3},{"a":2,"b":4}]));
+
+    let oracle = run_cue(
+        &cue_bin,
+        directory.path(),
+        &[
+            "export",
+            first.to_str().expect("first"),
+            second.to_str().expect("second"),
+            "--list",
+            "--out",
+            "json",
+        ],
+    );
+    let oracle_value: Value = serde_json::from_slice(&oracle.stdout).expect("cue json");
+    assert_eq!(value, oracle_value);
+
+    let short = directory.path().join("short.yaml");
+    write(&short, "b: 9\n");
+    let output = ost(&[
+        "export",
+        first.to_str().expect("first"),
+        short.to_str().expect("short"),
+        "--list",
+        "--out",
+        "json",
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("incompatible list lengths"));
+}
+
+#[test]
+fn export_list_with_input_is_rejected_for_both_evaluators() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data = directory.path().join("data.json");
+    let input = directory.path().join("input.json");
+    let workflow = directory.path().join("wf.cue");
+    write(&data, r#"{"a":1}"#);
+    write(&input, r#"{"b":2}"#);
+    write(&workflow, "package demo\nroot: string | *\"ok\"\n");
+    for source in [&data, &workflow] {
+        for evaluator in ["rust", "cue"] {
+            let output = ost(&[
+                "--evaluator",
+                evaluator,
+                "--cue",
+                &cue_bin,
+                "export",
+                source.to_str().expect("source"),
+                "--input",
+                input.to_str().expect("input"),
+                "--list",
+                "--out",
+                "json",
+            ]);
+            assert!(!output.status.success(), "{evaluator} {}", source.display());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("--list"));
+        }
+    }
+}
+
+#[test]
+fn reserved_serde_json_key_is_rejected_and_big_numbers_survive() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let reserved = directory.path().join("reserved.json");
+    write(&reserved, r#"{"$serde_json::private::Number":"1"}"#);
+    let output = ost(&[
+        "import",
+        reserved.to_str().expect("reserved"),
+        "-o",
+        directory.path().join("reserved.cue").to_str().expect("out"),
+        "--force",
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("reserved key"));
+
+    let big = directory.path().join("big.json");
+    write(&big, r#"{"n":123456789012345678901234567890}"#);
+    let output = ost(&["export", big.to_str().expect("big"), "--out", "json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("123456789012345678901234567890"));
+}
+
+#[test]
+fn underscore_keys_are_not_hidden_in_import_or_input() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data = directory.path().join("underscore.json");
+    write(&data, r#"{"_id":1,"__":2,"_meta":{"_x":3}}"#);
+    let cue = directory.path().join("underscore.cue");
+    let output = ost(&[
+        "import",
+        data.to_str().expect("data"),
+        "-o",
+        cue.to_str().expect("cue"),
+        "--force",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let exported = cue_export_json(&cue_bin, directory.path(), &cue);
+    assert_eq!(exported["_id"], 1);
+    assert_eq!(exported["__"], 2);
+    assert_eq!(exported["_meta"]["_x"], 3);
+
+    let workflow = directory.path().join("wf.cue");
+    write(&workflow, "package demo\nroot: string | *\"ok\"\n");
+    let output = ost(&[
+        "export",
+        workflow.to_str().expect("workflow"),
+        "--input",
+        data.to_str().expect("data"),
+        "--out",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let exported: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(exported["_id"], 1);
+    assert_eq!(exported["_meta"]["_x"], 3);
+}
+
+#[test]
+fn import_collision_detection_normalizes_absolute_and_dot_paths() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(&directory.path().join("x.json"), r#"{"a":1}"#);
+    write(&directory.path().join("x.yaml"), "b: 2\n");
+    for args in [
+        vec![
+            "import".to_owned(),
+            directory
+                .path()
+                .join("x.json")
+                .to_str()
+                .expect("abs")
+                .to_owned(),
+            "x.yaml".to_owned(),
+        ],
+        vec![
+            "import".to_owned(),
+            "x.json".to_owned(),
+            "./x.yaml".to_owned(),
+        ],
+    ] {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = ost_in(directory.path(), &refs);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("same output"));
+        assert!(!directory.path().join("x.cue").exists());
+    }
+}
+
+fn json_output(output: &Output) -> Value {
+    serde_json::from_slice(&output.stdout).expect("json")
+}
+
+#[test]
+fn broken_pipe_is_a_silent_success() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data = directory.path().join("wide.json");
+    let mut text = String::from("[");
+    for index in 0..200_000 {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push_str(&index.to_string());
+    }
+    text.push(']');
+    write(&data, &text);
+    let mut child = Command::new(bin())
+        .args(["export", data.to_str().expect("data"), "--out", "json"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    drop(child.stdout.take());
+    let status = child.wait().expect("wait");
+    assert!(status.success(), "{status}");
+}
+
+#[cfg(unix)]
+#[test]
+fn force_preserves_existing_output_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data = directory.path().join("data.json");
+    let output_path = directory.path().join("out.json");
+    write(&data, r#"{"a":1}"#);
+    write(&output_path, "old");
+    std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(0o640)).expect("chmod");
+    let output = ost(&[
+        "export",
+        data.to_str().expect("data"),
+        "-o",
+        output_path.to_str().expect("out"),
+        "--force",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mode = std::fs::metadata(&output_path)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o640);
 }

@@ -42,7 +42,7 @@ fn render_fields(fields: &Map<String, Json>, indent: usize) -> String {
 }
 
 fn render_label(key: &str) -> String {
-    if is_identifier(key) && !is_keyword(key) {
+    if is_identifier(key) && !is_keyword(key) && !key.starts_with('_') {
         key.to_owned()
     } else {
         serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_owned())

@@ -31,22 +31,25 @@ ostinato import config.json --package demo --force
 * Without `-o`, one `<stem>.cue` file is written next to each input, matching
   `cue import`.
 * `--merge` (with `-o`) unifies all object documents into one CUE file.
-  Without `--merge`, `-o` plus several inputs mirrors CUE: the first input is
-  written and the rest are skipped with a warning. Ostinato exits 1 when data
-  was skipped so the loss is never silent; pass `--skip-existing` for CUE's
-  exit status 0.
+  Without `--merge`, `-o` plus several inputs mirrors CUE: without `--force`
+  the first input is written and the rest are skipped with a warning (exit 1
+  so the loss is never silent); with `--force` the **last** input is written,
+  matching `cue import -f`. Pass `--skip-existing` for CUE's exit status 0.
 * `--files` splits multi-document YAML into `<stem>.cue`, `<stem>-1.cue`, ...,
-  matching `cue import --files`.
+  matching `cue import --files`. `--files -o -` concatenates every document to
+  stdout, matching CUE.
 * `--package/-p <name>` adds a validated `package <name>` header to every
   output file. `-p` is scoped to `import` (elsewhere `-p` means `--param`).
 * `--list` wraps every document into one top-level list. It is required for a
   YAML file with several documents when neither `--list` nor `--files` is
-  given, exactly like CUE.
+  given, exactly like CUE. With several data sources, `--list` requires equal
+  document counts and unifies documents per index (CUE list zipping).
 * Destinations are no-clobber by default: an existing file is an error unless
   `--force` is given. `--skip-existing` skips it with exit status 0 instead
   (CUE compatibility).
 * Two inputs that map to the same basename (`x.json` and `x.yaml` both target
-  `x.cue`) are rejected before anything is written.
+  `x.cue`) are rejected before anything is written. Paths are normalized
+  first, so absolute/relative and `./` spellings are also detected.
 * Input is fully decoded before any file is written. Invalid JSON/YAML,
   duplicate keys, unsupported tags, conflicts or missing documents produce a
   typed error and no partial output.
@@ -91,8 +94,9 @@ ostinato export multi.yaml --list --out yaml
   sorted map, so its CUE-source output is sorted (documented limit).
 * When the source itself is `.json`, `.yaml` or `.yml`, it is read as data.
   Multiple documents are unified; `--list` emits them as a list instead.
-* `--list` with `--input` is rejected (CUE's per-file list semantics do not
-  compose); put all documents in the source data file.
+* `--list` with `--input` is rejected for both CUE and data sources; put all
+  documents in the source files. `--list` with several data sources zips and
+  unifies documents per index, requiring equal document counts.
 * Destinations are no-clobber by default; pass `--force` to replace an existing
   file. Symlinks, hard links and paths that alias an input are always refused.
   Writes are atomic (temporary file + rename).
@@ -176,11 +180,11 @@ The e2e suite compares Ostinato with CUE v0.17.1 for:
 
 | Area | Cases |
 | --- | --- |
-| Import | object, scalar, array, nested, `--list`, multi-document YAML, `--files`, `--merge`, anchors/merge keys, duplicate keys, big integers, custom tags |
-| Export | hidden/optional filtering, `-e` (dot, index, hidden, optional error), `--list`, `--out` inference, `--out` vs extension, no-clobber/`--force`, symlink/hardlink/input aliasing, data conflicts, array-vs-struct conflicts, stdout purity, repeated `-e` streams |
-| Workflow | `run --input` with JSON/YAML, native vs official CUE evaluators, `run --out yaml`, `run --dry-run`, `-p @file` rejection |
+| Import | object, scalar, array, nested, `--list`, multi-document YAML, `--files`, `--merge`, `--files -o -`, `--force` last-input, anchors/merge keys, quoted `<<`, numeric underscores, key normalization, duplicate keys, big integers, custom tags, BOM |
+| Export | hidden/optional filtering, `-e` (dot, index, hidden, optional error), `--list`, `--list` multi-source zip, `--list`+`--input` rejection, `--out` inference, `--out` vs extension, no-clobber/`--force`, symlink/hardlink/input aliasing, data conflicts, array-vs-struct conflicts, stdout purity, broken pipe, repeated `-e` streams |
+| Workflow | `run --input` with JSON/YAML, native vs official CUE evaluators, `run --out yaml`, `run --dry-run`, `-p @file` rejection, `_id`/`_meta` input keys |
 | Numbers | >2^53 integers, 30-digit integers, `1e400`, YAML lexical integers, non-finite rejection |
-| YAML safety | byte/depth/document/node/alias limits, alias bombs, cyclic aliases, unknown tags, `!!binary` rejection, timestamps as strings |
+| YAML safety | byte/depth/document/node/alias/expanded-byte limits, alias bombs, cyclic aliases, unknown tags, `!!binary` rejection, timestamps as strings, C1/noncharacter escaping, quoted keys, JSON node limit |
 
 ## Limits and security policy
 
@@ -192,6 +196,8 @@ The e2e suite compares Ostinato with CUE v0.17.1 for:
 | Maximum YAML events/nodes | 1,000,000 (`MAX_YAML_NODES`) |
 | Maximum YAML aliases | 50,000 (`MAX_YAML_ALIASES`) |
 | YAML alias expansion budget | 50,000 nodes (`MAX_ALIAS_EXPANSION_NODES`, matches CUE) |
+| Expanded JSON/YAML value budget | 32 MiB (`MAX_EXPANDED_BYTES`, aliases and merge keys) |
+| Maximum JSON values/nodes | 1,000,000 (`MAX_JSON_NODES`) |
 | JSON number precision | arbitrary precision (no f64 rounding) |
 
 * Duplicate mapping keys are errors in both formats.
@@ -202,15 +208,22 @@ The e2e suite compares Ostinato with CUE v0.17.1 for:
 * `null`, `~`, `Null` and `NULL` are null.
 * Non-finite floats (`.inf`, `.nan`) are rejected because JSON cannot represent
   them.
-* Anchors and aliases are resolved with a bounded node budget, aliases are
-  counted, and cyclic aliases are rejected; this blocks billion-laughs
-  expansion. YAML merge keys (`<<`) are expanded explicitly with explicit
-  fields taking precedence.
+* Anchors and aliases are resolved with a bounded node budget and an expanded
+  byte budget, aliases are counted, and cyclic aliases are rejected; this
+  blocks billion-laughs and multi-gigabyte scalar expansion. YAML merge keys
+  (`<<`) are expanded explicitly with explicit fields taking precedence. A
+  quoted `"<<"` is a literal key; only a plain untagged (or `!!merge`) key
+  triggers merging.
 * YAML timestamps stay strings (YAML 1.2 core schema has no timestamp type).
 * `!!binary` is rejected: JSON has no byte type and silently decoding it would
   lose the bytes/text distinction. Core `!!str`, `!!int`, `!!bool`, `!!null`
   and `!!float` tags are accepted.
 * Empty JSON and YAML files decode to `null`; `{}` and `[]` are preserved.
+* UTF-8 BOMs are stripped before parsing in JSON and YAML.
+* YAML integer/float digit separators follow CUE: underscores must sit between
+  digits (`1_000.5`), a leading-zero form such as `0_1` is rejected, and
+  `_`, `__`, `+_`, `_1`, `-_` remain strings. JSON has an explicit node limit,
+  so wide adversarial arrays are rejected during deserialization.
 * Mapping keys may be strings or scalar numbers/booleans/null; scalars are
   stringified like CUE. Complex keys (maps/lists) are rejected.
 * YAML parsing uses [`saphyr`](https://crates.io/crates/saphyr) 0.3, a
@@ -218,28 +231,35 @@ The e2e suite compares Ostinato with CUE v0.17.1 for:
   `serde_yaml` (deprecated) and `serde_yml` (deprecated shim) were avoided.
 * YAML emission is a small deterministic emitter built on `saphyr`'s tree and
   emitter. Number tokens are preserved verbatim so integers above 2^53 are
-  never rounded.
+  never rounded. Every key and string value is double-quoted and escaped,
+  including C1 controls, U+2028/U+2029, BOM/noncharacters and unquoted-looking
+  keys such as `0B101`, `0O17`, `<<` and `_id`.
 
 ## Deviations
 
-1. `ostinato import a.json b.yaml -o merged.cue` writes only the first input
-   and exits 1 after warning that the rest were skipped (CUE writes the first
-   and exits 0). Use `--merge` for one unified file, omit `-o` for per-input
-   outputs, or pass `--skip-existing` for CUE's exit status.
+1. `ostinato import a.json b.yaml -o merged.cue` writes the first input and
+   exits 1 after warning that the rest were skipped (CUE exits 0); with
+   `--force` it writes the last input, matching CUE. Use `--merge` for one
+   unified file, omit `-o` for per-input outputs, or pass `--skip-existing`
+   for CUE's exit status.
 2. `ostinato export` supports a constrained `-e` path grammar rather than full
    CUE expressions. Multi-source exports apply expressions after unification.
 3. `ostinato import` supports JSON (`.json`) and YAML (`.yaml`/`.yml`) only; JSON
    lines (`.jsonl`, `.ndjson`), TOML, text, JSON Schema, OpenAPI, proto, `-l`,
    `--path`, `--recursive` and `-R` are not implemented.
-4. YAML output quotes all string values. CUE leaves simple strings unquoted.
-   Both encodings decode to the same value.
-5. `--list` cannot be combined with `--input` for export; CUE's `--list` acts
-   per input file, so compose the documents into one file instead.
+4. YAML output double-quotes every key and string value. CUE leaves simple
+   strings/keys unquoted. Both encodings decode to the same value; quoting is
+   required for C1/noncharacter safety.
+5. `--list` cannot be combined with `--input` for export (rejected for both
+   evaluators); `--list` with several data sources zips per index.
 6. `ostinato import` preserves source field order. The Rust CUE evaluator stores
    structs in sorted maps, so `export` of a CUE source is sorted; the official
-   CUE evaluator preserves declaration order.
+   CUE evaluator preserves declaration order. `serde_json/preserve_order` is
+   enabled globally and covered by ordering tests.
 7. `!!binary` is rejected rather than decoded.
-8. Empty JSON files decode to `null` (CUE import rejects empty JSON).
+8. Empty JSON files decode to `null` (CUE import rejects empty JSON); UTF-8
+   BOMs are accepted and stripped.
+9. Broken stdout pipes are treated as silent success.
 
 ## Error behavior
 

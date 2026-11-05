@@ -338,7 +338,7 @@ fn append_data_fields(items: &mut Vec<StructItem>, documents: &[Json]) -> PortRe
                 optional: false,
                 definition: false,
                 alias: None,
-                quoted: !is_cue_identifier(key),
+                quoted: key.starts_with('_') || !is_cue_identifier(key),
                 bytes_label_runes: None,
                 bytes_label_multiline: false,
                 attributes: Vec::new(),

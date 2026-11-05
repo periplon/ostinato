@@ -25,13 +25,16 @@
 //! number tokens as raw scalars to preserve arbitrary precision.
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use saphyr::{Mapping, Scalar, ScalarStyle, Yaml, YamlEmitter, YamlLoader};
 use saphyr_parser::{BufferedInput, Event, Parser, Span, SpannedEventReceiver};
-use serde::de::{self, MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::Deserializer;
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value as Json};
 use thiserror::Error;
 
@@ -52,6 +55,12 @@ pub const MAX_YAML_ALIASES: usize = 50_000;
 
 /// Maximum node budget produced by alias expansion (matches CUE's 50k cap).
 pub const MAX_ALIAS_EXPANSION_NODES: usize = 50_000;
+
+/// Maximum expanded JSON/YAML value size (aliases and merge keys included).
+pub const MAX_EXPANDED_BYTES: usize = 32 * 1024 * 1024;
+
+/// Maximum number of JSON values/nodes accepted in one document.
+pub const MAX_JSON_NODES: usize = 1_000_000;
 
 /// Data format inferred from a file extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +120,10 @@ pub enum DataError {
     UnsupportedFormat { path: String },
     #[error("{path}: input is not valid UTF-8")]
     InvalidEncoding { path: String },
+    #[error("{path}: input is not a regular file")]
+    NotRegularFile { path: String },
+    #[error("{path}: expanded value exceeds the {max}-byte budget")]
+    ExpandedTooLarge { path: String, max: usize },
     #[error("{path}: invalid JSON: {message}")]
     InvalidJson { path: String, message: String },
     #[error("{path}: invalid YAML: {message}")]
@@ -158,6 +171,11 @@ impl DataError {
 pub fn read_documents(path: &Path) -> Result<Vec<Json>, DataError> {
     let format = DataFormat::from_path(path)?;
     let metadata = std::fs::metadata(path).map_err(|error| DataError::io(path, &error))?;
+    if !metadata.is_file() {
+        return Err(DataError::NotRegularFile {
+            path: path.display().to_string(),
+        });
+    }
     if metadata.len() > MAX_INPUT_BYTES as u64 {
         return Err(DataError::TooLarge {
             path: path.display().to_string(),
@@ -165,7 +183,11 @@ pub fn read_documents(path: &Path) -> Result<Vec<Json>, DataError> {
             max: MAX_INPUT_BYTES,
         });
     }
-    let bytes = std::fs::read(path).map_err(|error| DataError::io(path, &error))?;
+    let file = std::fs::File::open(path).map_err(|error| DataError::io(path, &error))?;
+    let mut bytes = Vec::new();
+    file.take((MAX_INPUT_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| DataError::io(path, &error))?;
     if bytes.len() > MAX_INPUT_BYTES {
         return Err(DataError::TooLarge {
             path: path.display().to_string(),
@@ -188,24 +210,38 @@ pub fn parse_documents(
     text: &str,
     origin: &Path,
 ) -> Result<Vec<Json>, DataError> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     match format {
         DataFormat::Json => {
             if text.trim().is_empty() {
                 return Ok(vec![Json::Null]);
             }
-            let value: StrictJson =
-                serde_json::from_str(text).map_err(|error| DataError::InvalidJson {
-                    path: origin.display().to_string(),
-                    message: error.to_string(),
-                })?;
+            reject_reserved_json_key(text, origin)?;
+            let counter = Rc::new(Cell::new(0));
+            let mut deserializer = serde_json::Deserializer::from_str(text);
+            let value = StrictSeed {
+                counter: counter.clone(),
+            }
+            .deserialize(&mut deserializer)
+            .map_err(|error| DataError::InvalidJson {
+                path: origin.display().to_string(),
+                message: error.to_string(),
+            })?;
+            deserializer.end().map_err(|error| DataError::InvalidJson {
+                path: origin.display().to_string(),
+                message: error.to_string(),
+            })?;
             check_json_depth(&value.0, 0, origin)?;
             Ok(vec![value.0])
         }
-        DataFormat::Yaml => parse_yaml_documents(text, origin),
+        DataFormat::Yaml => {
+            scan_yaml_alias_budget(text, origin)?;
+            parse_yaml_documents(text, origin)
+        }
     }
 }
 
-/// Read a single object document, used for `-p @file`.
+/// Read a single object document from a file.
 ///
 /// Multiple YAML documents are unified in order; every document must be an
 /// object.
@@ -251,6 +287,17 @@ pub fn unify_objects(documents: &[Json], origin: &Path) -> Result<Json, DataErro
         merged = merge_json(&merged, document, &at, origin)?;
     }
     Ok(merged)
+}
+
+/// Unify two JSON values using CUE-like rules.
+///
+/// Objects merge, equal-length lists unify element-wise, and equal scalars
+/// unify. Different concrete values conflict.
+///
+/// # Errors
+/// Returns [`DataError::Conflict`] for incompatible values or list lengths.
+pub fn unify_values(left: &Json, right: &Json, origin: &Path) -> Result<Json, DataError> {
+    merge_json(left, right, "$", origin)
 }
 
 /// Encode a JSON value as YAML.
@@ -333,9 +380,97 @@ fn parse_yaml_documents(text: &str, origin: &Path) -> Result<Vec<Json>, DataErro
     }
     let mut out = Vec::with_capacity(documents.len());
     for document in &documents {
-        out.push(yaml_to_json(document, 0, "$", origin)?);
+        let mut budget = MAX_EXPANDED_BYTES;
+        out.push(yaml_to_json(document, 0, "$", origin, &mut budget)?);
     }
     Ok(out)
+}
+
+/// Walk the event stream without expanding aliases and reject alias trees
+/// whose estimated clone size exceeds the byte budget. This runs before the
+/// loader so a large scalar referenced by many aliases cannot allocate
+/// gigabytes of cloned nodes first.
+fn scan_yaml_alias_budget(text: &str, origin: &Path) -> Result<(), DataError> {
+    let mut parser = Parser::new(BufferedInput::new(text.chars()));
+    let mut receiver = AliasSizeReceiver::default();
+    parser
+        .load(&mut receiver, true)
+        .map_err(|error| DataError::InvalidYaml {
+            path: origin.display().to_string(),
+            message: error.to_string(),
+        })?;
+    if let Some(violation) = receiver.violation {
+        return Err(DataError::InvalidYaml {
+            path: origin.display().to_string(),
+            message: violation,
+        });
+    }
+    let mut expanded = receiver.total;
+    for (anchor, references) in &receiver.refs {
+        let size = receiver.anchors.get(anchor).copied().unwrap_or(0);
+        expanded = expanded.saturating_add(size.saturating_mul(*references));
+        if expanded > MAX_EXPANDED_BYTES {
+            return Err(DataError::ExpandedTooLarge {
+                path: origin.display().to_string(),
+                max: MAX_EXPANDED_BYTES,
+            });
+        }
+    }
+    if expanded > MAX_EXPANDED_BYTES {
+        return Err(DataError::ExpandedTooLarge {
+            path: origin.display().to_string(),
+            max: MAX_EXPANDED_BYTES,
+        });
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct AliasSizeReceiver {
+    stack: Vec<(Option<usize>, usize)>,
+    anchors: BTreeMap<usize, usize>,
+    refs: BTreeMap<usize, usize>,
+    total: usize,
+    violation: Option<String>,
+}
+
+impl AliasSizeReceiver {
+    fn add(&mut self, bytes: usize) {
+        if let Some((_, current)) = self.stack.last_mut() {
+            *current = current.saturating_add(bytes);
+        } else {
+            self.total = self.total.saturating_add(bytes);
+        }
+    }
+}
+
+impl<'input> SpannedEventReceiver<'input> for AliasSizeReceiver {
+    fn on_event(&mut self, event: Event<'input>, _span: Span) {
+        match &event {
+            Event::Scalar(text, _, anchor, _) => {
+                let size = text.len().saturating_add(16);
+                self.add(size);
+                if *anchor > 0 {
+                    self.anchors.insert(*anchor, size);
+                }
+            }
+            Event::SequenceStart(anchor, _) | Event::MappingStart(anchor, _) => {
+                self.stack.push(((*anchor > 0).then_some(*anchor), 16));
+            }
+            Event::SequenceEnd | Event::MappingEnd => {
+                if let Some((anchor, bytes)) = self.stack.pop() {
+                    self.add(bytes);
+                    if let Some(anchor) = anchor {
+                        self.anchors.insert(anchor, bytes);
+                    }
+                }
+            }
+            Event::Alias(anchor) => {
+                *self.refs.entry(*anchor).or_insert(0) += 1;
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A parser receiver that bounds documents, nodes, aliases and alias cycles
@@ -429,13 +564,20 @@ impl<'input> SpannedEventReceiver<'input> for BudgetLoader<'input> {
     }
 }
 
-fn yaml_to_json(node: &Yaml<'_>, depth: usize, at: &str, origin: &Path) -> Result<Json, DataError> {
+fn yaml_to_json(
+    node: &Yaml<'_>,
+    depth: usize,
+    at: &str,
+    origin: &Path,
+    budget: &mut usize,
+) -> Result<Json, DataError> {
     if depth > MAX_DEPTH {
         return Err(DataError::TooDeep {
             path: origin.display().to_string(),
             max: MAX_DEPTH,
         });
     }
+    consume(budget, 16, origin)?;
     match node {
         Yaml::Value(Scalar::Null) => Ok(Json::Null),
         Yaml::Value(Scalar::Boolean(value)) => Ok(Json::Bool(*value)),
@@ -450,9 +592,14 @@ fn yaml_to_json(node: &Yaml<'_>, depth: usize, at: &str, origin: &Path) -> Resul
             };
             Ok(Json::Number(number))
         }
-        Yaml::Value(Scalar::String(value)) => Ok(Json::String(value.to_string())),
+        Yaml::Value(Scalar::String(value)) => {
+            consume(budget, value.len().saturating_add(8), origin)?;
+            Ok(Json::String(value.to_string()))
+        }
         Yaml::Representation(value, style, tag) => {
-            resolve_yaml_scalar(value, *style, tag.as_deref(), origin)
+            let resolved = resolve_yaml_scalar(value, *style, tag.as_deref(), origin)?;
+            consume(budget, json_size(&resolved), origin)?;
+            Ok(resolved)
         }
         Yaml::Sequence(sequence) => {
             let mut out = Vec::with_capacity(sequence.len());
@@ -462,11 +609,12 @@ fn yaml_to_json(node: &Yaml<'_>, depth: usize, at: &str, origin: &Path) -> Resul
                     depth + 1,
                     &format!("{at}[{index}]"),
                     origin,
+                    budget,
                 )?);
             }
             Ok(Json::Array(out))
         }
-        Yaml::Mapping(mapping) => yaml_mapping_to_json(mapping, depth, at, origin),
+        Yaml::Mapping(mapping) => yaml_mapping_to_json(mapping, depth, at, origin, budget),
         Yaml::Tagged(tag, _) => Err(DataError::UnsupportedTag {
             path: origin.display().to_string(),
             tag: tag.to_string(),
@@ -487,34 +635,38 @@ fn yaml_mapping_to_json(
     depth: usize,
     at: &str,
     origin: &Path,
+    budget: &mut usize,
 ) -> Result<Json, DataError> {
     // Merge keys (`<<`) are resolved after explicit fields are known. Per the
     // YAML merge-key specification, explicit keys win and earlier merged maps
-    // take precedence over later ones.
+    // take precedence over later ones. Only a plain untagged `<<` (or the core
+    // `!!merge` tag) is a merge key; a quoted `"<<"` stays a literal key.
     let mut explicit = Vec::with_capacity(mapping.len());
     let mut merged: Vec<(String, Json)> = Vec::new();
     let mut seen_explicit = BTreeSet::new();
     for (key, value) in mapping {
         let key = yaml_key(key, origin)?;
-        if key == "<<" {
-            merge_yaml_mapping(value, depth, at, origin, &mut merged)?;
+        if key.merge {
+            merge_yaml_mapping(value, depth, at, origin, budget, &mut merged)?;
             continue;
         }
-        if !seen_explicit.insert(key.clone()) {
+        consume(budget, key.text.len().saturating_add(8), origin)?;
+        if !seen_explicit.insert(key.text.clone()) {
             return Err(DataError::DuplicateKey {
                 path: origin.display().to_string(),
-                key,
+                key: key.text,
             });
         }
-        explicit.push((key, value));
+        explicit.push((key.text, value));
     }
     let mut fields = Map::new();
     for (key, value) in merged {
+        consume(budget, json_size(&value), origin)?;
         fields.entry(key).or_insert(value);
     }
     for (key, value) in explicit {
         let child_at = format!("{at}.{key}");
-        let converted = yaml_to_json(value, depth + 1, &child_at, origin)?;
+        let converted = yaml_to_json(value, depth + 1, &child_at, origin, budget)?;
         fields.insert(key, converted);
     }
     Ok(Json::Object(fields))
@@ -525,19 +677,21 @@ fn merge_yaml_mapping(
     depth: usize,
     at: &str,
     origin: &Path,
+    budget: &mut usize,
     merged: &mut Vec<(String, Json)>,
 ) -> Result<(), DataError> {
     match value {
         Yaml::Mapping(mapping) => {
-            let Json::Object(object) = yaml_mapping_to_json(mapping, depth + 1, at, origin)? else {
-                return Ok(());
-            };
-            merged.extend(object);
+            let converted = yaml_mapping_to_json(mapping, depth + 1, at, origin, budget)?;
+            consume(budget, json_size(&converted), origin)?;
+            if let Json::Object(object) = converted {
+                merged.extend(object);
+            }
             Ok(())
         }
         Yaml::Sequence(sequence) => {
             for item in sequence {
-                merge_yaml_mapping(item, depth + 1, at, origin, merged)?;
+                merge_yaml_mapping(item, depth + 1, at, origin, budget, merged)?;
             }
             Ok(())
         }
@@ -570,11 +724,12 @@ fn resolve_yaml_scalar(
                     path: origin.display().to_string(),
                     message: format!("invalid `!!bool` value `{text}`"),
                 }),
-            "int" => parse_yaml_integer(text).ok_or_else(|| DataError::InvalidYaml {
+            "int" => parse_yaml_integer(text, origin)?.ok_or_else(|| DataError::InvalidYaml {
                 path: origin.display().to_string(),
                 message: format!("invalid `!!int` value `{text}`"),
             }),
             "float" => parse_yaml_float(text, origin),
+            "merge" => Ok(Json::String("<<".to_owned())),
             _ => Err(DataError::UnsupportedTag {
                 path: origin.display().to_string(),
                 tag: tag.to_string(),
@@ -590,13 +745,13 @@ fn resolve_yaml_scalar(
     if let Some(value) = parse_yaml_bool(text) {
         return Ok(Json::Bool(value));
     }
-    if is_yaml_integer(text) {
-        return parse_yaml_integer(text).ok_or_else(|| DataError::InvalidYaml {
+    if looks_like_yaml_integer(text) {
+        return parse_yaml_integer(text, origin)?.ok_or_else(|| DataError::InvalidYaml {
             path: origin.display().to_string(),
             message: format!("integer `{text}` is out of range"),
         });
     }
-    if is_yaml_float(text) {
+    if looks_like_yaml_float(text) {
         return parse_yaml_float(text, origin);
     }
     Ok(Json::String(text.to_owned()))
@@ -610,35 +765,47 @@ fn parse_yaml_bool(text: &str) -> Option<bool> {
     }
 }
 
-fn is_yaml_integer(text: &str) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumberKind {
+    Integer,
+    Float,
+}
+
+fn looks_like_yaml_integer(text: &str) -> bool {
     let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
+    if unsigned.is_empty() {
+        return false;
+    }
     if let Some(rest) = unsigned
         .strip_prefix("0x")
         .or_else(|| unsigned.strip_prefix("0X"))
     {
-        return !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_hexdigit());
+        return !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '_');
     }
     if let Some(rest) = unsigned
         .strip_prefix("0o")
         .or_else(|| unsigned.strip_prefix("0O"))
-    {
-        return !rest.is_empty() && rest.chars().all(|ch| matches!(ch, '0'..='7'));
-    }
-    if let Some(rest) = unsigned
-        .strip_prefix("0b")
+        .or_else(|| unsigned.strip_prefix("0b"))
         .or_else(|| unsigned.strip_prefix("0B"))
     {
-        return !rest.is_empty() && rest.chars().all(|ch| matches!(ch, '0' | '1'));
+        return !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit() || ch == '_');
     }
-    !unsigned.is_empty() && unsigned.chars().all(|ch| ch.is_ascii_digit() || ch == '_')
+    unsigned
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit())
+        && unsigned.chars().all(|ch| ch.is_ascii_digit() || ch == '_')
 }
 
-fn parse_yaml_integer(text: &str) -> Option<Json> {
-    let cleaned: String = text.chars().filter(|ch| *ch != '_').collect();
+fn parse_yaml_integer(text: &str, origin: &Path) -> Result<Option<Json>, DataError> {
+    let cleaned = strip_numeric_underscores(text, NumberKind::Integer, origin)?;
     let (negative, unsigned) = match cleaned.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, cleaned.strip_prefix('+').unwrap_or(&cleaned)),
     };
+    if unsigned.is_empty() {
+        return Ok(None);
+    }
     let number = if let Some(rest) = unsigned
         .strip_prefix("0x")
         .or_else(|| unsigned.strip_prefix("0X"))
@@ -646,20 +813,16 @@ fn parse_yaml_integer(text: &str) -> Option<Json> {
         u128::from_str_radix(rest, 16)
             .ok()
             .map(|value| value.to_string())
-    } else if let Some(rest) = unsigned
-        .strip_prefix("0o")
-        .or_else(|| unsigned.strip_prefix("0O"))
-    {
+    } else if let Some(rest) = unsigned.strip_prefix("0o") {
         u128::from_str_radix(rest, 8)
             .ok()
             .map(|value| value.to_string())
-    } else if let Some(rest) = unsigned
-        .strip_prefix("0b")
-        .or_else(|| unsigned.strip_prefix("0B"))
-    {
+    } else if let Some(rest) = unsigned.strip_prefix("0b") {
         u128::from_str_radix(rest, 2)
             .ok()
             .map(|value| value.to_string())
+    } else if unsigned.starts_with("0B") || unsigned.starts_with("0O") {
+        return Err(illegal_number(text, origin));
     } else {
         let trimmed = unsigned.trim_start_matches('0');
         Some(if trimmed.is_empty() {
@@ -667,16 +830,19 @@ fn parse_yaml_integer(text: &str) -> Option<Json> {
         } else {
             trimmed.to_owned()
         })
-    }?;
+    };
+    let Some(number) = number else {
+        return Ok(None);
+    };
     let signed = if negative {
         format!("-{number}")
     } else {
         number
     };
-    signed.parse::<Number>().ok().map(Json::Number)
+    Ok(signed.parse::<Number>().ok().map(Json::Number))
 }
 
-fn is_yaml_float(text: &str) -> bool {
+fn looks_like_yaml_float(text: &str) -> bool {
     if matches!(
         text,
         ".inf"
@@ -694,10 +860,14 @@ fn is_yaml_float(text: &str) -> bool {
     ) {
         return true;
     }
-    if text.contains(['.', 'e', 'E']) && text.chars().any(|ch| ch.is_ascii_digit()) {
-        return normalized_float(text).is_some();
+    let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
+    if !unsigned.contains(['.', 'e', 'E']) || !unsigned.chars().any(|ch| ch.is_ascii_digit()) {
+        return false;
     }
-    false
+    unsigned
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit() || ch == '.')
 }
 
 fn parse_yaml_float(text: &str, origin: &Path) -> Result<Json, DataError> {
@@ -721,17 +891,83 @@ fn parse_yaml_float(text: &str, origin: &Path) -> Result<Json, DataError> {
             value: text.to_owned(),
         });
     }
-    let normalized = normalized_float(text).ok_or_else(|| DataError::InvalidYaml {
-        path: origin.display().to_string(),
-        message: format!("invalid float `{text}`"),
-    })?;
+    let cleaned = strip_numeric_underscores(text, NumberKind::Float, origin)?;
+    let normalized = normalized_float(&cleaned).ok_or_else(|| illegal_number(text, origin))?;
     normalized
         .parse::<Number>()
         .map(Json::Number)
-        .map_err(|error| DataError::InvalidYaml {
-            path: origin.display().to_string(),
-            message: format!("invalid float `{text}`: {error}"),
-        })
+        .map_err(|_| illegal_number(text, origin))
+}
+
+fn strip_numeric_underscores(
+    text: &str,
+    kind: NumberKind,
+    origin: &Path,
+) -> Result<String, DataError> {
+    let chars: Vec<char> = text.chars().collect();
+    let unsigned_start = usize::from(matches!(chars.first(), Some('-' | '+')));
+    let unsigned: String = chars[unsigned_start..].iter().collect();
+    let (hex, oct, bin) = (
+        unsigned.starts_with("0x") || unsigned.starts_with("0X"),
+        unsigned.starts_with("0o") || unsigned.starts_with("0O"),
+        unsigned.starts_with("0b") || unsigned.starts_with("0B"),
+    );
+    let digit = |ch: char| -> bool {
+        if kind == NumberKind::Float {
+            ch.is_ascii_digit()
+        } else if hex {
+            ch.is_ascii_hexdigit()
+        } else if oct {
+            matches!(ch, '0'..='7')
+        } else if bin {
+            matches!(ch, '0' | '1')
+        } else {
+            ch.is_ascii_digit()
+        }
+    };
+    let mut out = String::with_capacity(text.len());
+    for (index, ch) in chars.iter().enumerate() {
+        if *ch != '_' {
+            out.push(*ch);
+            continue;
+        }
+        let previous = index
+            .checked_sub(1)
+            .and_then(|index| chars.get(index))
+            .copied();
+        let next = chars.get(index + 1).copied();
+        match (previous, next) {
+            (Some(previous), Some(next)) if digit(previous) && digit(next) => {}
+            (Some('.'), Some(next)) if kind == NumberKind::Float && digit(next) => out.push('0'),
+            (Some('e' | 'E'), Some(next)) if kind == NumberKind::Float && digit(next) => {
+                out.push('0');
+            }
+            (Some('+' | '-'), Some(next))
+                if kind == NumberKind::Float
+                    && digit(next)
+                    && chars
+                        .get(index.wrapping_sub(2))
+                        .is_some_and(|ch| matches!(ch, 'e' | 'E')) =>
+            {
+                out.push('0');
+            }
+            _ => return Err(illegal_number(text, origin)),
+        }
+    }
+    if kind == NumberKind::Integer && !hex && !oct && !bin {
+        let body = out.strip_prefix(['-', '+']).unwrap_or(&out);
+        if body.len() > 1 && body.starts_with('0') && text.chars().any(|ch| ch == '_') {
+            return Err(illegal_number(text, origin));
+        }
+    }
+    Ok(out)
+}
+
+fn illegal_number(text: &str, origin: &Path) -> DataError {
+    DataError::InvalidYaml {
+        path: origin.display().to_string(),
+        message: format!("cannot decode `{text}` as a number: illegal '_' in number"),
+    }
 }
 
 fn normalized_float(text: &str) -> Option<String> {
@@ -765,18 +1001,37 @@ fn normalized_float(text: &str) -> Option<String> {
     normalized.parse::<Number>().ok().map(|_| normalized)
 }
 
-fn yaml_key(node: &Yaml<'_>, origin: &Path) -> Result<String, DataError> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct YamlKey {
+    text: String,
+    merge: bool,
+}
+
+fn yaml_key(node: &Yaml<'_>, origin: &Path) -> Result<YamlKey, DataError> {
     match node {
-        Yaml::Value(Scalar::String(value)) => Ok(value.to_string()),
-        Yaml::Value(Scalar::Boolean(value)) => Ok(value.to_string()),
-        Yaml::Value(Scalar::Integer(value)) => Ok(value.to_string()),
-        Yaml::Value(Scalar::FloatingPoint(value)) => Ok(value.into_inner().to_string()),
-        Yaml::Value(Scalar::Null) => Ok("null".to_owned()),
-        Yaml::Representation(value, _, None) => Ok(value.to_string()),
-        Yaml::Representation(_, _, Some(tag)) => Err(DataError::UnsupportedTag {
-            path: origin.display().to_string(),
-            tag: tag.to_string(),
+        Yaml::Value(Scalar::String(value)) => Ok(YamlKey {
+            text: value.to_string(),
+            merge: false,
         }),
+        Yaml::Value(Scalar::Boolean(value)) => Ok(YamlKey {
+            text: value.to_string(),
+            merge: false,
+        }),
+        Yaml::Value(Scalar::Integer(value)) => Ok(YamlKey {
+            text: value.to_string(),
+            merge: false,
+        }),
+        Yaml::Value(Scalar::FloatingPoint(value)) => Ok(YamlKey {
+            text: value.into_inner().to_string(),
+            merge: false,
+        }),
+        Yaml::Value(Scalar::Null) => Ok(YamlKey {
+            text: "null".to_owned(),
+            merge: false,
+        }),
+        Yaml::Representation(value, style, tag) => {
+            yaml_representation_key(value, *style, tag.as_deref(), origin)
+        }
         Yaml::Tagged(tag, _) => Err(DataError::UnsupportedTag {
             path: origin.display().to_string(),
             tag: tag.to_string(),
@@ -787,24 +1042,157 @@ fn yaml_key(node: &Yaml<'_>, origin: &Path) -> Result<String, DataError> {
     }
 }
 
+fn yaml_representation_key(
+    value: &str,
+    style: ScalarStyle,
+    tag: Option<&saphyr_parser::Tag>,
+    origin: &Path,
+) -> Result<YamlKey, DataError> {
+    if let Some(tag) = tag {
+        if !tag.is_yaml_core_schema() {
+            return Err(DataError::UnsupportedTag {
+                path: origin.display().to_string(),
+                tag: tag.to_string(),
+            });
+        }
+        return match tag.suffix.as_str() {
+            "str" => Ok(YamlKey {
+                text: value.to_owned(),
+                merge: false,
+            }),
+            "int" => parse_yaml_integer(value, origin)?
+                .map(|number| YamlKey {
+                    text: number.to_string(),
+                    merge: false,
+                })
+                .ok_or_else(|| illegal_number(value, origin)),
+            "bool" => parse_yaml_bool(value)
+                .map(|value| YamlKey {
+                    text: value.to_string(),
+                    merge: false,
+                })
+                .ok_or_else(|| illegal_number(value, origin)),
+            "null" => Ok(YamlKey {
+                text: "null".to_owned(),
+                merge: false,
+            }),
+            "merge" => Ok(YamlKey {
+                text: "<<".to_owned(),
+                merge: true,
+            }),
+            "float" => parse_yaml_float(value, origin).map(|number| YamlKey {
+                text: number.to_string(),
+                merge: false,
+            }),
+            _ => Err(DataError::UnsupportedTag {
+                path: origin.display().to_string(),
+                tag: tag.to_string(),
+            }),
+        };
+    }
+    if style != ScalarStyle::Plain {
+        return Ok(YamlKey {
+            text: value.to_owned(),
+            merge: false,
+        });
+    }
+    if value.is_empty() || matches!(value, "~" | "null" | "Null" | "NULL") {
+        return Ok(YamlKey {
+            text: "null".to_owned(),
+            merge: false,
+        });
+    }
+    if let Some(value) = parse_yaml_bool(value) {
+        return Ok(YamlKey {
+            text: value.to_string(),
+            merge: false,
+        });
+    }
+    Ok(YamlKey {
+        text: value.to_owned(),
+        merge: value == "<<",
+    })
+}
+
 fn json_to_yaml(value: &Json) -> Yaml<'static> {
     match value {
-        Json::Null => Yaml::Value(Scalar::Null),
+        Json::Null => Yaml::Representation(Cow::Owned("null".to_owned()), ScalarStyle::Plain, None),
         Json::Bool(value) => Yaml::Value(Scalar::Boolean(*value)),
         Json::Number(number) => {
             Yaml::Representation(Cow::Owned(number.to_string()), ScalarStyle::Plain, None)
         }
-        Json::String(value) => Yaml::Value(Scalar::String(Cow::Owned(value.clone()))),
+        Json::String(value) => yaml_quoted(value),
         Json::Array(values) => Yaml::Sequence(values.iter().map(json_to_yaml).collect()),
         Json::Object(fields) => {
             let mut mapping = Mapping::default();
             for (key, value) in fields {
-                mapping.insert(
-                    Yaml::Value(Scalar::String(Cow::Owned(key.clone()))),
-                    json_to_yaml(value),
-                );
+                mapping.insert(yaml_quoted(key), json_to_yaml(value));
             }
             Yaml::Mapping(mapping)
+        }
+    }
+}
+
+fn yaml_quoted(value: &str) -> Yaml<'static> {
+    Yaml::Representation(
+        Cow::Owned(escape_yaml_string(value)),
+        ScalarStyle::DoubleQuoted,
+        None,
+    )
+}
+
+fn escape_yaml_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\u{00}'..='\u{1f}' | '\u{7f}' => out.push_str(&format!("\\u{:04X}", u32::from(ch))),
+            '\u{80}'..='\u{9f}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{feff}'
+            | '\u{fffe}'
+            | '\u{ffff}'
+            | '\u{fdd0}'..='\u{fdef}' => {
+                out.push_str(&format!("\\u{:04X}", u32::from(ch)));
+            }
+            _ if (u32::from(ch) & 0xffff == 0xfffe) || (u32::from(ch) & 0xffff == 0xffff) => {
+                out.push_str(&format!("\\U{:08X}", u32::from(ch)));
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn consume(budget: &mut usize, bytes: usize, origin: &Path) -> Result<(), DataError> {
+    if bytes > *budget {
+        return Err(DataError::ExpandedTooLarge {
+            path: origin.display().to_string(),
+            max: MAX_EXPANDED_BYTES,
+        });
+    }
+    *budget -= bytes;
+    Ok(())
+}
+
+fn json_size(value: &Json) -> usize {
+    match value {
+        Json::Null | Json::Bool(_) => 8,
+        Json::Number(_) => 16,
+        Json::String(value) => value.len() + 8,
+        Json::Array(values) => 16 + values.iter().map(json_size).sum::<usize>(),
+        Json::Object(fields) => {
+            16 + fields
+                .iter()
+                .map(|(key, value)| key.len() + json_size(value))
+                .sum::<usize>()
         }
     }
 }
@@ -995,21 +1383,44 @@ impl DataFile {
 /// arbitrary-precision number protocol (`$serde_json::private::Number`).
 struct StrictJson(Json);
 
-impl<'de> Deserialize<'de> for StrictJson {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+struct StrictSeed {
+    counter: Rc<Cell<usize>>,
+}
+
+impl<'de> DeserializeSeed<'de> for StrictSeed {
+    type Value = StrictJson;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(StrictVisitor)
+        deserializer.deserialize_any(StrictVisitor {
+            counter: self.counter,
+        })
     }
 }
 
-struct StrictVisitor;
+struct StrictVisitor {
+    counter: Rc<Cell<usize>>,
+}
 
 /// serde_json's arbitrary-precision number protocol sends numbers through a
 /// single-entry map with this key. The workspace always enables the feature;
 /// the constant is harmless when it is disabled because the key never appears.
 const NUMBER_TOKEN: &str = "$serde_json::private::Number";
+
+impl StrictVisitor {
+    fn bump<E: de::Error>(&self) -> Result<(), E> {
+        let next = self.counter.get().saturating_add(1);
+        if next > MAX_JSON_NODES {
+            return Err(E::custom(format!(
+                "JSON node count exceeds the maximum of {MAX_JSON_NODES}"
+            )));
+        }
+        self.counter.set(next);
+        Ok(())
+    }
+}
 
 impl<'de> Visitor<'de> for StrictVisitor {
     type Value = StrictJson;
@@ -1018,15 +1429,27 @@ impl<'de> Visitor<'de> for StrictVisitor {
         formatter.write_str("a JSON value")
     }
 
-    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.bump()?;
         Ok(StrictJson(Json::Bool(value)))
     }
 
-    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.bump()?;
         Ok(StrictJson(Json::Number(Number::from(value))))
     }
 
-    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.bump()?;
         Ok(StrictJson(Json::Number(Number::from(value))))
     }
 
@@ -1034,25 +1457,42 @@ impl<'de> Visitor<'de> for StrictVisitor {
     where
         E: de::Error,
     {
+        self.bump()?;
         let Some(number) = Number::from_f64(value) else {
             return Err(E::custom("non-finite JSON number"));
         };
         Ok(StrictJson(Json::Number(number)))
     }
 
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.bump()?;
         Ok(StrictJson(Json::String(value.to_owned())))
     }
 
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.bump()?;
         Ok(StrictJson(Json::String(value)))
     }
 
-    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.bump()?;
         Ok(StrictJson(Json::Null))
     }
 
-    fn visit_none<E>(self) -> Result<Self::Value, E> {
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.bump()?;
         Ok(StrictJson(Json::Null))
     }
 
@@ -1067,8 +1507,11 @@ impl<'de> Visitor<'de> for StrictVisitor {
     where
         A: SeqAccess<'de>,
     {
+        self.bump()?;
         let mut out = Vec::new();
-        while let Some(item) = sequence.next_element::<StrictJson>()? {
+        while let Some(item) = sequence.next_element_seed(StrictSeed {
+            counter: self.counter.clone(),
+        })? {
             out.push(item.0);
         }
         Ok(StrictJson(Json::Array(out)))
@@ -1078,6 +1521,7 @@ impl<'de> Visitor<'de> for StrictVisitor {
     where
         A: MapAccess<'de>,
     {
+        self.bump()?;
         let Some(first_key) = map.next_key::<String>()? else {
             return Ok(StrictJson(Json::Object(Map::new())));
         };
@@ -1088,18 +1532,97 @@ impl<'de> Visitor<'de> for StrictVisitor {
                 .map_err(|error| de::Error::custom(format!("invalid JSON number: {error}")))?;
             return Ok(StrictJson(Json::Number(number)));
         }
-        let first_value: StrictJson = map.next_value()?;
+        let first_value: StrictJson = map.next_value_seed(StrictSeed {
+            counter: self.counter.clone(),
+        })?;
         let mut out = Map::new();
         out.insert(first_key.clone(), first_value.0);
         while let Some(key) = map.next_key::<String>()? {
             if out.contains_key(&key) {
                 return Err(de::Error::custom(format!("duplicate key `{key}`")));
             }
-            let value: StrictJson = map.next_value()?;
+            let value: StrictJson = map.next_value_seed(StrictSeed {
+                counter: self.counter.clone(),
+            })?;
             out.insert(key, value.0);
         }
         Ok(StrictJson(Json::Object(out)))
     }
+}
+
+/// Reject the internal arbitrary-precision number key before deserialization.
+///
+/// serde_json uses `{"$serde_json::private::Number": "..."}` internally for
+/// number tokens. A user object with that key would otherwise be reinterpreted
+/// as a number. Scanning raw JSON distinguishes real number tokens (not
+/// objects) from user objects and gives a clear error instead of corruption.
+fn reject_reserved_json_key(text: &str, origin: &Path) -> Result<(), DataError> {
+    #[derive(Clone, Copy)]
+    enum Context {
+        Object { expect_key: bool },
+        Array,
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut stack: Vec<Context> = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        match chars[index] {
+            '{' => {
+                stack.push(Context::Object { expect_key: true });
+                index += 1;
+            }
+            '[' => {
+                stack.push(Context::Array);
+                index += 1;
+            }
+            '}' | ']' => {
+                stack.pop();
+                index += 1;
+            }
+            ',' => {
+                if let Some(Context::Object { expect_key }) = stack.last_mut() {
+                    *expect_key = true;
+                }
+                index += 1;
+            }
+            '"' => {
+                let start = index;
+                index += 1;
+                let mut escaped = false;
+                while index < chars.len() {
+                    let ch = chars[index];
+                    index += 1;
+                    if escaped {
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == '"' {
+                        break;
+                    }
+                }
+                let literal: String = chars[start..index].iter().collect();
+                let decoded: String = serde_json::from_str(&literal).unwrap_or(literal);
+                if let Some(Context::Object { expect_key }) = stack.last_mut()
+                    && *expect_key
+                {
+                    if decoded == NUMBER_TOKEN {
+                        return Err(DataError::InvalidJson {
+                            path: origin.display().to_string(),
+                            message: format!(
+                                "reserved key `{NUMBER_TOKEN}` is not supported in user JSON"
+                            ),
+                        });
+                    }
+                    *expect_key = false;
+                }
+            }
+            ch if ch.is_whitespace() || ch == ':' => index += 1,
+            _ => {
+                index += 1;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1284,6 +1807,169 @@ mod tests {
     }
 
     #[test]
+    fn yaml_numeric_underscores_match_cue() {
+        for text in ["_", "__", "+_", "_1", "-_"] {
+            let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
+            assert_eq!(docs[0]["v"], Json::String(text.to_owned()), "{text}");
+        }
+        let cases = [
+            ("1_000.5", "1000.5"),
+            ("1_0e5", "1000000"),
+            ("1e1_0", "1e10"),
+            ("1._5", "1.05"),
+            ("01", "1"),
+            ("1_000", "1000"),
+            ("0x1", "1"),
+            ("0o17", "15"),
+            ("0b101", "5"),
+        ];
+        for (text, expected) in cases {
+            let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
+            let actual = docs[0]["v"].to_string();
+            assert!(
+                actual == expected || actual.parse::<f64>().ok() == expected.parse::<f64>().ok(),
+                "{text}: {actual} != {expected}"
+            );
+        }
+        for text in ["1_", "1__0", "0_1", "1_.5", "1.5_", "1_e5", "1e5_"] {
+            let error = parse_documents(DataFormat::Yaml, &format!("v: {text}\n"), Path::new("t"))
+                .expect_err(text);
+            assert!(error.to_string().contains("illegal '_'"), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn quoted_merge_key_is_literal() {
+        let docs = parse(
+            DataFormat::Yaml,
+            "\"<<\": {a: 1}\nbase: &b {x: 1}\nchild:\n  <<: *b\n  y: 2\n",
+        );
+        assert_eq!(docs[0]["<<"]["a"], 1);
+        assert_eq!(docs[0]["child"]["x"], 1);
+        assert_eq!(docs[0]["child"]["y"], 2);
+        assert!(docs[0]["child"].get("<<").is_none());
+    }
+
+    #[test]
+    fn yaml_keys_normalize_and_collide_like_cue() {
+        let error = parse_documents(DataFormat::Yaml, "true: a\nTrue: b\n", Path::new("t"))
+            .expect_err("bool keys");
+        assert!(matches!(error, DataError::DuplicateKey { .. }), "{error}");
+        let error = parse_documents(DataFormat::Yaml, "~: a\nnull: b\n", Path::new("t"))
+            .expect_err("null keys");
+        assert!(matches!(error, DataError::DuplicateKey { .. }), "{error}");
+        let docs = parse(DataFormat::Yaml, "0x1: a\n1: b\n");
+        assert_eq!(docs[0]["0x1"], Json::String("a".to_owned()));
+        assert_eq!(docs[0]["1"], Json::String("b".to_owned()));
+        let error = parse_documents(
+            DataFormat::Yaml,
+            "!!str 5: a\n!!int \"5\": b\n",
+            Path::new("t"),
+        )
+        .expect_err("tagged keys");
+        assert!(matches!(error, DataError::DuplicateKey { .. }), "{error}");
+    }
+
+    #[test]
+    fn yaml_emitter_escapes_controls_and_quotes_keys() {
+        let value = serde_json::json!({
+            "_id": "a\u{85}b\u{2028}c\u{2029}d\u{feff}e\u{fffe}f\u{ffff}g",
+            "0B101": 1,
+            "0O17": 2,
+            "<<": 3,
+            "plain": "ok",
+        });
+        let yaml = to_yaml(&value).expect("yaml");
+        assert!(yaml.contains("\\u0085"), "{yaml}");
+        assert!(yaml.contains("\\u2028"), "{yaml}");
+        assert!(yaml.contains("\\u2029"), "{yaml}");
+        assert!(yaml.contains("\\uFEFF"), "{yaml}");
+        assert!(yaml.contains("\\uFFFE"), "{yaml}");
+        assert!(yaml.contains("\\uFFFF"), "{yaml}");
+        assert!(yaml.contains("\"_id\""), "{yaml}");
+        assert!(yaml.contains("\"0B101\""), "{yaml}");
+        assert!(yaml.contains("\"0O17\""), "{yaml}");
+        assert!(yaml.contains("\"<<\""), "{yaml}");
+        assert_eq!(parse(DataFormat::Yaml, &yaml).remove(0), value);
+    }
+
+    #[test]
+    fn reserved_serde_json_number_key_is_rejected() {
+        let error = parse_documents(
+            DataFormat::Json,
+            r#"{"$serde_json::private::Number":"1"}"#,
+            Path::new("t"),
+        )
+        .expect_err("reserved");
+        assert!(error.to_string().contains("reserved key"), "{error}");
+    }
+
+    #[test]
+    fn utf8_bom_is_stripped() {
+        assert_eq!(
+            parse(DataFormat::Json, "\u{feff}{\"a\":1}"),
+            vec![serde_json::json!({"a": 1})]
+        );
+        assert_eq!(
+            parse(DataFormat::Yaml, "\u{feff}a: 1\n"),
+            vec![serde_json::json!({"a": 1})]
+        );
+    }
+
+    #[test]
+    fn json_node_limit_is_enforced() {
+        let mut text = String::from("[");
+        for _ in 0..=MAX_JSON_NODES {
+            text.push_str("0,");
+        }
+        text.push('0');
+        text.push(']');
+        let error = parse_documents(DataFormat::Json, &text, Path::new("t")).expect_err("nodes");
+        assert!(error.to_string().contains("node count"), "{error}");
+    }
+
+    #[test]
+    fn alias_byte_budget_is_enforced() {
+        let scalar = "x".repeat(1024 * 1024);
+        let mut text = format!("big: &b \"{scalar}\"\n");
+        for index in 0..64 {
+            text.push_str(&format!("a{index}: *b\n"));
+        }
+        let error = parse_documents(DataFormat::Yaml, &text, Path::new("t")).expect_err("bytes");
+        let message = error.to_string();
+        assert!(
+            message.contains("expanded") || message.contains("budget"),
+            "{message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn devices_and_fifos_are_rejected_without_reading() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let link = directory.path().join("zero.json");
+        std::os::unix::fs::symlink("/dev/zero", &link).expect("symlink");
+        let error = read_documents(&link).expect_err("device");
+        assert!(
+            matches!(
+                error,
+                DataError::NotRegularFile { .. } | DataError::UnsupportedFormat { .. }
+            ),
+            "{error}"
+        );
+
+        let fifo = directory.path().join("pipe.yaml");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        if status.success() {
+            let error = read_documents(&fifo).expect_err("fifo");
+            assert!(matches!(error, DataError::NotRegularFile { .. }), "{error}");
+        }
+    }
+
+    #[test]
     fn select_json_path_supports_dots_and_indexes() {
         let value = serde_json::json!({"a": {"b": [10, 20]}});
         assert_eq!(select_json_path(&value, "a.b[1]").expect("path"), &20);
@@ -1304,7 +1990,7 @@ mod tests {
         let json = to_json(&value).expect("json");
         assert!(json.find("\"z\"").expect("z") < json.find("\"a\"").expect("a"));
         let yaml = to_yaml(&value).expect("yaml");
-        assert!(yaml.find("z: 1").expect("z") < yaml.find("a: 2").expect("a"));
+        assert!(yaml.find("\"z\": 1").expect("z") < yaml.find("\"a\": 2").expect("a"));
         let back = parse(DataFormat::Yaml, &yaml).remove(0);
         assert_eq!(back, value);
     }
