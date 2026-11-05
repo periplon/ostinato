@@ -1726,13 +1726,40 @@ pub fn run_tool_command_paths(
     // Command-target alias chains (`command: c: p3`). CUE runs the command
     // task itself at the target and materialises the odd hops below it, just
     // like a command field alias. Module targets stay single instances.
-    let command_target_candidates: Vec<Vec<String>> = {
+    let (command_target_candidates, command_target_extra_instances): (
+        Vec<Vec<String>>,
+        Vec<Vec<String>>,
+    ) = {
+        let command_scopes: Vec<&[StructItem]> = combined
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                StructItem::Field(field)
+                    if matches!(&field.label, Label::Name(name, _) if name == "command") =>
+                {
+                    match &field.value {
+                        Expr::Struct(items, _) => Some(items.as_slice()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
         let mut paths = Vec::new();
+        let mut extras = Vec::new();
         for value in &selected_values {
-            command_target_paths(&combined.items, value, &mut paths);
+            let before = paths.len();
+            command_target_paths(&command_scopes, &combined.items, value, &mut paths);
+            if command_target_uses_local_field(&command_scopes, &combined.items, value) {
+                for path in &paths[before..] {
+                    if alias_chain_instances(&combined.items, path).is_empty() {
+                        extras.push(path.clone());
+                    }
+                }
+            }
         }
         paths.retain(|path| !path.first().is_some_and(|root| imports.contains_key(root)));
-        paths
+        (paths, extras)
     };
     apply_os_value_schema(&mut combined.items, command_name, &imports);
     // Schema expansion can replace the last reference to an imported value;
@@ -1863,6 +1890,12 @@ pub fn run_tool_command_paths(
         .values()
         .filter_map(|target| target.local.as_ref())
         .flat_map(|local| alias_chain_nodes(&combined.items, local))
+        .chain(
+            command_target_candidates
+                .iter()
+                .flat_map(|path| alias_chain_nodes(&combined.items, path))
+                .chain(command_target_extra_instances.iter().cloned()),
+        )
         .collect();
     let module_backed_task_reads: Vec<Vec<String>> = raw_task_input_read_paths
         .iter()
@@ -2035,6 +2068,25 @@ pub fn run_tool_command_paths(
     for path in &command_target_candidates {
         alias_instance_paths.extend(alias_chain_instances(&combined.items, path));
     }
+    alias_instance_paths.extend(command_target_extra_instances.iter().cloned());
+    // When a module-backed task-input read is covered by materialised alias
+    // instances on its chain, CUE coalesces the module hop instead of running
+    // an extra local module-root producer (`group.prep`).
+    let mut covered_module_roots = std::collections::BTreeSet::new();
+    for path in &module_backed_task_reads {
+        let root = task_read_root(&combined.items, path);
+        if &root == path {
+            continue;
+        }
+        let read_nodes = alias_chain_nodes(&combined.items, path);
+        if alias_instance_paths
+            .iter()
+            .any(|instance| read_nodes.contains(instance))
+        {
+            covered_module_roots.insert(root);
+        }
+    }
+    external_paths.retain(|path| !covered_module_roots.contains(path));
     let alias_instance_roots: std::collections::BTreeSet<Vec<String>> = alias_instance_paths
         .iter()
         .filter_map(|local| alias_instance_root(&combined.items, local))
@@ -4440,6 +4492,15 @@ fn resolve_command_items(
             resolve_command_items(items, left, visited, out);
             resolve_command_items(items, right, visited, out);
         }
+        Expr::Disjunction(left, right, _) => {
+            let mut left_items = Vec::new();
+            resolve_command_items(items, left, visited, &mut left_items);
+            if left_items.is_empty() {
+                resolve_command_items(items, right, visited, out);
+            } else {
+                out.extend(left_items);
+            }
+        }
         Expr::Struct(task_items, _) => out.extend(task_items.iter().cloned()),
         _ => {}
     }
@@ -4896,6 +4957,16 @@ fn collect_command_field_output_reads(
             collect_command_field_output_reads(base, out, paths);
         }
         Expr::Index(base, index, _) => {
+            if index_field_name(index)
+                .is_some_and(|field| matches!(field.as_str(), "stdout" | "stderr" | "success"))
+            {
+                if let Some(name) = command_field_read_name(base) {
+                    out.insert(name);
+                }
+                if let Some(path) = selector_names(base, None) {
+                    paths.insert(path);
+                }
+            }
             collect_command_field_output_reads(base, out, paths);
             collect_command_field_output_reads(index, out, paths);
         }
@@ -7447,39 +7518,144 @@ fn alias_chain_instances(items: &[StructItem], target: &[String]) -> Vec<Vec<Str
 /// `command: c: p3 & q` each contribute their task operands. Transparent
 /// `let` bindings are followed; package field aliases are not (the chain walk
 /// takes care of those).
-fn command_target_paths(items: &[StructItem], expr: &Expr, out: &mut Vec<Vec<String>>) {
+fn command_target_paths(
+    scopes: &[&[StructItem]],
+    items: &[StructItem],
+    expr: &Expr,
+    out: &mut Vec<Vec<String>>,
+) {
     match expr {
-        Expr::Ident(name, _) => match local_binding_location(&[items], items, name) {
-            Some((_, StructItem::Let { value, .. })) => command_target_paths(items, value, out),
+        Expr::Ident(name, _) => match local_binding_location(scopes, items, name) {
+            Some((_, StructItem::Let { value, .. })) => {
+                command_target_paths(scopes, items, value, out);
+            }
+            // Command-scoped task fields are transparent aliases:
+            // `command: {c1: base; c2: c1}` targets `base`.
+            Some((false, StructItem::Field(field))) => {
+                command_target_paths(scopes, items, &field.value, out);
+            }
             _ => push_target(out, vec![name.clone()]),
         },
         Expr::Select(base, field, _, _) => {
+            // Inline container selection: `{a: p4}.a`. A selector rooted at
+            // a package field (`group.p5`) stays a path.
+            if is_inline_container(base)
+                && let Some(value) =
+                    field_in_expr(items, base, field, &mut std::collections::BTreeSet::new())
+            {
+                command_target_paths(scopes, items, value, out);
+                return;
+            }
             let mut paths = Vec::new();
-            command_target_paths(items, base, &mut paths);
+            command_target_paths(scopes, items, base, &mut paths);
             for mut path in paths {
                 path.push(field.clone());
                 push_target(out, path);
             }
         }
         Expr::Index(base, index, _) => {
+            // Inline list/struct indexing: `([p4])[0]`, `{a: p4}["a"]`.
+            // Import/package paths such as `group["p4"]` stay paths.
+            if is_inline_container(base)
+                && let Some(value) = command_target_container_item(base, index)
+            {
+                command_target_paths(scopes, items, value, out);
+                return;
+            }
             let Some(field) = index_field_name(index) else {
                 return;
             };
             let mut paths = Vec::new();
-            command_target_paths(items, base, &mut paths);
+            command_target_paths(scopes, items, base, &mut paths);
             for mut path in paths {
                 path.push(field.clone());
                 push_target(out, path);
             }
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            command_target_paths(items, inner, out);
+            command_target_paths(scopes, items, inner, out);
         }
-        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            command_target_paths(items, left, out);
-            command_target_paths(items, right, out);
+        Expr::Unify(left, right, _) => {
+            command_target_paths(scopes, items, left, out);
+            command_target_paths(scopes, items, right, out);
+        }
+        Expr::Disjunction(left, right, _) => {
+            // CUE's command target picks the first resolvable alternative.
+            let mut paths = Vec::new();
+            command_target_paths(scopes, items, left, &mut paths);
+            if paths.is_empty() {
+                command_target_paths(scopes, items, right, &mut paths);
+            }
+            for path in paths {
+                push_target(out, path);
+            }
         }
         _ => {}
+    }
+}
+
+/// Whether resolving a command target passes through a command-local field
+/// alias (`command: {c1: base; c2: c1}`). CUE materialises one extra producer
+/// even when the resolved task has no further alias hops.
+fn command_target_uses_local_field(
+    scopes: &[&[StructItem]],
+    items: &[StructItem],
+    expr: &Expr,
+) -> bool {
+    match expr {
+        Expr::Ident(name, _) => match local_binding_location(scopes, items, name) {
+            Some((false, StructItem::Field(_))) => true,
+            Some((_, StructItem::Let { value, .. })) => {
+                command_target_uses_local_field(scopes, items, value)
+            }
+            _ => false,
+        },
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+            !is_inline_container(base) && command_target_uses_local_field(scopes, items, base)
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            command_target_uses_local_field(scopes, items, left)
+                || command_target_uses_local_field(scopes, items, right)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            command_target_uses_local_field(scopes, items, inner)
+        }
+        _ => false,
+    }
+}
+
+/// Select a literal field/list element from an inline container expression.
+fn command_target_container_item<'a>(base: &'a Expr, index: &Expr) -> Option<&'a Expr> {
+    let base = strip_expr_parens(base);
+    let name = index_field_name(index)?;
+    match base {
+        Expr::Struct(struct_items, _) => named_field(struct_items, &name),
+        Expr::List(list, _) => {
+            let position = name.parse::<usize>().ok()?;
+            list.get(position)
+        }
+        Expr::Unify(left, right, _) => command_target_container_item(left, index)
+            .or_else(|| command_target_container_item(right, index)),
+        _ => None,
+    }
+}
+
+fn is_inline_container(expr: &Expr) -> bool {
+    match strip_expr_parens(expr) {
+        Expr::Struct(..) | Expr::List(..) => true,
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            is_inline_container(left) || is_inline_container(right)
+        }
+        _ => false,
+    }
+}
+
+fn strip_expr_parens(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            strip_expr_parens(inner)
+        }
+        _ => expr,
     }
 }
 
@@ -10423,7 +10599,21 @@ fn extract_command_tasks(
             "no `command` field in tool files".to_owned(),
         ));
     };
-    let Some(tasks) = command.get(command_name).and_then(value_fields) else {
+    let Some(command_value) = command.get(command_name) else {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "unknown tool command `{command_name}`"
+        )));
+    };
+    let command_value = match command_value {
+        Value::Disjunction(alternatives, _) => alternatives
+            .iter()
+            .find(|alternative| {
+                value_fields(alternative).is_some_and(|fields| fields.contains_key("$id"))
+            })
+            .unwrap_or(command_value),
+        value => value,
+    };
+    let Some(tasks) = value_fields(command_value) else {
         return Err(ostinato_lang::LangError::Workflow(format!(
             "unknown tool command `{command_name}`"
         )));

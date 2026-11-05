@@ -11623,6 +11623,21 @@ command: resmodulehopr3: {
             .to_owned(),
         ),
         (
+            "resaliasindex",
+            r#"package res
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resaliasindex: {
+	a: base
+	t: cli.Print & {text: "R=\(a["stdout"])"}
+}
+"#
+            .to_owned(),
+        ),
+        (
             "resifpending",
             r#"package res
 import (
@@ -11743,6 +11758,87 @@ command: resplainodd: {
             std::fs::read(rust_dir.path().join("order.txt")).ok(),
             "{name}: order.txt differs"
         );
+    }
+}
+
+#[test]
+fn tool_command_non_scalar_and_if_pending_docs_examples() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases: &[(&str, &str)] = &[
+        (
+            "resifsuccess",
+            r#"package docs
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resifsuccess: {
+	if run.success {
+		t: cli.Print & {text: "yes"}
+	}
+}
+"#,
+        ),
+        (
+            "resstructwhole",
+            r#"package docs
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resstructwhole: {
+	t: cli.Print & {text: "v=\(run)"}
+}
+"#,
+        ),
+        (
+            "reslistinterp",
+            r#"package docs
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: reslistinterp: {
+	t: cli.Print & {text: "v=\([run.stdout])"}
+}
+"#,
+        ),
+    ];
+    for (name, source) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            write(&directory.join("x_tool.cue"), source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert!(!expected.status.success(), "{name}: cue accepted the input");
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: exit codes differ"
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+        let cue_order = std::fs::read(cue_dir.path().join("order.txt")).ok();
+        let rust_order = std::fs::read(rust_dir.path().join("order.txt")).ok();
+        if *name == "reslistinterp" {
+            // Documented residual: CUE rejects literal list interpolation
+            // before the producer; Ostinato schedules it and then rejects.
+            assert!(cue_order.is_none(), "{name}: cue executed the producer");
+            assert!(rust_order.is_some(), "{name}: ostinato did not execute");
+        } else {
+            assert_eq!(cue_order, rust_order, "{name}: order.txt differs");
+        }
     }
 }
 
