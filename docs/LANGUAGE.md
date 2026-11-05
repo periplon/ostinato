@@ -388,7 +388,7 @@ Values may be paths, double-quoted strings, backtick raw strings, integers, floa
 | `print a...` | `fmt.Sprint`-style concatenation; spaces separate adjacent non-string values. |
 | `printf format a...` | Go `fmt`-inspired formatting subset. Supports `%s` (stringified value), `%v` (raw string, plain scalar, or compact JSON for arrays/objects), `%q` (Go-quoted string or rune for integer values), `%t`, `%d`/`%i`, `%f`/`%e`/`%g`, `%x`/`%X`/`%o`/`%b`, `%%`, the `-`, `+`, space, `0` and `#` flags, and `*` width/precision arguments. Field widths and precisions are capped at 1 MiB; larger values are template errors rather than allocations. |
 
-Integer directives (`%d`, `%i`, `%x`, `%X`, `%o`, `%b`) format exact decimal digits for arbitrary-precision JSON integers and integral exponent-form values such as `1e30`; they do not truncate through `i128` or `f64`. As in Go, an alternate zero-precision integer (`%#.0x`, `%#.0o`, `%#.0b`) of zero renders as an empty string.
+Integer directives (`%d`, `%i`, `%x`, `%X`, `%o`, `%b`) format exact decimal digits for arbitrary-precision JSON integers and integral exponent-form values such as `1e30`; they do not truncate through `i128` or `f64`. Exponent forms are expanded exactly from their decimal text, with expansion capped at 1 MiB of digits; larger expansions are template errors. As in Go, an alternate zero-precision integer (`%#.0x`, `%#.0o`, `%#.0b`) of zero renders as an empty string.
 
 ### Not supported
 

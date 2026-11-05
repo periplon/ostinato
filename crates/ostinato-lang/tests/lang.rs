@@ -867,12 +867,32 @@ fn printf_formats_exponent_form_numbers_exactly() {
     let context = template_context();
     assert_eq!(
         render("{{printf \"%d\" 1e30}}", &context).expect("render"),
-        "1000000000000000019884624838656"
+        "1000000000000000000000000000000"
     );
     assert_eq!(
         render("{{printf \"%x\" 1e30}}", &context).expect("render"),
-        "c9f2c9cd04675000000000000"
+        "c9f2c9cd04674edea40000000"
     );
+    assert_eq!(
+        render("{{printf \"%d\" 9007199254740993e0}}", &context).expect("render"),
+        "9007199254740993"
+    );
+    assert_eq!(
+        render("{{printf \"%x\" 9007199254740993e0}}", &context).expect("render"),
+        "20000000000001"
+    );
+
+    let exponent_context: serde_json::Value =
+        serde_json::from_str(r#"{"big": 123456789012345678901234567890e0}"#).expect("json");
+    assert_eq!(
+        render("{{printf \"%d\" .big}}", &exponent_context).expect("render"),
+        "123456789012345678901234567890"
+    );
+    assert_eq!(
+        render("{{printf \"%x\" .big}}", &exponent_context).expect("render"),
+        "18ee90ff6c373e0ee4e3f0ad2"
+    );
+    assert!(render("{{printf \"%d\" 1e2000000}}", &context).is_err());
 }
 
 #[test]

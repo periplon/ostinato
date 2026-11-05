@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
-use num_bigint::BigUint;
+use bigdecimal::BigDecimal;
+use num_bigint::{BigInt, BigUint};
 use serde_json::Value as Json;
 use unicode_general_category::{GeneralCategory, get_general_category};
 
@@ -8,6 +9,7 @@ use crate::error::LangError;
 
 const MAX_TEMPLATE_NESTING: usize = 256;
 const MAX_PRINTF_FIELD: usize = 1024 * 1024;
+const MAX_TEMPLATE_INTEGER_DIGITS: usize = 1024 * 1024;
 
 /// Render a Go `text/template`-compatible subset against a JSON context.
 ///
@@ -884,13 +886,24 @@ fn parse_number(word: &str) -> Option<Json> {
     if let Ok(value) = word.parse::<u64>() {
         return Some(Json::from(value));
     }
-    let digits_start = usize::from(matches!(bytes.first(), Some(b'-' | b'+')));
-    if bytes
-        .get(digits_start..)
-        .is_some_and(|digits| !digits.is_empty() && digits.iter().all(u8::is_ascii_digit))
-        && let Ok(value) = serde_json::from_str::<Json>(word)
-    {
-        return Some(value);
+    if let Ok(Json::Number(value)) = serde_json::from_str::<Json>(word) {
+        if let Some(float) = value.as_f64()
+            && let Some(float) = serde_json::Number::from_f64(float)
+        {
+            match (
+                exact_decimal_integer(&value.to_string()),
+                exact_decimal_integer(&float.to_string()),
+            ) {
+                (Some(exact), Some(rounded))
+                    if rounded.negative == exact.negative && rounded.digits == exact.digits =>
+                {
+                    return Some(Json::Number(float));
+                }
+                (None, None) => return Some(Json::Number(float)),
+                _ => {}
+            }
+        }
+        return Some(Json::Number(value));
     }
     word.parse::<f64>()
         .ok()
@@ -1615,11 +1628,38 @@ fn exact_integer(value: &Json) -> Option<IntegerParts> {
     if let Some(parts) = integer_parts(&text) {
         return Some(parts);
     }
-    let float = number.as_f64()?;
-    if float.is_finite() && float.fract() == 0.0 {
-        integer_parts(&format!("{float:.0}"))
+    exact_decimal_integer(&text)
+}
+
+fn exact_decimal_integer(text: &str) -> Option<IntegerParts> {
+    let decimal = text.parse::<BigDecimal>().ok()?;
+    let (bigint, exponent) = decimal.as_bigint_and_exponent();
+    if bigint == BigInt::from(0) {
+        return Some(IntegerParts {
+            negative: false,
+            digits: "0".to_owned(),
+        });
+    }
+    let scale = usize::try_from(exponent.unsigned_abs()).ok()?;
+    if scale > MAX_TEMPLATE_INTEGER_DIGITS {
+        return None;
+    }
+    let digits = bigint.to_string();
+    let digits = digits.trim_start_matches('-');
+    if exponent <= 0 {
+        let expanded_len = digits.len().checked_add(scale)?;
+        if expanded_len > MAX_TEMPLATE_INTEGER_DIGITS {
+            return None;
+        }
+        let power = BigInt::from(10u32).pow(u32::try_from(scale).ok()?);
+        integer_parts(&(bigint * power).to_string())
     } else {
-        None
+        digits.len().checked_sub(scale)?;
+        let power = BigInt::from(10u32).pow(u32::try_from(scale).ok()?);
+        if (&bigint % &power) != BigInt::from(0) {
+            return None;
+        }
+        integer_parts(&(bigint / power).to_string())
     }
 }
 
