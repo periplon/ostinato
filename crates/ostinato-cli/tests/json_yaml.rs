@@ -384,6 +384,139 @@ fn export_data_files_and_inputs_match_cue() {
 }
 
 #[test]
+fn import_escapes_bom_in_keys_and_values_and_passes_cue_vet() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("bom.yaml");
+    write(&input, "\"\u{feff}key\": \"a\u{feff}b\"\n");
+    let ours = directory.path().join("ours.cue");
+    let theirs = directory.path().join("theirs.cue");
+    let output = ost(&[
+        "import",
+        input.to_str().expect("input"),
+        "-o",
+        ours.to_str().expect("ours"),
+        "--force",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let generated = std::fs::read_to_string(&ours).expect("read");
+    assert!(generated.contains("\\uFEFF"), "{generated}");
+    assert!(!generated.contains('\u{feff}'), "{generated}");
+    let vet = run_cue(
+        &cue_bin,
+        directory.path(),
+        &["vet", ours.to_str().expect("ours")],
+    );
+    assert!(
+        vet.status.success(),
+        "{}",
+        String::from_utf8_lossy(&vet.stderr)
+    );
+    let output = run_cue(
+        &cue_bin,
+        directory.path(),
+        &[
+            "import",
+            input.to_str().expect("input"),
+            "-o",
+            theirs.to_str().expect("theirs"),
+            "-f",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        cue_export_json(&cue_bin, directory.path(), &ours),
+        cue_export_json(&cue_bin, directory.path(), &theirs)
+    );
+}
+
+#[test]
+fn zero_huge_exponent_export_and_import_stay_small() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    for exponent in ["100000000", "9223372036854775807"] {
+        let data = directory.path().join("zero.yaml");
+        write(&data, &format!("a: 0e-{exponent}\n---\na: 0e-{exponent}\n"));
+        let output = ost(&["export", data.to_str().expect("data"), "--out", "json"]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stdout.len() < 256,
+            "exponent {exponent} produced {} bytes",
+            output.stdout.len()
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("0e-"),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let cue = directory.path().join("zero.cue");
+        let output = ost(&[
+            "import",
+            data.to_str().expect("data"),
+            "-o",
+            cue.to_str().expect("cue"),
+            "--list",
+            "--force",
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cue_text = std::fs::read_to_string(&cue).expect("cue");
+        assert!(cue_text.len() < 256, "exponent {exponent}: {cue_text}");
+    }
+}
+
+#[test]
+fn unicode_normalized_output_collisions_do_not_write_partial_files() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let nfc = directory.path().join("caf\u{e9}.json");
+    let nfd = directory.path().join("cafe\u{301}.yaml");
+    write(&nfc, r#"{"a":1}"#);
+    write(&nfd, "b: 2\n");
+    for extra in [None, Some("--force")] {
+        let mut args = vec![
+            "import",
+            nfc.to_str().expect("nfc"),
+            nfd.to_str().expect("nfd"),
+        ];
+        if let Some(extra) = extra {
+            args.push(extra);
+        }
+        let output = ost(&args);
+        assert!(!output.status.success(), "accepted colliding outputs");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("same output"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut outputs = Vec::new();
+        for entry in std::fs::read_dir(directory.path()).expect("read_dir") {
+            let entry = entry.expect("entry");
+            if entry.path().extension().and_then(|ext| ext.to_str()) == Some("cue") {
+                outputs.push(entry.path());
+            }
+        }
+        assert!(outputs.is_empty(), "partial outputs: {outputs:?}");
+    }
+}
+
+#[test]
 fn import_single_output_skips_extra_inputs_like_cue_but_is_not_silent() {
     let directory = tempfile::tempdir().expect("tempdir");
     write(&directory.path().join("a.json"), r#"{"a":1}"#);

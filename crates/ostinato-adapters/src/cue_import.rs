@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value as Json;
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::data;
 
@@ -273,13 +274,22 @@ fn normalized_path(path: &Path) -> PathBuf {
     let parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
     match absolute.file_name() {
         Some(name) => {
-            let mut name = name.to_os_string();
-            if is_case_insensitive(&parent)
-                && let Some(text) = name.to_str()
-            {
-                name = text.to_ascii_lowercase().into();
+            let Some(name) = name.to_str() else {
+                return parent.join(name);
+            };
+            // Unicode normalization matters on APFS, where NFC and NFD
+            // spellings address the same file. Case folding is layered on top
+            // only for case-insensitive filesystems.
+            let mut normalized: String = name.nfc().collect();
+            if is_case_insensitive(&parent) {
+                normalized = normalized
+                    .chars()
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>()
+                    .nfc()
+                    .collect();
             }
-            parent.join(name)
+            parent.join(normalized)
         }
         None => parent,
     }
@@ -490,6 +500,19 @@ mod tests {
         let inputs = vec![
             data_file("x.json", vec![serde_json::json!({"a": 1})]),
             data_file("./x.yaml", vec![serde_json::json!({"b": 2})]),
+        ];
+        let error = plan_per_input(&inputs, None, false, false).expect_err("collision");
+        assert!(
+            matches!(error, ImportError::OutputCollision { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn unicode_normalization_collisions_are_detected() {
+        let inputs = vec![
+            data_file("caf\u{e9}.json", vec![serde_json::json!({"a": 1})]),
+            data_file("cafe\u{301}.yaml", vec![serde_json::json!({"b": 2})]),
         ];
         let error = plan_per_input(&inputs, None, false, false).expect_err("collision");
         assert!(

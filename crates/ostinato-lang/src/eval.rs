@@ -6948,24 +6948,48 @@ fn repeat_bytes(bytes: &[u8], count: i64, span: Span) -> Result<Value, LangError
     Ok(Value::Bytes(bytes.repeat(count)))
 }
 
+/// Largest number of fractional zeros materialized in plain notation. Larger
+/// scales use scientific notation so a short input such as `0e-100000000`
+/// cannot allocate a multi-megabyte string.
+const MAX_MATERIALIZED_SCALE: i64 = 1024;
+
 fn float_text(value: &BigDecimal, scale: i64) -> String {
     if scale < 0 {
         let (coefficient, _) = value.as_bigint_and_exponent();
         let raw = coefficient.to_string();
         let negative = raw.starts_with('-');
         let digits = raw.trim_start_matches('-');
-        let exponent = -scale + i64::try_from(digits.len()).unwrap_or(0) - 1;
+        let exponent = -i128::from(scale) + i128::try_from(digits.len()).unwrap_or(i128::MAX) - 1;
         let mantissa = if digits.len() > 1 {
             format!("{}.{}", &digits[..1], &digits[1..])
         } else {
             digits.to_owned()
         };
         let sign = if negative { "-" } else { "" };
-        return format!("{sign}{mantissa}E{:+}", exponent);
+        return format!("{sign}{mantissa}E{exponent:+}");
+    }
+    if scale > MAX_MATERIALIZED_SCALE {
+        let (coefficient, _) = value.as_bigint_and_exponent();
+        let raw = coefficient.to_string();
+        let negative = raw.starts_with('-');
+        let digits = raw.trim_start_matches('-');
+        if digits == "0" {
+            return format!("0e-{scale}");
+        }
+        let exponent = i128::try_from(digits.len()).unwrap_or(i128::MAX) - 1 - i128::from(scale);
+        let mantissa = if digits.len() > 1 {
+            format!("{}.{}", &digits[..1], &digits[1..])
+        } else {
+            digits.to_owned()
+        };
+        let sign = if negative { "-" } else { "" };
+        return format!("{sign}{mantissa}E{exponent:+}");
     }
     if value == &BigDecimal::from(0) && scale > 0 {
-        let zeros = usize::try_from(scale).unwrap_or(0);
-        return format!("0.{}", "0".repeat(zeros));
+        return format!(
+            "0.{}",
+            "0".repeat(usize::try_from(scale).unwrap_or_default())
+        );
     }
     let mut text = value.to_string();
     if scale != 0 && !text.contains(['.', 'e', 'E']) {
@@ -7929,6 +7953,16 @@ fn unify_disjunctions(
     }
 }
 
+/// Convert a JSON number token whose exponent exceeds BigDecimal's range.
+/// Preserving the token as a string is preferable to silently merging it as
+/// zero, which would turn unrepresentable values into concrete data.
+fn float_value_or_token(text: &str) -> Value {
+    match text.parse::<BigDecimal>() {
+        Ok(value) => Value::Float(value),
+        Err(_) => Value::String(text.to_owned()),
+    }
+}
+
 /// Convert concrete JSON into the evaluator's value type.
 ///
 /// This is used when the official CUE CLI has already produced a concrete
@@ -7947,17 +7981,11 @@ pub fn value_from_json(value: &Json) -> Value {
                 } else {
                     match text.parse::<BigInt>() {
                         Ok(big) => Value::BigInt(big),
-                        Err(_) => Value::Float(
-                            text.parse::<BigDecimal>()
-                                .unwrap_or_else(|_| BigDecimal::from(0)),
-                        ),
+                        Err(_) => float_value_or_token(&text),
                     }
                 }
             } else {
-                Value::Float(
-                    text.parse::<BigDecimal>()
-                        .unwrap_or_else(|_| BigDecimal::from(0)),
-                )
+                float_value_or_token(&text)
             }
         }
         Json::String(value) => Value::String(value.clone()),

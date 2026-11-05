@@ -663,20 +663,40 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                 force,
             )?;
             preflight_outputs(&plan.files, &inputs, force, skip_existing)?;
-            let sink = FileOutputSink;
             let options = OutputOptions {
                 force,
                 skip_existing,
             };
-            for file in &plan.files {
-                let outcome = sink
-                    .write(Some(&file.path), &file.content, options, &inputs)
+            if plan.files.iter().any(|file| file.path == Path::new("-")) {
+                let sink = FileOutputSink;
+                for file in &plan.files {
+                    let outcome = sink
+                        .write(Some(&file.path), &file.content, options, &inputs)
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                    if outcome == ostinato_application::WriteOutcome::Skipped {
+                        eprintln!(
+                            "skipping {}: already exists (--skip-existing)",
+                            file.path.display()
+                        );
+                    }
+                }
+            } else {
+                // Stage every output before replacing any destination so a
+                // late failure cannot leave a partial import behind.
+                let files: Vec<(PathBuf, String)> = plan
+                    .files
+                    .iter()
+                    .map(|file| (file.path.clone(), file.content.clone()))
+                    .collect();
+                let outcomes = ostinato_adapters::write_all_atomic(&files, options, &inputs)
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                if outcome == ostinato_application::WriteOutcome::Skipped {
-                    eprintln!(
-                        "skipping {}: already exists (--skip-existing)",
-                        file.path.display()
-                    );
+                for (file, outcome) in plan.files.iter().zip(outcomes) {
+                    if outcome == ostinato_application::WriteOutcome::Skipped {
+                        eprintln!(
+                            "skipping {}: already exists (--skip-existing)",
+                            file.path.display()
+                        );
+                    }
                 }
             }
             if !plan.skipped_inputs.is_empty() && !force {

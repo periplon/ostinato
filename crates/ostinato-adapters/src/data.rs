@@ -31,6 +31,8 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use bigdecimal::BigDecimal;
+use num_bigint::BigInt;
 use saphyr::{Mapping, Scalar, ScalarStyle, Yaml, YamlEmitter, YamlLoader};
 use saphyr_parser::{BufferedInput, Event, Parser, Span, SpannedEventReceiver};
 use serde::Deserializer;
@@ -268,7 +270,7 @@ pub fn parse_documents(
             Ok(vec![value.0])
         }
         DataFormat::Yaml => {
-            scan_yaml_alias_budget(text, origin)?;
+            scan_yaml(text, origin)?;
             parse_yaml_documents(text, origin)
         }
     }
@@ -419,24 +421,43 @@ fn parse_yaml_documents(text: &str, origin: &Path) -> Result<Vec<Json>, DataErro
     Ok(out)
 }
 
-/// Walk the event stream without expanding aliases and reject alias trees
-/// whose estimated clone size exceeds the byte budget. This runs before the
-/// loader so a large scalar referenced by many aliases cannot allocate
-/// gigabytes of cloned nodes first.
-fn scan_yaml_alias_budget(text: &str, origin: &Path) -> Result<(), DataError> {
+/// Walk the event stream iteratively before handing the text to the recursive
+/// loader. This rejects excessive nesting and alias trees whose estimated clone
+/// size exceeds the byte budget without ever recursing, so a deeply nested
+/// document cannot overflow the stack and a large scalar referenced by many
+/// aliases cannot allocate gigabytes of cloned nodes first.
+fn scan_yaml(text: &str, origin: &Path) -> Result<(), DataError> {
     let mut parser = Parser::new(BufferedInput::new(text.chars()));
     let mut receiver = AliasSizeReceiver::default();
-    parser
-        .load(&mut receiver, true)
-        .map_err(|error| DataError::InvalidYaml {
+    let mut depth = 0usize;
+    while let Some(event) = parser.next_event() {
+        let (event, span) = event.map_err(|error| DataError::InvalidYaml {
             path: origin.display().to_string(),
             message: error.to_string(),
         })?;
-    if receiver.violation.is_some() {
-        return Err(DataError::ExpandedTooLarge {
-            path: origin.display().to_string(),
-            max: MAX_EXPANDED_BYTES,
-        });
+        match &event {
+            Event::StreamEnd => break,
+            Event::SequenceStart(..) | Event::MappingStart(..) => {
+                depth = depth.saturating_add(1);
+                if depth > MAX_DEPTH {
+                    return Err(DataError::TooDeep {
+                        path: origin.display().to_string(),
+                        max: MAX_DEPTH,
+                    });
+                }
+            }
+            Event::SequenceEnd | Event::MappingEnd => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+        receiver.on_event(event, span);
+        if receiver.violation.is_some() {
+            return Err(DataError::ExpandedTooLarge {
+                path: origin.display().to_string(),
+                max: MAX_EXPANDED_BYTES,
+            });
+        }
     }
     Ok(())
 }
@@ -446,31 +467,49 @@ struct AliasSizeReceiver {
     stack: Vec<(Option<usize>, usize)>,
     anchors: BTreeMap<usize, usize>,
     total: usize,
+    /// Running total of `total` plus every frame on the stack. Updated
+    /// incrementally so every event stays O(1) instead of rescanning the stack.
+    current_size: usize,
     violation: Option<String>,
 }
 
 impl AliasSizeReceiver {
     fn add(&mut self, bytes: usize) {
+        self.current_size = self.current_size.saturating_add(bytes);
         if let Some((_, current)) = self.stack.last_mut() {
             *current = current.saturating_add(bytes);
         } else {
             self.total = self.total.saturating_add(bytes);
         }
-        if self.current_size() > MAX_EXPANDED_BYTES && self.violation.is_none() {
+        self.check_budget();
+    }
+
+    /// Account for a finished frame in its parent. The frame bytes were already
+    /// counted when they were added, so `current_size` is unchanged.
+    fn finish(&mut self, bytes: usize) {
+        if let Some((_, current)) = self.stack.last_mut() {
+            *current = current.saturating_add(bytes);
+        } else {
+            self.total = self.total.saturating_add(bytes);
+        }
+        self.check_budget();
+    }
+
+    fn push(&mut self, anchor: usize) {
+        self.current_size = self.current_size.saturating_add(16);
+        self.stack.push(((anchor > 0).then_some(anchor), 16));
+        self.check_budget();
+    }
+
+    fn check_budget(&mut self) {
+        if self.current_size > MAX_EXPANDED_BYTES && self.violation.is_none() {
             self.violation = Some(format!(
                 "expanded YAML value exceeds the {MAX_EXPANDED_BYTES}-byte budget"
             ));
         }
     }
 
-    fn current_size(&self) -> usize {
-        self.total
-            .saturating_add(self.stack.iter().map(|(_, bytes)| *bytes).sum())
-    }
-}
-
-impl<'input> SpannedEventReceiver<'input> for AliasSizeReceiver {
-    fn on_event(&mut self, event: Event<'input>, _span: Span) {
+    fn on_event<'input>(&mut self, event: Event<'input>, _span: Span) {
         match &event {
             Event::Scalar(text, _, anchor, _) => {
                 let size = text.len().saturating_add(16);
@@ -480,11 +519,11 @@ impl<'input> SpannedEventReceiver<'input> for AliasSizeReceiver {
                 }
             }
             Event::SequenceStart(anchor, _) | Event::MappingStart(anchor, _) => {
-                self.stack.push(((*anchor > 0).then_some(*anchor), 16));
+                self.push(*anchor);
             }
             Event::SequenceEnd | Event::MappingEnd => {
                 if let Some((anchor, bytes)) = self.stack.pop() {
-                    self.add(bytes);
+                    self.finish(bytes);
                     if let Some(anchor) = anchor {
                         self.anchors.insert(anchor, bytes);
                     }
@@ -744,17 +783,16 @@ fn resolve_yaml_scalar(
         return match tag.suffix.as_str() {
             "str" => Ok(Json::String(text.to_owned())),
             "null" => Ok(Json::Null),
-            "bool" => parse_yaml_bool(text)
-                .map(Json::Bool)
-                .ok_or_else(|| DataError::InvalidYaml {
+            // CUE's explicit `!!bool` only recognizes the canonical true
+            // spellings; every other token resolves to false.
+            "bool" => Ok(Json::Bool(matches!(text, "true" | "True" | "TRUE"))),
+            "int" => {
+                parse_yaml_integer(text, origin, true)?.ok_or_else(|| DataError::InvalidYaml {
                     path: origin.display().to_string(),
-                    message: format!("invalid `!!bool` value `{text}`"),
-                }),
-            "int" => parse_yaml_integer(text, origin)?.ok_or_else(|| DataError::InvalidYaml {
-                path: origin.display().to_string(),
-                message: format!("invalid `!!int` value `{text}`"),
-            }),
-            "float" => parse_yaml_float(text, origin),
+                    message: format!("invalid `!!int` value `{text}`"),
+                })
+            }
+            "float" => parse_yaml_float(text, origin, true),
             "merge" => Ok(Json::String("<<".to_owned())),
             _ => Err(DataError::UnsupportedTag {
                 path: origin.display().to_string(),
@@ -772,13 +810,14 @@ fn resolve_yaml_scalar(
         return Ok(Json::Bool(value));
     }
     if looks_like_yaml_integer(text) {
-        return parse_yaml_integer(text, origin)?.ok_or_else(|| DataError::InvalidYaml {
-            path: origin.display().to_string(),
-            message: format!("integer `{text}` is out of range"),
-        });
+        // CUE keeps base-prefixed integers that do not fit in u64 (and other
+        // spellings that are not valid YAML integers) as strings rather than
+        // failing the document.
+        return Ok(parse_yaml_integer(text, origin, false)?
+            .unwrap_or_else(|| Json::String(text.to_owned())));
     }
     if looks_like_yaml_float(text) {
-        return parse_yaml_float(text, origin);
+        return parse_yaml_float(text, origin, false);
     }
     Ok(Json::String(text.to_owned()))
 }
@@ -789,12 +828,6 @@ fn parse_yaml_bool(text: &str) -> Option<bool> {
         "false" | "False" | "FALSE" => Some(false),
         _ => None,
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NumberKind {
-    Integer,
-    Float,
 }
 
 fn looks_like_yaml_integer(text: &str) -> bool {
@@ -823,49 +856,119 @@ fn looks_like_yaml_integer(text: &str) -> bool {
         && unsigned.chars().all(|ch| ch.is_ascii_digit() || ch == '_')
 }
 
-fn parse_yaml_integer(text: &str, origin: &Path) -> Result<Option<Json>, DataError> {
-    let cleaned = strip_numeric_underscores(text, NumberKind::Integer, origin)?;
-    let (negative, unsigned) = match cleaned.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, cleaned.strip_prefix('+').unwrap_or(&cleaned)),
-    };
+fn parse_yaml_integer(
+    text: &str,
+    origin: &Path,
+    explicit: bool,
+) -> Result<Option<Json>, DataError> {
+    let signed = matches!(text.as_bytes().first(), Some(b'-' | b'+'));
+    let negative = text.starts_with('-');
+    let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
     if unsigned.is_empty() {
         return Ok(None);
     }
-    let number = if let Some(rest) = unsigned
+    let (radix, body) = if let Some(rest) = unsigned
         .strip_prefix("0x")
         .or_else(|| unsigned.strip_prefix("0X"))
     {
-        u128::from_str_radix(rest, 16)
-            .ok()
-            .map(|value| value.to_string())
+        (16, rest)
     } else if let Some(rest) = unsigned.strip_prefix("0o") {
-        u128::from_str_radix(rest, 8)
-            .ok()
-            .map(|value| value.to_string())
+        (8, rest)
     } else if let Some(rest) = unsigned.strip_prefix("0b") {
-        u128::from_str_radix(rest, 2)
-            .ok()
-            .map(|value| value.to_string())
+        (2, rest)
     } else if unsigned.starts_with("0B") || unsigned.starts_with("0O") {
+        // CUE rejects uppercase binary/octal prefixes, including as tagged
+        // values, rather than treating them as strings.
         return Err(illegal_number(text, origin));
     } else {
-        let trimmed = unsigned.trim_start_matches('0');
-        Some(if trimmed.is_empty() {
-            "0".to_owned()
-        } else {
-            trimmed.to_owned()
-        })
+        (10, unsigned)
     };
-    let Some(number) = number else {
+    // A sign followed by a leading zero (`-00`, `+00`, `-001`) is illegal,
+    // while unsigned leading zeros (`00`) and bare `-0` are accepted.
+    if signed && radix == 10 && body.len() > 1 && body.starts_with('0') {
+        return Err(illegal_number(text, origin));
+    }
+    let Some(digits) = clean_integer_digits(body, radix, text, origin)? else {
         return Ok(None);
     };
-    let signed = if negative {
-        format!("-{number}")
-    } else {
-        number
+    if explicit {
+        let Some(magnitude) = BigInt::parse_bytes(digits.as_bytes(), radix) else {
+            return Ok(None);
+        };
+        let value = if negative { -magnitude } else { magnitude };
+        return Ok(value.to_string().parse::<Number>().ok().map(Json::Number));
+    }
+    if radix == 10 {
+        // Keep arbitrary-precision decimal integers, matching the data-file
+        // policy elsewhere in this adapter.
+        let Some(magnitude) = BigInt::parse_bytes(digits.as_bytes(), 10) else {
+            return Ok(None);
+        };
+        let value = if negative { -magnitude } else { magnitude };
+        return Ok(value.to_string().parse::<Number>().ok().map(Json::Number));
+    }
+    // Base-prefixed plain scalars stay strings when they do not fit in u64
+    // (positive) or i64 (negative), matching CUE's YAML decoder.
+    let Some(magnitude) = u128::from_str_radix(&digits, radix).ok() else {
+        return Ok(None);
     };
-    Ok(signed.parse::<Number>().ok().map(Json::Number))
+    let signed_value = if negative {
+        if magnitude > (1_u128 << 63) {
+            return Ok(None);
+        }
+        format!("-{magnitude}")
+    } else {
+        if magnitude > u128::from(u64::MAX) {
+            return Ok(None);
+        }
+        magnitude.to_string()
+    };
+    Ok(signed_value.parse::<Number>().ok().map(Json::Number))
+}
+
+fn clean_integer_digits(
+    body: &str,
+    radix: u32,
+    text: &str,
+    origin: &Path,
+) -> Result<Option<String>, DataError> {
+    let digit = |ch: char| -> bool {
+        match radix {
+            16 => ch.is_ascii_hexdigit(),
+            8 => matches!(ch, '0'..='7'),
+            2 => matches!(ch, '0' | '1'),
+            _ => ch.is_ascii_digit(),
+        }
+    };
+    let mut digits = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '_' {
+            let next_is_digit = chars.peek().copied().is_some_and(digit);
+            if next_is_digit {
+                continue;
+            }
+            // `0x_`/`0b_` are not integers but are valid strings for plain
+            // scalars. Once a digit has been seen, a dangling underscore is an
+            // illegal number.
+            if digits.is_empty() && radix != 10 {
+                return Ok(None);
+            }
+            return Err(illegal_number(text, origin));
+        }
+        if digit(ch) {
+            digits.push(ch);
+        } else {
+            return Ok(None);
+        }
+    }
+    if digits.is_empty() {
+        return Ok(None);
+    }
+    if radix == 10 && body.len() > 1 && body.starts_with('0') && body.contains('_') {
+        return Err(illegal_number(text, origin));
+    }
+    Ok(Some(digits))
 }
 
 fn looks_like_yaml_float(text: &str) -> bool {
@@ -895,7 +998,7 @@ fn looks_like_yaml_float(text: &str) -> bool {
             .is_some_and(|ch| ch.is_ascii_digit() || ch == '.')
 }
 
-fn parse_yaml_float(text: &str, origin: &Path) -> Result<Json, DataError> {
+fn parse_yaml_float(text: &str, origin: &Path, explicit: bool) -> Result<Json, DataError> {
     if matches!(
         text,
         ".inf"
@@ -917,12 +1020,13 @@ fn parse_yaml_float(text: &str, origin: &Path) -> Result<Json, DataError> {
         });
     }
     let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
-    // `._5` and `-._5` are strings; a leading decimal point must be followed
-    // by a digit. `1._5` is a valid CUE float and normalizes to 1.5.
-    if unsigned.starts_with("._") {
+    // `._5` and `-._5` are strings as plain scalars; a leading decimal point
+    // must be followed by a digit. `1._5` is a valid CUE float and normalizes
+    // to 1.5. An explicit `!!float` accepts the leading-underscore spelling.
+    if unsigned.starts_with("._") && !explicit {
         return Ok(Json::String(text.to_owned()));
     }
-    let cleaned = strip_numeric_underscores(text, NumberKind::Float, origin)?;
+    let cleaned = strip_float_underscores(text, origin)?;
     let unsigned_clean = cleaned.strip_prefix(['-', '+']).unwrap_or(&cleaned);
     let end = unsigned_clean
         .find(['.', 'e', 'E'])
@@ -935,13 +1039,20 @@ fn parse_yaml_float(text: &str, origin: &Path) -> Result<Json, DataError> {
         });
     }
     let Some(mut normalized) = normalized_float(&cleaned) else {
-        return Ok(Json::String(text.to_owned()));
+        return if explicit {
+            Err(illegal_number(text, origin))
+        } else {
+            Ok(Json::String(text.to_owned()))
+        };
     };
-    // CUE rejects exponents that overflow f64 lexical parsing and keeps them
-    // as strings (`1e400`, `1e309`). Negative exponents remain valid.
-    match normalized.parse::<f64>() {
-        Ok(value) if value.is_finite() => {}
-        _ => return Ok(Json::String(text.to_owned())),
+    if !explicit {
+        // CUE rejects plain exponents that overflow f64 lexical parsing and
+        // keeps them as strings (`1e400`, `1e309`). Explicit `!!float` values
+        // stay numbers and preserve arbitrary precision.
+        match normalized.parse::<f64>() {
+            Ok(value) if value.is_finite() => {}
+            _ => return Ok(Json::String(text.to_owned())),
+        }
     }
     if unsigned.ends_with('.') && normalized.ends_with(".0") {
         normalized.truncate(normalized.len() - 2);
@@ -952,32 +1063,9 @@ fn parse_yaml_float(text: &str, origin: &Path) -> Result<Json, DataError> {
         .map_err(|_| illegal_number(text, origin))
 }
 
-fn strip_numeric_underscores(
-    text: &str,
-    kind: NumberKind,
-    origin: &Path,
-) -> Result<String, DataError> {
+fn strip_float_underscores(text: &str, origin: &Path) -> Result<String, DataError> {
     let chars: Vec<char> = text.chars().collect();
-    let unsigned_start = usize::from(matches!(chars.first(), Some('-' | '+')));
-    let unsigned: String = chars[unsigned_start..].iter().collect();
-    let (hex, oct, bin) = (
-        unsigned.starts_with("0x") || unsigned.starts_with("0X"),
-        unsigned.starts_with("0o") || unsigned.starts_with("0O"),
-        unsigned.starts_with("0b") || unsigned.starts_with("0B"),
-    );
-    let digit = |ch: char| -> bool {
-        if kind == NumberKind::Float {
-            ch.is_ascii_digit()
-        } else if hex {
-            ch.is_ascii_hexdigit()
-        } else if oct {
-            matches!(ch, '0'..='7')
-        } else if bin {
-            matches!(ch, '0' | '1')
-        } else {
-            ch.is_ascii_digit()
-        }
-    };
+    let digit = |ch: char| ch.is_ascii_digit();
     let mut out = String::with_capacity(text.len());
     for (index, ch) in chars.iter().enumerate() {
         if *ch != '_' {
@@ -991,23 +1079,14 @@ fn strip_numeric_underscores(
         let next = chars.get(index + 1).copied();
         match (previous, next) {
             (Some(previous), Some(next)) if digit(previous) && digit(next) => {}
-            (Some('x' | 'X' | 'o' | 'O' | 'b' | 'B'), Some(next))
-                if kind == NumberKind::Integer && digit(next) => {}
-            (Some('.'), Some(next)) if kind == NumberKind::Float && digit(next) => {}
-            (Some('e' | 'E'), Some(next)) if kind == NumberKind::Float && digit(next) => {}
+            (Some('.'), Some(next)) if digit(next) => {}
+            (Some('e' | 'E'), Some(next)) if digit(next) => {}
             (Some('+' | '-'), Some(next))
-                if kind == NumberKind::Float
-                    && digit(next)
+                if digit(next)
                     && chars
                         .get(index.wrapping_sub(2))
                         .is_some_and(|ch| matches!(ch, 'e' | 'E')) => {}
             _ => return Err(illegal_number(text, origin)),
-        }
-    }
-    if kind == NumberKind::Integer && !hex && !oct && !bin {
-        let body = out.strip_prefix(['-', '+']).unwrap_or(&out);
-        if body.len() > 1 && body.starts_with('0') && text.chars().any(|ch| ch == '_') {
-            return Err(illegal_number(text, origin));
         }
     }
     Ok(out)
@@ -1116,15 +1195,10 @@ fn yaml_representation_key(
                 text: value.to_owned(),
                 merge: false,
             }),
-            "bool" => parse_yaml_bool(value)
-                .map(|value| YamlKey {
-                    text: value.to_string(),
-                    merge: false,
-                })
-                .ok_or_else(|| DataError::InvalidYaml {
-                    path: origin.display().to_string(),
-                    message: format!("invalid `!!bool` value `{value}`"),
-                }),
+            "bool" => Ok(YamlKey {
+                text: matches!(value, "true" | "True" | "TRUE").to_string(),
+                merge: false,
+            }),
             "null" => Ok(YamlKey {
                 text: "null".to_owned(),
                 merge: false,
@@ -1294,18 +1368,35 @@ fn merge_json(left: &Json, right: &Json, at: &str, origin: &Path) -> Result<Json
             }
             Ok(Json::Array(out))
         }
-        (Json::Number(_), Json::Number(_)) => {
-            let left_value = ostinato_lang::value_from_json(left);
-            let right_value = ostinato_lang::value_from_json(right);
-            match ostinato_lang::unify(&left_value, &right_value) {
-                Ok(value) => value.to_json().ok_or_else(|| DataError::Conflict {
-                    path: origin.display().to_string(),
-                    at: at.to_owned(),
-                }),
-                Err(_) => Err(DataError::Conflict {
-                    path: origin.display().to_string(),
-                    at: at.to_owned(),
-                }),
+        (Json::Number(left), Json::Number(right)) => {
+            let conflict = || DataError::Conflict {
+                path: origin.display().to_string(),
+                at: at.to_owned(),
+            };
+            let left_text = left.to_string();
+            let right_text = right.to_string();
+            // Identical lexical numbers always unify, including exponents that
+            // BigDecimal cannot represent.
+            if left_text == right_text {
+                return Ok(Json::Number(left.clone()));
+            }
+            // CUE does not unify an int token with a float token, even when the
+            // numeric values are equal.
+            let left_float = left_text.contains(['.', 'e', 'E']);
+            let right_float = right_text.contains(['.', 'e', 'E']);
+            if left_float != right_float {
+                return Err(conflict());
+            }
+            let (Ok(left_value), Ok(right_value)) = (
+                left_text.parse::<BigDecimal>(),
+                right_text.parse::<BigDecimal>(),
+            ) else {
+                return Err(conflict());
+            };
+            if left_value == right_value {
+                Ok(Json::Number(left.clone()))
+            } else {
+                Err(conflict())
             }
         }
         _ if left == right => Ok(left.clone()),
@@ -1834,6 +1925,124 @@ mod tests {
     }
 
     #[test]
+    fn deeply_nested_yaml_is_rejected_in_linear_time() {
+        for depth in [MAX_DEPTH + 1, 5_000, 20_000, 200_000, 250_000] {
+            let text = format!("a:\n  {}1", "- ".repeat(depth));
+            let start = std::time::Instant::now();
+            let error =
+                parse_documents(DataFormat::Yaml, &text, Path::new("t")).expect_err("deep nesting");
+            assert!(
+                matches!(error, DataError::TooDeep { .. }),
+                "{depth}: {error}"
+            );
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(2),
+                "depth {depth} took {:?}",
+                start.elapsed()
+            );
+        }
+    }
+
+    #[test]
+    fn zero_with_huge_exponent_does_not_materialize_zeros() {
+        for exponent in ["100000000", "9223372036854775807"] {
+            let text = format!("a: 0e-{exponent}\n---\na: 0e-{exponent}\n");
+            let documents = parse(DataFormat::Yaml, &text);
+            let merged = unify_objects(&documents, Path::new("t")).expect("merge");
+            let json = to_json(&merged).expect("json");
+            assert!(
+                json.len() < 256,
+                "exponent {exponent} produced {} bytes",
+                json.len()
+            );
+            assert!(json.contains("0e-") || json.contains("0E-"), "{json}");
+        }
+    }
+
+    #[test]
+    fn number_merge_never_falls_back_to_zero() {
+        let huge: Json = serde_json::from_str("1e-999999999999999999999").expect("number");
+        let merged = unify_values(
+            &serde_json::json!({"a": huge.clone()}),
+            &serde_json::json!({"a": huge.clone()}),
+            Path::new("t"),
+        )
+        .expect("identical tokens");
+        assert_eq!(merged["a"], huge);
+        let different: Json = serde_json::from_str("2e-999999999999999999999").expect("number");
+        let error = unify_values(
+            &serde_json::json!({"a": huge.clone()}),
+            &serde_json::json!({"a": different}),
+            Path::new("t"),
+        )
+        .expect_err("unrepresentable conflict");
+        assert!(matches!(error, DataError::Conflict { .. }), "{error}");
+        let error = unify_values(
+            &serde_json::json!({"a": 1}),
+            &serde_json::json!({"a": 1.0}),
+            Path::new("t"),
+        )
+        .expect_err("int/float conflict");
+        assert!(matches!(error, DataError::Conflict { .. }), "{error}");
+    }
+
+    #[test]
+    fn explicit_numeric_and_bool_tags_match_cue() {
+        let docs = parse(
+            DataFormat::Yaml,
+            "f: !!float 1e400\nu: !!float ._5\nb: !!int 0x10000000000000000\n\
+             h: !!int 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\n",
+        );
+        assert!(docs[0]["f"].to_string().contains("400"), "{}", docs[0]["f"]);
+        assert_eq!(docs[0]["u"].to_string(), "0.5");
+        assert_eq!(docs[0]["b"].to_string(), "18446744073709551616");
+        assert_eq!(
+            docs[0]["h"].to_string(),
+            "5444517870735015415413993718908291383295"
+        );
+        for bad in [
+            "!!int 1e2",
+            "!!int 1.0",
+            "!!int 0b12",
+            "!!int 0b_2",
+            "!!int 0x_",
+        ] {
+            let error = parse_documents(DataFormat::Yaml, &format!("a: {bad}\n"), Path::new("t"))
+                .expect_err(bad);
+            assert!(error.to_string().contains("!!int"), "{bad}: {error}");
+        }
+        let docs = parse(
+            DataFormat::Yaml,
+            "a: !!bool yes\nb: !!bool 1\nc: !!bool true\nd: !!bool TRUE\n",
+        );
+        assert_eq!(docs[0]["a"], Json::Bool(false));
+        assert_eq!(docs[0]["b"], Json::Bool(false));
+        assert_eq!(docs[0]["c"], Json::Bool(true));
+        assert_eq!(docs[0]["d"], Json::Bool(true));
+    }
+
+    #[test]
+    fn plain_base_integers_and_leading_zeros_match_cue() {
+        let text = "a: 0x10000000000000000\nb: 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\n\
+                    c: 0x_\nd: 0b_\ne: 0b12\nf: 0b_2\n";
+        let docs = parse(DataFormat::Yaml, text);
+        for key in ["a", "b", "c", "d", "e", "f"] {
+            assert!(docs[0][key].is_string(), "{key}: {}", docs[0][key]);
+        }
+        assert_eq!(docs[0]["c"], Json::String("0x_".to_owned()));
+        assert_eq!(docs[0]["e"], Json::String("0b12".to_owned()));
+        for bad in ["-00", "+00", "-001"] {
+            let error = parse_documents(DataFormat::Yaml, &format!("a: {bad}\n"), Path::new("t"))
+                .expect_err(bad);
+            assert!(error.to_string().contains("illegal"), "{bad}: {error}");
+        }
+        for good in ["-0", "00"] {
+            let docs = parse(DataFormat::Yaml, &format!("a: {good}\n"));
+            assert_eq!(docs[0]["a"].as_i64(), Some(0), "{good}");
+        }
+    }
+
+    #[test]
     fn input_size_limit_is_enforced() {
         let directory = tempfile::tempdir().expect("tempdir");
         let path = directory.path().join("large.json");
@@ -1923,15 +2132,13 @@ mod tests {
     }
 
     #[test]
-    fn tagged_keys_keep_raw_numeric_text_and_clear_bool_errors() {
+    fn tagged_keys_keep_raw_numeric_text_and_resolve_bool_like_cue() {
         let docs = parse(DataFormat::Yaml, "!!int 0x10: a\n!!float 1e2: b\n");
         assert_eq!(docs[0]["0x10"], Json::String("a".to_owned()));
         assert_eq!(docs[0]["1e2"], Json::String("b".to_owned()));
-        let error =
-            parse_documents(DataFormat::Yaml, "!!bool yes: a\n", Path::new("t")).expect_err("bool");
-        let message = error.to_string();
-        assert!(message.contains("!!bool"), "{message}");
-        assert!(!message.contains("illegal '_'"), "{message}");
+        let docs = parse(DataFormat::Yaml, "!!bool yes: a\n!!bool true: b\n");
+        assert_eq!(docs[0]["false"], Json::String("a".to_owned()));
+        assert_eq!(docs[0]["true"], Json::String("b".to_owned()));
     }
 
     #[test]

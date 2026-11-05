@@ -45,8 +45,19 @@ fn render_label(key: &str) -> String {
     if is_identifier(key) && !is_keyword(key) && !key.starts_with('_') {
         key.to_owned()
     } else {
-        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_owned())
+        cue_string(key)
     }
+}
+
+/// Quote a string for CUE source. `serde_json` leaves U+FEFF literal, which
+/// CUE treats as a byte-order mark and rejects inside identifiers/strings, so
+/// escape it explicitly.
+fn cue_string(text: &str) -> String {
+    let mut quoted = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_owned());
+    if quoted.contains('\u{feff}') {
+        quoted = quoted.replace('\u{feff}', "\\uFEFF");
+    }
+    quoted
 }
 
 fn render_value(value: &Json, indent: usize) -> String {
@@ -54,7 +65,7 @@ fn render_value(value: &Json, indent: usize) -> String {
         Json::Null => "null".to_owned(),
         Json::Bool(value) => value.to_string(),
         Json::Number(number) => number.to_string(),
-        Json::String(text) => serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_owned()),
+        Json::String(text) => cue_string(text),
         Json::Array(values) => render_array(values, indent),
         Json::Object(fields) => {
             if fields.is_empty() {
@@ -154,6 +165,15 @@ mod tests {
         );
         assert!(is_valid_package("demo"));
         assert!(!is_valid_package("9bad"));
+    }
+
+    #[test]
+    fn bom_characters_are_escaped_in_keys_and_values() {
+        let value = serde_json::json!({"\u{feff}key": "a\u{feff}b"});
+        let cue = render_cue_data(&value, None);
+        assert!(cue.contains("\\uFEFF"), "{cue}");
+        assert!(!cue.contains('\u{feff}'), "{cue}");
+        assert!(cue.contains("\"\\uFEFFkey\""), "{cue}");
     }
 
     #[test]
