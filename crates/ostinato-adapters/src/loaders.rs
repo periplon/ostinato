@@ -1291,6 +1291,15 @@ pub fn run_tool_command(
         .iter()
         .filter_map(|local| alias_instance_root(&combined.items, local))
         .collect();
+    let definition_alias_roots: std::collections::BTreeSet<Vec<String>> = alias_instance_paths
+        .iter()
+        .filter_map(|local| {
+            let value = find_field_expr_at_path_in_root(&combined.items, local, &combined.items)?;
+            let root = expr_local_root_path(value)?;
+            definition_root(&combined.items, &root).then_some(root)
+        })
+        .collect();
+    external_paths.retain(|path| !definition_alias_roots.contains(path));
     plain_read_paths.extend(alias_instance_roots.iter().cloned());
     external_paths.extend(alias_instance_paths.iter().cloned());
 
@@ -4634,7 +4643,17 @@ fn module_root(
 
 fn alias_instance_root(items: &[StructItem], local: &[String]) -> Option<Vec<String>> {
     let value = find_field_expr_at_path_in_root(items, local, items)?;
-    expr_local_root_path(value)
+    let root = expr_local_root_path(value)?;
+    (!definition_root(items, &root)).then_some(root)
+}
+
+fn definition_root(items: &[StructItem], path: &[String]) -> bool {
+    path.first().is_some_and(|first| {
+        matches!(
+            local_binding_location(&[items], items, first),
+            Some((true, StructItem::Field(field))) if field.definition
+        )
+    })
 }
 
 fn expr_local_root_path(expr: &Expr) -> Option<Vec<String>> {

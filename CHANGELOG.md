@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.41.2
+
+Definition-rooted alias reads in second-hop chains.
+
+- Definition roots (`prep: #base`, `p2: #G.run`) no longer count as alias
+  instance roots, and the definition read path is not scheduled separately;
+  the alias instance executes and injects its outputs, so task-input reads
+  through the definition (`prep.stdout`, `p2.stdout`, `r.stdout`) resolve with
+  CUE's two executions instead of failing.
+- Added an e2e shape and a conformance case.
+
+- 446 tests (109 CLI E2E, 2 conformance, 1 tool conformance, 246 language,
+  6 language agents, 3 language unit, 22 application, 9 analysis,
+  0 domain unit, 22 domain, 10 store, 8 workspace, 8 adapters unit).
+
 ## v0.41.1
 
 Second-hop chain corrections.

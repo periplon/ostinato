@@ -10470,6 +10470,11 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
             false,
         ),
         (
+            "secondhopdefinitionread",
+            "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n#base: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\nprep: #base\ncommand: secondhopdefinitionread: {\n\tr: prep\n\tt: cli.Print & {text: \"R=\\(prep.stdout)\"}\n}\n".to_owned(),
+            false,
+        ),
+        (
             "secondhopcommandlocal",
             format!("{local}command: secondhopcommandlocal: {{\n\tr: base\n\tr2: r\n}}\n"),
             false,
