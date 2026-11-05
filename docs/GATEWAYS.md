@@ -1,9 +1,8 @@
 # Gateways in Ostinato workflows
 
-**Status:** Implemented in `v0.12.0`; extended with `n_of`, `expression` joins and gateway cycles
-**Target:** `v0.12.0` and the later gateway releases
-**Scope:** AND / OR / XOR / N_OF / expression split and join gateways, branch conditions, default branches, dead-path elimination, durable resume, audit and observability.
-**Remaining-work plan:** [`docs/GATEWAYS-REMAINING-PLAN.md`](GATEWAYS-REMAINING-PLAN.md)
+**Status:** Proposed design and implementation plan  
+**Target:** `v0.12.0` (additive, no store migration)  
+**Scope:** AND / OR / XOR split and join gateways with conditions, default branches, dead-path elimination, durable resume, audit and observability.
 
 ---
 
@@ -31,7 +30,7 @@ The plan also defines the exact limitations of the first release:
 - XOR / OR / AND splits and joins, default branches, nested splits.
 - No mixing gateways and cycles in v1; such a workflow is rejected at
   validation time, with a phase-2 design sketched in §14.
-- `N_OF` quorum joins, `expression` joins and gateway cycles are implemented; event-based gateways and edge-level `when` remain out of scope.
+- `N_OF` / quorum joins, event-based gateways and complex gateways are deferred.
 - `NAND`, `NOR` and `XNOR` are not added as control-flow primitives; §5.5
   explains how to express the useful cases with conditions.
 
@@ -116,9 +115,9 @@ Terminology:
 | `and` | Activate **all** branches. Conditions are not allowed (or must be `true`). | Wait for **all** incoming edges; if any is dead, the join is dead. | Yes |
 | `or` | Activate **every** branch whose condition is true; `true` means unconditional. At least one branch or the default must be selected. | Activate if **at least one** incoming edge is active; ignore the rest. Dead only if all incoming edges are dead. | Yes |
 | `xor` | Activate **exactly one** branch: the unique true condition, or the `default` if none are true. More than one true is a run failure (`ambiguous`). | Activate if **exactly one** incoming edge is active. More than one active is a run failure (`ambiguous`). Dead if none. | Yes |
-| `n_of` | Not planned as a split. Use an OR split plus condition predicates. | Activate if at least `n` incoming edges are active; fail if `1..n-1` are active; dead if zero. | Yes |
+| `n_of` | Not planned as a split. Use an OR split plus condition predicates. | Activate if at least `n` incoming edges are active; fail if `1..n-1` are active; dead if zero. | Deferred |
 | `event_based` | Waits for external events. Ostinato has no event bus or daemon. | n/a | Out of scope |
-| `complex` | Arbitrary boolean activation expression over incoming edges. | n/a | Yes (`join: "expression"`) |
+| `complex` | Arbitrary boolean activation expression over incoming edges. | n/a | Deferred; conditions + nested gateways cover the common cases |
 
 ### 4.1 Join is a barrier, not an early-firing merge
 
@@ -269,10 +268,10 @@ workflow: {
             gateway: {
                 split: "xor"
                 branches: {
-                    deployFast: "steps.test.score >= 0.9"
-                    deploySlow: true    // fallback only; selected via `default`
+                    fast: "steps.test.score >= 0.9"
+                    slow: true          // fallback only; selected via `default`
                 }
-                default: "deploySlow"
+                default: "slow"
             }
         }
 
@@ -339,7 +338,7 @@ which is a different abstraction. The useful cases are expressible already:
   and inspect it from a subsequent split;
 - “any/none” → OR join / dead-path elimination;
 - “exactly one” → XOR;
-- “quorum” → `n_of` join;
+- “quorum” → `n_of` join (deferred);
 - “all or nothing” → AND join.
 
 Adding NAND/NOR/XNOR as aliases would create ambiguous join semantics and a
@@ -376,9 +375,6 @@ pub struct GatewaySpec {
     pub join: Option<JoinMode>,
     pub branches: BTreeMap<String, BranchSpec>,
     pub default: Option<String>,
-    pub n: Option<u32>,                       // join: "n_of"
-    pub expression: Option<String>,           // join: "expression"
-    pub labels: BTreeMap<String, String>,     // join: "expression"
 }
 
 pub struct StepSpec {
@@ -425,9 +421,8 @@ In `crates/ostinato-lang/src/compile.rs`:
 5. Add `condition::step_references(expr) -> BTreeSet<String>`, a pure parse
    pass that collects `steps.<name>` and `stepStatus.<name>` references. Use it
    to reject a branch condition that references a step not in the gateway's
-   transitive predecessor set. This is a compiler/language-layer check (it
-   reports a path-qualified `LangError::Workflow`); the domain crate validates
-   structure, not condition syntax.
+   transitive predecessor set (`GatewayConditionScope`). This turns a runtime
+   missing-output surprise into a validation error.
 6. Keep the existing `build_plan` call in `compile_value` so topology errors
    are reported by validation, not only at run time.
 
@@ -471,13 +466,12 @@ is metadata only; it is not persisted, so there is no migration concern.
    an `incoming` entry `Branch { gateway, branch }` on the target.
 3. Deduplicate edges; reject a target that also lists the split gateway in
    `needs` (`GatewayNeedsRejected`).
-4. Cyclic SCCs are materialised with a cycle layout: removed back-edges become
-   `EdgeScope::Carry`, and gateway-bearing SCCs use `ActivationScope::RoundCycle`.
-   A join that mixes carry and same-round inputs is rejected.
+4. If the workflow contains a gateway and any SCC is cyclic, return
+   `GatewayCycleUnsupported` (v1).
 5. If the workflow contains a gateway and a non-gateway step has more than one
-   same-round incoming edge, return `ImplicitJoinWithGateways`. Use an explicit
-   join gateway. (Legacy workflows without gateways keep their current
-   multi-`needs` AND behaviour.)
+   incoming edge, return `ImplicitJoinWithGateways`. Use an explicit join
+   gateway. (Legacy workflows without gateways keep their current multi-`needs`
+   AND behaviour.)
 6. Store `incoming` and `gateway` on each `PlanNode`; set `has_gateways`.
 7. The existing cycle expansion is untouched for workflows without gateways.
 
@@ -588,7 +582,7 @@ Skipped nodes remove any previous output for that step name and increment
   "split": "xor",
   "evaluated": {
     "fast": {"condition": "steps.test.score >= 0.9", "result": true},
-    "slow": {"default": true, "result": true}
+    "slow": {"default": true, "result": false}
   },
   "chosen": ["fast"],
   "default": "slow",
@@ -733,12 +727,9 @@ compiler (the domain remains defence in depth for programmatic callers):
 | `GatewayAndCondition` | AND branch has a condition / not `true` |
 | `GatewayJoinWithoutNeeds` | join with empty `needs` |
 | `GatewayJoinHasBranches` | join with `branches` or `default` |
-| `GatewayQuorumMissingN` / `GatewayQuorumInvalidN` | `n_of` without a valid quorum |
-| `GatewayQuorumNotMet` (runtime) | fewer than `n` active inputs reached the quorum join |
-| `GatewayExpressionMissing` / label errors | invalid `expression` join configuration |
-| `GatewayCycleMixedScopeJoin` | a cycle join mixes carry and same-round inputs |
-| `GatewayBranchLeavesCycle` / `GatewayBranchIntoCycle` | a split branch crosses a cycle boundary |
-| `ImplicitJoinWithGateways` | gateway workflow has a non-gateway step with >1 same-round incoming edge |
+| `GatewayConditionScope` | a branch condition references a non-ancestor step |
+| `GatewayCycleUnsupported` | the workflow contains both a gateway and a cycle |
+| `ImplicitJoinWithGateways` | gateway workflow has a non-gateway step with >1 incoming edge |
 | `GatewayNoBranch` (runtime) | XOR/OR selected nothing and no default |
 | `GatewayAmbiguous` (runtime) | XOR split/join selected more than one branch |
 | `GatewayCondition` (runtime) | condition evaluation error, including missing output |
@@ -833,7 +824,8 @@ Skipped steps must not be counted by `steps_failed` or
 - join node is after all incoming branches;
 - `has_gateways` is set;
 - deterministic ordering of branches/edges;
-- a gateway cycle plan marks `RoundCycle` activation and `Carry` edges;
+- `GatewayCycleUnsupported` for a workflow that combines a gateway and a
+  cycle;
 - `ImplicitJoinWithGateways` for a gateway workflow with a multi-`needs` normal
   step;
 - `GatewayBranchTargetHasNeeds`, unknown target, join with branches, both
@@ -1000,23 +992,23 @@ phase 5 docs run in parallel with phase 3/4.
 
 ---
 
-## 14. Deferred work and implemented extensions
+## 14. Deferred work (phase 2+)
 
-1. **Gateways inside cycles — implemented.** Each round has a fresh activation
-   scope by `(step, round)`; removed back-edges become carry edges. `StepRecord`
-   carries a `round`, and `cycle.exited` records a dead carry token.
-2. **`n_of` / quorum joins — implemented.** `join: "n_of", n: N` with the
-   semantics in §4.
-3. **Event-based gateway — still out of scope.** Requires an external event
-   source or a polling adapter; clashes with the CLI-only, no-daemon design.
-4. **Complex gateway — implemented as `join: "expression"`.** Boolean
-   expressions over named edge states (`edges.<label>`), plus counts.
-5. **Edge-level `when` sugar — rejected.** It adds no expressive power over an
-   explicit split/join and hides convergence. Use a split gateway and a join.
-6. **Static branch analysis — implemented as warnings/notes.** `validate`
-   reports unreachable AND/N_OF joins, shared split targets, XOR ambiguity
-   potential and missing default fallbacks; `--strict` makes warnings fatal.
-   Condition-coverage lints remain deferred.
+1. **Gateways inside cycles.** Each round needs a fresh edge-token scope. The
+   plan already marks `round`; add a per-round activation state keyed by
+   `(step, round)` and ensure gateway back-edges are not removed by the DFS
+   back-edge pass. This is a substantial change; keep it out of v1.
+2. **`n_of` / quorum joins.** Add `join: "n_of", n: N`; semantics in §4.
+3. **Event-based gateway.** Requires an external event source or a polling
+   adapter; clashes with the CLI-only, no-daemon design.
+4. **Complex gateway.** Add `join: "expression"` over edge activation states
+   once the activation model is stable.
+5. **Edge-level `when` sugar.** A `when` on a normal step could compile to an
+   implicit one-branch XOR split, but it hides where the join is. Keep the
+   explicit form.
+6. **Static branch analysis.** Post-dominance checks for unreachable joins,
+   dead-end branches and condition coverage. Nice-to-have validation, not a
+   correctness requirement for v1.
 
 ---
 
@@ -1024,14 +1016,14 @@ phase 5 docs run in parallel with phase 3/4.
 
 ### A. Edge conditions only (`needs: [{step: "a", when: "..."}]`)
 
-Pros: compact; no gateway nodes.
+Pros: compact; no gateway nodes.  
 Cons: no explicit join policy; convergence defaults to AND and silently breaks
 XOR branches; `needs` becomes a union type, breaking the schema and every
 existing consumer; no place to audit the routing decision. Rejected for v1.
 
 ### B. Separate top-level `gateways` map
 
-Pros: clean separation of “work” and “control”.
+Pros: clean separation of “work” and “control”.  
 Cons: gateways need plan indices, status, outputs, audit events and resume
 state anyway; a second map duplicates all of that and makes `graph`/`status`
 handle two node kinds. Rejected.
@@ -1049,7 +1041,7 @@ architecture; adds a runtime dependency and a second source of truth.
 
 ### E. Normal steps as implicit OR joins
 
-Pros: no join gateways.
+Pros: no join gateways.  
 Cons: changes the meaning of existing multi-`needs` AND joins, and makes dead
 paths unpredictable. Rejected; explicit joins are the invariant that keeps
 legacy behaviour intact.
@@ -1060,10 +1052,8 @@ legacy behaviour intact.
 
 A release implementing this plan is done when:
 
-1. `ostinato validate` accepts the §5.3 example and rejects each structural
-   error in §8 with a path-qualified message. `GatewayNoBranch` and
-   `GatewayAmbiguous` are routing errors, reported when the run reaches the
-   gateway rather than at validation time.
+1. `ostinato validate` accepts the §5.3 example and rejects each error in §8
+   with a path-qualified message.
 2. XOR selects exactly one branch, OR selects every true branch, AND selects
    all; default, no-branch and ambiguous cases behave as specified.
 3. Dead branches and dead join inputs are recorded as `skipped`, visible in
@@ -1095,8 +1085,8 @@ change them before phase 1:
 1. **Explicit join rule.** Recommendation: once a workflow uses gateways, a
    non-gateway step may have at most one incoming edge; convergence must be a
    join gateway. This keeps legacy semantics and makes dead paths explicit.
-2. **Cycle exclusion.** Resolved: gateways participate in cycles with per-round
-   activation and carry edges; mixed carry/same-round joins are rejected.
+2. **Cycle exclusion.** Recommendation: reject any workflow that combines
+   gateways and cycles in v1; add per-round activation in phase 2.
 3. **Failure routing.** Recommendation: add `stepStatus` to the context rather
    than overloading `steps.<name>.status`.
 4. **Join barrier.** Recommendation: accept barrier semantics (join runs after
@@ -1106,14 +1096,17 @@ change them before phase 1:
 
 ---
 
-## Appendix A — Historical pre-implementation check
+## Appendix A — Current-state check
 
-This appendix records the state before the gateway feature landed. It is kept
-for context only; the current compiler accepts `kind: "gateway"` and the
-current test suite covers the implemented surface.
+The §5.3 example is valid CUE today:
 
-Before phase 1, the §5.3 example was valid CUE but the Ostinato compiler
-rejected the new field:
+```text
+$ cue export gateway-example.cue -e workflow --out json
+exit=0
+```
+
+The current Ostinato compiler rejects the new field, which is exactly the gap
+phase 1 closes:
 
 ```text
 $ ostinato --db /tmp/gateway.db validate gateway-example.cue
@@ -1121,5 +1114,6 @@ error: loader error: workflow error: workflow.steps.merge: unknown field `gatewa
 exit=2
 ```
 
-The baseline at that time was 281 tests. Current counts are in `CHANGELOG.md`
-and `docs/EVIDENCE.md`.
+Baseline before this plan: `cargo test --all` and
+`cargo fmt --all -- --check` pass (281 tests: 49 CLI E2E, 1 conformance, 218
+language, 3 language unit, 6 domain, 3 store, 1 adapters unit).
