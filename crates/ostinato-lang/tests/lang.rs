@@ -8790,6 +8790,37 @@ listcomp: ({l: [for i in [1] {a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [
 }
 
 #[test]
+fn list_comprehension_selector_paths_see_narrowed_elements() {
+    let source = r#"
+package demo
+x: {l: [for i in [1] {a: *1 | int, b: a}]} & {l: [{a?: 5}], c: x.l[0].b}
+concrete: {l: [for i in [1] {a: *1 | int, b: a}]} & {l: [{a: 5}], c: concrete.l[0].b}
+idx1: {l: [for i in [1, 2] {a: *1 | int, b: a}]} & {l: [{a: 5}, {a: 6}], c: idx1.l[1].b}
+ifcomp: {l: [for i in [1, 2] if i > 1 {a: *1 | int, b: a}]} & {l: [{a: 7}], c: ifcomp.l[0].b}
+nested: {l: [for i in [1] {o: {a: *1 | int, b: a}}]} & {l: [{o: {a: 8}}], c: nested.l[0].o.b}
+let Z = [for i in [1] {a: *1 | int, b: a}]
+letcomp: {l: Z} & {l: [{a: 9}], c: letcomp.l[0].b}
+arith: {l: [for i in [1] {a: *1 | int, b: a}]} & {l: [{a: 5}], c: arith.l[0].b + 1}
+interp: {l: [for i in [1] {a: *1 | int, b: a}]} & {l: [{a: 5}], c: "\(interp.l[0].b)"}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse list-comp selector narrowing");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval list-comp selector narrowing")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["c"], 5);
+    assert_eq!(json["x"]["l"][0], serde_json::json!({"a": 5, "b": 5}));
+    assert_eq!(json["concrete"]["c"], 5);
+    assert_eq!(json["idx1"]["c"], 6);
+    assert_eq!(json["ifcomp"]["c"], 7);
+    assert_eq!(json["nested"]["c"], 8);
+    assert_eq!(json["letcomp"]["c"], 9);
+    assert_eq!(json["letcomp"]["l"][0]["b"], 9);
+    assert_eq!(json["arith"]["c"], 6);
+    assert_eq!(json["interp"]["c"], "5");
+}
+
+#[test]
 fn disjunction_alternatives_inject_optional_narrowing_into_elements() {
     let source = r#"
 package demo

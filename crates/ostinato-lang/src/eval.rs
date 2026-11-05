@@ -4021,6 +4021,21 @@ impl<'a> Frame<'a> {
                 },
                 SelectSegment::Field(_, _) => Ok(PathProjection::default()),
             },
+            Expr::ListComp { .. } => {
+                let value = match injection {
+                    Some(injected) => {
+                        eval_declaration_part(scope, expr, injected, Span::default())?
+                    }
+                    None => eval_expr(expr, scope)?,
+                };
+                let Some(projected) = project_value_path(&value, &segments[index..]) else {
+                    return Ok(PathProjection::default());
+                };
+                Ok(PathProjection {
+                    values: vec![projected],
+                    ..PathProjection::default()
+                })
+            }
             Expr::OpenListPrefix(items, tail, _) => match segments[index] {
                 SelectSegment::Index(position) => {
                     if let Some(item) = items.get(position) {
@@ -7254,6 +7269,13 @@ fn eval_declaration_part(
         (Expr::Ident(name, _), value) => {
             if frame.injected_field_reference(name) {
                 return eval_expr(expr, frame);
+            }
+            let mut cursor = Some(frame);
+            while let Some(current) = cursor {
+                if current.lets.borrow().contains_key(name) {
+                    return current.eval_let_with_injections(name, value, span);
+                }
+                cursor = current.parent;
             }
             if let Some(injections) = concrete_fields(value)
                 && let Some(narrowed) =
