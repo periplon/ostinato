@@ -310,7 +310,7 @@ Plan construction:
 
 ## Templates
 
-Strings in `exec.cmd`, `exec.cwd`, `exec.env`, `agent.prompt`, `agent.system` and `agent.command` support runtime placeholders:
+Strings in `exec.cmd`, `exec.cwd`, `exec.env`, `agent.prompt`, `agent.system` and `agent.command` support Go `text/template`-style runtime placeholders:
 
 ```text
 {{ run_id }}
@@ -325,7 +325,74 @@ Strings in `exec.cmd`, `exec.cwd`, `exec.env`, `agent.prompt`, `agent.system` an
 {{ steps.build.exitCode }}
 ```
 
+Bare paths (without a leading dot) are resolved from the context root, preserving the original syntax. The full path syntax is:
+
+| Form | Meaning |
+|---|---|
+| `{{ params.repo }}`, `{{ run_id }}` | Root-relative path (legacy form). |
+| `{{ .steps.build.stdout }}` | Path relative to the current dot. At the top level the dot is the root. |
+| `{{ $.params.repo }}` | `$` always refers to the root context, including inside `range` and `with`. |
+| `{{ . }}`, `{{ $ }}` | The current value and the whole root context. |
+| `{{ steps.build.json.items.0 }}` | Numeric segments index arrays. |
+
 Unknown paths fail the step. Template substitution happens at execution time, so values from earlier steps and previous cycle rounds are available.
+
+### Control actions
+
+```text
+{{if .params.deploy}}deploy{{else if eq .round 2}}retry{{else}}skip{{end}}
+
+{{range .steps.build.json.items}}
+- {{ . }}
+{{else}}
+(no items)
+{{end}}
+
+{{with .params.repo}}repo={{.}}{{else}}no repo{{end}}
+
+{{/* a comment */}}
+```
+
+- `{{if PIPELINE}}...{{else if PIPELINE}}...{{else}}...{{end}}` runs the matching branch. Any number of `else if` branches is allowed.
+- `{{range PIPELINE}}...{{else}}...{{end}}` iterates arrays (the dot becomes the element) and objects (the dot becomes the value; keys are visited in sorted order for deterministic output). The `else` branch runs when the collection is empty.
+- `{{with PIPELINE}}...{{else}}...{{end}}` sets the dot to the pipeline value when it is truthy; otherwise it renders the `else` branch with the previous dot.
+- `{{/* ... */}}` is a comment and produces no output.
+- `{{end}}` closes the nearest `if`, `range` or `with`; mismatched or missing terminators are errors.
+
+Go-like truthiness is used by `if`, `with`, `and`, `or` and `not`: `false`, `0`, the empty string, empty arrays, empty objects and `null` are false; everything else is true.
+
+### Pipelines and functions
+
+A pipeline is `value | function arg...`. The value produced by a stage is appended as the last argument of the next function, so `{{ .name | printf "Hello, %s!" }}` behaves as `printf "Hello, %s!" .name`.
+
+Values may be paths, double-quoted strings (with Go-style escapes), backtick raw strings, integers, floats, `true`, `false`, `null`/`nil`, or parenthesized pipelines such as `(eq .round 2)`.
+
+| Function | Behavior |
+|---|---|
+| `eq a b...` | True when `a` equals any of the following arguments. |
+| `ne a b` | True when `a` does not equal `b`. |
+| `lt`, `le`, `gt`, `ge` | Numeric or string ordering comparison. |
+| `and a...` | First falsey argument, otherwise the last argument. Short-circuits left to right. |
+| `or a...` | First truthy argument, otherwise the last argument. Short-circuits left to right. |
+| `not a` | Boolean negation using template truthiness. |
+| `len a` | Length of a string (bytes), array or object. |
+| `index item key...` | Indexes arrays (integer keys) and objects (string keys), descending through multiple keys. |
+| `print a...` | `fmt.Sprint`-style concatenation; spaces separate adjacent non-string values. |
+| `printf format a...` | `fmt.Sprintf`-style formatting. `%s`, `%d`, `%v`, `%q`, `%t`, `%f`, `%e`, `%g`, `%x`, `%X`, `%o`, `%b`, `%%`, widths and precisions are supported. |
+
+### Whitespace and literal braces
+
+`{{-` trims whitespace immediately before an action and `-}}` trims whitespace immediately after it, for both output actions and control actions:
+
+```text
+{{- if .params.deploy -}}
+deploy
+{{- end -}}
+```
+
+Literal braces can be emitted with a quoted string: `{{"{{"}}` prints `{{` and `{{"}}"}}` prints `}}`.
+
+Malformed actions, unknown functions, unknown paths and runtime evaluation failures produce a template error that fails the step with a message identifying the offending action and its line/column.
 
 ## Step output contract
 

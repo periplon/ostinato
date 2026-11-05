@@ -109,6 +109,520 @@ fn renders_templates() {
     );
 }
 
+fn template_context() -> serde_json::Value {
+    json!({
+        "run_id": "run-1",
+        "workflow": "demo",
+        "round": 2,
+        "params": {
+            "repo": "acme/app",
+            "empty": "",
+            "flag": false
+        },
+        "steps": {
+            "build": {
+                "stdout": "built ok",
+                "stderr": "",
+                "exitCode": 0,
+                "score": 0.75,
+                "json": {
+                    "n": 3,
+                    "ok": true,
+                    "items": ["a", "b", "c"]
+                }
+            }
+        }
+    })
+}
+
+fn template_error(template: &str) -> String {
+    render(template, &template_context())
+        .expect_err("template must fail")
+        .to_string()
+}
+
+#[test]
+fn renders_dot_root_and_legacy_template_paths() {
+    let context = template_context();
+    assert_eq!(
+        render(
+            "{{ run_id }}|{{ .steps.build.stdout }}|{{ $.params.repo }}|{{ steps.build.stdout }}",
+            &context
+        )
+        .expect("render"),
+        "run-1|built ok|acme/app|built ok"
+    );
+    assert_eq!(
+        render("{{ $ }}", &json!({"a": 1})).expect("render"),
+        r#"{"a":1}"#
+    );
+}
+
+#[test]
+fn renders_the_current_dot_for_any_value() {
+    assert_eq!(render("{{ . }}", &json!("text")).expect("render"), "text");
+    assert_eq!(render("{{ . }}", &json!(3)).expect("render"), "3");
+    assert_eq!(render("{{ . }}", &json!(true)).expect("render"), "true");
+    assert_eq!(render("{{ . }}", &json!(null)).expect("render"), "");
+    assert_eq!(render("{{ . }}", &json!([1, 2])).expect("render"), "[1,2]");
+}
+
+#[test]
+fn renders_if_else_if_and_else() {
+    let context = template_context();
+    assert_eq!(
+        render("{{if params.flag}}yes{{else}}no{{end}}", &context).expect("render"),
+        "no"
+    );
+    assert_eq!(
+        render(
+            "{{if eq round 2}}two{{else if eq round 1}}one{{else}}other{{end}}",
+            &context
+        )
+        .expect("render"),
+        "two"
+    );
+    let one = json!({"round": 1});
+    assert_eq!(
+        render(
+            "{{if eq round 2}}two{{else if eq round 1}}one{{else}}other{{end}}",
+            &one
+        )
+        .expect("render"),
+        "one"
+    );
+    let other = json!({"round": 9});
+    assert_eq!(
+        render(
+            "{{if eq round 2}}two{{else if eq round 1}}one{{else}}other{{end}}",
+            &other
+        )
+        .expect("render"),
+        "other"
+    );
+    assert_eq!(
+        render(
+            "{{if true}}{{if false}}a{{else}}b{{end}}{{else}}c{{end}}",
+            &context
+        )
+        .expect("render"),
+        "b"
+    );
+}
+
+#[test]
+fn uses_go_like_truthiness() {
+    for value in [
+        json!(false),
+        json!(0),
+        json!(""),
+        json!([]),
+        json!({}),
+        json!(null),
+    ] {
+        assert_eq!(
+            render("{{if .}}yes{{else}}no{{end}}", &value).expect("render"),
+            "no",
+            "value {value} must be falsey"
+        );
+    }
+    for value in [
+        json!(true),
+        json!(1),
+        json!(-1),
+        json!("x"),
+        json!([1]),
+        json!({"a": 1}),
+    ] {
+        assert_eq!(
+            render("{{if .}}yes{{else}}no{{end}}", &value).expect("render"),
+            "yes",
+            "value {value} must be truthy"
+        );
+    }
+}
+
+#[test]
+fn renders_ranges_over_arrays_and_objects() {
+    let context = template_context();
+    assert_eq!(
+        render("{{range steps.build.json.items}}{{ . }},{{end}}", &context).expect("render"),
+        "a,b,c,"
+    );
+    assert_eq!(
+        render("{{range .}}x{{else}}empty{{end}}", &json!([])).expect("render"),
+        "empty"
+    );
+    assert_eq!(
+        render("{{range .}}x{{else}}empty{{end}}", &json!({})).expect("render"),
+        "empty"
+    );
+    assert_eq!(
+        render("{{range .}}{{.}};{{end}}", &json!({"b": 2, "a": 1})).expect("render"),
+        "1;2;"
+    );
+    assert_eq!(
+        render(
+            "{{range .}}{{.name}};{{end}}",
+            &json!([{"name": "x"}, {"name": "y"}])
+        )
+        .expect("render"),
+        "x;y;"
+    );
+    assert_eq!(
+        render(
+            "{{range steps.build.json.items}}{{ $.params.repo }}={{ . }};{{end}}",
+            &context
+        )
+        .expect("render"),
+        "acme/app=a;acme/app=b;acme/app=c;"
+    );
+    assert_eq!(
+        render(
+            "{{range .}}{{if eq . 2}}two{{else}}{{.}}{{end}}{{end}}",
+            &json!([1, 2, 3])
+        )
+        .expect("render"),
+        "1two3"
+    );
+}
+
+#[test]
+fn renders_with_and_restores_dot_in_else() {
+    let context = template_context();
+    assert_eq!(
+        render("{{with params.repo}}{{.}}{{else}}none{{end}}", &context).expect("render"),
+        "acme/app"
+    );
+    assert_eq!(
+        render(
+            "{{with steps.build.json}}{{.n}}{{else}}none{{end}}",
+            &context
+        )
+        .expect("render"),
+        "3"
+    );
+    assert_eq!(
+        render(
+            "{{with steps.build.json}}{{$.params.repo}}={{.n}}{{else}}none{{end}}",
+            &context
+        )
+        .expect("render"),
+        "acme/app=3"
+    );
+    assert_eq!(
+        render("{{with .}}{{.}}{{else}}none{{end}}", &json!("")).expect("render"),
+        "none"
+    );
+    assert_eq!(
+        render("{{with .}}{{.}}{{else}}none{{end}}", &json!(false)).expect("render"),
+        "none"
+    );
+}
+
+#[test]
+fn ignores_template_comments() {
+    let context = template_context();
+    assert_eq!(
+        render("a{{/* ignored }} and {{ */}}b", &context).expect("render"),
+        "ab"
+    );
+    assert_eq!(
+        render("a \n {{- /* comment */ -}} \n b", &context).expect("render"),
+        "ab"
+    );
+    assert_eq!(
+        render("{{if true}}a{{/* c */}}b{{end}}", &context).expect("render"),
+        "ab"
+    );
+}
+
+#[test]
+fn evaluates_comparison_logic_and_function_pipelines() {
+    let context = template_context();
+    assert_eq!(render("{{eq round 2}}", &context).expect("render"), "true");
+    assert_eq!(
+        render("{{eq round 2 3}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{eq round 4 3}}", &context).expect("render"),
+        "false"
+    );
+    assert_eq!(render("{{ne round 3}}", &context).expect("render"), "true");
+    assert_eq!(render("{{lt 1 2}}", &context).expect("render"), "true");
+    assert_eq!(render("{{le 2 2}}", &context).expect("render"), "true");
+    assert_eq!(render("{{gt 3 2}}", &context).expect("render"), "true");
+    assert_eq!(render("{{ge 2 2}}", &context).expect("render"), "true");
+    assert_eq!(
+        render("{{lt \"a\" \"b\"}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{and true 1 \"x\"}}", &context).expect("render"),
+        "x"
+    );
+    assert_eq!(
+        render("{{and true 0 \"x\"}}", &context).expect("render"),
+        "0"
+    );
+    assert_eq!(
+        render("{{or false 0 \"x\"}}", &context).expect("render"),
+        "x"
+    );
+    assert_eq!(render("{{or false 0}}", &context).expect("render"), "0");
+    assert_eq!(render("{{not false}}", &context).expect("render"), "true");
+    assert_eq!(
+        render("{{not (eq round 1)}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render(
+            "{{and (eq round 2) (eq params.repo \"acme/app\")}}",
+            &context
+        )
+        .expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{len steps.build.json.items}}", &context).expect("render"),
+        "3"
+    );
+    assert_eq!(
+        render("{{len params.repo}}", &context).expect("render"),
+        "8"
+    );
+    assert_eq!(
+        render("{{index steps.build.json.items 1}}", &context).expect("render"),
+        "b"
+    );
+    assert_eq!(
+        render("{{index steps.build.json \"n\"}}", &context).expect("render"),
+        "3"
+    );
+    assert_eq!(render("{{print 1 2}}", &context).expect("render"), "1 2");
+    assert_eq!(
+        render("{{print \"a\" 1 2}}", &context).expect("render"),
+        "a1 2"
+    );
+    assert_eq!(
+        render("{{printf \"%s=%d\" \"n\" 3}}", &context).expect("render"),
+        "n=3"
+    );
+    assert_eq!(
+        render("{{printf \"%03d\" 7}}", &context).expect("render"),
+        "007"
+    );
+    assert_eq!(
+        render("{{printf \"%.2f\" 1.234}}", &context).expect("render"),
+        "1.23"
+    );
+    assert_eq!(
+        render("{{printf \"%% %v\" true}}", &context).expect("render"),
+        "% true"
+    );
+    assert_eq!(
+        render("{{printf \"%q\" \"hi\"}}", &context).expect("render"),
+        "\"hi\""
+    );
+}
+
+#[test]
+fn pipes_values_into_functions() {
+    let context = template_context();
+    assert_eq!(
+        render("{{params.repo | printf \"repo=%s\"}}", &context).expect("render"),
+        "repo=acme/app"
+    );
+    assert_eq!(
+        render("{{steps.build.stdout | len}}", &context).expect("render"),
+        "8"
+    );
+    assert_eq!(
+        render("{{ \"hi\" | print \"x\" }}", &context).expect("render"),
+        "xhi"
+    );
+    assert_eq!(
+        render("{{steps.build.exitCode | eq 0}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{params.repo | printf \"%s/%s\" \"org\"}}", &context).expect("render"),
+        "org/acme/app"
+    );
+}
+
+#[test]
+fn and_or_short_circuit() {
+    let context = template_context();
+    assert_eq!(
+        render("{{and false .missing.path}}", &context).expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render("{{or true .missing.path}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{and true false .missing.path}}", &context).expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render("{{or false true .missing.path}}", &context).expect("render"),
+        "true"
+    );
+}
+
+#[test]
+fn renders_literal_numbers_strings_and_nested_indices() {
+    let context = template_context();
+    assert_eq!(render("{{1}}", &context).expect("render"), "1");
+    assert_eq!(render("{{-1}}", &context).expect("render"), "-1");
+    assert_eq!(render("{{1.5}}", &context).expect("render"), "1.5");
+    assert_eq!(render("{{1e3}}", &context).expect("render"), "1000.0");
+    assert_eq!(
+        render("{{ \"a\\tb\\n\" }}", &context).expect("render"),
+        "a\tb\n"
+    );
+    assert_eq!(
+        render("{{index . 0 1}}", &json!([[1, 2], [3, 4]])).expect("render"),
+        "2"
+    );
+    assert_eq!(
+        render("{{printf \"%t %x %o %b %v\" true 15 8 5 2.5}}", &context).expect("render"),
+        "true f 10 101 2.5"
+    );
+}
+
+#[test]
+fn trims_whitespace_with_markers() {
+    let context = json!({"name": "x"});
+    assert_eq!(
+        render("a  \n\t{{- .name }}", &context).expect("render"),
+        "ax"
+    );
+    assert_eq!(
+        render("{{ .name -}}  \n\t b", &context).expect("render"),
+        "xb"
+    );
+    assert_eq!(
+        render("a \n {{- .name -}} \n b", &context).expect("render"),
+        "axb"
+    );
+    assert_eq!(
+        render("{{- if true -}} a {{- end -}}", &context).expect("render"),
+        "a"
+    );
+    assert_eq!(
+        render("start\n{{- if true }}\nmid\n{{- end }}\nend", &context).expect("render"),
+        "start\nmid\nend"
+    );
+}
+
+#[test]
+fn renders_literal_braces() {
+    let context = template_context();
+    assert_eq!(render("{{ \"{{\" }}", &context).expect("render"), "{{");
+    assert_eq!(render("{{ \"}}\" }}", &context).expect("render"), "}}");
+    assert_eq!(render("{{\"{{\"}}", &context).expect("render"), "{{");
+    assert_eq!(render("{{\"}}\"}}", &context).expect("render"), "}}");
+    assert_eq!(
+        render("{{`{{ .x }}`}}", &context).expect("render"),
+        "{{ .x }}"
+    );
+    assert_eq!(
+        render("x{{ \"{{\" }}if y{{ \"}}\" }}z", &context).expect("render"),
+        "x{{if y}}z"
+    );
+}
+
+#[test]
+fn stringifies_plain_template_values() {
+    let context = template_context();
+    assert_eq!(render("{{params.empty}}", &context).expect("render"), "");
+    assert_eq!(
+        render("{{params.flag}}", &context).expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render("{{steps.build.score}}", &context).expect("render"),
+        "0.75"
+    );
+    assert_eq!(
+        render("{{steps.build.json.items}}", &context).expect("render"),
+        "[\"a\",\"b\",\"c\"]"
+    );
+    assert_eq!(
+        render("{{steps.build.json}}", &context).expect("render"),
+        r#"{"items":["a","b","c"],"n":3,"ok":true}"#
+    );
+}
+
+#[test]
+fn reports_template_syntax_and_execution_errors() {
+    let cases = [
+        ("{{ params.repo", "unterminated"),
+        ("{{ }}", "empty template action"),
+        ("{{ \"unterminated }}", "unterminated quoted string"),
+        ("{{/* unclosed }}", "unterminated template comment"),
+        ("{{ missing.path }}", "unknown template reference"),
+        ("{{ .missing }}", "unknown template reference"),
+        ("{{ $missing }}", "unsupported template variable"),
+        ("{{ .foo. }}", "invalid template path"),
+        ("{{ foo 1 }}", "unknown template function"),
+        ("{{ 1 2 }}", "unexpected argument"),
+        ("{{ 1 | }}", "expected a command after `|`"),
+        ("{{ (1 }}", "missing `)`"),
+        ("{{ end }}", "unexpected `{{end}}`"),
+        ("{{ else }}", "unexpected `{{else}}`"),
+        ("{{ if true }}x", "missing `{{end}}`"),
+        ("{{ if }}x{{end}}", "`if` requires a pipeline"),
+        (
+            "{{ range . }}x{{ else if true }}y{{ end }}",
+            "does not support `else if`",
+        ),
+        (
+            "{{ range params.repo }}x{{ end }}",
+            "cannot range over string",
+        ),
+        ("{{ eq 1 }}", "expects at least 2"),
+        ("{{ len 1 2 }}", "expects 1 argument"),
+        ("{{ index }}", "expects at least 1"),
+        (
+            "{{ index steps.build.json.items 9 }}",
+            "array index 9 out of range",
+        ),
+        (
+            "{{ index steps.build.json.items \"x\" }}",
+            "index must be an integer",
+        ),
+        ("{{ index steps.build.stdout 0 }}", "cannot index into"),
+        ("{{ lt 1 \"a\" }}", "cannot compare"),
+        ("{{ printf \"%d\" }}", "not enough arguments"),
+        ("{{ printf \"%d\" 1 2 }}", "unused argument"),
+        ("{{ printf \"%z\" 1 }}", "unsupported verb"),
+        ("{{ 1 | . }}", "cannot pipe a value"),
+        ("{{ .steps.build.stdout.extra }}", "cannot descend into"),
+        ("{{ steps.build.json.items.5 }}", "array index out of range"),
+        ("{{ steps.build.json.items.x }}", "not a valid array index"),
+    ];
+    for (template, expected) in cases {
+        let message = template_error(template);
+        assert!(
+            message.contains(expected),
+            "template {template:?} should fail with {expected:?}, got {message:?}"
+        );
+    }
+}
+
+#[test]
+fn reports_template_error_locations() {
+    let message = template_error("line one\n{{ missing.path }}");
+    assert!(message.contains("line 2"), "message: {message}");
+    let message = template_error("{{/* unclosed }}");
+    assert!(message.contains("line 1"), "message: {message}");
+}
+
 #[test]
 fn native_parameter_overrides_are_injected_before_interpolation() {
     let source = r#"
