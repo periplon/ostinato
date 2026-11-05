@@ -510,6 +510,9 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             force,
         } => {
             let params = parse_params(&params)?;
+            if list && !inputs.is_empty() {
+                bail!("--list does not support --input; pass the documents in the source files");
+            }
             let mut protected = sources.clone();
             protected.extend(inputs.iter().cloned());
             let values = if sources
@@ -521,27 +524,40 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                 }
                 let codec = JsonYamlCodec;
                 let source = &sources[0];
-                let mut documents = Vec::new();
+                let mut per_source = Vec::with_capacity(sources.len());
                 for source in &sources {
-                    documents.extend(
+                    per_source.push(
                         codec
                             .read(&DataInput::new(source.clone()))
                             .map_err(|error| anyhow::anyhow!(error.to_string()))?,
                     );
                 }
                 if list {
-                    if !inputs.is_empty() {
+                    let length = per_source[0].len();
+                    if let Some(documents) = per_source
+                        .iter()
+                        .find(|documents| documents.len() != length)
+                    {
                         bail!(
-                            "--list does not support --input; pass the documents in a single \
-                             data file"
+                            "incompatible list lengths ({} and {})",
+                            length,
+                            documents.len()
                         );
                     }
-                    if sources.len() != 1 {
-                        bail!("--list supports a single data source");
+                    let mut documents = Vec::with_capacity(length);
+                    for index in 0..length {
+                        let mut merged = per_source[0][index].clone();
+                        for source_documents in &per_source[1..] {
+                            merged = data::unify_values(&merged, &source_documents[index], source)
+                                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                        }
+                        documents.push(merged);
                     }
                     let value = serde_json::Value::Array(documents);
                     select_data_values(&value, &expressions)?
                 } else {
+                    let mut documents: Vec<serde_json::Value> =
+                        per_source.into_iter().flatten().collect();
                     for input in &inputs {
                         documents.extend(
                             codec
@@ -644,6 +660,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                 list,
                 files,
                 merge,
+                force,
             )?;
             preflight_outputs(&plan.files, &inputs, force, skip_existing)?;
             let sink = FileOutputSink;
@@ -662,7 +679,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     );
                 }
             }
-            if !plan.skipped_inputs.is_empty() {
+            if !plan.skipped_inputs.is_empty() && !force {
                 for input in &plan.skipped_inputs {
                     eprintln!(
                         "skipping {}: -o with multiple inputs writes only the first \

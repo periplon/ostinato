@@ -76,6 +76,9 @@ impl OutputSink for FileOutputSink {
                 )));
             }
         }
+        let existing_permissions = std::fs::metadata(&destination)
+            .ok()
+            .map(|metadata| metadata.permissions());
         let mut temporary = tempfile::Builder::new()
             .prefix(".ostinato-output-")
             .tempfile_in(parent)
@@ -95,6 +98,14 @@ impl OutputSink for FileOutputSink {
                     destination.display()
                 ))
             })?;
+        if let Some(permissions) = existing_permissions {
+            std::fs::set_permissions(temporary.path(), permissions).map_err(|error| {
+                PortError::Io(format!(
+                    "cannot preserve permissions for {}: {error}",
+                    destination.display()
+                ))
+            })?;
+        }
         if options.force {
             temporary.persist(&destination).map_err(|error| {
                 PortError::Io(format!(
@@ -118,11 +129,17 @@ impl OutputSink for FileOutputSink {
 
 fn write_stdout(content: &str) -> PortResult<WriteOutcome> {
     let mut stdout = std::io::stdout().lock();
-    stdout
+    match stdout
         .write_all(content.as_bytes())
         .and_then(|()| stdout.flush())
-        .map_err(|error| PortError::Io(format!("cannot write to stdout: {error}")))?;
-    Ok(WriteOutcome::Written)
+    {
+        Ok(()) => Ok(WriteOutcome::Written),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+            // A downstream pager/consumer closed the pipe; treat it as success.
+            Ok(WriteOutcome::Written)
+        }
+        Err(error) => Err(PortError::Io(format!("cannot write to stdout: {error}"))),
+    }
 }
 
 fn absolute_destination(path: &Path) -> PortResult<PathBuf> {

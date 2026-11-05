@@ -7845,3 +7845,20 @@ fn unify_merges_structs_and_rejects_conflicts() {
     .expect_err("conflict");
     assert!(conflict.to_string().contains("conflicting") || conflict.is_conflict());
 }
+
+#[test]
+fn numeric_unification_uses_value_equality_but_keeps_int_float_types() {
+    let unify = |left: &str, right: &str| {
+        let left: serde_json::Value = serde_json::from_str(left).expect("json");
+        let right: serde_json::Value = serde_json::from_str(right).expect("json");
+        ostinato_lang::unify(
+            &ostinato_lang::value_from_json(&left),
+            &ostinato_lang::value_from_json(&right),
+        )
+    };
+    for (left, right) in [("-0", "0"), ("0e0", "0.0"), ("1e2", "100.0")] {
+        assert!(unify(left, right).is_ok(), "{left} vs {right}");
+    }
+    assert!(unify("1", "1.0").is_err());
+    assert!(unify("1", "2").is_err());
+}

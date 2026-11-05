@@ -121,7 +121,7 @@ pub fn plan_per_input(
     }
     let mut seen = std::collections::BTreeSet::new();
     for file in &planned {
-        if !seen.insert(file.path.clone()) {
+        if !seen.insert(normalized_path(&file.path)) {
             return Err(ImportError::OutputCollision {
                 output: file.path.display().to_string(),
             });
@@ -149,12 +149,32 @@ pub fn plan_single(
     list: bool,
     files: bool,
     merge: bool,
+    force: bool,
 ) -> Result<ImportPlan, ImportError> {
     validate_package(package)?;
     if merge && files {
         return Err(ImportError::MultiDocument);
     }
     if files {
+        if output == Path::new("-") {
+            let mut content = String::new();
+            for input in inputs {
+                for document in &input.documents {
+                    content.push_str(&render_documents(
+                        std::slice::from_ref(document),
+                        package,
+                        list,
+                    )?);
+                }
+            }
+            return Ok(ImportPlan {
+                files: vec![PlannedFile {
+                    path: output.to_path_buf(),
+                    content,
+                }],
+                skipped_inputs: Vec::new(),
+            });
+        }
         let first = inputs.first().ok_or(ImportError::MultiDocument)?;
         let content = match first.documents.first() {
             Some(document) => render_documents(std::slice::from_ref(document), package, list)?,
@@ -187,20 +207,28 @@ pub fn plan_single(
             skipped_inputs: Vec::new(),
         });
     }
-    let Some(first) = inputs.first() else {
-        return Err(ImportError::MultiDocument);
+    let selected =
+        if force { inputs.last() } else { inputs.first() }.ok_or(ImportError::MultiDocument)?;
+    let content = render_documents(&selected.documents, package, list)?;
+    let skipped_inputs = if force {
+        inputs
+            .iter()
+            .take(inputs.len().saturating_sub(1))
+            .map(|input| input.path.clone())
+            .collect()
+    } else {
+        inputs
+            .iter()
+            .skip(1)
+            .map(|input| input.path.clone())
+            .collect()
     };
-    let content = render_documents(&first.documents, package, list)?;
     Ok(ImportPlan {
         files: vec![PlannedFile {
             path: output.to_path_buf(),
             content,
         }],
-        skipped_inputs: inputs
-            .iter()
-            .skip(1)
-            .map(|input| input.path.clone())
-            .collect(),
+        skipped_inputs,
     })
 }
 
@@ -216,14 +244,34 @@ pub fn import_files(
     list: bool,
     files: bool,
     merge: bool,
+    force: bool,
 ) -> Result<ImportPlan, ImportError> {
     let mut decoded = Vec::with_capacity(inputs.len());
     for path in inputs {
         decoded.push(data::DataFile::read(path)?);
     }
     match output {
-        Some(output) => plan_single(&decoded, output, package, list, files, merge),
+        Some(output) => plan_single(&decoded, output, package, list, files, merge, force),
         None => plan_per_input(&decoded, package, list, files),
+    }
+}
+
+fn normalized_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path),
+            Err(_) => path.to_path_buf(),
+        }
+    };
+    let Some(parent) = absolute.parent() else {
+        return absolute;
+    };
+    let parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    match absolute.file_name() {
+        Some(name) => parent.join(name),
+        None => parent,
     }
 }
 
@@ -367,10 +415,81 @@ mod tests {
             data_file("a.json", vec![serde_json::json!({"a": 1})]),
             data_file("b.yaml", vec![serde_json::json!({"b": 2})]),
         ];
-        let plan =
-            plan_single(&inputs, Path::new("out.cue"), None, false, false, false).expect("plan");
+        let plan = plan_single(
+            &inputs,
+            Path::new("out.cue"),
+            None,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("plan");
         assert_eq!(plan.files.len(), 1);
         assert_eq!(plan.skipped_inputs, vec![PathBuf::from("b.yaml")]);
+    }
+
+    #[test]
+    fn single_output_with_force_uses_last_input() {
+        let inputs = vec![
+            data_file("a.json", vec![serde_json::json!({"a": 1})]),
+            data_file("b.yaml", vec![serde_json::json!({"b": 2})]),
+        ];
+        let plan = plan_single(
+            &inputs,
+            Path::new("out.cue"),
+            None,
+            false,
+            false,
+            false,
+            true,
+        )
+        .expect("plan");
+        assert_eq!(plan.files[0].content, "b: 2\n");
+        assert_eq!(plan.skipped_inputs, vec![PathBuf::from("a.json")]);
+    }
+
+    #[test]
+    fn files_stdout_concatenates_all_documents() {
+        let inputs = vec![
+            data_file(
+                "a.yaml",
+                vec![serde_json::json!({"a": 1}), serde_json::json!({"a": 2})],
+            ),
+            data_file("b.yaml", vec![serde_json::json!({"b": 3})]),
+        ];
+        let plan =
+            plan_single(&inputs, Path::new("-"), None, false, true, false, false).expect("plan");
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.files[0].content, "a: 1\na: 2\nb: 3\n");
+        assert!(plan.skipped_inputs.is_empty());
+    }
+
+    #[test]
+    fn output_collisions_are_detected_after_path_normalization() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let inputs = vec![
+            data_file(
+                cwd.join("x.json").to_str().expect("absolute"),
+                vec![serde_json::json!({"a": 1})],
+            ),
+            data_file("x.yaml", vec![serde_json::json!({"b": 2})]),
+        ];
+        let error = plan_per_input(&inputs, None, false, false).expect_err("collision");
+        assert!(
+            matches!(error, ImportError::OutputCollision { .. }),
+            "{error}"
+        );
+
+        let inputs = vec![
+            data_file("x.json", vec![serde_json::json!({"a": 1})]),
+            data_file("./x.yaml", vec![serde_json::json!({"b": 2})]),
+        ];
+        let error = plan_per_input(&inputs, None, false, false).expect_err("collision");
+        assert!(
+            matches!(error, ImportError::OutputCollision { .. }),
+            "{error}"
+        );
     }
 
     #[test]
@@ -379,8 +498,16 @@ mod tests {
             data_file("a.json", vec![serde_json::json!({"a": 1})]),
             data_file("b.yaml", vec![serde_json::json!({"b": 2})]),
         ];
-        let plan =
-            plan_single(&inputs, Path::new("out.cue"), None, false, false, true).expect("plan");
+        let plan = plan_single(
+            &inputs,
+            Path::new("out.cue"),
+            None,
+            false,
+            false,
+            true,
+            false,
+        )
+        .expect("plan");
         assert_eq!(plan.files[0].content, "a: 1\nb: 2\n");
         assert!(plan.skipped_inputs.is_empty());
     }
