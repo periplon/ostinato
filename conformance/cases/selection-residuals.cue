@@ -36,6 +36,17 @@ deep_k: {b: C.c, c: 2}
 deep_m: {c: A.b}
 deep_mutual: deep_h
 
+narrow_flat: {a: *1 | int, b: a, c: narrow_flat.b} & {a: 12}
+narrow_nested: {o: {a: *1 | int, b: a, c: narrow_nested.o.b}} & {o: {a: 13}}
+let disj_base = {a: *1 | int, b: a}
+disj_let_alias: (disj_base | {a: string}) & {a: 14}
+#DisjBase: {a: *1 | int, b: a}
+disj_def_alt: (#DisjBase | {a: string}) & {a: 15}
+disj_optional: ({a: *1 | int, b: a} | {a: string}) & {a?: 16}
+let def_alias = #DefAlias
+#DefAlias: {a: def_alias.b, b: 1}
+def_let_self: #DefAlias
+
 #A: {bs: [...#B], u: len(bs)}
 #B: {as: [...#A], t: len(as)}
 mutual_lists_x: #A & {bs: [{as: [{}]}]}
@@ -54,6 +65,12 @@ params: {
 	r_disj: disj
 	r_disj_rev: disj_rev
 	r_disj_nested: disj_nested
+	r_narrow_flat: narrow_flat
+	r_narrow_nested: narrow_nested
+	r_disj_let_alias: disj_let_alias
+	r_disj_def_alt: disj_def_alt
+	r_disj_optional: disj_optional
+	r_def_let_self: def_let_self
 	r_mutual: mutual_x
 	r_alias_self: alias_x
 	r_deep_mutual: deep_mutual

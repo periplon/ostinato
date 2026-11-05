@@ -8646,6 +8646,74 @@ l: ({a: *1 | int, b: [a]} | {a: string}) & {a: 8}
 }
 
 #[test]
+fn self_selection_respects_narrowed_defaults() {
+    let source = r#"
+package demo
+flat: {a: *1 | int, b: a, c: flat.b} & {a: 6}
+nested: {o: {a: *1 | int, b: a, c: nested.o.b}} & {o: {a: 6}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse narrowed self selection");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval narrowed self selection")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["flat"], serde_json::json!({"a": 6, "b": 6, "c": 6}));
+    assert_eq!(
+        json["nested"]["o"],
+        serde_json::json!({"a": 6, "b": 6, "c": 6})
+    );
+
+    // A non-transparent self-default reference must fail closed instead of
+    // reading the injected default back as a concrete value.
+    for source in [
+        "package demo\nflat: {a: flat.a + 1} & {a: *2 | int}\n",
+        "package demo\nx: {o: {a: x.o.a + 1}} & {o: {a: *2 | int}}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse self-default cycle");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "self-default cycle must not resolve: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn disjunction_alternatives_through_aliases_and_optional_values() {
+    let source = r#"
+package demo
+let P = {a: *1 | int, b: a}
+let_alias: (P | {a: string}) & {a: 9}
+#P: {a: *1 | int, b: a}
+def_alt: (#P | {a: string}) & {a: 4}
+opt: ({a: *1 | int, b: a} | {a: string}) & {a?: 3}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse alias disjunction narrowing");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval alias disjunction narrowing")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["let_alias"], serde_json::json!({"a": 9, "b": 9}));
+    assert_eq!(json["def_alt"], serde_json::json!({"a": 4, "b": 4}));
+    assert_eq!(json["opt"], serde_json::json!({"a": 3, "b": 3}));
+}
+
+#[test]
+fn definition_self_selection_through_a_let_alias_resolves() {
+    let source = r#"
+package demo
+let X = #D
+#D: {a: X.b, b: 1}
+x: #D
+"#;
+    let file = ostinato_lang::parse(source).expect("parse definition let alias");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval definition let alias")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"], serde_json::json!({"a": 1, "b": 1}));
+}
+
+#[test]
 fn mutual_field_mediated_let_cycles_match_cue() {
     let source = r#"
 package demo

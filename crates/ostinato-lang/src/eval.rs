@@ -3316,6 +3316,16 @@ impl<'a> Frame<'a> {
         while let Some(current) = cursor {
             if let Some(key) = current.any_field_key(&name) {
                 if current.evaluating.borrow().contains(&key) {
+                    // When the selector sits inside the struct that the last
+                    // path segment names, resolve it in this frame first. That
+                    // frame carries any narrowing injections (`a: 6`) applied
+                    // to the field value being evaluated, which the outer
+                    // declaration projection does not see.
+                    if frame_depth(self, current) == Some(segments.len())
+                        && let Some(value) = self.resolve_local_selector(&name, &segments, span)?
+                    {
+                        return Ok(Some(value));
+                    }
                     return current
                         .resolve_field_path(&name, &key, &segments, span)
                         .map(Some);
@@ -3325,6 +3335,57 @@ impl<'a> Frame<'a> {
             cursor = current.parent;
         }
         Ok(None)
+    }
+
+    fn resolve_local_selector(
+        &self,
+        name: &str,
+        segments: &[SelectSegment],
+        span: Span,
+    ) -> Result<Option<Value>, LangError> {
+        let Some(SelectSegment::Field(field, quoted)) = segments.last() else {
+            return Ok(None);
+        };
+        if *quoted && field.starts_with('#') {
+            return Ok(None);
+        }
+        let Some(key) = self.any_field_key(field) else {
+            return Ok(None);
+        };
+        if self.fields.borrow().get(&key).is_some_and(|definition| {
+            definition
+                .exprs
+                .iter()
+                .any(|expr| expr_contains_selector_path(expr, self, name, segments))
+        }) {
+            // The local field selects this same path (directly or inside an
+            // expression). Its seeded injection must not satisfy the
+            // reference; the outer fixpoint decides whether another operand
+            // supplies a transparent value.
+            return Ok(None);
+        }
+        let optional = self
+            .fields
+            .borrow()
+            .get(&key)
+            .is_some_and(|definition| definition.optional);
+        if optional {
+            // Optional peers keep their existing materialization rules; the
+            // local cache may contain an injected optional that the
+            // declaration itself is not allowed to select.
+            return Ok(None);
+        }
+        if self.evaluating.borrow().contains(&key) {
+            // Selecting the field currently being evaluated must not read a
+            // seeded injection: only the outer transparent-self-selection
+            // path may resolve it, and non-transparent uses stay cyclic.
+            return Ok(None);
+        }
+        match self.eval_field_key(&key, span) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if is_cyclic_reference_error(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn resolve_field_path(
@@ -3844,6 +3905,19 @@ fn merge_non_poisoned(parts: Vec<PathProjection>) -> PathProjection {
     out
 }
 
+fn frame_depth(frame: &Frame<'_>, ancestor: &Frame<'_>) -> Option<usize> {
+    let mut depth = 0;
+    let mut cursor = Some(frame);
+    while let Some(current) = cursor {
+        if std::ptr::eq(current, ancestor) {
+            return Some(depth);
+        }
+        depth += 1;
+        cursor = current.parent;
+    }
+    None
+}
+
 fn field_path_key(key: &str, segments: &[SelectSegment]) -> String {
     let mut path = key.to_owned();
     for segment in segments {
@@ -3897,6 +3971,107 @@ fn selector_path(expr: &Expr) -> Option<(String, Vec<SelectSegment>)> {
             Some((root, segments))
         }
         _ => None,
+    }
+}
+
+fn expr_contains_selector_path(
+    expr: &Expr,
+    frame: &Frame<'_>,
+    name: &str,
+    segments: &[SelectSegment],
+) -> bool {
+    if let Some((root, path)) = selector_path(expr)
+        && frame.resolve_transparent_let(&root) == name
+        && path == segments
+    {
+        return true;
+    }
+    match expr {
+        Expr::Select(base, _, _, _) => expr_contains_selector_path(base, frame, name, segments),
+        Expr::Index(base, index, _) => {
+            expr_contains_selector_path(base, frame, name, segments)
+                || expr_contains_selector_path(index, frame, name, segments)
+        }
+        Expr::Call(callee, arguments, _) => {
+            expr_contains_selector_path(callee, frame, name, segments)
+                || arguments
+                    .iter()
+                    .any(|arg| expr_contains_selector_path(arg, frame, name, segments))
+        }
+        Expr::Bound(_, operand, _)
+        | Expr::Paren(operand, _)
+        | Expr::Default(operand, _)
+        | Expr::Unary(_, operand, _) => expr_contains_selector_path(operand, frame, name, segments),
+        Expr::Binary(_, left, right, _)
+        | Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _) => {
+            expr_contains_selector_path(left, frame, name, segments)
+                || expr_contains_selector_path(right, frame, name, segments)
+        }
+        Expr::Struct(items, _) => items.iter().any(|item| match item {
+            StructItem::Field(field) => {
+                expr_contains_selector_path(&field.value, frame, name, segments)
+            }
+            StructItem::Pattern { value, .. } | StructItem::Let { value, .. } => {
+                expr_contains_selector_path(value, frame, name, segments)
+            }
+            StructItem::If { cond, body, .. } => {
+                expr_contains_selector_path(cond, frame, name, segments)
+                    || body.iter().any(|item| match item {
+                        StructItem::Field(field) => {
+                            expr_contains_selector_path(&field.value, frame, name, segments)
+                        }
+                        _ => false,
+                    })
+            }
+            StructItem::For { source, body, .. } => {
+                expr_contains_selector_path(source, frame, name, segments)
+                    || body.iter().any(|item| match item {
+                        StructItem::Field(field) => {
+                            expr_contains_selector_path(&field.value, frame, name, segments)
+                        }
+                        _ => false,
+                    })
+            }
+            StructItem::Ellipsis(_) => false,
+        }),
+        Expr::List(items, _) => items
+            .iter()
+            .any(|item| expr_contains_selector_path(item, frame, name, segments)),
+        Expr::OpenListPrefix(items, tail, _) => {
+            items
+                .iter()
+                .any(|item| expr_contains_selector_path(item, frame, name, segments))
+                || tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_contains_selector_path(tail, frame, name, segments))
+        }
+        Expr::OpenList(Some(item), _) => expr_contains_selector_path(item, frame, name, segments),
+        Expr::OpenList(None, _) => false,
+        Expr::Str(parts, _) => parts.iter().any(|part| match part {
+            crate::ast::StrPart::Interp(expr) => {
+                expr_contains_selector_path(expr, frame, name, segments)
+            }
+            crate::ast::StrPart::Text(_) => false,
+        }),
+        Expr::BytesInterp(parts, _) => parts.iter().any(|part| match part {
+            crate::ast::BytePart::Interp(expr) => {
+                expr_contains_selector_path(expr, frame, name, segments)
+            }
+            crate::ast::BytePart::Text(_) => false,
+        }),
+        Expr::ListComp { clauses, body, .. } => {
+            expr_contains_selector_path(body, frame, name, segments)
+                || clauses.iter().any(|clause| match clause {
+                    crate::ast::CompClause::For { source, .. } => {
+                        expr_contains_selector_path(source, frame, name, segments)
+                    }
+                    crate::ast::CompClause::If { cond, .. } => {
+                        expr_contains_selector_path(cond, frame, name, segments)
+                    }
+                })
+        }
+        _ => false,
     }
 }
 
@@ -4344,6 +4519,7 @@ fn eval_split_field(
     }
     let mut remaining = Vec::new();
     let mut deferred = Vec::new();
+    let mut injection_fields = BTreeMap::new();
     for (index, part) in parts.iter().enumerate() {
         if expr_selects_key(part, name, frame) {
             remaining.push(index);
@@ -4352,6 +4528,9 @@ fn eval_split_field(
         match eval_expr(part, frame) {
             Ok(value) => {
                 add_selector_peers(&mut peers, &value, &required, span)?;
+                if let Some(fields) = concrete_fields(&value) {
+                    merge_injection_fields(&mut injection_fields, fields, span)?;
+                }
                 values[index] = Some(value);
             }
             Err(err) if is_cyclic_reference_error(&err) => {
@@ -4370,11 +4549,23 @@ fn eval_split_field(
         let mut next = Vec::new();
         for index in remaining {
             let previous = frame.selector_peers.replace(peers.clone());
-            let result = eval_expr(&parts[index], frame);
+            let result = if injection_fields.is_empty() {
+                eval_expr(&parts[index], frame)
+            } else {
+                eval_declaration_part(
+                    frame,
+                    &parts[index],
+                    &Value::Struct(injection_fields.clone()),
+                    span,
+                )
+            };
             frame.selector_peers.replace(previous);
             match result {
                 Ok(value) => {
                     add_selector_peers(&mut peers, &value, &required, span)?;
+                    if let Some(fields) = concrete_fields(&value) {
+                        merge_injection_fields(&mut injection_fields, fields, span)?;
+                    }
                     values[index] = Some(value);
                     progress = true;
                 }
@@ -4780,16 +4971,17 @@ fn try_disjunction_narrowing(
         return Ok(None);
     }
     let value = eval_expr(other, frame)?;
-    if concrete_fields(&value).is_none() {
+    let Some(injections) = narrowing_fields(&value) else {
         return Ok(None);
-    }
+    };
+    let injection_value = Value::Struct(injections);
     let mut ast = Vec::new();
     collect_disjunction(disjunction, &mut ast);
     let mut dependencies = BTreeSet::new();
     for alternative in &ast {
-        expr_sibling_dependency_names(alternative, &mut dependencies);
+        expr_sibling_dependency_names(frame, alternative, &mut dependencies, &mut BTreeSet::new());
     }
-    if dependencies.is_empty() || !value_has_any_field(&value, &dependencies) {
+    if dependencies.is_empty() || !value_has_any_field(&injection_value, &dependencies) {
         return Ok(None);
     }
     let mut candidates = Vec::new();
@@ -4799,7 +4991,7 @@ fn try_disjunction_narrowing(
             Expr::Default(inner, _) => (inner.as_ref(), true),
             other => (other, false),
         };
-        let recomputed = match eval_declaration_part(frame, alternative, &value, span) {
+        let recomputed = match eval_declaration_part(frame, alternative, &injection_value, span) {
             Ok(recomputed) => recomputed,
             Err(err) if err.is_conflict() || is_deferrable_incomplete_error(&err) => continue,
             Err(err) => return Err(err),
@@ -4835,6 +5027,27 @@ fn try_disjunction_narrowing(
     Ok(Some(Value::Disjunction(candidates, defaults)))
 }
 
+/// Concrete fields (including concrete optional fields) used to narrow a
+/// disjunction alternative. Optional fields that remain constraints are not
+/// injected.
+fn narrowing_fields(value: &Value) -> Option<BTreeMap<String, Value>> {
+    match value {
+        Value::Struct(fields) => Some(fields.clone()),
+        Value::Definition {
+            fields, optional, ..
+        } => {
+            let mut out = fields.clone();
+            for (key, value) in optional {
+                if value.to_json().is_some() {
+                    out.insert(key.clone(), value.concretize().clone());
+                }
+            }
+            Some(out)
+        }
+        _ => concrete_fields(value),
+    }
+}
+
 fn collect_struct_labels(items: &[StructItem], out: &mut BTreeSet<String>) {
     for item in items {
         match item {
@@ -4854,7 +5067,12 @@ fn collect_struct_labels(items: &[StructItem], out: &mut BTreeSet<String>) {
 /// Bare identifiers used by a struct literal field that are also declared as a
 /// sibling field in the same literal (recursively). These are the fields whose
 /// values must be recomputed when an alternative is narrowed.
-fn expr_sibling_dependency_names(expr: &Expr, out: &mut BTreeSet<String>) {
+fn expr_sibling_dependency_names(
+    frame: &Frame<'_>,
+    expr: &Expr,
+    out: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<String>,
+) {
     match strip_expr_parens(expr) {
         Expr::Struct(items, _) => {
             let mut labels = BTreeSet::new();
@@ -4869,32 +5087,62 @@ fn expr_sibling_dependency_names(expr: &Expr, out: &mut BTreeSet<String>) {
                                 out.insert(identifier);
                             }
                         }
-                        expr_sibling_dependency_names(&field.value, out);
+                        expr_sibling_dependency_names(frame, &field.value, out, visited);
                     }
                     StructItem::If { cond, body, .. } => {
-                        expr_sibling_dependency_names(cond, out);
+                        expr_sibling_dependency_names(frame, cond, out, visited);
                         expr_sibling_dependency_names(
+                            frame,
                             &Expr::Struct(body.clone(), Span::default()),
                             out,
+                            visited,
                         );
                     }
                     StructItem::For { source, body, .. } => {
-                        expr_sibling_dependency_names(source, out);
+                        expr_sibling_dependency_names(frame, source, out, visited);
                         expr_sibling_dependency_names(
+                            frame,
                             &Expr::Struct(body.clone(), Span::default()),
                             out,
+                            visited,
                         );
                     }
                     _ => {}
                 }
             }
         }
+        Expr::Ident(name, _) => {
+            let resolved = frame.resolve_transparent_let(name);
+            if !visited.insert(resolved.clone()) {
+                return;
+            }
+            let mut cursor = Some(frame);
+            while let Some(current) = cursor {
+                if let Some(let_expr) = current.lets.borrow().get(&resolved).cloned() {
+                    expr_sibling_dependency_names(current, &let_expr, out, visited);
+                    return;
+                }
+                if let Some(key) = current.any_field_key(&resolved) {
+                    let exprs = current
+                        .fields
+                        .borrow()
+                        .get(&key)
+                        .map(|definition| definition.exprs.clone())
+                        .unwrap_or_default();
+                    for expr in exprs {
+                        expr_sibling_dependency_names(current, &expr, out, visited);
+                    }
+                    return;
+                }
+                cursor = current.parent;
+            }
+        }
         Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            expr_sibling_dependency_names(left, out);
-            expr_sibling_dependency_names(right, out);
+            expr_sibling_dependency_names(frame, left, out, visited);
+            expr_sibling_dependency_names(frame, right, out, visited);
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) => {
-            expr_sibling_dependency_names(inner, out);
+            expr_sibling_dependency_names(frame, inner, out, visited);
         }
         _ => {}
     }
