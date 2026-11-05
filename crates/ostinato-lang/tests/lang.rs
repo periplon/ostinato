@@ -6766,19 +6766,70 @@ defaulted: #A & {n: *4 | int}
         "unmaterialized optional references must still fail"
     );
 
-    for source in [
-        "package demo\n#P: {ls?: [[{a?: int, v: a}]]}\nx: #P & {ls: [[{a: 2}]]}\n",
-        "package demo\n#E: {a?: int, v: a}\n#P: {e?: #E}\nx: #P & {e: {a: 2}}\n",
-        "package demo\n#N: {cfg: {a?: int, v: a}}\nx: #N & {cfg: {a: 2}}\n",
-        "package demo\n#L: {xs?: [int, int], sum: xs[0] + xs[1]}\nx: #L & {xs: [4, 5]}\n",
-        "package demo\n#P: {name?: string, greeting: \"Hello \\(name)\"}\nparams: #P & {name: \"Alice\"}\n",
-    ] {
-        let file = ostinato_lang::parse(source).expect("parse");
-        assert!(
-            ostinato_lang::eval_file(&file).is_err(),
-            "compound optional-dependent forms remain documented limits: {source:?}"
-        );
-    }
+    let compound = r#"
+package demo
+#E: {a?: int, v: a}
+#P: {ls?: [[{a?: int, v: a}]], e?: #E}
+list_case: #P & {ls: [[{a: 2}]]}
+def_case: #P & {e: {a: 2}}
+#N: {cfg: {a?: int, v: a}}
+nested_case: #N & {cfg: {a: 2}}
+#L: {xs?: [int, int], sum: xs[0] + xs[1]}
+list_sum: #L & {xs: [4, 5]}
+#T: {cfg?: {port: int, url: "http://localhost:\(port)"}}
+dependent_struct: #T & {cfg: {port: 8080}}
+"#;
+    let file = ostinato_lang::parse(compound).expect("parse compound optional-dependent fields");
+    let value = ostinato_lang::eval_file(&file).expect("eval compound optional-dependent fields");
+    let json = value.to_json().expect("json");
+    assert_eq!(
+        json["list_case"]["ls"],
+        serde_json::json!([[{"a": 2, "v": 2}]])
+    );
+    assert_eq!(json["def_case"]["e"], serde_json::json!({"a": 2, "v": 2}));
+    assert_eq!(
+        json["nested_case"]["cfg"],
+        serde_json::json!({"a": 2, "v": 2})
+    );
+    assert_eq!(json["list_sum"]["xs"], serde_json::json!([4, 5]));
+    assert_eq!(json["list_sum"]["sum"], 9);
+    assert_eq!(
+        json["dependent_struct"]["cfg"],
+        serde_json::json!({"port": 8080, "url": "http://localhost:8080"})
+    );
+
+    let params = r#"
+package demo
+#P: {name?: string, greeting: "Hello \(name)"}
+params: #P & {name: "Alice"}
+workflow: {name: "\(params.greeting)", steps: {s: {kind: "noop"}}}
+"#;
+    let file = ostinato_lang::parse(params).expect("parse definition-backed params");
+    let value = ostinato_lang::eval_file(&file).expect("eval definition-backed params");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["name"], "Alice");
+    assert_eq!(json["params"]["greeting"], "Hello Alice");
+    assert_eq!(json["workflow"]["name"], "Hello Alice");
+}
+
+#[test]
+fn reusable_non_definition_bases_resolve_dependent_optionals() {
+    let source = r#"
+package demo
+let base = {b?: int, c: b}
+_base: {b?: int, c: b}
+#A: base & {b: 3}
+#B: _base & {b: 4}
+let_case: #A
+hidden_case: #B
+concrete: #A & {c: 3}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse reusable bases");
+    let value = ostinato_lang::eval_file(&file).expect("eval reusable bases");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["let_case"], serde_json::json!({"b": 3, "c": 3}));
+    assert_eq!(json["hidden_case"], serde_json::json!({"b": 4, "c": 4}));
+    assert_eq!(json["concrete"], serde_json::json!({"b": 3, "c": 3}));
 }
 
 #[test]

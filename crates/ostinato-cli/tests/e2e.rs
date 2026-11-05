@@ -97,6 +97,75 @@ workflow: {
 }
 
 #[test]
+fn compound_optional_template_params_drive_a_run() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let output_file = directory.path().join("params.txt");
+    let workflow = directory.path().join("template.cue");
+    write(
+        &workflow,
+        &format!(
+            r#"
+package demo
+#Limits: {{
+    attempts: int
+    delay: "\(attempts)s"
+}}
+#Template: {{
+    base?: string
+    tags?: [...string]
+    retry?: #Limits
+    label: "\(base)"
+}}
+let template = #Template & {{
+    base: "root"
+    tags: ["alpha", "beta"]
+    retry: {{attempts: 2}}
+}}
+#Params: {{
+    base?: string
+    tag?: string
+    delay?: string
+}}
+params: #Params & {{
+    base: template.label
+    tag: template.tags[1]
+    delay: template.retry.delay
+}}
+workflow: {{
+    name: "template-\(params.base)"
+    steps: {{
+        main: {{
+            kind: "exec"
+            exec: {{cmd: ["sh", "-c", "printf '%s %s %s' '\(params.base)' '\(params.tag)' '\(params.delay)' > {out}"]}}
+        }}
+    }}
+}}
+"#,
+            out = output_file.display()
+        ),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--json",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["status"], "succeeded");
+    assert_eq!(
+        std::fs::read_to_string(&output_file).expect("params output"),
+        "root beta 2s"
+    );
+}
+
+#[test]
 fn retries_are_attempted_and_logged_as_trials() {
     let directory = tempfile::tempdir().expect("tempdir");
     let db = directory.path().join("db.sqlite");
