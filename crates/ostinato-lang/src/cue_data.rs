@@ -64,7 +64,7 @@ fn render_value(value: &Json, indent: usize) -> String {
     match value {
         Json::Null => "null".to_owned(),
         Json::Bool(value) => value.to_string(),
-        Json::Number(number) => number.to_string(),
+        Json::Number(number) => canonical_number_text(&number.to_string()),
         Json::String(text) => cue_string(text),
         Json::Array(values) => render_array(values, indent),
         Json::Object(fields) => {
@@ -107,6 +107,19 @@ fn render_array(values: &[Json], indent: usize) -> String {
 
 fn is_scalar(value: &Json) -> bool {
     !matches!(value, Json::Array(_) | Json::Object(_))
+}
+
+/// CUE prints negative zero as zero while preserving the rest of the token.
+fn canonical_number_text(text: &str) -> String {
+    let Some(rest) = text.strip_prefix('-') else {
+        return text.to_owned();
+    };
+    let mantissa = rest.split(['e', 'E']).next().unwrap_or(rest);
+    if mantissa.chars().all(|ch| ch == '0' || ch == '.') && mantissa.chars().any(|ch| ch == '0') {
+        rest.to_owned()
+    } else {
+        text.to_owned()
+    }
 }
 
 fn is_identifier(key: &str) -> bool {
@@ -165,6 +178,15 @@ mod tests {
         );
         assert!(is_valid_package("demo"));
         assert!(!is_valid_package("9bad"));
+    }
+
+    #[test]
+    fn negative_zero_numbers_render_as_zero() {
+        let value: Json = serde_json::from_str(r#"{"a":-0.0,"b":-0}"#).expect("json");
+        let cue = render_cue_data(&value, None);
+        assert!(cue.contains("a: 0.0"), "{cue}");
+        assert!(cue.contains("b: 0\n"), "{cue}");
+        assert!(!cue.contains("-0"), "{cue}");
     }
 
     #[test]

@@ -344,7 +344,8 @@ pub fn unify_values(left: &Json, right: &Json, origin: &Path) -> Result<Json, Da
 /// # Errors
 /// Returns [`DataError::Encode`] if the YAML emitter fails.
 pub fn to_yaml(value: &Json) -> Result<String, DataError> {
-    let yaml = json_to_yaml(value);
+    let normalized = normalize_number_signs(value);
+    let yaml = json_to_yaml(&normalized);
     let mut out = String::new();
     {
         let mut emitter = YamlEmitter::new(&mut out);
@@ -364,7 +365,8 @@ pub fn to_yaml(value: &Json) -> Result<String, DataError> {
 /// # Errors
 /// Returns [`DataError::Encode`] if serialization fails.
 pub fn to_json(value: &Json) -> Result<String, DataError> {
-    let mut out = serde_json::to_string_pretty(value).map_err(|error| DataError::Encode {
+    let normalized = normalize_number_signs(value);
+    let mut out = serde_json::to_string_pretty(&normalized).map_err(|error| DataError::Encode {
         path: "<output>".to_owned(),
         message: error.to_string(),
     })?;
@@ -867,7 +869,7 @@ fn parse_yaml_integer(
     if unsigned.is_empty() {
         return Ok(None);
     }
-    let (radix, body) = if let Some(rest) = unsigned
+    let (mut radix, body) = if let Some(rest) = unsigned
         .strip_prefix("0x")
         .or_else(|| unsigned.strip_prefix("0X"))
     {
@@ -883,10 +885,21 @@ fn parse_yaml_integer(
     } else {
         (10, unsigned)
     };
-    // A sign followed by a leading zero (`-00`, `+00`, `-001`) is illegal,
-    // while unsigned leading zeros (`00`) and bare `-0` are accepted.
-    if signed && radix == 10 && body.len() > 1 && body.starts_with('0') {
-        return Err(illegal_number(text, origin));
+    // YAML 1.1 legacy octal: an unsigned leading-zero decimal with no
+    // separators is octal when every digit is 0-7. Invalid octal is a string
+    // for plain scalars and an error for `!!int`; signed octal is always an
+    // error.
+    if radix == 10 && body.len() > 1 && body.starts_with('0') && !body.contains('_') {
+        if body.chars().all(|ch| matches!(ch, '0'..='7')) {
+            if signed {
+                return Err(illegal_number(text, origin));
+            }
+            radix = 8;
+        } else if explicit {
+            return Err(illegal_number(text, origin));
+        } else {
+            return Ok(None);
+        }
     }
     let Some(digits) = clean_integer_digits(body, radix, text, origin)? else {
         return Ok(None);
@@ -924,6 +937,23 @@ fn parse_yaml_integer(
         magnitude.to_string()
     };
     Ok(signed_value.parse::<Number>().ok().map(Json::Number))
+}
+
+/// Render an unsigned legacy-octal key the way CUE does: `010` -> `0o10`,
+/// `000` -> `0o00`. Signed octal never reaches key rendering (it is an error).
+fn legacy_octal_key_text(value: &str) -> Option<String> {
+    if value.starts_with(['-', '+']) {
+        return None;
+    }
+    if value.len() > 1
+        && value.starts_with('0')
+        && !value.contains('_')
+        && value.chars().all(|ch| matches!(ch, '0'..='7'))
+    {
+        Some(format!("0o{}", &value[1..]))
+    } else {
+        None
+    }
 }
 
 fn clean_integer_digits(
@@ -998,6 +1028,35 @@ fn looks_like_yaml_float(text: &str) -> bool {
             .is_some_and(|ch| ch.is_ascii_digit() || ch == '.')
 }
 
+fn yaml_float_base_prefixed(unsigned: &str) -> bool {
+    ["0x", "0X", "0b", "0B", "0o", "0O"]
+        .iter()
+        .any(|prefix| unsigned.starts_with(prefix))
+}
+
+fn float_significand_has_digit(unsigned: &str) -> bool {
+    let end = unsigned.find(['e', 'E']).unwrap_or(unsigned.len());
+    unsigned[..end].chars().any(|ch| ch.is_ascii_digit())
+}
+
+fn number_token_is_zero(text: &str) -> bool {
+    let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
+    let mantissa = unsigned.split(['e', 'E']).next().unwrap_or(unsigned);
+    mantissa.chars().all(|ch| ch == '0' || ch == '.') && mantissa.chars().any(|ch| ch == '0')
+}
+
+fn canonical_zero_number(number: &Number) -> Option<Number> {
+    let text = number.to_string();
+    if !number_token_is_zero(&text) {
+        return None;
+    }
+    if text.contains(['.', 'e', 'E']) {
+        Number::from_f64(0.0)
+    } else {
+        Some(Number::from(0))
+    }
+}
+
 fn parse_yaml_float(text: &str, origin: &Path, explicit: bool) -> Result<Json, DataError> {
     if matches!(
         text,
@@ -1019,25 +1078,58 @@ fn parse_yaml_float(text: &str, origin: &Path, explicit: bool) -> Result<Json, D
             value: text.to_owned(),
         });
     }
+    let signed = matches!(text.as_bytes().first(), Some(b'-' | b'+'));
     let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
-    // `._5` and `-._5` are strings as plain scalars; a leading decimal point
-    // must be followed by a digit. `1._5` is a valid CUE float and normalizes
-    // to 1.5. An explicit `!!float` accepts the leading-underscore spelling.
-    if unsigned.starts_with("._") && !explicit {
+    if yaml_float_base_prefixed(unsigned) {
+        return if explicit {
+            Err(illegal_number(text, origin))
+        } else {
+            Ok(Json::String(text.to_owned()))
+        };
+    }
+    // A bare dot has no significand digit and stays a string.
+    if !float_significand_has_digit(unsigned) {
+        return if explicit {
+            Err(illegal_number(text, origin))
+        } else {
+            Ok(Json::String(text.to_owned()))
+        };
+    }
+    // Unsigned `._5` is a string; signed `-._5`/`+._5` resolve to +/-0.5
+    // through the ordinary underscore stripping path.
+    if !signed && unsigned.starts_with("._") && !explicit {
         return Ok(Json::String(text.to_owned()));
     }
-    let cleaned = strip_float_underscores(text, origin)?;
-    let unsigned_clean = cleaned.strip_prefix(['-', '+']).unwrap_or(&cleaned);
-    let end = unsigned_clean
-        .find(['.', 'e', 'E'])
-        .unwrap_or(unsigned_clean.len());
-    let integer = &unsigned_clean[..end];
-    if integer.len() > 1 && integer.starts_with('0') {
+    // Only an unsigned raw `0` followed by a decimal digit is an illegal
+    // leading-zero float. Signed forms normalize (`-01.5` -> -1.5) and
+    // `0_0.1` is a valid separated digit.
+    if !signed
+        && unsigned.as_bytes().first() == Some(&b'0')
+        && unsigned
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| byte.is_ascii_digit())
+    {
         return Err(DataError::InvalidYaml {
             path: origin.display().to_string(),
             message: format!("cannot decode `{text}` as a number: illegal number"),
         });
     }
+    let cleaned = match strip_float_underscores(text, origin) {
+        Ok(cleaned) => cleaned,
+        Err(error) => {
+            if explicit {
+                return Err(error);
+            }
+            // An illegal underscore that leaves no number after removal is a
+            // string (`1e_`); otherwise it stays a hard error (`1_`, `1_.5`).
+            let fallback: String = text.chars().filter(|ch| *ch != '_').collect();
+            if normalized_float(&fallback).is_none() {
+                return Ok(Json::String(text.to_owned()));
+            }
+            return Err(error);
+        }
+    };
     let Some(mut normalized) = normalized_float(&cleaned) else {
         return if explicit {
             Err(illegal_number(text, origin))
@@ -1056,6 +1148,10 @@ fn parse_yaml_float(text: &str, origin: &Path, explicit: bool) -> Result<Json, D
     }
     if unsigned.ends_with('.') && normalized.ends_with(".0") {
         normalized.truncate(normalized.len() - 2);
+    }
+    // CUE canonicalizes negative zero to zero while preserving scale.
+    if normalized.starts_with('-') && number_token_is_zero(&normalized) {
+        normalized.remove(0);
     }
     normalized
         .parse::<Number>()
@@ -1190,11 +1286,29 @@ fn yaml_representation_key(
                 merge: false,
             }),
             // CUE keeps the raw spelling of explicitly tagged numeric keys
-            // (`!!int 0x10` → key `"0x10"`, `!!float 1e2` → key `"1e2"`).
-            "int" | "float" => Ok(YamlKey {
-                text: value.to_owned(),
-                merge: false,
-            }),
+            // (`!!int 0x10` → key `"0x10"`, `!!float 1e2` → key `"1e2"`),
+            // except legacy octal integers, which render as `0oNN`.
+            "int" => {
+                if parse_yaml_integer(value, origin, true)?.is_none() {
+                    return Err(DataError::InvalidYaml {
+                        path: origin.display().to_string(),
+                        message: format!("invalid `!!int` value `{value}`"),
+                    });
+                }
+                Ok(YamlKey {
+                    text: legacy_octal_key_text(value).unwrap_or_else(|| value.to_owned()),
+                    merge: false,
+                })
+            }
+            "float" => {
+                // Validate the tag, but CUE preserves the raw float spelling in
+                // keys.
+                let _ = parse_yaml_float(value, origin, true)?;
+                Ok(YamlKey {
+                    text: value.to_owned(),
+                    merge: false,
+                })
+            }
             "bool" => Ok(YamlKey {
                 text: matches!(value, "true" | "True" | "TRUE").to_string(),
                 merge: false,
@@ -1231,10 +1345,51 @@ fn yaml_representation_key(
             merge: false,
         });
     }
+    if looks_like_yaml_integer(value) {
+        let parsed = parse_yaml_integer(value, origin, false)?;
+        if parsed.is_some()
+            && let Some(text) = legacy_octal_key_text(value)
+        {
+            return Ok(YamlKey { text, merge: false });
+        }
+        return Ok(YamlKey {
+            text: value.to_owned(),
+            merge: false,
+        });
+    }
+    if looks_like_yaml_float(value) {
+        // Resolve exactly like a scalar so invalid numbers still fail, but
+        // CUE preserves the raw spelling in keys.
+        let _ = parse_yaml_float(value, origin, false)?;
+    }
     Ok(YamlKey {
         text: value.to_owned(),
         merge: value == "<<",
     })
+}
+
+/// Drop the sign from zero number tokens before encoding. CUE prints
+/// `-0.0` as `0.0` while preserving the scale/exponent.
+fn normalize_number_signs(value: &Json) -> Json {
+    match value {
+        Json::Number(number) => {
+            let text = number.to_string();
+            if text.starts_with('-') && number_token_is_zero(&text) {
+                return text[1..]
+                    .parse::<Number>()
+                    .map_or_else(|_| Json::Number(number.clone()), Json::Number);
+            }
+            Json::Number(number.clone())
+        }
+        Json::Array(values) => Json::Array(values.iter().map(normalize_number_signs).collect()),
+        Json::Object(fields) => Json::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), normalize_number_signs(value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
 }
 
 fn json_to_yaml(value: &Json) -> Yaml<'static> {
@@ -1375,17 +1530,24 @@ fn merge_json(left: &Json, right: &Json, at: &str, origin: &Path) -> Result<Json
             };
             let left_text = left.to_string();
             let right_text = right.to_string();
-            // Identical lexical numbers always unify, including exponents that
-            // BigDecimal cannot represent.
-            if left_text == right_text {
-                return Ok(Json::Number(left.clone()));
-            }
             // CUE does not unify an int token with a float token, even when the
             // numeric values are equal.
             let left_float = left_text.contains(['.', 'e', 'E']);
             let right_float = right_text.contains(['.', 'e', 'E']);
             if left_float != right_float {
                 return Err(conflict());
+            }
+            // Both sides are zero: canonicalize the sign away so `0.0` vs
+            // `-0.0` is order-independent.
+            if let Some(left_zero) = canonical_zero_number(left)
+                && canonical_zero_number(right).is_some()
+            {
+                return Ok(Json::Number(left_zero));
+            }
+            // Identical lexical numbers always unify, including exponents that
+            // BigDecimal cannot represent.
+            if left_text == right_text {
+                return Ok(Json::Number(left.clone()));
             }
             let (Ok(left_value), Ok(right_value)) = (
                 left_text.parse::<BigDecimal>(),
@@ -1394,7 +1556,9 @@ fn merge_json(left: &Json, right: &Json, at: &str, origin: &Path) -> Result<Json
                 return Err(conflict());
             };
             if left_value == right_value {
-                Ok(Json::Number(left.clone()))
+                Ok(Json::Number(
+                    canonical_zero_number(left).unwrap_or_else(|| left.clone()),
+                ))
             } else {
                 Err(conflict())
             }
@@ -1955,7 +2119,7 @@ mod tests {
                 "exponent {exponent} produced {} bytes",
                 json.len()
             );
-            assert!(json.contains("0e-") || json.contains("0E-"), "{json}");
+            assert!(json.contains("\"a\": 0"), "{json}");
         }
     }
 
@@ -1984,6 +2148,34 @@ mod tests {
         )
         .expect_err("int/float conflict");
         assert!(matches!(error, DataError::Conflict { .. }), "{error}");
+    }
+
+    #[test]
+    fn negative_zero_merge_and_encoding_are_canonical() {
+        for (left, right) in [
+            ("0.0", "-0.0"),
+            ("-0.0", "0.0"),
+            ("-0.0", "-0.0"),
+            ("0", "-0"),
+            ("-0", "0"),
+        ] {
+            let left: Json = serde_json::from_str(left).expect("number");
+            let right: Json = serde_json::from_str(right).expect("number");
+            let merged = unify_values(
+                &serde_json::json!({"a": left}),
+                &serde_json::json!({"a": right}),
+                Path::new("t"),
+            )
+            .expect("zero merge");
+            let text = merged["a"].to_string();
+            assert!(!text.starts_with('-'), "{text}");
+            assert!(text == "0" || text == "0.0", "{text}");
+        }
+        let value: Json = serde_json::from_str(r#"{"a":-0.0,"b":[-0.0]}"#).expect("json");
+        let json = to_json(&value).expect("json");
+        assert!(!json.contains("-0"), "{json}");
+        let yaml = to_yaml(&value).expect("yaml");
+        assert!(!yaml.contains("-0"), "{yaml}");
     }
 
     #[test]
@@ -2121,7 +2313,7 @@ mod tests {
                 "{text}: {error}"
             );
         }
-        for text in ["1..5", "1.5.6", "._5", "-._5", "1e400"] {
+        for text in ["1..5", "1.5.6", "._5", "1e400"] {
             let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
             assert_eq!(docs[0]["v"], Json::String(text.to_owned()), "{text}");
         }
@@ -2129,6 +2321,77 @@ mod tests {
             let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
             assert_eq!(docs[0]["v"], Json::Number(Number::from(1)), "{text}");
         }
+    }
+
+    #[test]
+    fn yaml_legacy_octal_and_float_edges_match_cue() {
+        for (text, expected) in [
+            ("010", "8"),
+            ("0o10", "8"),
+            ("00", "0"),
+            ("000", "0"),
+            ("-0", "0"),
+        ] {
+            let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
+            assert_eq!(docs[0]["v"].to_string(), expected, "{text}");
+        }
+        for text in [
+            "08", "09", "019", "0009", "-08", "+08", "-09", "+09", "-019", "+019", "-0009", "+0009",
+        ] {
+            let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
+            assert_eq!(docs[0]["v"], Json::String(text.to_owned()), "{text}");
+        }
+        for text in ["-010", "+010", "-00", "+00"] {
+            parse_documents(DataFormat::Yaml, &format!("v: {text}\n"), Path::new("t"))
+                .expect_err(text);
+        }
+        let docs = parse(DataFormat::Yaml, "v: !!int 010\n");
+        assert_eq!(docs[0]["v"].to_string(), "8");
+        for text in ["!!int 08", "!!int 09", "!!int 019", "!!int 0009"] {
+            parse_documents(DataFormat::Yaml, &format!("v: {text}\n"), Path::new("t"))
+                .expect_err(text);
+        }
+
+        for text in [".", "-.", "+."] {
+            let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
+            assert_eq!(docs[0]["v"], Json::String(text.to_owned()), "{text}");
+        }
+        for (text, expected) in [
+            ("-01.5", "-1.5"),
+            ("+01.5", "1.5"),
+            ("0_0.1", "0.1"),
+            ("-._5", "-0.5"),
+            ("+._5", "0.5"),
+            ("!!float -._5", "-0.5"),
+        ] {
+            let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
+            let actual = docs[0]["v"].to_string();
+            assert!(
+                actual == expected || actual.parse::<f64>().ok() == expected.parse::<f64>().ok(),
+                "{text}: {actual} != {expected}"
+            );
+        }
+        for text in ["1e_", "0x1.0", "0b1e2", "0o1e2", "0x1e2.0"] {
+            let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
+            assert_eq!(docs[0]["v"], Json::String(text.to_owned()), "{text}");
+        }
+        for text in ["1_", "1_.5", "1.5_", "1_e5", "1e5_"] {
+            parse_documents(DataFormat::Yaml, &format!("v: {text}\n"), Path::new("t"))
+                .expect_err(text);
+        }
+        for text in ["!!float 0x1.0", "!!float 0b1e2", "!!float 1e_"] {
+            parse_documents(DataFormat::Yaml, &format!("v: {text}\n"), Path::new("t"))
+                .expect_err(text);
+        }
+
+        let docs = parse(DataFormat::Yaml, "010: a\n08: b\n019: c\n-08: d\n");
+        assert_eq!(docs[0]["0o10"], Json::String("a".to_owned()));
+        assert_eq!(docs[0]["08"], Json::String("b".to_owned()));
+        assert_eq!(docs[0]["019"], Json::String("c".to_owned()));
+        assert_eq!(docs[0]["-08"], Json::String("d".to_owned()));
+        let docs = parse(DataFormat::Yaml, "!!int 010: d\n");
+        assert_eq!(docs[0]["0o10"], Json::String("d".to_owned()));
+        parse_documents(DataFormat::Yaml, "!!int 09: x\n", Path::new("t")).expect_err("bad key");
     }
 
     #[test]
