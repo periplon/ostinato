@@ -1120,17 +1120,23 @@ fn let_cycle_defers_to_evaluation(cycle: &[(usize, String)], ctx: &AliasCtx) -> 
     if !has_let || !has_field {
         return false;
     }
-    let mut defers = true;
+    let mut defers = false;
     for (scope, name) in cycle {
         if !is_field_node(name) {
             continue;
         }
-        // Definition cycles (and fields declared inside a `let` value) are
-        // static errors; CUE reports structural cycles for these.
-        if name.trim_start_matches('\u{2}').starts_with('#') || ctx.let_value_scopes.contains(scope)
-        {
-            defers = false;
-            break;
+        // Definition cycles stay static errors; CUE reports structural cycles
+        // for these.
+        if name.trim_start_matches('\u{2}').starts_with('#') {
+            return false;
+        }
+        // A cycle routed through a field declared inside a `let` value is
+        // only resolvable when the same cycle also reaches a field outside
+        // that value (for example `let base = {c: x.a}; x: {a: x.b} & base`).
+        // Purely let-internal structure (`let A = {x: B}; let B = A`) remains
+        // a static error.
+        if !ctx.let_value_scopes.contains(scope) {
+            defers = true;
         }
     }
     defers

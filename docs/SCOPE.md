@@ -16,10 +16,12 @@ workflow outside the Rust surface has a supported escape hatch.
 - imports: `strings`, `list`; local modules via `cue.mod`; relative imports;
   module path comments and `@v` suffixes;
 - file-scoped `let`, lazy/forward bindings; direct/indirect `let` cycles are
-  rejected, while cycles routed through a plain field (`let X = f, f: X`)
-  remain incomplete values like CUE. Split/composed fields and transparent
-  let aliases (for example `let X = f; f: {a: X.b} & {b: 1}`) resolve like
-  CUE; composite/structural cycles remain errors as in CUE;
+  rejected, while cycles routed through plain fields (`let X = f, f: X`, and
+  mutual let→field→let chains such as `let X = f`, `let Y = g`, `f`/`g`
+  selecting each other) remain incomplete values or resolve field by field
+  like CUE. Split/composed fields and transparent let aliases (for example
+  `let X = f; f: {a: X.b} & {b: 1}`) resolve like CUE; composite/structural
+  cycles remain errors as in CUE;
 - `for`/`if` struct comprehensions, clause sequences (`for ... if ...`,
   nested `for`), dynamic labels, list comprehensions;
 - nested field shorthand, string and bytes literal field labels, **closed
@@ -35,24 +37,28 @@ workflow outside the Rust surface has a supported escape hatch.
   optional fields, type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - recursive definition materialization through optional fields and lists
-  (`#Tree: {children?: [...#Tree]}`, mutually recursive definitions);
+  (`#Tree: {children?: [...#Tree]}`, mutually recursive definitions),
+  including mutual open-list re-materialization where a second value reuses a
+  selector such as `z: #A & {bs: x.bs}` without re-expanding the subtree;
 - string and bytes interpolation, including nested quoted expressions and
   nested """..."""/'''...''' literals inside interpolation;
 - multiline strings (`"""..."""`) with CUE opening/closing rules, dedent, CR
   stripping and interpolation continuations;
 - self-selection of a definition's or struct field's own fields
-  (`#D: {a: #D.b, b: 1}`, `x: {a: x.b, b: 1}`), including nested and composed
-  definitions, split composed non-definition literals
-  (`x: {a: x.b} & {b: 1}`, non-literal bases that do not themselves
-  self-select (`let base`/field bases), reversed operands, `x: {a: x.a} & {a: 1}`, quoted and computed labels,
-  top-level cross-dependent and 3-operand chains such as
+  (`#D: {a: #D.b, b: 1}`, `x: {a: x.b, b: 1}`), including nested selectors
+  (`x: {o: {a: x.o.b, b: 1}}`, `#D: {o: {a: #D.o.b, b: 1}}`), nested and
+  composed definitions, split composed non-definition literals
+  (`x: {a: x.b} & {b: 1}`, self-selecting non-literal `let`/field bases such
+  as `let base = {b: 1, c: x.a}; x: {a: x.b} & base`, nested/list forms,
+  reversed operands, `x: {a: x.a} & {a: 1}`, quoted and computed labels,
+  top-level and nested cross-dependent chains, and 3-operand chains such as
   `x: {a: x.b} & {b: 1, c: x.a}`) and fields materialized by the same or a
   nested comprehension body
   (`#M: {b?: int, if true {b: 5, y: #M.b}}`); comprehension-generated
   labels remain reachable through selectors (`x.b`) but are not bare
   identifiers, matching CUE (`x: {if true {b: 1}, a: b}` is rejected);
 - comprehension-generated definitions (`#D: {if true {#I: 3}, a: #D.#I}`);
-- default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`), including through definition-valued definitions (`#B: #A & {n: 4}`), recursive definitions (dependents recomputed at every level, including optional/open-list recursive children and required defaulted open lists) and shadowing nested same-name definitions, plus generated declaration merges (`if true {#P: {env: "prod"}}` recomputes `#P.greeting`);
+- default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`), including through definition-valued definitions (`#B: #A & {n: 4}`), recursive definitions (dependents recomputed at every level, including optional/open-list recursive children and required defaulted open lists), disjunction alternatives (`({a: *1|int, b: a} | {a: string}) & {a: 3}` recomputes `b: 3`, including nested/list dependents and either alternative order) and shadowing nested same-name definitions, plus generated declaration merges (`if true {#P: {env: "prod"}}` recomputes `#P.greeting`);
 - optional/open metadata on non-definition struct literals (`base: {b?: int}; #D: base`, `{c: 1, ...}`), including nested/pattern/list forms;
 - arbitrary-precision integer *literals* and arithmetic in CUE's
   34-significant-digit decimal context (add/subtract/multiply round results
@@ -137,12 +143,6 @@ workflow outside the Rust surface has a supported escape hatch.
 | Go float64 last-bit parity | The exposed float64-backed `math` functions match Go's routines for the conformance/tested surface. Rare `math.Asinh`, `math.Acosh` or `math.Atanh` inputs can still differ by 1 ulp from the oracle (for example `math.Atanh(-0.1731958024477226)`, `math.Acosh(204534.80525878677)`). `Asin`, `Acos` and `Atan2` are covered by the oracle fuzz and match |
 | Numeric unification lexical form | Numerically equal decimals keep the first operand's scale in some unifications (`(1.0 + 0) & 1.00` exports `1.0`; CUE exports `1.00`). Values compare equal; only the chosen representation differs |
 | Bare identifiers across operands of a composed definition | `#D: {a: 1} & {b: a}` is accepted although CUE rejects the bare reference to a sibling operand's field; with an enclosing `a: 9`, `b` resolves to `1` instead of CUE's `9`. Non-definition composition, selectors and definition-valued narrowing match CUE |
-| Nested cross-dependent split operands | `x: {o: {a: x.o.b}} & {o: {b: 1, c: x.o.a}}` remains cyclic although CUE resolves it; top-level operands (including multi-dependent and three-operand chains) match CUE |
-| Nested selector self-selection | `x: {o: {a: x.o.b, b: 1}}` and `#D: {o: {a: #D.o.b, b: 1}}` remain cyclic although CUE resolves them; flat, composed and split self-selection match CUE |
-| Mutually recursive open-list re-materialization | The mutually recursive `#A`/`#B` open-list shape with `z: #A & {bs: x.bs}` (corpus `rec_mutual_lists2`) still exceeds 60 s; the one-way mutually recursive open-list shape matches CUE |
-| Mutual field-mediated let cycles | Two lets routed through separate fields (`let X = f`, `let Y = g`, `f`/`g` selecting each other) remain unsupported; single-let field cycles, transparent aliases and split forms match CUE |
-| Self-selecting non-literal split bases | `let base = {b: 1, c: x.a}; x: {a: x.b} & base` (and the field-base variant) remains cyclic although CUE resolves it; literal operands, transparent let aliases and top-level cross-dependent operands match CUE |
-| Disjunction-alternative dependent recomputation | `({a: *1|int, b: a} | {a: string}) & {a: 3}` leaves `b` at `1` although CUE recomputes `b: 3` |
 | Pending-output expressions in conditions and non-scalar interpolation | CUE rejects `if` conditions before running the producer; for list-valued interpolation CUE runs the producer and rejects during interpolation, while Ostinato rejects before execution. Both exit non-zero, with Ostinato's own diagnostic text. Scalar string/number operations (including string/bytes concatenation and repetition such as `run.stdout * 2` and `r.response.body * 2`), unary operators, comparisons, list indexing/comprehensions, `len`/`strings`/`list.Concat`/`math`/`regexp` helpers and pending values used as task inputs are deferred and match CUE |
 | Command-local alias read without a companion | `command: c: {a: base; t: cli.Print & {text: "\(a.stdout)"}}`: CUE rejects before execution; Ostinato executes `base` and then reports the non-concrete error. Exit codes match, but the producer side effect differs |
 | Cross-target module-hop reads | With `prep: lib.run; p2: prep; p3: p2`: `r: p2` plus `t: cli.Print & {text: "\(p3.stdout)"}` succeeds in CUE (order `PP`) while Ostinato rejects; `r: p3` plus `t: cli.Print & {text: "\(prep.stdout)"}` rejects in CUE after running `P` while Ostinato succeeds with order `PP`. The same shapes with a plain `q: "\(...)"` read agree (`0/PP` on both). Same-target hops and direct alias chains are covered |

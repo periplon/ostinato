@@ -8553,6 +8553,162 @@ fn multi_dependent_split_operands_reach_a_fixpoint() {
 }
 
 #[test]
+fn nested_cross_dependent_split_operands_match_cue() {
+    let source = r#"
+package demo
+x: {o: {a: x.o.b}} & {o: {b: 1, c: x.o.a}}
+y: {o: {a: y.o.b}} & {o: {b: 2, c: y.o.a}} & {o: {d: y.o.c}}
+z: {o: {p: {a: z.o.p.b}}} & {o: {p: {b: 3, c: z.o.p.a}}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse nested split operands");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval nested split operands")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["o"]["a"], 1);
+    assert_eq!(json["x"]["o"]["c"], 1);
+    assert_eq!(json["y"]["o"]["c"], 2);
+    assert_eq!(json["y"]["o"]["d"], 2);
+    assert_eq!(json["z"]["o"]["p"]["a"], 3);
+    assert_eq!(json["z"]["o"]["p"]["c"], 3);
+}
+
+#[test]
+fn nested_selector_self_selection_matches_cue() {
+    let source = r#"
+package demo
+x: {o: {a: x.o.b, b: 1}}
+#D: {o: {a: #D.o.b, b: 1}}
+d: #D
+#Deep: {o: {p: {a: #Deep.o.p.b, b: 2}}}
+deep: #Deep
+"#;
+    let file = ostinato_lang::parse(source).expect("parse nested self selection");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval nested self selection")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["o"]["a"], 1);
+    assert_eq!(json["d"]["o"]["a"], 1);
+    assert_eq!(json["deep"]["o"]["p"]["a"], 2);
+}
+
+#[test]
+fn self_selecting_non_literal_split_bases_match_cue() {
+    let source = r#"
+package demo
+let base = {b: 1, c: x.a}
+x: {a: x.b} & base
+field_base: {b: 2, c: z.a}
+z: {a: z.b} & field_base
+let nested_base = {o: {b: 3, c: w.o.a}}
+w: {o: {a: w.o.b}} & nested_base
+let list_base = {l: [4, v.a]}
+v: {a: v.l[0]} & list_base
+"#;
+    let file = ostinato_lang::parse(source).expect("parse non-literal split base");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval non-literal split base")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["a"], 1);
+    assert_eq!(json["x"]["c"], 1);
+    assert_eq!(json["z"]["a"], 2);
+    assert_eq!(json["field_base"]["c"], 2);
+    assert_eq!(json["w"]["o"]["a"], 3);
+    assert_eq!(json["w"]["o"]["c"], 3);
+    assert_eq!(json["v"]["a"], 4);
+    assert_eq!(json["v"]["l"], serde_json::json!([4, 4]));
+}
+
+#[test]
+fn disjunction_alternatives_recompute_dependent_fields_when_narrowed() {
+    let source = r#"
+package demo
+x: ({a: *1 | int, b: a} | {a: string}) & {a: 3}
+y: ({a: string} | {a: *1 | int, b: a}) & {a: 4}
+z: ({a: *1 | int, b: a} | {a: *2 | int, b: a}) & {a: 5}
+w: ({a: *1 | int, b: a, c: b + 1} | {a: string}) & {a: 6}
+n: ({o: {a: *1 | int, b: a}} | {o: {a: string}}) & {o: {a: 7}}
+l: ({a: *1 | int, b: [a]} | {a: string}) & {a: 8}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse disjunction narrowing");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval disjunction narrowing")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"], serde_json::json!({"a": 3, "b": 3}));
+    assert_eq!(json["y"], serde_json::json!({"a": 4, "b": 4}));
+    assert_eq!(json["z"], serde_json::json!({"a": 5, "b": 5}));
+    assert_eq!(json["w"], serde_json::json!({"a": 6, "b": 6, "c": 7}));
+    assert_eq!(json["n"]["o"], serde_json::json!({"a": 7, "b": 7}));
+    assert_eq!(json["l"]["b"], serde_json::json!([8]));
+}
+
+#[test]
+fn mutual_field_mediated_let_cycles_match_cue() {
+    let source = r#"
+package demo
+let X = f
+let Y = g
+f: {a: Y.b, b: 1}
+g: {b: X.b}
+x: f
+let A = h
+let B = k
+let C = m
+h: {a: B.b, b: 1}
+k: {b: C.c, c: 2}
+m: {c: A.b}
+y: h
+let Z = z_self
+z_self: {a: Z.a} & {a: 1}
+z_out: z_self
+"#;
+    let file = ostinato_lang::parse(source).expect("parse mutual let cycles");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval mutual let cycles")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["f"], serde_json::json!({"a": 1, "b": 1}));
+    assert_eq!(json["g"], serde_json::json!({"b": 1}));
+    assert_eq!(json["x"], serde_json::json!({"a": 1, "b": 1}));
+    assert_eq!(json["h"], serde_json::json!({"a": 1, "b": 1}));
+    assert_eq!(json["k"], serde_json::json!({"b": 1, "c": 2}));
+    assert_eq!(json["m"], serde_json::json!({"c": 1}));
+    assert_eq!(json["y"], serde_json::json!({"a": 1, "b": 1}));
+    assert_eq!(json["z_out"], serde_json::json!({"a": 1}));
+}
+
+#[test]
+fn mutually_recursive_open_lists_rematerialize_quickly() {
+    use std::time::{Duration, Instant};
+
+    let source = r#"
+package demo
+#A: {bs: [...#B], u: len(bs)}
+#B: {as: [...#A], t: len(as)}
+x: #A & {bs: [{as: [{}]}]}
+z: #A & {bs: x.bs}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse mutual open lists");
+    let started = Instant::now();
+    let value = ostinato_lang::eval_file(&file).expect("eval mutual open lists");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "mutual open-list re-materialization took {elapsed:?}"
+    );
+    let json = value.to_json().expect("json");
+    let expected = serde_json::json!({
+        "bs": [{"as": [{"bs": [], "u": 0}], "t": 1}],
+        "u": 1
+    });
+    assert_eq!(json["x"], expected);
+    assert_eq!(json["z"], expected);
+}
+
+#[test]
 fn selection_and_narrowing_scope_rows_match_cue() {
     let source = r#"
 package demo
