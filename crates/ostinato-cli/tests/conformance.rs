@@ -56,6 +56,22 @@ fn cue_bin() -> Result<Option<String>, String> {
     Ok(Some(cue))
 }
 
+fn canonical_json(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by_key(|(key, _)| key.as_str());
+            let mut out = serde_json::Map::new();
+            for (key, value) in entries {
+                out.insert(key.clone(), canonical_json(value));
+            }
+            Value::Object(out)
+        }
+        Value::Array(values) => Value::Array(values.iter().map(canonical_json).collect()),
+        other => other.clone(),
+    }
+}
+
 fn rust_export(path: &Path, params: &[&str]) -> Value {
     let mut arguments = vec![
         "--db",
@@ -244,6 +260,73 @@ fn rust_and_official_cue_reject_invalid_corpus() {
             String::from_utf8_lossy(&oracle.stdout)
         );
     }
+}
+
+#[test]
+fn rust_export_omits_incomplete_definitions_and_matches_cue() {
+    let Some(cue) = cue_bin().expect("explicit CUE_BIN must be usable") else {
+        eprintln!("skipping: official CUE >= 0.17.1 not installed and CUE_BIN is unset");
+        return;
+    };
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("conformance")
+        .join("cases");
+    let cases = [
+        "optional-compound-template.cue",
+        "optional-compound-params.cue",
+        "optional-nested-default-params.cue",
+        "optional-nested-definition-params.cue",
+    ];
+    let export = |path: &Path| {
+        let rust = Command::new(bin())
+            .args(["export", path.to_str().expect("path"), "--out", "json"])
+            .output()
+            .expect("run rust export");
+        assert!(
+            rust.status.success(),
+            "rust export failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&rust.stderr)
+        );
+        let oracle = Command::new(&cue)
+            .args(["export", path.to_str().expect("path"), "--out", "json"])
+            .output()
+            .expect("run cue export");
+        assert!(
+            oracle.status.success(),
+            "cue export failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+        let rust_json: Value = serde_json::from_slice(&rust.stdout).expect("rust json");
+        let cue_json: Value = serde_json::from_slice(&oracle.stdout).expect("cue json");
+        assert_eq!(
+            rust_json,
+            cue_json,
+            "export mismatch for {}",
+            path.display()
+        );
+        assert_eq!(
+            serde_json::to_string(&canonical_json(&rust_json)).expect("canonical rust json"),
+            serde_json::to_string(&canonical_json(&cue_json)).expect("canonical cue json"),
+            "canonical export mismatch for {}",
+            path.display()
+        );
+        let text = String::from_utf8_lossy(&rust.stdout);
+        assert!(
+            !text.contains("\"#"),
+            "export must not emit definitions: {text}"
+        );
+    };
+    for case in cases {
+        export(&root.join(case));
+    }
+
+    let scope = tempfile::tempdir().expect("tempdir");
+    let minimal = scope.path().join("minimal.cue");
+    std::fs::write(&minimal, "package demo\n#P: {a?: int, v: a}\nx: 1\n").expect("write minimal");
+    export(&minimal);
 }
 
 #[test]

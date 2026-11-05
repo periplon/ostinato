@@ -2343,11 +2343,10 @@ impl<'a> Frame<'a> {
                     Err(err) => return Err(err),
                 }
             }
-            let literal_injection = exprs.iter().enumerate().find_map(|(index, expr)| {
-                if !expr_is_narrowing_source(expr) {
+            let container = |value: &Value| -> Option<Value> {
+                if !value_is_plain_concrete(value) {
                     return None;
                 }
-                let value = evaluated[index].as_ref()?;
                 match value.concretize() {
                     Value::Struct(_)
                     | Value::Definition { .. }
@@ -2355,38 +2354,76 @@ impl<'a> Frame<'a> {
                     | Value::OpenListPrefix(..) => Some(value.clone()),
                     _ => None,
                 }
-            });
-            if let Some(injection) = literal_injection
-                && exprs.len() > 1
-            {
-                // A literal sibling declaration supplies the concrete fields
-                // that narrow defaults in the other declarations.
-                for (index, expr) in exprs.iter().enumerate() {
-                    let previous = segment
-                        .as_ref()
-                        .map(|segment| self.params_segment.replace(Some(segment.clone())));
-                    let value = eval_declaration_part(self, expr, &injection, span);
-                    if let Some(previous) = previous {
-                        *self.params_segment.borrow_mut() = previous;
-                    }
-                    evaluated[index] = Some(value?);
+            };
+            let mut candidates: Vec<Value> = Vec::new();
+            for (index, expr) in exprs.iter().enumerate() {
+                if !expr_is_narrowing_source(expr) {
+                    continue;
                 }
-            } else if evaluated.iter().any(Option::is_none) {
+                if let Some(value) = evaluated[index].as_ref().and_then(&container)
+                    && !candidates.contains(&value)
+                {
+                    candidates.push(value);
+                }
+            }
+            for value in evaluated.iter().flatten() {
+                if let Some(value) = container(value)
+                    && !candidates.contains(&value)
+                {
+                    candidates.push(value);
+                }
+            }
+            if exprs.len() > 1 {
+                // Re-evaluate every declaration against a concrete sibling.
+                // This narrows nested defaults while still letting the normal
+                // unification below reject genuine conflicts.
+                for injection in &candidates {
+                    let mut trial = Vec::with_capacity(exprs.len());
+                    let mut complete = true;
+                    for expr in &exprs {
+                        let previous = segment
+                            .as_ref()
+                            .map(|segment| self.params_segment.replace(Some(segment.clone())));
+                        let value = eval_declaration_part(self, expr, injection, span);
+                        if let Some(previous) = previous {
+                            *self.params_segment.borrow_mut() = previous;
+                        }
+                        match value {
+                            Ok(value) => trial.push(value),
+                            Err(_) => {
+                                complete = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !complete {
+                        continue;
+                    }
+                    let mut result = Value::Bottom;
+                    let mut unified = true;
+                    for (index, value) in trial.into_iter().enumerate() {
+                        if index == 0 {
+                            result = value;
+                        } else {
+                            match unify_values(&result, &value, span) {
+                                Ok(value) => result = value,
+                                Err(_) => {
+                                    unified = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if unified {
+                        return Ok(result);
+                    }
+                }
+            }
+            if evaluated.iter().any(Option::is_none) {
                 // A sibling declaration in the same field supplied a concrete
                 // struct/list. Re-evaluate the incomplete declaration against
                 // it so nested optionals see the concrete values.
-                let injection =
-                    evaluated
-                        .iter()
-                        .flatten()
-                        .find_map(|value| match value.concretize() {
-                            Value::Struct(_)
-                            | Value::Definition { .. }
-                            | Value::List(_)
-                            | Value::OpenListPrefix(..) => Some(value.clone()),
-                            _ => None,
-                        });
-                let Some(injection) = injection else {
+                let Some(injection) = candidates.first() else {
                     return Err(deferred.unwrap_or_else(|| {
                         LangError::eval(span.line, span.col, "incomplete value")
                     }));
@@ -2398,7 +2435,7 @@ impl<'a> Frame<'a> {
                     let previous = segment
                         .as_ref()
                         .map(|segment| self.params_segment.replace(Some(segment.clone())));
-                    let value = eval_declaration_part(self, expr, &injection, span);
+                    let value = eval_declaration_part(self, expr, injection, span);
                     if let Some(previous) = previous {
                         *self.params_segment.borrow_mut() = previous;
                     }
@@ -3029,6 +3066,11 @@ impl<'a> Frame<'a> {
                 // concrete export, even when their value is known.
                 continue;
             }
+            let is_definition = self
+                .fields
+                .borrow()
+                .get(&name)
+                .is_some_and(|def| def.definition);
             let value = match self.eval_field_key(&name, Span::default()) {
                 Ok(value) => value,
                 // Hidden fields are not exported; like CUE, allow them to stay
@@ -3036,15 +3078,19 @@ impl<'a> Frame<'a> {
                 Err(err) if is_hidden_key(&name) && is_optional_incomplete_error(&err) => {
                     continue;
                 }
+                // Definitions are never emitted by CUE, so incomplete
+                // definitions do not block an export.
+                Err(err)
+                    if include_definitions
+                        && is_definition
+                        && is_deferrable_incomplete_error(&err) =>
+                {
+                    continue;
+                }
                 Err(err) => return Err(err),
             };
             let display = output_field_name(&name);
-            if self
-                .fields
-                .borrow()
-                .get(&name)
-                .is_some_and(|def| def.definition)
-            {
+            if is_definition {
                 definitions_out.insert(display, value);
             } else {
                 fields_out.insert(display, value);
@@ -3177,6 +3223,33 @@ fn concrete_fields(value: &Value) -> Option<BTreeMap<String, Value>> {
         Value::Struct(fields) => Some(fields.clone()),
         Value::Definition { fields, .. } => Some(fields.clone()),
         _ => None,
+    }
+}
+
+fn value_is_plain_concrete(value: &Value) -> bool {
+    match value {
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::BigInt(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::Bytes(_) => true,
+        Value::List(values) | Value::OpenListPrefix(values, _) => {
+            values.iter().all(value_is_plain_concrete)
+        }
+        Value::Struct(fields) | Value::Definition { fields, .. } => {
+            fields.values().all(value_is_plain_concrete)
+        }
+        Value::OpenList(_)
+        | Value::Disjunction(_, _)
+        | Value::Bounds(_)
+        | Value::Type(_)
+        | Value::Builtin(_)
+        | Value::Bottom
+        | Value::Conflict(_)
+        | Value::Recursive(_)
+        | Value::Deferred(_, _) => false,
     }
 }
 
@@ -3605,10 +3678,73 @@ fn eval_declaration_part(
 
 fn expr_is_narrowing_source(expr: &Expr) -> bool {
     !contains_default(expr)
+        && !expr_contains_ident(expr)
         && matches!(
             strip_expr_parens(expr),
             Expr::Struct(_, _) | Expr::List(_, _) | Expr::OpenListPrefix(_, _, _)
         )
+}
+
+fn expr_contains_ident(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(_, _) => true,
+        Expr::Select(base, _, _, _) => expr_contains_ident(base),
+        Expr::Index(base, index, _) => expr_contains_ident(base) || expr_contains_ident(index),
+        Expr::Call(callee, arguments, _) => {
+            expr_contains_ident(callee) || arguments.iter().any(expr_contains_ident)
+        }
+        Expr::Bound(_, operand, _)
+        | Expr::Paren(operand, _)
+        | Expr::Default(operand, _)
+        | Expr::Unary(_, operand, _) => expr_contains_ident(operand),
+        Expr::Binary(_, left, right, _)
+        | Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _) => {
+            expr_contains_ident(left) || expr_contains_ident(right)
+        }
+        Expr::Struct(items, _) => struct_items_contain_ident(items),
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            items.iter().any(expr_contains_ident)
+        }
+        Expr::OpenList(Some(item), _) => expr_contains_ident(item),
+        Expr::OpenList(None, _) => false,
+        Expr::Str(parts, _) => parts.iter().any(|part| match part {
+            crate::ast::StrPart::Text(_) => false,
+            crate::ast::StrPart::Interp(expr) => expr_contains_ident(expr),
+        }),
+        Expr::BytesInterp(parts, _) => parts.iter().any(|part| match part {
+            crate::ast::BytePart::Text(_) => false,
+            crate::ast::BytePart::Interp(expr) => expr_contains_ident(expr),
+        }),
+        Expr::ListComp { clauses, body, .. } => {
+            expr_contains_ident(body)
+                || clauses.iter().any(|clause| match clause {
+                    crate::ast::CompClause::For { source, .. } => expr_contains_ident(source),
+                    crate::ast::CompClause::If { cond, .. } => expr_contains_ident(cond),
+                })
+        }
+        Expr::Bytes(_, _)
+        | Expr::Null(_)
+        | Expr::Bool(_, _)
+        | Expr::Int(_, _)
+        | Expr::BigInt(_, _)
+        | Expr::Float(_, _) => false,
+    }
+}
+
+fn struct_items_contain_ident(items: &[StructItem]) -> bool {
+    items.iter().any(|item| match item {
+        StructItem::Field(field) => expr_contains_ident(&field.value),
+        StructItem::Pattern { value, .. } => expr_contains_ident(value),
+        StructItem::Let { value, .. } => expr_contains_ident(value),
+        StructItem::For { source, body, .. } => {
+            expr_contains_ident(source) || struct_items_contain_ident(body)
+        }
+        StructItem::If { cond, body, .. } => {
+            expr_contains_ident(cond) || struct_items_contain_ident(body)
+        }
+        StructItem::Ellipsis(_) => false,
+    })
 }
 
 fn contains_default(expr: &Expr) -> bool {

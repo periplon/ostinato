@@ -41,7 +41,11 @@ workflow outside the Rust surface has a supported escape hatch.
 - arbitrary-precision integer literals and exact integer arithmetic
   (add/subtract/multiply, comparison, typing, bounds and JSON export);
 - required fields that depend on optional fields materialized by unification
-  (`#P: {name?: string, greeting: "Hello \\(name)"}`; `#P & {name: "Alice"}`);
+  (`#P: {name?: string, greeting: "Hello \\(name)"}`; `#P & {name: "Alice"}`),
+  including compound optional structs, lists, list-of-lists and definitions,
+  nested optionals inside required structs, fixed-length optional lists,
+  reusable non-definition bases and root `params: #P & {...}` definition-backed
+  parameters;
 - `strings`, `list`, `regexp`, `math` and `time` builtins (including the full
   Go layout language, `FormatString`, `Split`, `ToUnix`/`ToUnixNano`,
   `FormatDuration` and time constants), bytes literals (single-line, multiline
@@ -101,7 +105,6 @@ workflow outside the Rust surface has a supported escape hatch.
 | Narrowing a defaulted constraint through a definition-valued definition | `#B: #A & {n: 4}` conflicts; narrowing inline/unified values and #A & {n: 4} directly recompute dependent fields |
 | Narrowing defaulted fields inside recursive definitions | `#Node: {n: *1|int, total: n+1, children?: [...#Node]}` does not recompute dependents when `n` is narrowed; recursive defaults themselves are preserved |
 | Default narrowing with a shadowing nested same-name definition | `#A: {n:*1|int, y:n+1, inner:{#A:5, v:#A}}` does not recompute `y` when `n` is narrowed; rename the nested definition or use the oracle |
-| Optional-dependent required fields through compound optionals | Optional fields whose value is a struct, list, list-of-list or definition (`cfg?: {...}`, `ps?: [...]`, `e?: #E`), nested optional fields inside a required struct, fixed-length optional lists, reusable non-definition bases (`base: {b?: int, c: b}`), and the root `params: #P & {...}` form are not resolved; primitive optional fields are implemented |
 | Self-selection through split composed non-definition literals | `x: {a: x.b} & {b: 1}` is not resolved; definition self-selection, regular struct self-selection and composed definitions are implemented |
 | Dependent fields after a generated declaration merge | `#P: {env: string, greeting: "hello \(env)"}` plus `if true {#P: {env: "prod"}}` does not recompute `greeting`; declared declaration order or the oracle |
 | Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |

@@ -7005,6 +7005,59 @@ y: plain & {a: 4}
 }
 
 #[test]
+fn nested_definitions_inside_params_literals_match_cue() {
+    let eval_params = |source: &str| {
+        let file = ostinato_lang::parse(source).expect("parse nested definition params");
+        let value = ostinato_lang::eval_file(&file).expect("eval nested definition params");
+        value.to_json().expect("json")["params"].clone()
+    };
+    let cases = [
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {ls?: [#E], v: ls[0].m}\nparams: #P & {ls: [{n: 4}]}\n",
+            serde_json::json!({"ls": [{"n": 4, "m": 12}], "v": 12}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {c?: {e: #E}, v: c.e.m}\nparams: #P & {c: {e: {n: 4}}}\n",
+            serde_json::json!({"c": {"e": {"n": 4, "m": 12}}, "v": 12}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {ls?: [#E, #E], v: ls[0].m + ls[1].m}\nparams: #P & {ls: [{n: 4}, {n: 5}]}\n",
+            serde_json::json!({"ls": [{"n": 4, "m": 12}, {"n": 5, "m": 15}], "v": 27}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {ls?: [[#E]], v: ls[0][0].m}\nparams: #P & {ls: [[{n: 4}]]}\n",
+            serde_json::json!({"ls": [[{"n": 4, "m": 12}]], "v": 12}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {ls?: [int, #E], v: ls[1].m}\nparams: #P & {ls: [7, {n: 4}]}\n",
+            serde_json::json!({"ls": [7, {"n": 4, "m": 12}], "v": 12}),
+        ),
+        (
+            "package demo\nlet base = {n: *2 | int, m: n * 3}\n#P: {ls?: [base], v: ls[0].m}\nparams: #P & {ls: [{n: 4}]}\n",
+            serde_json::json!({"ls": [{"n": 4, "m": 12}], "v": 12}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {cfg?: {inner: {e: #E}}, v: cfg.inner.e.m}\nparams: #P & {cfg: {inner: {e: {n: 4}}}}\n",
+            serde_json::json!({"cfg": {"inner": {"e": {"n": 4, "m": 12}}}, "v": 12}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\nlet cfg = {n: 4}\n#P: {ls?: [#E], v: ls[0].m}\nparams: #P & {ls: [cfg]}\n",
+            serde_json::json!({"ls": [{"n": 4, "m": 12}], "v": 12}),
+        ),
+    ];
+    for (source, expected) in cases {
+        assert_eq!(eval_params(source), expected, "source: {source}");
+    }
+
+    let closed = "package demo\n#E: {n: *2 | int, m: n * 3}\nlet cfg = {n: 4}\n#P: {ls?: [cfg], v: ls[0].m}\nparams: #P & {ls: [#E]}\n";
+    let file = ostinato_lang::parse(closed).expect("parse closed nested definition params");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "closed nested definition must reject extra defaulted fields"
+    );
+}
+
+#[test]
 fn arbitrary_precision_integer_literals_keep_exact_values() {
     let source = r#"
 package demo
