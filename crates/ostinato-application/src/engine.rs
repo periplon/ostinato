@@ -1849,6 +1849,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn execute_agent(
         &self,
         run: &RunRecord,

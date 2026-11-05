@@ -1,0 +1,387 @@
+//! Import policy for JSON/YAML → CUE conversion.
+//!
+//! The pure value rendering lives in [`ostinato_lang::render_cue_data`]. This
+//! module adds multi-document, multi-input and package-validation policy.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::Value as Json;
+use thiserror::Error;
+
+use crate::data;
+
+/// Errors raised while planning an import.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ImportError {
+    #[error("multiple documents require --list or --files when writing one CUE file")]
+    MultiDocument,
+    #[error(
+        "cannot merge multiple inputs at `{at}`: top-level value is {found}, expected an object \
+         (pass --list or --files instead)"
+    )]
+    NotObject { at: String, found: &'static str },
+    #[error("conflicting values while merging inputs at `{at}`")]
+    Conflict { at: String },
+    #[error("invalid CUE package name `{name}`")]
+    InvalidPackage { name: String },
+    #[error("two inputs map to the same output `{output}`")]
+    OutputCollision { output: String },
+    #[error("{0}")]
+    Data(String),
+}
+
+impl From<data::DataError> for ImportError {
+    fn from(error: data::DataError) -> Self {
+        Self::Data(error.to_string())
+    }
+}
+
+/// One planned output file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedFile {
+    pub path: PathBuf,
+    pub content: String,
+}
+
+/// Result of planning an import, before any destination is written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportPlan {
+    pub files: Vec<PlannedFile>,
+    /// Inputs that could not be written because a single `-o` was reused.
+    pub skipped_inputs: Vec<PathBuf>,
+}
+
+/// Render the documents of one input file.
+///
+/// # Errors
+/// Rejects multiple documents without `--list` and invalid package names.
+pub fn render_documents(
+    documents: &[Json],
+    package: Option<&str>,
+    list: bool,
+) -> Result<String, ImportError> {
+    validate_package(package)?;
+    let value = if list {
+        Json::Array(documents.to_vec())
+    } else {
+        match documents {
+            [] => Json::Null,
+            [document] => document.clone(),
+            _ => return Err(ImportError::MultiDocument),
+        }
+    };
+    Ok(ostinato_lang::render_cue_data(&value, package))
+}
+
+/// Render several input files into a single CUE file by unifying objects.
+///
+/// # Errors
+/// Rejects non-object roots, concrete conflicts and invalid package names.
+pub fn render_combined(
+    documents: &[Json],
+    package: Option<&str>,
+    list: bool,
+) -> Result<String, ImportError> {
+    validate_package(package)?;
+    let value = if list {
+        Json::Array(documents.to_vec())
+    } else {
+        merge_documents(documents)?
+    };
+    Ok(ostinato_lang::render_cue_data(&value, package))
+}
+
+/// Plan a default one-output-per-input import.
+///
+/// # Errors
+/// Rejects multiple documents without `--list`, duplicate output basenames and
+/// invalid package names.
+pub fn plan_per_input(
+    inputs: &[data::DataFile],
+    package: Option<&str>,
+    list: bool,
+    files: bool,
+) -> Result<ImportPlan, ImportError> {
+    validate_package(package)?;
+    let mut planned = Vec::new();
+    for input in inputs {
+        if files {
+            for (index, document) in input.documents.iter().enumerate() {
+                let path = split_output(&input.path, index);
+                let content = render_documents(std::slice::from_ref(document), package, list)?;
+                planned.push(PlannedFile { path, content });
+            }
+        } else {
+            let content = render_documents(&input.documents, package, list)?;
+            planned.push(PlannedFile {
+                path: input.path.with_extension("cue"),
+                content,
+            });
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for file in &planned {
+        if !seen.insert(file.path.clone()) {
+            return Err(ImportError::OutputCollision {
+                output: file.path.display().to_string(),
+            });
+        }
+    }
+    Ok(ImportPlan {
+        files: planned,
+        skipped_inputs: Vec::new(),
+    })
+}
+
+/// Plan a single-output import.
+///
+/// With `merge`, all documents are unified. Without it, the first input is
+/// written to `output` and the remaining inputs are reported as skipped, which
+/// mirrors `cue import a.json b.yaml -o out.cue`.
+///
+/// # Errors
+/// Rejects multiple documents without `--list`/`--files`, merge conflicts,
+/// invalid package names and duplicate split outputs.
+pub fn plan_single(
+    inputs: &[data::DataFile],
+    output: &Path,
+    package: Option<&str>,
+    list: bool,
+    files: bool,
+    merge: bool,
+) -> Result<ImportPlan, ImportError> {
+    validate_package(package)?;
+    if merge && files {
+        return Err(ImportError::MultiDocument);
+    }
+    if files {
+        let first = inputs.first().ok_or(ImportError::MultiDocument)?;
+        let content = match first.documents.first() {
+            Some(document) => render_documents(std::slice::from_ref(document), package, list)?,
+            None => render_documents(&[], package, list)?,
+        };
+        let mut skipped_inputs = Vec::new();
+        if first.documents.len() > 1 {
+            skipped_inputs.push(first.path.clone());
+        }
+        skipped_inputs.extend(inputs.iter().skip(1).map(|input| input.path.clone()));
+        return Ok(ImportPlan {
+            files: vec![PlannedFile {
+                path: output.to_path_buf(),
+                content,
+            }],
+            skipped_inputs,
+        });
+    }
+    if merge {
+        let documents: Vec<Json> = inputs
+            .iter()
+            .flat_map(|input| input.documents.iter().cloned())
+            .collect();
+        let content = render_combined(&documents, package, list)?;
+        return Ok(ImportPlan {
+            files: vec![PlannedFile {
+                path: output.to_path_buf(),
+                content,
+            }],
+            skipped_inputs: Vec::new(),
+        });
+    }
+    let Some(first) = inputs.first() else {
+        return Err(ImportError::MultiDocument);
+    };
+    let content = render_documents(&first.documents, package, list)?;
+    Ok(ImportPlan {
+        files: vec![PlannedFile {
+            path: output.to_path_buf(),
+            content,
+        }],
+        skipped_inputs: inputs
+            .iter()
+            .skip(1)
+            .map(|input| input.path.clone())
+            .collect(),
+    })
+}
+
+/// Read and plan one import operation.
+///
+/// # Errors
+/// Propagates decoding and planning errors. All inputs are decoded before any
+/// output is planned, so parse failures never leave partial files.
+pub fn import_files(
+    inputs: &[PathBuf],
+    output: Option<&Path>,
+    package: Option<&str>,
+    list: bool,
+    files: bool,
+    merge: bool,
+) -> Result<ImportPlan, ImportError> {
+    let mut decoded = Vec::with_capacity(inputs.len());
+    for path in inputs {
+        decoded.push(data::DataFile::read(path)?);
+    }
+    match output {
+        Some(output) => plan_single(&decoded, output, package, list, files, merge),
+        None => plan_per_input(&decoded, package, list, files),
+    }
+}
+
+fn split_output(input: &Path, index: usize) -> PathBuf {
+    if index == 0 {
+        return input.with_extension("cue");
+    }
+    let stem = input
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("import");
+    let name = format!("{stem}-{index}.cue");
+    input.with_file_name(name)
+}
+
+fn merge_documents(documents: &[Json]) -> Result<Json, ImportError> {
+    let mut iter = documents.iter();
+    let Some(first) = iter.next() else {
+        return Ok(Json::Null);
+    };
+    if !first.is_object() {
+        return Err(ImportError::NotObject {
+            at: "$".to_owned(),
+            found: json_type_name(first),
+        });
+    }
+    let mut merged = first.clone();
+    for document in iter {
+        if !document.is_object() {
+            return Err(ImportError::NotObject {
+                at: "$".to_owned(),
+                found: json_type_name(document),
+            });
+        }
+        merged = merge(&merged, document, "$")?;
+    }
+    Ok(merged)
+}
+
+fn merge(left: &Json, right: &Json, at: &str) -> Result<Json, ImportError> {
+    match (left, right) {
+        (Json::Object(left), Json::Object(right)) => {
+            let mut out = left.clone();
+            for (key, value) in right {
+                let child_at = format!("{at}.{key}");
+                match out.get(key) {
+                    Some(existing) => {
+                        let merged = merge(existing, value, &child_at)?;
+                        out.insert(key.clone(), merged);
+                    }
+                    None => {
+                        out.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            Ok(Json::Object(out))
+        }
+        (Json::Array(left), Json::Array(right)) if left.len() == right.len() => {
+            let mut out = Vec::with_capacity(left.len());
+            for (index, (left, right)) in left.iter().zip(right).enumerate() {
+                out.push(merge(left, right, &format!("{at}[{index}]"))?);
+            }
+            Ok(Json::Array(out))
+        }
+        _ if left == right => Ok(left.clone()),
+        _ => Err(ImportError::Conflict { at: at.to_owned() }),
+    }
+}
+
+fn validate_package(package: Option<&str>) -> Result<(), ImportError> {
+    match package {
+        Some(package) if !ostinato_lang::is_valid_package(package) => {
+            Err(ImportError::InvalidPackage {
+                name: package.to_owned(),
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
+fn json_type_name(value: &Json) -> &'static str {
+    match value {
+        Json::Null => "null",
+        Json::Bool(_) => "bool",
+        Json::Number(_) => "number",
+        Json::String(_) => "string",
+        Json::Array(_) => "list",
+        Json::Object(_) => "object",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+
+    fn data_file(path: &str, documents: Vec<Json>) -> data::DataFile {
+        data::DataFile {
+            path: PathBuf::from(path),
+            documents,
+        }
+    }
+
+    #[test]
+    fn multiple_documents_without_list_or_files_fail() {
+        let error = render_documents(
+            &[serde_json::json!({"a": 1}), serde_json::json!({"b": 2})],
+            None,
+            false,
+        )
+        .expect_err("multi");
+        assert!(matches!(error, ImportError::MultiDocument));
+    }
+
+    #[test]
+    fn per_input_plan_reports_collisions() {
+        let inputs = vec![
+            data_file("x.json", vec![serde_json::json!({"a": 1})]),
+            data_file("x.yaml", vec![serde_json::json!({"b": 2})]),
+        ];
+        let error = plan_per_input(&inputs, None, false, false).expect_err("collision");
+        assert!(matches!(error, ImportError::OutputCollision { .. }));
+    }
+
+    #[test]
+    fn split_outputs_match_cue_names() {
+        assert_eq!(
+            split_output(Path::new("multi.yaml"), 0),
+            PathBuf::from("multi.cue")
+        );
+        assert_eq!(
+            split_output(Path::new("multi.yaml"), 1),
+            PathBuf::from("multi-1.cue")
+        );
+    }
+
+    #[test]
+    fn single_output_without_merge_skips_extra_inputs() {
+        let inputs = vec![
+            data_file("a.json", vec![serde_json::json!({"a": 1})]),
+            data_file("b.yaml", vec![serde_json::json!({"b": 2})]),
+        ];
+        let plan =
+            plan_single(&inputs, Path::new("out.cue"), None, false, false, false).expect("plan");
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.skipped_inputs, vec![PathBuf::from("b.yaml")]);
+    }
+
+    #[test]
+    fn merge_unifies_inputs() {
+        let inputs = vec![
+            data_file("a.json", vec![serde_json::json!({"a": 1})]),
+            data_file("b.yaml", vec![serde_json::json!({"b": 2})]),
+        ];
+        let plan =
+            plan_single(&inputs, Path::new("out.cue"), None, false, false, true).expect("plan");
+        assert_eq!(plan.files[0].content, "a: 1\nb: 2\n");
+        assert!(plan.skipped_inputs.is_empty());
+    }
+}

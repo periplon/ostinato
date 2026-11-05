@@ -6,12 +6,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use ostinato_adapters::{
-    CommandAgent, CueCliLoader, LocalWorkspace, NativeLoader, ProcessExecutor, SqliteStore,
-    SystemClock, TracingTelemetry, UuidGen, init_tracing,
+    CommandAgent, CueCliLoader, FileOutputSink, JsonYamlCodec, LocalWorkspace, NativeLoader,
+    ProcessExecutor, SqliteStore, SystemClock, TracingTelemetry, UuidGen, cue_import, data,
+    init_tracing,
 };
 use ostinato_application::{
-    Clock, Engine, EngineDeps, EngineOptions, ImproveRequest, LoadRequest, SpecLoader, Store,
-    WorkflowEventQuery, params_patch,
+    Clock, DataInput, DocumentCodec, DocumentFormat, Engine, EngineDeps, EngineOptions,
+    ImproveRequest, LoadRequest, OutputOptions, OutputSink, SpecLoader, Store, WorkflowEventQuery,
+    params_patch,
 };
 use ostinato_domain::{
     EventSource, JoinMode, NewWorkflowEvent, RunStatus, analyze, audit, build_plan,
@@ -75,6 +77,9 @@ enum Command {
         file: PathBuf,
         #[arg(short = 'p', long = "param")]
         params: Vec<String>,
+        /// Unify a JSON/YAML file into the CUE root (repeatable).
+        #[arg(long = "input", visible_alias = "data")]
+        inputs: Vec<PathBuf>,
         /// Treat static-analysis warnings as errors.
         #[arg(long)]
         strict: bool,
@@ -92,12 +97,80 @@ enum Command {
         file: PathBuf,
         #[arg(short = 'p', long = "param")]
         params: Vec<String>,
+        /// Unify a JSON/YAML file into the CUE root (repeatable).
+        #[arg(long = "input", visible_alias = "data")]
+        inputs: Vec<PathBuf>,
         /// Override workflow maxParallel.
         #[arg(long)]
         max_parallel: Option<usize>,
         /// Agent command; receives the prompt on stdin.
         #[arg(long, env = "OSTINATO_AGENT")]
         agent_cmd: Option<String>,
+        /// Evaluate and print the workflow instead of executing it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the result as JSON or YAML instead of text.
+        #[arg(long = "out", value_enum)]
+        out: Option<DataFormatArg>,
+        /// Write the result to a file instead of stdout.
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+        /// Overwrite an existing output file.
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
+    /// Export an evaluated CUE value or data document as JSON or YAML.
+    Export {
+        /// CUE package/file/directory or JSON/YAML data file.
+        #[arg(required = true)]
+        sources: Vec<PathBuf>,
+        /// Select a value by path (repeatable; emits a JSON/YAML stream).
+        #[arg(short = 'e', long = "expression")]
+        expressions: Vec<String>,
+        /// Output encoding (default: json, or inferred from --output).
+        #[arg(long = "out", value_enum)]
+        out: Option<DataFormatArg>,
+        /// Write to a file instead of stdout (`-` means stdout).
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+        /// Wrap data documents into a top-level list (CUE `--list`).
+        #[arg(long)]
+        list: bool,
+        #[arg(short = 'p', long = "param")]
+        params: Vec<String>,
+        /// Unify a JSON/YAML file into the CUE root (repeatable).
+        #[arg(long = "input", visible_alias = "data")]
+        inputs: Vec<PathBuf>,
+        /// Overwrite an existing output file.
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
+    /// Convert JSON or YAML files into CUE source.
+    Import {
+        /// JSON/YAML files to convert (repeatable).
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+        /// Write to one CUE file (`-` means stdout).
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+        /// CUE package name for the generated file(s).
+        #[arg(short = 'p', long = "package")]
+        package: Option<String>,
+        /// Wrap documents into a top-level list (CUE `--list`).
+        #[arg(long)]
+        list: bool,
+        /// Split multi-document YAML into `<stem>.cue`, `<stem>-1.cue`, ...
+        #[arg(long)]
+        files: bool,
+        /// Unify all inputs into one CUE file (requires `-o`).
+        #[arg(long)]
+        merge: bool,
+        /// Overwrite existing CUE files.
+        #[arg(short = 'f', long)]
+        force: bool,
+        /// Skip existing files and extra inputs with exit status 0 (CUE compat).
+        #[arg(long)]
+        skip_existing: bool,
     },
     /// Run a CUE tool command declared in `*_tool.cue` files.
     #[command(disable_help_flag = true)]
@@ -258,6 +331,21 @@ enum GraphFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DataFormatArg {
+    Json,
+    Yaml,
+}
+
+impl DataFormatArg {
+    fn as_document(self) -> DocumentFormat {
+        match self {
+            Self::Json => DocumentFormat::Json,
+            Self::Yaml => DocumentFormat::Yaml,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum MetricFormat {
     Text,
     Prometheus,
@@ -299,12 +387,14 @@ fn execute(cli: Cli) -> Result<ExitCode> {
         Command::Validate {
             file,
             params,
+            inputs,
             strict,
         } => {
             let (loader, _) = build_loader(&cli)?;
             let loaded = loader.load(&LoadRequest {
                 source: file,
                 params: parse_params(&params)?,
+                inputs: data_inputs(&inputs),
             })?;
             let plan = build_plan(&loaded.spec)?;
             let report = analyze(&loaded.spec, &plan);
@@ -358,6 +448,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             let loaded = loader.load(&LoadRequest {
                 source: file,
                 params: parse_params(&params)?,
+                inputs: Vec::new(),
             })?;
             let plan = build_plan(&loaded.spec)?;
             match format {
@@ -369,18 +460,224 @@ fn execute(cli: Cli) -> Result<ExitCode> {
         Command::Run {
             file,
             params,
+            inputs,
             max_parallel,
             agent_cmd,
+            dry_run,
+            out,
+            output,
+            force,
         } => {
             let (loader, _) = build_loader(&cli)?;
-            let (engine, _) = build_runtime(&cli, agent_cmd, max_parallel)?;
-            let loaded = loader.load(&LoadRequest {
-                source: file,
+            let request = LoadRequest {
+                source: file.clone(),
                 params: parse_params(&params)?,
-            })?;
+                inputs: data_inputs(&inputs),
+            };
+            let mut protected = vec![file];
+            protected.extend(inputs);
+            if dry_run {
+                let loaded = loader.load(&request)?;
+                let value = serde_json::json!({
+                    "workflow": loaded.spec,
+                    "params": loaded.params,
+                    "evaluator": loaded.evaluator,
+                    "source": loaded.source_file,
+                });
+                write_values(output.as_deref(), out, &[value], force, &protected)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            let (engine, _) = build_runtime(&cli, agent_cmd, max_parallel)?;
+            let loaded = loader.load(&request)?;
             let report = engine.start(&loaded)?;
-            print_report(&report, json)?;
+            if out.is_some() || output.is_some() {
+                let value =
+                    serde_json::to_value(&report).context("cannot encode run report as data")?;
+                write_values(output.as_deref(), out, &[value], force, &protected)?;
+            } else {
+                print_report(&report, json)?;
+            }
             Ok(exit_for_status(report.status))
+        }
+        Command::Export {
+            sources,
+            expressions,
+            out,
+            output,
+            list,
+            params,
+            inputs,
+            force,
+        } => {
+            let params = parse_params(&params)?;
+            let mut protected = sources.clone();
+            protected.extend(inputs.iter().cloned());
+            let values = if sources
+                .iter()
+                .all(|source| data::DataFormat::is_data_path(source))
+            {
+                if !params.is_empty() {
+                    bail!("-p/--param is only supported with CUE sources");
+                }
+                let codec = JsonYamlCodec;
+                let source = &sources[0];
+                let mut documents = Vec::new();
+                for source in &sources {
+                    documents.extend(
+                        codec
+                            .read(&DataInput::new(source.clone()))
+                            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+                    );
+                }
+                if list {
+                    if !inputs.is_empty() {
+                        bail!(
+                            "--list does not support --input; pass the documents in a single \
+                             data file"
+                        );
+                    }
+                    if sources.len() != 1 {
+                        bail!("--list supports a single data source");
+                    }
+                    let value = serde_json::Value::Array(documents);
+                    select_data_values(&value, &expressions)?
+                } else {
+                    for input in &inputs {
+                        documents.extend(
+                            codec
+                                .read(&DataInput::new(input.clone()))
+                                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+                        );
+                    }
+                    let merged = unify_export_documents(&documents, source)?;
+                    select_data_values(&merged, &expressions)?
+                }
+            } else if !sources
+                .iter()
+                .all(|source| !data::DataFormat::is_data_path(source))
+            {
+                bail!("cannot mix CUE and data sources in one export");
+            } else {
+                let (loader, _) = build_loader(&cli)?;
+                if sources.len() == 1 {
+                    loader
+                        .evaluate(
+                            &LoadRequest {
+                                source: sources[0].clone(),
+                                params,
+                                inputs: data_inputs(&inputs),
+                            },
+                            &expressions,
+                            list,
+                        )
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                } else {
+                    let mut root: Option<ostinato_lang::Value> = None;
+                    for (index, source) in sources.iter().enumerate() {
+                        let evaluated = loader
+                            .evaluate(
+                                &LoadRequest {
+                                    source: source.clone(),
+                                    params: params.clone(),
+                                    inputs: if index == 0 {
+                                        data_inputs(&inputs)
+                                    } else {
+                                        Vec::new()
+                                    },
+                                },
+                                &[],
+                                false,
+                            )
+                            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                        for value in evaluated {
+                            let value = ostinato_lang::value_from_json(&value);
+                            root = Some(match root {
+                                Some(current) => ostinato_lang::unify(&current, &value)
+                                    .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+                                None => value,
+                            });
+                        }
+                    }
+                    let root = root.ok_or_else(|| anyhow::anyhow!("no CUE value to export"))?;
+                    if expressions.is_empty() {
+                        vec![
+                            root.to_json().ok_or_else(|| {
+                                anyhow::anyhow!("cannot export an incomplete value")
+                            })?,
+                        ]
+                    } else {
+                        let mut values = Vec::with_capacity(expressions.len());
+                        for expression in &expressions {
+                            let selected = ostinato_lang::select_path(&root, expression)
+                                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                            values.push(selected.to_json().ok_or_else(|| {
+                                anyhow::anyhow!("cannot export `{expression}`: value is incomplete")
+                            })?);
+                        }
+                        values
+                    }
+                }
+            };
+            write_values(output.as_deref(), out, &values, force, &protected)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Import {
+            inputs,
+            output,
+            package,
+            list,
+            files,
+            merge,
+            force,
+            skip_existing,
+        } => {
+            if merge && output.is_none() {
+                bail!("--merge requires -o/--output");
+            }
+            if merge && files {
+                bail!("--merge and --files are mutually exclusive");
+            }
+            let plan = cue_import::import_files(
+                &inputs,
+                output.as_deref(),
+                package.as_deref(),
+                list,
+                files,
+                merge,
+            )?;
+            preflight_outputs(&plan.files, &inputs, force, skip_existing)?;
+            let sink = FileOutputSink;
+            let options = OutputOptions {
+                force,
+                skip_existing,
+            };
+            for file in &plan.files {
+                let outcome = sink
+                    .write(Some(&file.path), &file.content, options, &inputs)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                if outcome == ostinato_application::WriteOutcome::Skipped {
+                    eprintln!(
+                        "skipping {}: already exists (--skip-existing)",
+                        file.path.display()
+                    );
+                }
+            }
+            if !plan.skipped_inputs.is_empty() {
+                for input in &plan.skipped_inputs {
+                    eprintln!(
+                        "skipping {}: -o with multiple inputs writes only the first \
+                         (use --merge for one file or omit -o)",
+                        input.display()
+                    );
+                }
+                if !skip_existing {
+                    eprintln!(
+                        "warning: some inputs were not written; pass --skip-existing for CUE-compatible exit status 0"
+                    );
+                    return Ok(ExitCode::FAILURE);
+                }
+            }
+            Ok(ExitCode::SUCCESS)
         }
         Command::Cmd {
             name,
@@ -1031,6 +1328,7 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                 let loaded = loader.load(&LoadRequest {
                     source: PathBuf::from(&record.source_file),
                     params: json_param_strings(&merged),
+                    inputs: Vec::new(),
                 })?;
                 let child = engine.start_with(
                     loaded.source_file,
@@ -1283,6 +1581,12 @@ fn build_runtime(
 fn parse_params(values: &[String]) -> Result<BTreeMap<String, String>> {
     let mut params = BTreeMap::new();
     for value in values {
+        if value.starts_with('@') {
+            bail!(
+                "`-p @file` is not supported; use --input <file.json|yaml> to unify data into \
+                 the CUE root. `-p` is reserved for scalar key=value parameters"
+            );
+        }
         let Some((key, raw)) = value.split_once('=') else {
             bail!("invalid parameter `{value}`; expected key=value");
         };
@@ -1294,6 +1598,127 @@ fn parse_params(values: &[String]) -> Result<BTreeMap<String, String>> {
         }
     }
     Ok(params)
+}
+
+fn data_inputs(paths: &[PathBuf]) -> Vec<DataInput> {
+    paths.iter().cloned().map(DataInput::new).collect()
+}
+
+fn resolve_output_format(
+    requested: Option<DataFormatArg>,
+    output: Option<&Path>,
+) -> DocumentFormat {
+    if let Some(requested) = requested {
+        return requested.as_document();
+    }
+    match output
+        .and_then(Path::extension)
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("yaml" | "yml") => DocumentFormat::Yaml,
+        _ => DocumentFormat::Json,
+    }
+}
+
+fn unify_export_documents(
+    documents: &[serde_json::Value],
+    origin: &Path,
+) -> Result<serde_json::Value> {
+    match documents {
+        [] => bail!("{}: no documents to export", origin.display()),
+        [document] => Ok(document.clone()),
+        documents => data::unify_objects(documents, origin).map_err(Into::into),
+    }
+}
+
+fn select_data_values(
+    value: &serde_json::Value,
+    expressions: &[String],
+) -> Result<Vec<serde_json::Value>> {
+    if expressions.is_empty() {
+        return Ok(vec![value.clone()]);
+    }
+    let mut values = Vec::with_capacity(expressions.len());
+    for expression in expressions {
+        values.push(data::select_json_path(value, expression)?.clone());
+    }
+    Ok(values)
+}
+
+fn write_values(
+    output: Option<&Path>,
+    out: Option<DataFormatArg>,
+    values: &[serde_json::Value],
+    force: bool,
+    protected: &[PathBuf],
+) -> Result<()> {
+    let format = resolve_output_format(out, output);
+    let codec = JsonYamlCodec;
+    let content = codec
+        .encode_stream(format, values)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let sink = FileOutputSink;
+    sink.write(
+        output,
+        &content,
+        OutputOptions {
+            force,
+            skip_existing: false,
+        },
+        protected,
+    )
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok(())
+}
+
+fn preflight_outputs(
+    files: &[cue_import::PlannedFile],
+    protected: &[PathBuf],
+    force: bool,
+    skip_existing: bool,
+) -> Result<()> {
+    for file in files {
+        if file.path == Path::new("-") {
+            continue;
+        }
+        let destination = std::fs::canonicalize(&file.path).unwrap_or_else(|_| file.path.clone());
+        for input in protected {
+            let input = std::fs::canonicalize(input).unwrap_or_else(|_| input.clone());
+            if destination == input {
+                bail!(
+                    "refusing to write {}: it is one of the inputs",
+                    file.path.display()
+                );
+            }
+        }
+        if let Ok(metadata) = std::fs::symlink_metadata(&file.path) {
+            if metadata.file_type().is_symlink() {
+                bail!(
+                    "refusing to write {}: destination is a symbolic link",
+                    file.path.display()
+                );
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if metadata.nlink() > 1 {
+                    bail!(
+                        "refusing to write {}: destination is hard-linked",
+                        file.path.display()
+                    );
+                }
+            }
+            if !force && !skip_existing {
+                bail!(
+                    "refusing to overwrite {}: pass --force or --skip-existing",
+                    file.path.display()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn exit_for_status(status: RunStatus) -> ExitCode {
