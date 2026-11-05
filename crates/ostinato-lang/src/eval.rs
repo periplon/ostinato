@@ -2180,7 +2180,17 @@ impl<'a> Frame<'a> {
                 .iter()
                 .any(|item| self.expr_reaches_task_output(item, allowed, seen)),
             Expr::OpenList(Some(inner), _) => self.expr_reaches_task_output(inner, allowed, seen),
-            Expr::ListComp { body, .. } => self.expr_reaches_task_output(body, allowed, seen),
+            Expr::ListComp { clauses, body, .. } => {
+                self.expr_reaches_task_output(body, allowed, seen)
+                    || clauses.iter().any(|clause| match clause {
+                        CompClause::For { source, .. } => {
+                            self.expr_reaches_task_output(source, allowed, seen)
+                        }
+                        CompClause::If { cond, .. } => {
+                            self.expr_reaches_task_output(cond, allowed, seen)
+                        }
+                    })
+            }
             Expr::Struct(items, _) => items
                 .iter()
                 .any(|item| self.item_reaches_task_output(item, allowed, seen)),
@@ -4672,6 +4682,14 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             None => None,
         })),
         Expr::ListComp { clauses, body, .. } => {
+            if frame.allows_incomplete(expr)
+                && let Some(CompClause::For { source, .. }) = clauses
+                    .iter()
+                    .find(|clause| matches!(clause, CompClause::For { .. }))
+                && eval_expr(source, frame).is_ok_and(|value| value_is_pending(&value))
+            {
+                return Ok(Value::OpenList(Some(Box::new(Value::Bottom))));
+            }
             let mut out = Vec::new();
             eval_list_comp(clauses, 0, body, frame, &mut out)?;
             Ok(Value::List(out))
@@ -4857,6 +4875,27 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         }
         Expr::Unary(op, inner, span) => {
             let value = eval_expr(inner, frame)?.concretize().clone();
+            let deferred_kind = match op {
+                UnOp::Not => matches!(value, Value::Type(TypeKind::Bool) | Value::Bottom),
+                UnOp::Neg => matches!(
+                    value,
+                    Value::Int(_)
+                        | Value::BigInt(_)
+                        | Value::Float(_)
+                        | Value::Type(TypeKind::Int | TypeKind::Float | TypeKind::Number)
+                        | Value::Bottom
+                ),
+            };
+            if frame.allows_incomplete(expr)
+                && value_is_pending(&value)
+                && deferred_kind
+                && !is_bare_type_operand(inner)
+            {
+                return Ok(Value::Type(match op {
+                    UnOp::Not => TypeKind::Bool,
+                    UnOp::Neg => TypeKind::Number,
+                }));
+            }
             if require_operand(frame, &value, inner, *span)?.is_none() {
                 return Ok(Value::Type(match op {
                     UnOp::Not => TypeKind::Bool,
@@ -6811,6 +6850,7 @@ fn deferred_builtin_value(builtin: Builtin) -> Option<Value> {
         | Builtin::StringsTrimSpace
         | Builtin::StringsJoin => Value::Type(TypeKind::String),
         Builtin::ListRange => Value::OpenList(Some(Box::new(Value::Type(TypeKind::Int)))),
+        Builtin::ListConcat => Value::OpenList(Some(Box::new(Value::Bottom))),
         Builtin::RegexpMatch | Builtin::RegexpValid => Value::Type(TypeKind::Bool),
         Builtin::RegexpFind | Builtin::RegexpReplaceAll | Builtin::RegexpQuoteMeta => {
             Value::Type(TypeKind::String)
