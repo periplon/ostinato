@@ -10,7 +10,7 @@ use num_bigint::{BigInt, ToBigInt};
 use ostinato_application::{
     DataInput, DocumentEvaluator, LoadRequest, LoadedWorkflow, PortError, PortResult, SpecLoader,
 };
-use ostinato_lang::ast::{Expr, Field, Label, Span, StructItem};
+use ostinato_lang::ast::{BytePart, CompClause, Expr, Field, Label, Span, StrPart, StructItem};
 use ostinato_lang::{
     Value, builtin_module, compile_json, compile_value, eval_file_with_imports_mode,
     eval_file_with_imports_mode_allow_incomplete, eval_file_with_imports_mode_allow_outputs, parse,
@@ -1708,10 +1708,16 @@ pub fn run_tool_command_paths(
             command_values_for_name(&field.value, command_name, &mut selected_values);
         }
     }
-    if selected_values
-        .iter()
-        .any(|value| expr_uses_imported_task_struct(value, &imports, &non_task_imports))
-    {
+    if selected_values.iter().any(|value| {
+        expr_uses_imported_task_struct(
+            value,
+            &[],
+            &combined.items,
+            &imports,
+            &non_task_imports,
+            &mut std::collections::BTreeSet::new(),
+        )
+    }) {
         return Err(ostinato_lang::LangError::Workflow(
             "tool command alias from an imported module contains tool/os tasks; this shape is not supported"
                 .to_owned(),
@@ -3029,23 +3035,13 @@ fn collect_command_references(
     out: &mut std::collections::BTreeSet<String>,
 ) {
     match expr {
-        Expr::Ident(name, _) => {
-            if known.contains(name) {
-                out.insert(name.clone());
-            }
-        }
-        Expr::Select(base, field, _, _) => {
+        Expr::Select(base, _, _, _) => {
             if let Some(path) = selector_names(expr, None)
-                && path.len() == 2
-                && path.first().is_some_and(|root| root == "command")
-                && known.contains(field)
+                && path.len() >= 2
+                && path[0] == "command"
+                && known.contains(&path[1])
             {
-                out.insert(field.clone());
-            } else if let Some(path) = selector_names(expr, None)
-                && path.len() > 1
-                && path.first().is_some_and(|root| known.contains(root))
-            {
-                out.insert(path[0].clone());
+                out.insert(path[1].clone());
             }
             collect_command_references(base, known, out);
         }
@@ -3187,7 +3183,7 @@ fn prune_command_expr(
                     let Label::Name(name, _) = &field.label else {
                         return Some(item.clone());
                     };
-                    if name.starts_with('$') {
+                    if !is_visible_command_name(name) {
                         return Some(item.clone());
                     }
                     if !keep.contains(name) {
@@ -3275,10 +3271,31 @@ fn expr_uses_imports(
                 item_uses_imports(item, aliases, used);
             }
         }
-        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+        Expr::List(items, _) => {
             for item in items {
                 expr_uses_imports(item, aliases, used);
             }
+        }
+        Expr::OpenListPrefix(items, tail, _) => {
+            for item in items {
+                expr_uses_imports(item, aliases, used);
+            }
+            if let Some(tail) = tail {
+                expr_uses_imports(tail, aliases, used);
+            }
+        }
+        Expr::ListComp { clauses, body, .. } => {
+            for clause in clauses {
+                match clause {
+                    CompClause::For { source, .. } => {
+                        expr_uses_imports(source, aliases, used);
+                    }
+                    CompClause::If { cond, .. } => {
+                        expr_uses_imports(cond, aliases, used);
+                    }
+                }
+            }
+            expr_uses_imports(body, aliases, used);
         }
         Expr::Call(callee, arguments, _) => {
             expr_uses_imports(callee, aliases, used);
@@ -3288,7 +3305,14 @@ fn expr_uses_imports(
         }
         Expr::Str(parts, _) => {
             for part in parts {
-                if let ostinato_lang::ast::StrPart::Interp(inner) = part {
+                if let StrPart::Interp(inner) = part {
+                    expr_uses_imports(inner, aliases, used);
+                }
+            }
+        }
+        Expr::BytesInterp(parts, _) => {
+            for part in parts {
+                if let BytePart::Interp(inner) = part {
                     expr_uses_imports(inner, aliases, used);
                 }
             }
@@ -3303,7 +3327,12 @@ fn item_uses_imports(
     used: &mut std::collections::BTreeSet<String>,
 ) {
     match item {
-        StructItem::Field(field) => expr_uses_imports(&field.value, aliases, used),
+        StructItem::Field(field) => {
+            if let Label::Dynamic(label, _) = &field.label {
+                expr_uses_imports(label, aliases, used);
+            }
+            expr_uses_imports(&field.value, aliases, used);
+        }
         StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
             expr_uses_imports(value, aliases, used);
         }
@@ -3334,17 +3363,114 @@ fn used_import_aliases(
     used
 }
 
-fn expr_uses_imported_task_struct(
-    expr: &Expr,
+fn item_uses_imported_task_struct(
+    item: &StructItem,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
     imports: &BTreeMap<String, Value>,
     non_task_imports: &ImportKinds,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    match item {
+        StructItem::Field(field) => {
+            if let Label::Dynamic(label, _) = &field.label
+                && expr_uses_imported_task_struct(
+                    label,
+                    scopes,
+                    root,
+                    imports,
+                    non_task_imports,
+                    visited,
+                )
+            {
+                return true;
+            }
+            expr_uses_imported_task_struct(
+                &field.value,
+                scopes,
+                root,
+                imports,
+                non_task_imports,
+                visited,
+            )
+        }
+        StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+            expr_uses_imported_task_struct(value, scopes, root, imports, non_task_imports, visited)
+        }
+        StructItem::For { source, body, .. } => {
+            expr_uses_imported_task_struct(source, scopes, root, imports, non_task_imports, visited)
+                || body.iter().any(|item| {
+                    item_uses_imported_task_struct(
+                        item,
+                        scopes,
+                        root,
+                        imports,
+                        non_task_imports,
+                        visited,
+                    )
+                })
+        }
+        StructItem::If { cond, body, .. } => {
+            expr_uses_imported_task_struct(cond, scopes, root, imports, non_task_imports, visited)
+                || body.iter().any(|item| {
+                    item_uses_imported_task_struct(
+                        item,
+                        scopes,
+                        root,
+                        imports,
+                        non_task_imports,
+                        visited,
+                    )
+                })
+        }
+        StructItem::Ellipsis(_) => false,
+    }
+}
+
+fn expr_uses_imported_task_struct(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+    non_task_imports: &ImportKinds,
+    visited: &mut std::collections::BTreeSet<String>,
 ) -> bool {
     match expr {
+        Expr::Ident(name, _) => {
+            if imports.contains_key(name) {
+                return false;
+            }
+            let key = format!("id:{name}");
+            if !visited.insert(key.clone()) {
+                return false;
+            }
+            let found = match local_binding(scopes, root, name) {
+                Some(StructItem::Field(field)) => expr_uses_imported_task_struct(
+                    &field.value,
+                    scopes,
+                    root,
+                    imports,
+                    non_task_imports,
+                    visited,
+                ),
+                Some(StructItem::Let { value, .. }) => expr_uses_imported_task_struct(
+                    value,
+                    scopes,
+                    root,
+                    imports,
+                    non_task_imports,
+                    visited,
+                ),
+                _ => false,
+            };
+            visited.remove(&key);
+            found
+        }
         Expr::Select(..) | Expr::Index(..) => {
             if let Some(path) = selector_names(expr, None)
-                && let Some((root, rest)) = path.split_first()
-                && non_task_imports.non_task.contains(root)
-                && let Some(module) = imports.get(root)
+                && let Some((root_name, rest)) = path.split_first()
+                && non_task_imports.non_task.contains(root_name)
+                && let Some(module) = imports.get(root_name)
             {
                 let mut value = module;
                 let mut found = true;
@@ -3359,49 +3485,163 @@ fn expr_uses_imported_task_struct(
                     return true;
                 }
             }
-            match expr {
-                Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
-                    expr_uses_imported_task_struct(base, imports, non_task_imports)
-                }
-                _ => false,
+            let key = selector_names(expr, None).map(|path| format!("sel:{}", path.join(".")));
+            if let Some(key) = &key
+                && !visited.insert(key.clone())
+            {
+                return false;
             }
+            let found =
+                resolve_local_value(scopes, root, expr, &mut std::collections::BTreeSet::new())
+                    .is_some_and(|resolved| {
+                        expr_uses_imported_task_struct(
+                            resolved,
+                            scopes,
+                            root,
+                            imports,
+                            non_task_imports,
+                            visited,
+                        )
+                    });
+            let base = match expr {
+                Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => Some(base.as_ref()),
+                _ => None,
+            };
+            let found = found
+                || base.is_some_and(|base| {
+                    expr_uses_imported_task_struct(
+                        base,
+                        scopes,
+                        root,
+                        imports,
+                        non_task_imports,
+                        visited,
+                    )
+                });
+            if let Some(key) = key {
+                visited.remove(&key);
+            }
+            found
         }
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            expr_uses_imported_task_struct(left, imports, non_task_imports)
-                || expr_uses_imported_task_struct(right, imports, non_task_imports)
+            expr_uses_imported_task_struct(left, scopes, root, imports, non_task_imports, visited)
+                || expr_uses_imported_task_struct(
+                    right,
+                    scopes,
+                    root,
+                    imports,
+                    non_task_imports,
+                    visited,
+                )
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
         | Expr::Unary(_, inner, _)
         | Expr::OpenList(Some(inner), _) => {
-            expr_uses_imported_task_struct(inner, imports, non_task_imports)
+            expr_uses_imported_task_struct(inner, scopes, root, imports, non_task_imports, visited)
         }
-        Expr::Struct(items, _) => items.iter().any(|item| match item {
-            StructItem::Field(field) => {
-                expr_uses_imported_task_struct(&field.value, imports, non_task_imports)
-            }
-            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                expr_uses_imported_task_struct(value, imports, non_task_imports)
-            }
-            _ => false,
+        Expr::Struct(items, _) => {
+            let mut nested = scopes.to_vec();
+            nested.push(items);
+            items.iter().any(|item| {
+                item_uses_imported_task_struct(
+                    item,
+                    &nested,
+                    root,
+                    imports,
+                    non_task_imports,
+                    visited,
+                )
+            })
+        }
+        Expr::List(items, _) => items.iter().any(|item| {
+            expr_uses_imported_task_struct(item, scopes, root, imports, non_task_imports, visited)
         }),
-        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => items
-            .iter()
-            .any(|item| expr_uses_imported_task_struct(item, imports, non_task_imports)),
+        Expr::OpenListPrefix(items, tail, _) => {
+            items.iter().any(|item| {
+                expr_uses_imported_task_struct(
+                    item,
+                    scopes,
+                    root,
+                    imports,
+                    non_task_imports,
+                    visited,
+                )
+            }) || tail.as_ref().is_some_and(|tail| {
+                expr_uses_imported_task_struct(
+                    tail,
+                    scopes,
+                    root,
+                    imports,
+                    non_task_imports,
+                    visited,
+                )
+            })
+        }
+        Expr::ListComp { clauses, body, .. } => {
+            clauses.iter().any(|clause| match clause {
+                CompClause::For { source, .. } => expr_uses_imported_task_struct(
+                    source,
+                    scopes,
+                    root,
+                    imports,
+                    non_task_imports,
+                    visited,
+                ),
+                CompClause::If { cond, .. } => expr_uses_imported_task_struct(
+                    cond,
+                    scopes,
+                    root,
+                    imports,
+                    non_task_imports,
+                    visited,
+                ),
+            }) || expr_uses_imported_task_struct(
+                body,
+                scopes,
+                root,
+                imports,
+                non_task_imports,
+                visited,
+            )
+        }
         Expr::Call(callee, arguments, _) => {
-            expr_uses_imported_task_struct(callee, imports, non_task_imports)
+            expr_uses_imported_task_struct(callee, scopes, root, imports, non_task_imports, visited)
                 || arguments.iter().any(|argument| {
-                    expr_uses_imported_task_struct(argument, imports, non_task_imports)
+                    expr_uses_imported_task_struct(
+                        argument,
+                        scopes,
+                        root,
+                        imports,
+                        non_task_imports,
+                        visited,
+                    )
                 })
         }
         Expr::Str(parts, _) => parts.iter().any(|part| match part {
-            ostinato_lang::ast::StrPart::Interp(inner) => {
-                expr_uses_imported_task_struct(inner, imports, non_task_imports)
-            }
-            ostinato_lang::ast::StrPart::Text(_) => false,
+            StrPart::Interp(inner) => expr_uses_imported_task_struct(
+                inner,
+                scopes,
+                root,
+                imports,
+                non_task_imports,
+                visited,
+            ),
+            StrPart::Text(_) => false,
+        }),
+        Expr::BytesInterp(parts, _) => parts.iter().any(|part| match part {
+            BytePart::Interp(inner) => expr_uses_imported_task_struct(
+                inner,
+                scopes,
+                root,
+                imports,
+                non_task_imports,
+                visited,
+            ),
+            BytePart::Text(_) => false,
         }),
         _ => false,
     }
