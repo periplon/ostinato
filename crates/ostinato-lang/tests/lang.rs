@@ -9657,6 +9657,15 @@ r: p & (1.0 + 0)
 #ND: {v: 0 * -1}
 #NE: {v: 0}
 c2: #ND & #NE
+zi: 0
+ni: 0 * -1
+ia: (0 * -1) & zi
+ib: (0 * -1) & (1 - 1)
+ic: (0 * -1) & (0 * 1)
+bigzero: 100000000000000000000 - 100000000000000000000
+id: ni & bigzero
+ie: (0 * -1) & 0
+ig: 0 & (0 * -1)
 "#;
     let file = ostinato_lang::parse(source).expect("parse");
     let mut imports = BTreeMap::new();
@@ -9680,6 +9689,12 @@ c2: #ND & #NE
         ("zb", "0.0"),
         ("ai", "0"),
         ("r", "1.00"),
+        ("ia", "-0"),
+        ("ib", "-0"),
+        ("ic", "-0"),
+        ("id", "-0"),
+        ("ie", "0"),
+        ("ig", "0"),
     ] {
         let actual = if matches!(field, "b" | "c" | "d" | "e") {
             json[field]["v"].to_string()

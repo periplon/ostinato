@@ -326,6 +326,12 @@ impl Value {
         match self {
             Self::DecimalInt(value) => Self::DecimalInt(value.as_reference()),
             Self::Float(value) => Self::Float(value.as_reference()),
+            Self::Int(0) => {
+                Self::DecimalInt(numeric::Decimal::new(BigDecimal::from(0)).as_reference())
+            }
+            Self::BigInt(value) if value == BigInt::from(0) => {
+                Self::DecimalInt(numeric::Decimal::new(BigDecimal::from(0)).as_reference())
+            }
             Self::List(values) => Self::List(values.into_iter().map(Self::as_reference).collect()),
             Self::Struct(fields) => Self::Struct(
                 fields
@@ -8204,6 +8210,9 @@ fn integer_big(value: &Value) -> Option<BigInt> {
 }
 
 fn value_from_bigint(value: BigInt) -> Value {
+    if value == BigInt::from(0) {
+        return Value::DecimalInt(numeric::Decimal::computed(BigDecimal::from(0)));
+    }
     i64::try_from(&value).map_or(Value::BigInt(value), Value::Int)
 }
 
@@ -9401,9 +9410,13 @@ fn decimal_int_value(value: BigDecimal) -> Value {
 }
 
 fn decimal_int_value_signed(value: BigDecimal, negative_zero: bool) -> Value {
-    if negative_zero && value.is_zero() {
+    if value.is_zero() {
         let scale = value.as_bigint_and_exponent().1;
-        return Value::DecimalInt(numeric::Decimal::negative_zero(scale));
+        return Value::DecimalInt(if negative_zero {
+            numeric::Decimal::negative_zero(scale)
+        } else {
+            numeric::Decimal::computed(BigDecimal::new(BigInt::from(0), scale))
+        });
     }
     let (coefficient, scale) = value.as_bigint_and_exponent();
     if scale >= 0 {
@@ -10021,16 +10034,28 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
             }
             Ok(Value::List(out))
         }
-        // A computed integer-kind signed zero unified with a positive integer
-        // literal keeps the literal's positive sign, matching CUE. The generic
-        // equal-value fallback below would otherwise keep the left `-0`.
-        (Value::DecimalInt(a), Value::Int(0)) | (Value::Int(0), Value::DecimalInt(a))
-            if a.is_negative_zero() =>
-        {
-            Ok(Value::Int(0))
+        // Computed integer-kind zeros carry their provenance in DecimalInt.
+        // A direct integer literal has the highest sign priority (2); a
+        // computed DecimalInt keeps the left operand on a tie.
+        (Value::DecimalInt(a), Value::Int(0)) if a.value().is_zero() => {
+            Ok(if a.sign_priority() >= 2 {
+                Value::DecimalInt(a.clone())
+            } else {
+                Value::Int(0)
+            })
         }
-        (Value::DecimalInt(a), Value::BigInt(b)) | (Value::BigInt(b), Value::DecimalInt(a))
-            if a.is_negative_zero() && b == &BigInt::from(0) =>
+        (Value::Int(0), Value::DecimalInt(a)) if a.value().is_zero() => Ok(Value::Int(0)),
+        (Value::DecimalInt(a), Value::BigInt(b))
+            if a.value().is_zero() && b == &BigInt::from(0) =>
+        {
+            Ok(if a.sign_priority() >= 2 {
+                Value::DecimalInt(a.clone())
+            } else {
+                Value::BigInt(BigInt::from(0))
+            })
+        }
+        (Value::BigInt(b), Value::DecimalInt(a))
+            if b == &BigInt::from(0) && a.value().is_zero() =>
         {
             Ok(Value::BigInt(BigInt::from(0)))
         }

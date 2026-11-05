@@ -36,9 +36,10 @@ workflow outside the Rust surface has a supported escape hatch.
   operand's syntactic literal wins when the left is not a syntactic literal;
   otherwise the left operand keeps its form, including references and
   named-definition references), `(1.0 + 0) & 1.00` -> `1.00`, plus CUE's
-  signed-zero sign hierarchy where a syntactic literal outranks an expression
-  or reference-to-literal, which outranks a reference-to-computed value; see
-  the residual rows for the remaining representation-only differences),
+  signed-zero sign hierarchy for both integer- and float-kind zeros, where a
+  syntactic literal outranks an expression or reference-to-literal, which
+  outranks a reference-to-computed value; see the residual rows for the
+  remaining representation-only differences),
   optional fields, type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - recursive definition materialization through optional fields and lists
