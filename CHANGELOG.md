@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.46.1
+
+Final review hardening for the three feature tracks.
+
+- **Runtime templates**: exact postfix adjacency, arbitrary-precision `%d/%x/%o/%b` (plain, exponent and >u64 literals), `%g` rounding carry, Go `%q` Unicode/rune behavior, precision-aware zero padding and alternate forms, `index` key validation.
+- **Optional semantics**: split `&` overrides merge before evaluation, optional definition/field aliases reject like CUE, definition aliases narrow defaults, `@tag` discovery through lists and rejection inside optional constraints.
+- **Tool commands**: per-command AST pruning with reference/let/import preservation, comprehension/for bindings shadow command names, definitions inside `command` preserved, imported `tool/os` aliases fail closed, scope-aware sibling command aliases.
+- JSON/YAML and event work from v0.46.0 unchanged.
+
+- 646 tests; fmt/clippy/conformance green.
+
+## v0.46.0
 ## v0.46.0
 
 JSON/YAML document I/O, durable events, Go-style runtime templates, optional-template semantics, and tool-command parity.
