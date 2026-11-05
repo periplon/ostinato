@@ -805,6 +805,27 @@ fn printf_general_format_uses_shortest_digits() {
 }
 
 #[test]
+fn printf_general_explicit_precision_uses_rounded_exponent() {
+    let context = template_context();
+    for (template, expected) in [
+        ("{{printf \"%.6g\" 999999.9}}", "1e+06"),
+        ("{{printf \"%.6g\" 999999.5}}", "1e+06"),
+        ("{{printf \"%.3g\" 999.9}}", "1e+03"),
+        ("{{printf \"%.2g\" 99.9}}", "1e+02"),
+        ("{{printf \"%.1g\" 9.9}}", "1e+01"),
+        ("{{printf \"%.4g\" 9999.5}}", "1e+04"),
+        ("{{printf \"%.6g\" 0.00009999999}}", "0.0001"),
+        ("{{printf \"%#.6g\" 999999.9}}", "1.00000e+06"),
+    ] {
+        assert_eq!(
+            render(template, &context).expect("render"),
+            expected,
+            "template {template}"
+        );
+    }
+}
+
+#[test]
 fn printf_integer_zero_padding_and_alternate_forms_match_go() {
     let context = template_context();
     assert_eq!(
@@ -826,6 +847,31 @@ fn printf_integer_zero_padding_and_alternate_forms_match_go() {
     assert_eq!(
         render("{{printf \"%#.0e\" 2}}", &context).expect("render"),
         "2.e+00"
+    );
+    for template in [
+        "{{printf \"%#.0o\" 0}}",
+        "{{printf \"%#.0x\" 0}}",
+        "{{printf \"%#.0X\" 0}}",
+        "{{printf \"%#.0b\" 0}}",
+    ] {
+        assert_eq!(
+            render(template, &context).expect("render"),
+            "",
+            "template {template}"
+        );
+    }
+}
+
+#[test]
+fn printf_formats_exponent_form_numbers_exactly() {
+    let context = template_context();
+    assert_eq!(
+        render("{{printf \"%d\" 1e30}}", &context).expect("render"),
+        "1000000000000000019884624838656"
+    );
+    assert_eq!(
+        render("{{printf \"%x\" 1e30}}", &context).expect("render"),
+        "c9f2c9cd04675000000000000"
     );
 }
 
@@ -858,6 +904,21 @@ fn printf_quotes_runes_strings_and_unicode_like_go() {
     );
     assert!(render("{{printf \"%q\" true}}", &context).is_err());
     assert!(render("{{printf \"%q\" 1.5}}", &context).is_err());
+    for (template, expected) in [
+        ("{{printf \"%q\" \"\\u200e\"}}", "\"\\u200e\""),
+        ("{{printf \"%q\" \"\\u2060\"}}", "\"\\u2060\""),
+        ("{{printf \"%q\" \"\\u0600\"}}", "\"\\u0600\""),
+        ("{{printf \"%q\" \"\\ue000\"}}", "\"\\ue000\""),
+        ("{{printf \"%q\" \"\\U0010ffff\"}}", "\"\\U0010ffff\""),
+        ("{{printf \"%q\" 4294967296}}", "'�'"),
+        ("{{printf \"%q\" 1114112}}", "'�'"),
+    ] {
+        assert_eq!(
+            render(template, &context).expect("render"),
+            expected,
+            "template {template}"
+        );
+    }
 }
 
 #[test]

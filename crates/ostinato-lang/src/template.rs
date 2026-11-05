@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 
 use num_bigint::BigUint;
 use serde_json::Value as Json;
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 use crate::error::LangError;
 
@@ -2017,7 +2018,7 @@ fn format_integer(
         sign.push(' ');
     }
     let mut base = String::new();
-    if flags.alternate {
+    if flags.alternate && !digits.is_empty() {
         match verb {
             'x' => base.push_str("0x"),
             'X' => base.push_str("0X"),
@@ -2139,9 +2140,14 @@ fn shortest_exponent(magnitude: f64) -> (String, i32) {
 
 fn go_general_explicit(magnitude: f64, precision: usize, alternate: bool) -> String {
     let effective = if precision == 0 { 1 } else { precision };
-    let exponent = magnitude.log10().floor() as i32;
+    let places = effective.saturating_sub(1);
+    let scientific = format!("{magnitude:.places$e}");
+    let exponent = scientific
+        .split_once('e')
+        .and_then(|(_, exponent)| exponent.parse::<i32>().ok())
+        .unwrap_or(0);
     if exponent < -4 || exponent >= effective as i32 {
-        let mut output = go_exponent(magnitude, effective.saturating_sub(1));
+        let mut output = go_exponent(magnitude, places);
         if alternate {
             output = ensure_decimal_point_in_exponent(output);
         } else {
@@ -2192,16 +2198,16 @@ fn go_quote(value: &Json, position: Position) -> Result<String, LangError> {
                     "printf: `%q` requires a string or integer, got a float",
                 ));
             };
-            if parts.negative {
-                return Ok("'\u{fffd}'".to_owned());
-            }
-            let code = parts.digits.parse::<u32>().map_err(|_| {
-                error_at(
-                    position,
-                    "printf: `%q` integer is outside the Unicode range",
-                )
-            })?;
-            let character = char::from_u32(code).unwrap_or('\u{fffd}');
+            let character = if parts.negative {
+                '\u{fffd}'
+            } else {
+                parts
+                    .digits
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(char::from_u32)
+                    .unwrap_or('\u{fffd}')
+            };
             Ok(quote_go(&character.to_string(), '\''))
         }
         other => Err(error_at(
@@ -2247,12 +2253,34 @@ fn quote_go(value: &str, quote: char) -> String {
 }
 
 fn needs_go_escape(character: char) -> bool {
-    character.is_control()
-        || (character.is_whitespace() && character != ' ')
-        || matches!(
-            character,
-            '\u{ad}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{feff}'
-        )
+    if character == ' ' {
+        return false;
+    }
+    !matches!(
+        get_general_category(character),
+        GeneralCategory::UppercaseLetter
+            | GeneralCategory::LowercaseLetter
+            | GeneralCategory::TitlecaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter
+            | GeneralCategory::NonspacingMark
+            | GeneralCategory::SpacingMark
+            | GeneralCategory::EnclosingMark
+            | GeneralCategory::DecimalNumber
+            | GeneralCategory::LetterNumber
+            | GeneralCategory::OtherNumber
+            | GeneralCategory::ConnectorPunctuation
+            | GeneralCategory::DashPunctuation
+            | GeneralCategory::OpenPunctuation
+            | GeneralCategory::ClosePunctuation
+            | GeneralCategory::InitialPunctuation
+            | GeneralCategory::FinalPunctuation
+            | GeneralCategory::OtherPunctuation
+            | GeneralCategory::MathSymbol
+            | GeneralCategory::CurrencySymbol
+            | GeneralCategory::ModifierSymbol
+            | GeneralCategory::OtherSymbol
+    )
 }
 
 // ---------------------------------------------------------------------------
