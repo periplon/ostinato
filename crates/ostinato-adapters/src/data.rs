@@ -159,6 +159,45 @@ impl DataError {
     }
 }
 
+#[cfg(unix)]
+fn open_regular_input(path: &Path) -> Result<(std::fs::File, u64), DataError> {
+    use rustix::fs::{Mode, OFlags};
+    let fd = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| DataError::io(path, &std::io::Error::from(error)))?;
+    let file = std::fs::File::from(fd);
+    let metadata = file
+        .metadata()
+        .map_err(|error| DataError::io(path, &error))?;
+    if !metadata.is_file() {
+        return Err(DataError::NotRegularFile {
+            path: path.display().to_string(),
+        });
+    }
+    let flags = rustix::fs::fcntl_getfl(&file)
+        .map_err(|error| DataError::io(path, &std::io::Error::from(error)))?;
+    rustix::fs::fcntl_setfl(&file, flags & !OFlags::NONBLOCK)
+        .map_err(|error| DataError::io(path, &std::io::Error::from(error)))?;
+    Ok((file, metadata.len()))
+}
+
+#[cfg(not(unix))]
+fn open_regular_input(path: &Path) -> Result<(std::fs::File, u64), DataError> {
+    let file = std::fs::File::open(path).map_err(|error| DataError::io(path, &error))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| DataError::io(path, &error))?;
+    if !metadata.is_file() {
+        return Err(DataError::NotRegularFile {
+            path: path.display().to_string(),
+        });
+    }
+    Ok((file, metadata.len()))
+}
+
 /// Read and decode every document in a JSON or YAML file.
 ///
 /// A JSON file always yields exactly one document. YAML may yield several
@@ -170,20 +209,14 @@ impl DataError {
 /// nesting.
 pub fn read_documents(path: &Path) -> Result<Vec<Json>, DataError> {
     let format = DataFormat::from_path(path)?;
-    let metadata = std::fs::metadata(path).map_err(|error| DataError::io(path, &error))?;
-    if !metadata.is_file() {
-        return Err(DataError::NotRegularFile {
-            path: path.display().to_string(),
-        });
-    }
-    if metadata.len() > MAX_INPUT_BYTES as u64 {
+    let (file, length) = open_regular_input(path)?;
+    if length > MAX_INPUT_BYTES as u64 {
         return Err(DataError::TooLarge {
             path: path.display().to_string(),
-            bytes: metadata.len(),
+            bytes: length,
             max: MAX_INPUT_BYTES,
         });
     }
-    let file = std::fs::File::open(path).map_err(|error| DataError::io(path, &error))?;
     let mut bytes = Vec::new();
     file.take((MAX_INPUT_BYTES as u64).saturating_add(1))
         .read_to_end(&mut bytes)
@@ -399,24 +432,7 @@ fn scan_yaml_alias_budget(text: &str, origin: &Path) -> Result<(), DataError> {
             path: origin.display().to_string(),
             message: error.to_string(),
         })?;
-    if let Some(violation) = receiver.violation {
-        return Err(DataError::InvalidYaml {
-            path: origin.display().to_string(),
-            message: violation,
-        });
-    }
-    let mut expanded = receiver.total;
-    for (anchor, references) in &receiver.refs {
-        let size = receiver.anchors.get(anchor).copied().unwrap_or(0);
-        expanded = expanded.saturating_add(size.saturating_mul(*references));
-        if expanded > MAX_EXPANDED_BYTES {
-            return Err(DataError::ExpandedTooLarge {
-                path: origin.display().to_string(),
-                max: MAX_EXPANDED_BYTES,
-            });
-        }
-    }
-    if expanded > MAX_EXPANDED_BYTES {
+    if receiver.violation.is_some() {
         return Err(DataError::ExpandedTooLarge {
             path: origin.display().to_string(),
             max: MAX_EXPANDED_BYTES,
@@ -429,7 +445,6 @@ fn scan_yaml_alias_budget(text: &str, origin: &Path) -> Result<(), DataError> {
 struct AliasSizeReceiver {
     stack: Vec<(Option<usize>, usize)>,
     anchors: BTreeMap<usize, usize>,
-    refs: BTreeMap<usize, usize>,
     total: usize,
     violation: Option<String>,
 }
@@ -441,6 +456,16 @@ impl AliasSizeReceiver {
         } else {
             self.total = self.total.saturating_add(bytes);
         }
+        if self.current_size() > MAX_EXPANDED_BYTES && self.violation.is_none() {
+            self.violation = Some(format!(
+                "expanded YAML value exceeds the {MAX_EXPANDED_BYTES}-byte budget"
+            ));
+        }
+    }
+
+    fn current_size(&self) -> usize {
+        self.total
+            .saturating_add(self.stack.iter().map(|(_, bytes)| *bytes).sum())
     }
 }
 
@@ -466,7 +491,8 @@ impl<'input> SpannedEventReceiver<'input> for AliasSizeReceiver {
                 }
             }
             Event::Alias(anchor) => {
-                *self.refs.entry(*anchor).or_insert(0) += 1;
+                let size = self.anchors.get(anchor).copied().unwrap_or(0);
+                self.add(size.saturating_add(16));
             }
             _ => {}
         }
@@ -861,13 +887,12 @@ fn looks_like_yaml_float(text: &str) -> bool {
         return true;
     }
     let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
-    if !unsigned.contains(['.', 'e', 'E']) || !unsigned.chars().any(|ch| ch.is_ascii_digit()) {
-        return false;
-    }
-    unsigned
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_digit() || ch == '.')
+    !unsigned.is_empty()
+        && unsigned.contains(['.', 'e', 'E'])
+        && unsigned
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_digit() || ch == '.')
 }
 
 fn parse_yaml_float(text: &str, origin: &Path) -> Result<Json, DataError> {
@@ -891,8 +916,36 @@ fn parse_yaml_float(text: &str, origin: &Path) -> Result<Json, DataError> {
             value: text.to_owned(),
         });
     }
+    let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
+    // `._5` and `-._5` are strings; a leading decimal point must be followed
+    // by a digit. `1._5` is a valid CUE float and normalizes to 1.5.
+    if unsigned.starts_with("._") {
+        return Ok(Json::String(text.to_owned()));
+    }
     let cleaned = strip_numeric_underscores(text, NumberKind::Float, origin)?;
-    let normalized = normalized_float(&cleaned).ok_or_else(|| illegal_number(text, origin))?;
+    let unsigned_clean = cleaned.strip_prefix(['-', '+']).unwrap_or(&cleaned);
+    let end = unsigned_clean
+        .find(['.', 'e', 'E'])
+        .unwrap_or(unsigned_clean.len());
+    let integer = &unsigned_clean[..end];
+    if integer.len() > 1 && integer.starts_with('0') {
+        return Err(DataError::InvalidYaml {
+            path: origin.display().to_string(),
+            message: format!("cannot decode `{text}` as a number: illegal number"),
+        });
+    }
+    let Some(mut normalized) = normalized_float(&cleaned) else {
+        return Ok(Json::String(text.to_owned()));
+    };
+    // CUE rejects exponents that overflow f64 lexical parsing and keeps them
+    // as strings (`1e400`, `1e309`). Negative exponents remain valid.
+    match normalized.parse::<f64>() {
+        Ok(value) if value.is_finite() => {}
+        _ => return Ok(Json::String(text.to_owned())),
+    }
+    if unsigned.ends_with('.') && normalized.ends_with(".0") {
+        normalized.truncate(normalized.len() - 2);
+    }
     normalized
         .parse::<Number>()
         .map(Json::Number)
@@ -938,19 +991,16 @@ fn strip_numeric_underscores(
         let next = chars.get(index + 1).copied();
         match (previous, next) {
             (Some(previous), Some(next)) if digit(previous) && digit(next) => {}
-            (Some('.'), Some(next)) if kind == NumberKind::Float && digit(next) => out.push('0'),
-            (Some('e' | 'E'), Some(next)) if kind == NumberKind::Float && digit(next) => {
-                out.push('0');
-            }
+            (Some('x' | 'X' | 'o' | 'O' | 'b' | 'B'), Some(next))
+                if kind == NumberKind::Integer && digit(next) => {}
+            (Some('.'), Some(next)) if kind == NumberKind::Float && digit(next) => {}
+            (Some('e' | 'E'), Some(next)) if kind == NumberKind::Float && digit(next) => {}
             (Some('+' | '-'), Some(next))
                 if kind == NumberKind::Float
                     && digit(next)
                     && chars
                         .get(index.wrapping_sub(2))
-                        .is_some_and(|ch| matches!(ch, 'e' | 'E')) =>
-            {
-                out.push('0');
-            }
+                        .is_some_and(|ch| matches!(ch, 'e' | 'E')) => {}
             _ => return Err(illegal_number(text, origin)),
         }
     }
@@ -1060,18 +1110,21 @@ fn yaml_representation_key(
                 text: value.to_owned(),
                 merge: false,
             }),
-            "int" => parse_yaml_integer(value, origin)?
-                .map(|number| YamlKey {
-                    text: number.to_string(),
-                    merge: false,
-                })
-                .ok_or_else(|| illegal_number(value, origin)),
+            // CUE keeps the raw spelling of explicitly tagged numeric keys
+            // (`!!int 0x10` → key `"0x10"`, `!!float 1e2` → key `"1e2"`).
+            "int" | "float" => Ok(YamlKey {
+                text: value.to_owned(),
+                merge: false,
+            }),
             "bool" => parse_yaml_bool(value)
                 .map(|value| YamlKey {
                     text: value.to_string(),
                     merge: false,
                 })
-                .ok_or_else(|| illegal_number(value, origin)),
+                .ok_or_else(|| DataError::InvalidYaml {
+                    path: origin.display().to_string(),
+                    message: format!("invalid `!!bool` value `{value}`"),
+                }),
             "null" => Ok(YamlKey {
                 text: "null".to_owned(),
                 merge: false,
@@ -1079,10 +1132,6 @@ fn yaml_representation_key(
             "merge" => Ok(YamlKey {
                 text: "<<".to_owned(),
                 merge: true,
-            }),
-            "float" => parse_yaml_float(value, origin).map(|number| YamlKey {
-                text: number.to_string(),
-                merge: false,
             }),
             _ => Err(DataError::UnsupportedTag {
                 path: origin.display().to_string(),
@@ -1244,6 +1293,20 @@ fn merge_json(left: &Json, right: &Json, at: &str, origin: &Path) -> Result<Json
                 out.push(merge_json(left, right, &format!("{at}[{index}]"), origin)?);
             }
             Ok(Json::Array(out))
+        }
+        (Json::Number(_), Json::Number(_)) => {
+            let left_value = ostinato_lang::value_from_json(left);
+            let right_value = ostinato_lang::value_from_json(right);
+            match ostinato_lang::unify(&left_value, &right_value) {
+                Ok(value) => value.to_json().ok_or_else(|| DataError::Conflict {
+                    path: origin.display().to_string(),
+                    at: at.to_owned(),
+                }),
+                Err(_) => Err(DataError::Conflict {
+                    path: origin.display().to_string(),
+                    at: at.to_owned(),
+                }),
+            }
         }
         _ if left == right => Ok(left.clone()),
         _ => Err(DataError::Conflict {
@@ -1737,7 +1800,13 @@ mod tests {
             text.push_str("]\n");
         }
         let error = parse_documents(DataFormat::Yaml, &text, Path::new("t")).expect_err("bomb");
-        assert!(error.to_string().contains("billion-laughs"), "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("billion-laughs")
+                || message.contains("expanded")
+                || message.contains("budget"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -1816,7 +1885,8 @@ mod tests {
             ("1_000.5", "1000.5"),
             ("1_0e5", "1000000"),
             ("1e1_0", "1e10"),
-            ("1._5", "1.05"),
+            ("1._5", "1.5"),
+            ("1._50", "1.50"),
             ("01", "1"),
             ("1_000", "1000"),
             ("0x1", "1"),
@@ -1831,11 +1901,37 @@ mod tests {
                 "{text}: {actual} != {expected}"
             );
         }
-        for text in ["1_", "1__0", "0_1", "1_.5", "1.5_", "1_e5", "1e5_"] {
+        for text in [
+            "1_", "1__0", "0_1", "1_.5", "1.5_", "1_e5", "1e5_", "01.5", "00.5",
+        ] {
             let error = parse_documents(DataFormat::Yaml, &format!("v: {text}\n"), Path::new("t"))
                 .expect_err(text);
-            assert!(error.to_string().contains("illegal '_'"), "{text}: {error}");
+            assert!(
+                error.to_string().contains("illegal '_'")
+                    || error.to_string().contains("illegal number"),
+                "{text}: {error}"
+            );
         }
+        for text in ["1..5", "1.5.6", "._5", "-._5", "1e400"] {
+            let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
+            assert_eq!(docs[0]["v"], Json::String(text.to_owned()), "{text}");
+        }
+        for text in ["0x_1", "0b_1", "0o_1"] {
+            let docs = parse(DataFormat::Yaml, &format!("v: {text}\n"));
+            assert_eq!(docs[0]["v"], Json::Number(Number::from(1)), "{text}");
+        }
+    }
+
+    #[test]
+    fn tagged_keys_keep_raw_numeric_text_and_clear_bool_errors() {
+        let docs = parse(DataFormat::Yaml, "!!int 0x10: a\n!!float 1e2: b\n");
+        assert_eq!(docs[0]["0x10"], Json::String("a".to_owned()));
+        assert_eq!(docs[0]["1e2"], Json::String("b".to_owned()));
+        let error =
+            parse_documents(DataFormat::Yaml, "!!bool yes: a\n", Path::new("t")).expect_err("bool");
+        let message = error.to_string();
+        assert!(message.contains("!!bool"), "{message}");
+        assert!(!message.contains("illegal '_'"), "{message}");
     }
 
     #[test]
@@ -1929,6 +2025,27 @@ mod tests {
     }
 
     #[test]
+    fn nested_alias_byte_budget_is_enforced() {
+        let scalar = "x".repeat(50 * 1024);
+        let mut text = format!("a0: &a0 \"{scalar}\"\n");
+        for level in 1..=4 {
+            text.push_str(&format!("a{level}: &a{level} ["));
+            for index in 0..10 {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&format!("*a{}", level - 1));
+            }
+            text.push_str("]\n");
+        }
+        let error = parse_documents(DataFormat::Yaml, &text, Path::new("t")).expect_err("bytes");
+        assert!(
+            matches!(error, DataError::ExpandedTooLarge { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn alias_byte_budget_is_enforced() {
         let scalar = "x".repeat(1024 * 1024);
         let mut text = format!("big: &b \"{scalar}\"\n");
@@ -1953,7 +2070,9 @@ mod tests {
         assert!(
             matches!(
                 error,
-                DataError::NotRegularFile { .. } | DataError::UnsupportedFormat { .. }
+                DataError::NotRegularFile { .. }
+                    | DataError::UnsupportedFormat { .. }
+                    | DataError::Io { .. }
             ),
             "{error}"
         );

@@ -3,7 +3,9 @@
 //! The pure value rendering lives in [`ostinato_lang::render_cue_data`]. This
 //! module adds multi-document, multi-input and package-validation policy.
 
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value as Json;
 use thiserror::Error;
@@ -270,9 +272,36 @@ fn normalized_path(path: &Path) -> PathBuf {
     };
     let parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
     match absolute.file_name() {
-        Some(name) => parent.join(name),
+        Some(name) => {
+            let mut name = name.to_os_string();
+            if is_case_insensitive(&parent)
+                && let Some(text) = name.to_str()
+            {
+                name = text.to_ascii_lowercase().into();
+            }
+            parent.join(name)
+        }
         None => parent,
     }
+}
+
+fn is_case_insensitive(directory: &Path) -> bool {
+    for attempt in 0..4 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let name = format!(".ostinato-case-{}-{nanos}-{attempt}", std::process::id());
+        let path = directory.join(&name);
+        let Ok(file) = OpenOptions::new().write(true).create_new(true).open(&path) else {
+            continue;
+        };
+        let alternate = directory.join(name.to_ascii_uppercase());
+        let insensitive = std::fs::metadata(&alternate).is_ok();
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return insensitive;
+    }
+    false
 }
 
 fn split_output(input: &Path, index: usize) -> PathBuf {
@@ -306,38 +335,15 @@ fn merge_documents(documents: &[Json]) -> Result<Json, ImportError> {
                 found: json_type_name(document),
             });
         }
-        merged = merge(&merged, document, "$")?;
+        merged = data::unify_values(&merged, document, Path::new("$")).map_err(map_unify)?;
     }
     Ok(merged)
 }
 
-fn merge(left: &Json, right: &Json, at: &str) -> Result<Json, ImportError> {
-    match (left, right) {
-        (Json::Object(left), Json::Object(right)) => {
-            let mut out = left.clone();
-            for (key, value) in right {
-                let child_at = format!("{at}.{key}");
-                match out.get(key) {
-                    Some(existing) => {
-                        let merged = merge(existing, value, &child_at)?;
-                        out.insert(key.clone(), merged);
-                    }
-                    None => {
-                        out.insert(key.clone(), value.clone());
-                    }
-                }
-            }
-            Ok(Json::Object(out))
-        }
-        (Json::Array(left), Json::Array(right)) if left.len() == right.len() => {
-            let mut out = Vec::with_capacity(left.len());
-            for (index, (left, right)) in left.iter().zip(right).enumerate() {
-                out.push(merge(left, right, &format!("{at}[{index}]"))?);
-            }
-            Ok(Json::Array(out))
-        }
-        _ if left == right => Ok(left.clone()),
-        _ => Err(ImportError::Conflict { at: at.to_owned() }),
+fn map_unify(error: data::DataError) -> ImportError {
+    match error {
+        data::DataError::Conflict { at, .. } => ImportError::Conflict { at },
+        other => ImportError::Data(other.to_string()),
     }
 }
 

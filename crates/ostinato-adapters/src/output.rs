@@ -28,10 +28,15 @@ impl OutputSink for FileOutputSink {
             return write_stdout(content);
         }
         let destination = absolute_destination(path)?;
+        let resolved_destination = if std::fs::symlink_metadata(&destination).is_ok() {
+            std::fs::canonicalize(&destination).unwrap_or_else(|_| destination.clone())
+        } else {
+            destination.clone()
+        };
         for input in protected {
             let input = std::fs::canonicalize(input)
                 .unwrap_or_else(|_| absolute_destination(input).unwrap_or_else(|_| input.clone()));
-            if input == destination {
+            if input == resolved_destination {
                 return Err(PortError::Io(format!(
                     "refusing to write {}: it is one of the inputs",
                     destination.display()
