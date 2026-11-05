@@ -3786,10 +3786,14 @@ fn expr_is_struct_literal(expr: &Expr) -> bool {
 fn is_numeric_literal_expr(expr: &Expr) -> bool {
     match strip_expr_parens(expr) {
         Expr::Int(_, _) | Expr::BigInt(_, _) | Expr::Float(_, _) => true,
-        Expr::Unary(UnOp::Neg, inner, _) => matches!(
-            strip_expr_parens(inner),
-            Expr::Int(_, _) | Expr::BigInt(_, _) | Expr::Float(_, _)
-        ),
+        Expr::Unary(UnOp::Neg, inner, _) => match strip_expr_parens(inner) {
+            Expr::Int(value, _) => *value != 0,
+            Expr::BigInt(value, _) => value != &BigInt::from(0),
+            // `-0.0`/`-0` behave as expressions for signed-zero selection;
+            // non-zero negated literals keep literal representation priority.
+            Expr::Float(value, _) => !value.is_zero(),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -3803,17 +3807,22 @@ fn numeric_values_share_kind(left: &Value, right: &Value) -> bool {
 
 /// CUE keeps the literal operand's lexical form when a computed or referenced
 /// value is unified with an equal syntactic literal. Two literals (or two
-/// non-literals) keep the left representation. Unifying signed zero with positive
-/// zero always selects the positive representation, regardless of operand order.
+/// non-literals) keep the left representation.
+///
+/// For equal zeros the sign follows the same priority hierarchy used by CUE:
+/// literal (2) > expression/result (1) > reference (0), with ties keeping the
+/// left operand. This preserves `-0` when an expression or reference carries it
+/// and no higher-priority positive zero participates.
 fn prefer_decimal_representation(
     left: &numeric::Decimal,
     right: &numeric::Decimal,
 ) -> numeric::Decimal {
-    if left.is_negative_zero() && !right.is_negative_zero() {
-        return right.clone();
-    }
-    if right.is_negative_zero() && !left.is_negative_zero() {
-        return left.clone();
+    if left.value().is_zero() && right.value().is_zero() {
+        return if right.sign_priority() > left.sign_priority() {
+            right.clone()
+        } else {
+            left.clone()
+        };
     }
     if right.is_literal() && !left.is_literal() {
         right.clone()
@@ -4521,18 +4530,18 @@ fn try_definition_unify(
         let Some(defined) = eval_definition_with_injections(frame, name, injections, span)? else {
             return Ok(None);
         };
-        return unify_values(&defined, &value, span).map(Some);
+        return unify_named_definition(defined, &value, span, reversed).map(Some);
     }
     let may_help = |err: &LangError| injection_may_help(frame, name, &injections, err);
     match eval_definition_named(frame, name, span) {
-        Ok(Some(defined)) => match unify_values(&defined, &value, span) {
+        Ok(Some(defined)) => match unify_named_definition(defined, &value, span, reversed) {
             Ok(value) => return Ok(Some(value)),
             Err(err) if may_help(&err) => {}
             Err(err) => return Err(err),
         },
         Ok(None) => {
             if let Some(defined) = eval_definition_with_injections(frame, name, injections, span)? {
-                return unify_values(&defined, &value, span).map(Some);
+                return unify_named_definition(defined, &value, span, reversed).map(Some);
             }
             return Ok(None);
         }
@@ -4542,7 +4551,21 @@ fn try_definition_unify(
     let Some(defined) = eval_definition_with_injections(frame, name, injections, span)? else {
         return Ok(None);
     };
-    unify_values(&defined, &value, span).map(Some)
+    unify_named_definition(defined, &value, span, reversed).map(Some)
+}
+
+fn unify_named_definition(
+    defined: Value,
+    value: &Value,
+    span: Span,
+    reversed: bool,
+) -> Result<Value, LangError> {
+    let defined = defined.as_reference();
+    if reversed {
+        unify_values(value, &defined, span)
+    } else {
+        unify_values(&defined, value, span)
+    }
 }
 
 fn injection_may_help(
@@ -5410,7 +5433,7 @@ fn eval_declaration_part(
                 && let Some(narrowed) =
                     eval_definition_with_injections(frame, name, injections, span)?
             {
-                return Ok(narrowed);
+                return Ok(narrowed.as_reference());
             }
             eval_expr(expr, frame)
         }
@@ -6635,7 +6658,11 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 (UnOp::Neg, Value::Float(value)) => {
                     let negated =
                         numeric::negate(&value).map_err(|error| numeric_error(error, *span))?;
-                    Ok(Value::Float(if is_numeric_literal_expr(inner) {
+                    // `-0.0` behaves as an expression for signed-zero sign
+                    // selection; non-zero negated literals keep literal
+                    // representation priority.
+                    let literal = is_numeric_literal_expr(inner) && !value.value().is_zero();
+                    Ok(Value::Float(if literal {
                         numeric::Decimal::new(negated)
                     } else {
                         numeric::Decimal::computed(negated)

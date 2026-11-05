@@ -148,8 +148,11 @@ pub struct Decimal {
     value: BigDecimal,
     negative_zero: bool,
     /// True when the value came directly from a numeric literal (including a
-    /// negated literal). Arithmetic and builtin results are computed.
+    /// non-zero negated literal). Arithmetic and builtin results are computed.
     literal: bool,
+    /// True when the value was read through a reference. References have the
+    /// lowest priority when CUE chooses the sign of an equal zero.
+    reference: bool,
 }
 
 impl Decimal {
@@ -160,6 +163,7 @@ impl Decimal {
             value,
             negative_zero: false,
             literal: true,
+            reference: false,
         }
     }
 
@@ -170,6 +174,7 @@ impl Decimal {
             value,
             negative_zero: false,
             literal: false,
+            reference: false,
         }
     }
 
@@ -181,6 +186,7 @@ impl Decimal {
             value: BigDecimal::new(BigInt::from(0), scale),
             negative_zero: true,
             literal: false,
+            reference: false,
         }
     }
 
@@ -214,7 +220,21 @@ impl Decimal {
     #[must_use]
     pub fn as_reference(mut self) -> Self {
         self.literal = false;
+        self.reference = true;
         self
+    }
+
+    /// Priority used when choosing the sign of an equal zero:
+    /// literal (2) > expression/result (1) > reference (0).
+    #[must_use]
+    pub fn sign_priority(&self) -> u8 {
+        if self.literal {
+            2
+        } else if self.reference {
+            0
+        } else {
+            1
+        }
     }
 
     /// Whether the value is negative for sign-propagation purposes (either a

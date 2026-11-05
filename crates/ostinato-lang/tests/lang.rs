@@ -9629,3 +9629,61 @@ f: math.Atanh(0.0 * -1.0)
         assert_eq!(json[field].to_string(), "-0", "{field}");
     }
 }
+
+#[test]
+fn named_definition_references_and_signed_zero_priority_match_cue() {
+    let source = r#"
+package representation2
+import "math"
+a: {v: 1.00}
+b: a & {v: 1.0}
+c: {v: 1.0} & a
+#D: {v: 1.00}
+d: #D & {v: 1.0}
+e: {v: 1.00} & #D
+r2a: 0.0*-1 & math.Sqrt(0)
+r2b: math.Mod(-1,1) & -0.0
+r2c: math.Sqrt(0) & (0.0*-1)
+r2d: -0.0 & math.Mod(-1,1)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "math".to_owned(),
+        ostinato_lang::builtin_module("math").expect("math builtin"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    for (field, expected) in [
+        ("b", "1.0"),
+        ("c", "1.0"),
+        ("d", "1.0"),
+        ("e", "1.00"),
+        ("r2a", "-0.0"),
+        ("r2b", "-0"),
+        ("r2c", "0"),
+        ("r2d", "0.0"),
+    ] {
+        let actual = if field.len() == 1 {
+            json[field]["v"].to_string()
+        } else {
+            json[field].to_string()
+        };
+        assert_eq!(actual, expected, "{field}");
+    }
+}
+
+#[test]
+fn duplicate_signed_zero_defaults_are_a_documented_residual() {
+    let source = r#"
+package zerodefaults
+a: *(0 / -1) | *(0 * -1)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    // CUE reports an incomplete `0 | -0` here; Ostinato currently collapses
+    // the two defaults. Documented in docs/SCOPE.md.
+    assert_eq!(json["a"].to_string(), "0");
+}
