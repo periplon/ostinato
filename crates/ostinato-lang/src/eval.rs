@@ -3581,6 +3581,7 @@ impl<'a> Frame<'a> {
         let injection = (!injections.is_empty()).then_some(Value::Struct(injections));
         let mut values = Vec::new();
         let mut poisoned = false;
+        let mut hard_cycle = false;
         let mut soft = None;
         for expr in &exprs {
             let mut visited = BTreeSet::new();
@@ -3594,13 +3595,9 @@ impl<'a> Frame<'a> {
                 &mut visited,
             )?;
             if projection.hard_cycle {
-                return Err(LangError::eval(
-                    span.line,
-                    span.col,
-                    format!("cyclic reference while evaluating `{name}`"),
-                ));
+                hard_cycle = true;
             }
-            if projection.poisoned {
+            if projection.poisoned && projection.values.is_empty() {
                 poisoned = true;
                 continue;
             }
@@ -3609,7 +3606,19 @@ impl<'a> Frame<'a> {
             }
             values.extend(projection.values);
         }
+        if hard_cycle {
+            // A cycle in one declaration only resolves if another operand
+            // supplies a concrete plain value for the selected path.
+            values.retain(value_is_plain_concrete);
+        }
         if values.is_empty() {
+            if hard_cycle {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("cyclic reference while evaluating `{name}`"),
+                ));
+            }
             if segments.len() == 1
                 && let Some(SelectSegment::Field(field, _)) = segments.last()
                 && let Some(peer) = self.selector_peer(field)
@@ -4253,7 +4262,10 @@ fn expr_contains_evaluating_selector(expr: &Expr, frame: &Frame<'_>) -> bool {
     {
         let root = frame.resolve_transparent_let(&root);
         if root != "params" {
-            let evaluating = EVALUATING_FIELD_NAMES.with(|names| names.borrow().contains(field));
+            let evaluating = EVALUATING_FIELD_NAMES.with(|names| {
+                let names = names.borrow();
+                names.contains(&root) && names.contains(field)
+            });
             if evaluating {
                 return true;
             }

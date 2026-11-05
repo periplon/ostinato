@@ -8789,6 +8789,31 @@ listcomp: ({l: [for i in [1] {a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [
 }
 
 #[test]
+fn let_leaf_and_mutual_split_false_cycles_resolve() {
+    let source = r#"
+package demo
+let X = y.a
+y: {a: 3}
+x: {a: X}
+let P = cfg.port
+cfg: {port: 8080}
+server: {port: P}
+x1: {a: x1.b, b: x1.a} & {b: 1}
+x2: {a: x2.b} & {b: 1, b: x2.a}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse false-cycle regressions");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval false-cycle regressions")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"], serde_json::json!({"a": 3}));
+    assert_eq!(json["y"], serde_json::json!({"a": 3}));
+    assert_eq!(json["server"], serde_json::json!({"port": 8080}));
+    assert_eq!(json["x1"], serde_json::json!({"a": 1, "b": 1}));
+    assert_eq!(json["x2"], serde_json::json!({"a": 1, "b": 1}));
+}
+
+#[test]
 fn list_comprehension_selector_paths_see_narrowed_elements() {
     let source = r#"
 package demo

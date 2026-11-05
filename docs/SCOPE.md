@@ -158,6 +158,8 @@ workflow outside the Rust surface has a supported escape hatch.
 | Numeric unification lexical form | Numerically equal decimals keep the first operand's scale in some unifications (`(1.0 + 0) & 1.00` exports `1.0`; CUE exports `1.00`). Values compare equal; only the chosen representation differs |
 | Bare identifiers across operands of a composed definition | `#D: {a: 1} & {b: a}` is accepted although CUE rejects the bare reference to a sibling operand's field; with an enclosing `a: 9`, `b` resolves to `1` instead of CUE's `9`. Non-definition composition and definition-valued narrowing match CUE; self-selection/narrowing is covered by the in-scope bullets for statically injectable operands, with the fail-closed cases in the two rows below |
 | Self-selection narrowing with non-static operands | When a narrowed value cannot be captured before selector-path projection (for example a let/alias chain that is not statically evaluable), Ostinato rejects the evaluation instead of emitting the operands' un-narrowed default. CUE may resolve the same program; no silent value is produced. Open-list-form list-comprehension self-selection also fails closed |
+| Self-selecting non-literal let base with a dependent default | `let base = {a: 2, b: x.a}; x: {a: x.b} & base` is rejected although CUE yields `{a: 2, b: 2}`. Literal bases and self-selecting non-literal bases whose dependents resolve match CUE |
+| Inline optional materialization without a required field | `x: {a?: int, b: a} & {a: 5}` is rejected although CUE materializes the optional `a` from the external concrete unification and yields `b: 5`. Definition-backed optional materialization and optional fields required by another operand match CUE |
 | Let-mediated self-default cycles | A `let` whose scalar body reads the field/path being defined (`let X = x.a + 0; x: {a: X + 1} & {a: *2 \| int}`) fails closed, including nested/list/`#D` forms. CUE may resolve the default variant; no un-narrowed or cached let value is emitted |
 | Cross-field mutual selection cycles | `x: {a: y.b, b: 1}; y: {b: x.a}` and the equivalent two-let form are rejected by Ostinato, while CUE reports an incomplete value. The same cycles that reach a concrete field (`g: {b: X.b}`) resolve like CUE; three-field cycles also fail closed |
 | Optional narrowing in multi-element disjunction lists and selector forms | Single-element nested/list/list-of-list/list-comprehension/open-list/let/definition alternatives recompute dependents from concrete optional values. Multi-element disjunction lists fail closed (`cannot unify lists of different lengths`) where CUE resolves each element, and selector forms over such alternatives fail closed rather than emitting a stale default |
@@ -201,6 +203,8 @@ rejects:
   This extension is covered by
   `conformance/tool_cases/selector-let-injection` (marked `extension`) and the
   `tool_command_let_selector_injection_is_an_ostinato_extension` e2e test.
+
+- **Lone default markers.** `y: {a: *3}` is accepted and exports `a: 3`; CUE rejects the preference marker outside a disjunction. Defaults inside a disjunction (`a: *3 | int`) match CUE.
 
 ## What this means
 
