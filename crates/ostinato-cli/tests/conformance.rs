@@ -181,6 +181,7 @@ fn rust_matches_official_cue_on_the_conformance_corpus() {
             Some("params-nested-tag-depth") => &["n=5"],
             Some("params-nested-tag-expr") => &["host=x", "port=7", "b=8", "unused=9"],
             Some("params-nested-tag-alias-scope") => &["glob=5", "loc=6", "n=7"],
+            Some("optional-list-tag") => &["n=5"],
             _ => &[],
         };
         compare(&cue, &path, params);

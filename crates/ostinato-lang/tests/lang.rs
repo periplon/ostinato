@@ -7107,20 +7107,93 @@ x: #P & {ls: [{n: 4}]}
         "package demo\n#P: {a?: int, b: a, c: 1, c: 2}\nx: 1\n",
         "package demo\n_h: {a?: int, b: a, z: [1][2]}\nx: 1\n",
     ] {
-        let file = ostinato_lang::parse(source).expect("parse hard export error");
-        let direct = ostinato_lang::eval_file(&file);
         let exported = export_mode(source);
         assert!(
-            direct.is_err() || exported.is_err(),
+            exported.is_err(),
             "hard errors under incomplete fields must not be skipped: {source:?}"
         );
-        if source.contains("#D: {a: int, b: 1 + int}") || source.contains("#P: {a?: int") {
-            assert!(
-                exported.is_err(),
-                "definition export must surface hard errors: {source:?}"
-            );
-        }
     }
+}
+
+#[test]
+fn split_unification_merges_overrides_before_evaluation() {
+    let eval = |source: &str| {
+        let file = ostinato_lang::parse(source).expect("parse split unification");
+        let value = ostinato_lang::eval_file(&file).expect("eval split unification");
+        value.to_json().expect("json")
+    };
+    let params = eval(
+        "package demo\n#P: {a?: int, b?: int, sum: a + b}\nparams: {p: #P & {a: 1} & {b: 2}}\n",
+    );
+    assert_eq!(
+        params["params"]["p"],
+        serde_json::json!({"a": 1, "b": 2, "sum": 3})
+    );
+    let defaults =
+        eval("package demo\n#P: {a: *1 | int, b: *2 | int, sum: a + b}\nx: #P & {a: 3} & {b: 4}\n");
+    assert_eq!(defaults["x"], serde_json::json!({"a": 3, "b": 4, "sum": 7}));
+    let nested = eval(
+        "package demo\n#P: {cfg?: {n: *2 | int, m: n * 3}, v: cfg.m}\nx: #P & {} & {cfg: {n: 5}}\n",
+    );
+    assert_eq!(
+        nested["x"],
+        serde_json::json!({"cfg": {"n": 5, "m": 15}, "v": 15})
+    );
+    let inline = eval("package demo\nx: {a?: int, b?: int, sum: a + b} & {a: 1} & {b: 2}\n");
+    assert_eq!(inline["x"], serde_json::json!({"a": 1, "b": 2, "sum": 3}));
+    let required =
+        eval("package demo\n#P: {a: int, b: int, sum: a + b}\nx: #P & {a: 1} & {b: 2}\n");
+    assert_eq!(required["x"], serde_json::json!({"a": 1, "b": 2, "sum": 3}));
+    let optional_struct = eval(
+        "package demo\n#P: {cfg?: {n: int, m: int}, v: cfg.m}\nx: #P & {cfg: {n: 1}} & {cfg: {m: 2}}\n",
+    );
+    assert_eq!(
+        optional_struct["x"],
+        serde_json::json!({"cfg": {"n": 1, "m": 2}, "v": 2})
+    );
+    let list = eval(
+        "package demo\n#P: {ls?: [{n: int, m: int}], v: ls[0].m}\nx: #P & {ls: [{n: 1}]} & {ls: [{m: 2}]}\n",
+    );
+    assert_eq!(
+        list["x"],
+        serde_json::json!({"ls": [{"n": 1, "m": 2}], "v": 2})
+    );
+    let let_base = eval(
+        "package demo\n#P: {a?: int, b?: int, sum: a + b}\nlet base = #P & {a: 1}\nx: base & {b: 2}\n",
+    );
+    assert_eq!(let_base["x"], serde_json::json!({"a": 1, "b": 2, "sum": 3}));
+    let alias = eval("package demo\n#E: {n: *2 | int, m: n * 3}\n#A: #E\nx: #A & {n: 6}\n");
+    assert_eq!(alias["x"], serde_json::json!({"n": 6, "m": 18}));
+}
+
+#[test]
+fn optional_definition_aliases_are_not_materialized() {
+    for source in [
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\nx: #A & {n: 6}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\nx?: #E\ny: x & {n: 6}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\n#B: #A\nx: #B & {n: 6}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\n#B: #A\n#C: #B\nx: #C & {n: 6}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\nx: (#A) & {n: 6}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\nx: #A & {n: 6} & {}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\nlet L = #A\ny: L & {n: 6}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse optional alias");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "optional definition aliases must not materialize: {source:?}"
+        );
+    }
+
+    let eval = |source: &str| {
+        let file = ostinato_lang::parse(source).expect("parse required alias");
+        let value = ostinato_lang::eval_file(&file).expect("eval required alias");
+        value.to_json().expect("json")
+    };
+    let chain =
+        eval("package demo\n#E: {n: *2 | int, m: n * 3}\n#A: #E\n#B: #A\n#C: #B\nx: #C & {n: 6}\n");
+    assert_eq!(chain["x"], serde_json::json!({"n": 6, "m": 18}));
+    let split = eval("package demo\n#E: {n: *2 | int, m: n * 3}\n#A: #E\nx: #A & {n: 6} & {}\n");
+    assert_eq!(split["x"], serde_json::json!({"n": 6, "m": 18}));
 }
 
 #[test]
@@ -7921,6 +7994,10 @@ comp_leading_field: {for i in [1] {
         "package demo\nparams: {l: [{outer: {a: string | *\"v\" @tag(a)}}]}\n",
         "package demo\nparams: {v: [{#D: {a: string | *\"v\" @tag(a)}}]}\n",
         "package demo\nparams: {v: [for i in [{a: string | *\"v\" @tag(a)}] {i.a}]}\n",
+        "package demo\nparams: {host?: string @tag(host)}\n",
+        "package demo\n#P: {host?: string @tag(host)}\nparams: #P\n",
+        "package demo\nparams: {cfg?: {host: string @tag(host)}}\n",
+        "package demo\n#P: {cfg?: {host: string @tag(host)}}\nparams: #P\n",
     ] {
         let outcome = ostinato_lang::parse(source).and_then(|file| ostinato_lang::eval_file(&file));
         let error = outcome.expect_err("tag placement must fail");
@@ -7937,6 +8014,35 @@ comp_leading_field: {for i in [1] {
     assert!(
         !tags.contains_key("x"),
         "standalone @tag must not register as a field tag"
+    );
+}
+
+#[test]
+fn tag_discovery_traverses_lists_and_optional_references() {
+    let source = r#"
+package demo
+#E: {n: int | *2 @tag(n, type=int), m: n * 3}
+#P: {ls?: [#E], open?: [...#E], maybe?: #E}
+params: {ls: [#E], open: [...#E] & [#E], maybe: #E}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse list tag discovery");
+    let tags = ostinato_lang::parameter_tags(&file).expect("collect list tags");
+    assert!(
+        tags.contains_key("n"),
+        "list element tags must be discovered"
+    );
+
+    let standalone = r#"
+package demo
+#E: {host: string @tag(host)}
+#P: {e?: #E}
+params: #P & {e: {host: "x"}}
+"#;
+    let file = ostinato_lang::parse(standalone).expect("parse optional definition reference");
+    let tags = ostinato_lang::parameter_tags(&file).expect("collect optional reference tags");
+    assert!(
+        tags.contains_key("host"),
+        "standalone definition tags referenced from optional fields must be discovered"
     );
 }
 
