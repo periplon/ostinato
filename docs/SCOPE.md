@@ -67,7 +67,8 @@ workflow outside the Rust surface has a supported escape hatch.
   (`#M: {b?: int, if true {b: 5, y: #M.b}}`); comprehension-generated
   labels remain reachable through selectors (`x.b`) but are not bare
   identifiers, matching CUE (`x: {if true {b: 1}, a: b}` is rejected).
-  Selector paths through list indices (`x.l[0].b`, `x.l[0][0].b`,
+  Selector paths through list indices with required optional leaves
+  (`x.l[0].b`, `x.l[0][0].b`,
   `x.l[0].o.b`, quoted indices and open-list prefixes), concrete optional
   operands and comprehension-generated fields (`if`/`for`/list
   comprehensions) are narrowed before dependent fields are recomputed.
@@ -78,7 +79,7 @@ workflow outside the Rust surface has a supported escape hatch.
   captured before path projection also fail closed (see the residuals
   table);
 - comprehension-generated definitions (`#D: {if true {#I: 3}, a: #D.#I}`);
-- default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`), including through definition-valued definitions (`#B: #A & {n: 4}`), recursive definitions (dependents recomputed at every level, including optional/open-list recursive children and required defaulted open lists), disjunction alternatives (`({a: *1|int, b: a} | {a: string}) & {a: 3}` recomputes `b: 3`, including nested/list dependents, either alternative order, let/definition-valued alternatives and concrete optional values), concrete optional operand narrowing (`{a: *1|int, b: a} & {a?: 5}` recomputes `b: 5`; conflicting `b?: 7` rejects) and shadowing nested same-name definitions, plus generated declaration merges (`if true {#P: {env: "prod"}}` recomputes `#P.greeting`);
+- default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`), including through definition-valued definitions (`#B: #A & {n: 4}`), recursive definitions (dependents recomputed at every level, including optional/open-list recursive children and required defaulted open lists), disjunction alternatives (`({a: *1|int, b: a} | {a: string}) & {a: 3}` recomputes `b: 3`, including nested/list dependents, either alternative order, let/definition-valued alternatives and concrete optional values), concrete optional operand narrowing when another operand requires the field (`{a: *1|int, b: a} & {a?: 5}` recomputes `b: 5`; conflicting `b?: 7` rejects; optional-vs-optional values stay omitted and cannot legalize references to them) and shadowing nested same-name definitions, plus generated declaration merges (`if true {#P: {env: "prod"}}` recomputes `#P.greeting`);
 - optional/open metadata on non-definition struct literals (`base: {b?: int}; #D: base`, `{c: 1, ...}`), including nested/pattern/list forms;
 - arbitrary-precision integer *literals* and arithmetic in CUE's
   34-significant-digit decimal context (add/subtract/multiply round results

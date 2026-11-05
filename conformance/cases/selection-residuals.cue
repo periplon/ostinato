@@ -61,6 +61,12 @@ optional_nested_narrow: {o: {a: *1 | int, b: a}} & {o: {a?: 34}}
 comp_narrow: {if true {a: *1 | int, b: a}} & {a: 35}
 comp_list_narrow: {l: [for i in [1] {a: *1 | int, b: a}]} & {l: [{a: 36}]}
 
+optional_only: {a?: *1 | int} & {a?: 37}
+optional_list_narrow: {l: [{a: *1 | int, b: a}]} & {l: [{a?: 38}], c: optional_list_narrow.l[0].b}
+optional_self_narrow: {a: optional_self_narrow.b} & {b: *1 | int} & {b?: 39}
+#OptionalD: {y: *2 | int, z: y}
+optional_def_list: {l: [{x: #OptionalD}]} & {l: [{x: {y?: 40}}], c: optional_def_list.l[0].x.z}
+
 #A: {bs: [...#B], u: len(bs)}
 #B: {as: [...#A], t: len(as)}
 mutual_lists_x: #A & {bs: [{as: [{}]}]}
@@ -96,6 +102,10 @@ params: {
 	r_optional_nested_narrow: optional_nested_narrow
 	r_comp_narrow: comp_narrow
 	r_comp_list_narrow: comp_list_narrow
+	r_optional_only: optional_only
+	r_optional_list_narrow: optional_list_narrow
+	r_optional_self_narrow: optional_self_narrow
+	r_optional_def_list: optional_def_list
 	r_mutual: mutual_x
 	r_alias_self: alias_x
 	r_deep_mutual: deep_mutual
