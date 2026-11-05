@@ -11877,3 +11877,54 @@ fn event_injection_requires_an_existing_run_and_valid_payload() {
     ]);
     assert!(!bad_name.status.success());
 }
+
+#[test]
+fn exec_renders_new_template_control_flow() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("templates.cue");
+    let output_file = directory.path().join("rendered.txt");
+    let source = r#"
+package demo
+params: {
+    name: string | *"world"
+    flag: bool | *true
+    items: [...string] | *["a", "b"]
+}
+workflow: {
+    name: "templates"
+    steps: {
+        emit: {
+            kind: "exec"
+            exec: {
+                cmd: ["sh", "-c", "printf '%s' '{{if and params.flag (eq params.name \"world\")}}ok{{else}}no{{end}}|{{range params.items}}{{.}}{{end}}|{{with params.name}}{{.}}{{else}}none{{end}}|{{params.name | printf \"%s\"}}' > '{OUT}'"]
+            }
+        }
+    }
+}
+"#;
+    write(
+        &workflow,
+        &source.replace("{OUT}", output_file.to_str().expect("output path")),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "--json",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["status"], "succeeded");
+    assert_eq!(
+        std::fs::read_to_string(&output_file).expect("rendered output"),
+        "ok|ab|world|world"
+    );
+}

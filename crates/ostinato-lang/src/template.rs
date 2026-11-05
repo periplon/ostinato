@@ -4,6 +4,9 @@ use serde_json::Value as Json;
 
 use crate::error::LangError;
 
+const MAX_TEMPLATE_NESTING: usize = 256;
+const MAX_PRINTF_FIELD: usize = 1024 * 1024;
+
 /// Render a Go `text/template`-compatible subset against a JSON context.
 ///
 /// Supported syntax:
@@ -25,6 +28,12 @@ use crate::error::LangError;
 /// Returns [`LangError::Template`] for malformed actions, unknown functions,
 /// unknown references and execution errors.
 pub fn render(template: &str, context: &Json) -> Result<String, LangError> {
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        render_impl(template, context)
+    })
+}
+
+fn render_impl(template: &str, context: &Json) -> Result<String, LangError> {
     let tokens = tokenize(template)?;
     let nodes = parse_nodes(&tokens)?;
     let engine = Engine { root: context };
@@ -52,14 +61,32 @@ struct Position {
     column: usize,
 }
 
-fn position_at(source: &str, offset: usize) -> Position {
-    let before = &source[..offset];
-    let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
-    let column = match before.rfind('\n') {
-        Some(index) => before[index + 1..].chars().count() + 1,
-        None => before.chars().count() + 1,
-    };
-    Position { line, column }
+struct LineMap {
+    starts: Vec<usize>,
+}
+
+impl LineMap {
+    fn new(source: &str) -> Self {
+        let mut starts = vec![0];
+        for (index, byte) in source.bytes().enumerate() {
+            if byte == b'\n' {
+                starts.push(index + 1);
+            }
+        }
+        Self { starts }
+    }
+
+    fn position(&self, offset: usize) -> Position {
+        let line_index = self
+            .starts
+            .partition_point(|start| *start <= offset)
+            .saturating_sub(1);
+        let line_start = self.starts.get(line_index).copied().unwrap_or(0);
+        Position {
+            line: line_index + 1,
+            column: offset.saturating_sub(line_start) + 1,
+        }
+    }
 }
 
 fn error_at(position: Position, message: impl Into<String>) -> LangError {
@@ -112,6 +139,7 @@ fn tokenize(template: &str) -> Result<Vec<Token>, LangError> {
     let mut tokens: Vec<Token> = Vec::new();
     let mut cursor = 0usize;
     let mut trim_next = false;
+    let lines = LineMap::new(template);
 
     while cursor < template.len() {
         let Some(relative) = template[cursor..].find("{{") else {
@@ -120,7 +148,7 @@ fn tokenize(template: &str) -> Result<Vec<Token>, LangError> {
                 &template[cursor..],
                 cursor,
                 &mut trim_next,
-                template,
+                &lines,
             );
             break;
         };
@@ -131,10 +159,10 @@ fn tokenize(template: &str) -> Result<Vec<Token>, LangError> {
                 &template[cursor..start],
                 cursor,
                 &mut trim_next,
-                template,
+                &lines,
             );
         }
-        let position = position_at(template, start);
+        let position = lines.position(start);
         let after_marker = &template[start + 2..];
         let trim_left = after_marker.starts_with('-')
             && after_marker[1..].chars().next().is_some_and(is_go_space);
@@ -175,7 +203,7 @@ fn push_text(
     text: &str,
     offset: usize,
     trim_next: &mut bool,
-    template: &str,
+    lines: &LineMap,
 ) {
     let text = if *trim_next {
         text.trim_start_matches(is_go_space)
@@ -188,7 +216,7 @@ fn push_text(
     }
     tokens.push(Token {
         kind: TokenKind::Text(text.to_owned()),
-        position: position_at(template, offset),
+        position: lines.position(offset),
     });
 }
 
@@ -287,6 +315,10 @@ fn scan_action(
 enum Node {
     Text(String),
     Output(Pipeline),
+    LegacyPath {
+        path: String,
+        position: Position,
+    },
     If {
         condition: Pipeline,
         body: Vec<Node>,
@@ -313,8 +345,14 @@ enum Stop {
 }
 
 fn parse_nodes(tokens: &[Token]) -> Result<Vec<Node>, LangError> {
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        parse_nodes_impl(tokens)
+    })
+}
+
+fn parse_nodes_impl(tokens: &[Token]) -> Result<Vec<Node>, LangError> {
     let mut index = 0usize;
-    let (nodes, stop) = parse_block(tokens, &mut index)?;
+    let (nodes, stop) = parse_block(tokens, &mut index, 0)?;
     match stop {
         Stop::Eof => Ok(nodes),
         Stop::End(position) => Err(error_at(
@@ -328,7 +366,21 @@ fn parse_nodes(tokens: &[Token]) -> Result<Vec<Node>, LangError> {
     }
 }
 
-fn parse_block(tokens: &[Token], index: &mut usize) -> Result<(Vec<Node>, Stop), LangError> {
+fn parse_block(
+    tokens: &[Token],
+    index: &mut usize,
+    depth: usize,
+) -> Result<(Vec<Node>, Stop), LangError> {
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        parse_block_impl(tokens, index, depth)
+    })
+}
+
+fn parse_block_impl(
+    tokens: &[Token],
+    index: &mut usize,
+    depth: usize,
+) -> Result<(Vec<Node>, Stop), LangError> {
     let mut nodes = Vec::new();
     while let Some(token) = tokens.get(*index) {
         match &token.kind {
@@ -353,19 +405,31 @@ fn parse_block(tokens: &[Token], index: &mut usize) -> Result<(Vec<Node>, Stop),
                     }
                     "if" => {
                         *index += 1;
-                        nodes.push(parse_if(rest, tokens, index, token.position)?);
+                        nodes.push(parse_if(rest, tokens, index, token.position, depth)?);
                     }
                     "range" => {
                         *index += 1;
-                        nodes.push(parse_range(rest, tokens, index, token.position)?);
+                        nodes.push(parse_range(rest, tokens, index, token.position, depth)?);
                     }
                     "with" => {
                         *index += 1;
-                        nodes.push(parse_with(rest, tokens, index, token.position)?);
+                        nodes.push(parse_with(rest, tokens, index, token.position, depth)?);
                     }
                     _ => {
                         *index += 1;
-                        nodes.push(Node::Output(parse_pipeline(content, token.position)?));
+                        match parse_pipeline(content, token.position) {
+                            Ok(pipeline) => nodes.push(Node::Output(pipeline)),
+                            Err(error) => {
+                                if let Some(path) = legacy_path(content) {
+                                    nodes.push(Node::LegacyPath {
+                                        path: path.to_owned(),
+                                        position: token.position,
+                                    });
+                                } else {
+                                    return Err(error);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -379,19 +443,33 @@ fn parse_if(
     tokens: &[Token],
     index: &mut usize,
     position: Position,
+    depth: usize,
 ) -> Result<Node, LangError> {
+    stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+        parse_if_impl(condition, tokens, index, position, depth)
+    })
+}
+
+fn parse_if_impl(
+    condition: &str,
+    tokens: &[Token],
+    index: &mut usize,
+    position: Position,
+    depth: usize,
+) -> Result<Node, LangError> {
+    ensure_nesting(depth, position)?;
     if condition.is_empty() {
         return Err(error_at(position, "`if` requires a pipeline"));
     }
     let condition = parse_pipeline(condition, position)?;
-    let (body, stop) = parse_block(tokens, index)?;
+    let (body, stop) = parse_block(tokens, index, depth + 1)?;
     let otherwise = match stop {
         Stop::Eof => return Err(error_at(position, "missing `{{end}}` for `if`")),
         Stop::End(_) => Vec::new(),
         Stop::Else(rest, else_position) => {
             let rest = rest.trim();
             if rest.is_empty() {
-                let (otherwise, stop) = parse_block(tokens, index)?;
+                let (otherwise, stop) = parse_block(tokens, index, depth + 1)?;
                 match stop {
                     Stop::End(_) => otherwise,
                     Stop::Eof => return Err(error_at(position, "missing `{{end}}` for `if`")),
@@ -403,7 +481,13 @@ fn parse_if(
                 if nested_condition.is_empty() {
                     return Err(error_at(else_position, "`else if` requires a pipeline"));
                 }
-                vec![parse_if(nested_condition, tokens, index, else_position)?]
+                vec![parse_if(
+                    nested_condition,
+                    tokens,
+                    index,
+                    else_position,
+                    depth + 1,
+                )?]
             } else {
                 return Err(error_at(
                     else_position,
@@ -424,13 +508,15 @@ fn parse_range(
     tokens: &[Token],
     index: &mut usize,
     position: Position,
+    depth: usize,
 ) -> Result<Node, LangError> {
+    ensure_nesting(depth, position)?;
     if expression.is_empty() {
         return Err(error_at(position, "`range` requires a pipeline"));
     }
     let expression = parse_pipeline(expression, position)?;
-    let (body, stop) = parse_block(tokens, index)?;
-    let otherwise = parse_control_else(stop, tokens, index, position, "range")?;
+    let (body, stop) = parse_block(tokens, index, depth + 1)?;
+    let otherwise = parse_control_else(stop, tokens, index, position, "range", depth + 1)?;
     Ok(Node::Range {
         expression,
         body,
@@ -444,13 +530,15 @@ fn parse_with(
     tokens: &[Token],
     index: &mut usize,
     position: Position,
+    depth: usize,
 ) -> Result<Node, LangError> {
+    ensure_nesting(depth, position)?;
     if expression.is_empty() {
         return Err(error_at(position, "`with` requires a pipeline"));
     }
     let expression = parse_pipeline(expression, position)?;
-    let (body, stop) = parse_block(tokens, index)?;
-    let otherwise = parse_control_else(stop, tokens, index, position, "with")?;
+    let (body, stop) = parse_block(tokens, index, depth + 1)?;
+    let otherwise = parse_control_else(stop, tokens, index, position, "with", depth + 1)?;
     Ok(Node::With {
         expression,
         body,
@@ -464,11 +552,12 @@ fn parse_control_else(
     index: &mut usize,
     position: Position,
     keyword: &str,
+    depth: usize,
 ) -> Result<Vec<Node>, LangError> {
     match stop {
         Stop::Eof => Err(error_at(
             position,
-            format!("missing `{{end}}` for `{keyword}`"),
+            format!("missing `{{{{end}}}}` for `{keyword}`"),
         )),
         Stop::End(_) => Ok(Vec::new()),
         Stop::Else(rest, else_position) => {
@@ -478,20 +567,42 @@ fn parse_control_else(
                     format!("`{keyword}` does not support `else if`; use a nested `if`"),
                 ));
             }
-            let (otherwise, stop) = parse_block(tokens, index)?;
+            let (otherwise, stop) = parse_block(tokens, index, depth)?;
             match stop {
                 Stop::End(_) => Ok(otherwise),
                 Stop::Eof => Err(error_at(
                     position,
-                    format!("missing `{{end}}` for `{keyword}`"),
+                    format!("missing `{{{{end}}}}` for `{keyword}`"),
                 )),
                 Stop::Else(_, second) => Err(error_at(
                     second,
-                    format!("unexpected second `{{else}}` in `{keyword}`"),
+                    format!("unexpected second `{{{{else}}}}` in `{keyword}`"),
                 )),
             }
         }
     }
+}
+
+fn ensure_nesting(depth: usize, position: Position) -> Result<(), LangError> {
+    if depth >= MAX_TEMPLATE_NESTING {
+        Err(error_at(
+            position,
+            format!("template nesting exceeds the limit of {MAX_TEMPLATE_NESTING}"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn legacy_path(content: &str) -> Option<&str> {
+    let content = content.trim();
+    if content.is_empty() || !content.contains('.') || !content.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let has_operator = content
+        .chars()
+        .any(|character| matches!(character, '|' | '(' | ')' | '"' | '`' | '\''));
+    if has_operator { None } else { Some(content) }
 }
 
 fn split_keyword(content: &str) -> (&str, &str) {
@@ -537,6 +648,11 @@ enum Operand {
         display: String,
     },
     Group(Box<Pipeline>),
+    Postfix {
+        base: Box<Operand>,
+        segments: Vec<String>,
+        display: String,
+    },
     Function(String),
 }
 
@@ -566,6 +682,7 @@ fn parse_pipeline(source: &str, position: Position) -> Result<Pipeline, LangErro
         lexemes,
         index: 0,
         position,
+        depth: 0,
     };
     let pipeline = parser.parse()?;
     if parser.peek().is_some() {
@@ -581,6 +698,7 @@ struct PipelineParser {
     lexemes: Vec<Lexeme>,
     index: usize,
     position: Position,
+    depth: usize,
 }
 
 impl PipelineParser {
@@ -597,6 +715,10 @@ impl PipelineParser {
     }
 
     fn parse(&mut self) -> Result<Pipeline, LangError> {
+        stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || self.parse_impl())
+    }
+
+    fn parse_impl(&mut self) -> Result<Pipeline, LangError> {
         let mut commands = vec![self.parse_command()?];
         while matches!(self.peek(), Some(Lexeme::Pipe)) {
             self.index += 1;
@@ -664,11 +786,35 @@ impl PipelineParser {
         match lexeme {
             Lexeme::Quoted(value) => Ok(Operand::Literal(Json::String(value))),
             Lexeme::LeftParen => {
-                let pipeline = self.parse()?;
-                match self.next() {
-                    Some(Lexeme::RightParen) => Ok(Operand::Group(Box::new(pipeline))),
-                    _ => Err(error_at(self.position, "missing `)` in template pipeline")),
+                ensure_nesting(self.depth, self.position)?;
+                self.depth += 1;
+                let pipeline = self.parse();
+                self.depth -= 1;
+                let pipeline = pipeline?;
+                let mut operand = match self.next() {
+                    Some(Lexeme::RightParen) => Operand::Group(Box::new(pipeline)),
+                    _ => return Err(error_at(self.position, "missing `)` in template pipeline")),
+                };
+                while let Some(Lexeme::Word(word)) = self.peek()
+                    && word != "."
+                    && word.starts_with('.')
+                {
+                    let word = word.clone();
+                    self.index += 1;
+                    let segments: Vec<String> = word[1..].split('.').map(str::to_owned).collect();
+                    if segments.iter().any(String::is_empty) {
+                        return Err(error_at(
+                            self.position,
+                            format!("invalid postfix path `{word}`"),
+                        ));
+                    }
+                    operand = Operand::Postfix {
+                        base: Box::new(operand),
+                        segments,
+                        display: format!("(...){word}"),
+                    };
                 }
+                Ok(operand)
             }
             Lexeme::RightParen => Err(error_at(self.position, "unexpected `)`")),
             Lexeme::Pipe => Err(error_at(self.position, "unexpected `|`")),
@@ -715,16 +861,30 @@ fn bare_function_name(operand: &Operand) -> Option<String> {
 }
 
 fn parse_number(word: &str) -> Option<Json> {
-    let mut characters = word.chars();
-    let first = characters.next()?;
-    if !first.is_ascii_digit() && first != '-' && first != '+' {
-        return None;
+    let bytes = word.as_bytes();
+    let mut index = 0usize;
+    if matches!(bytes.first(), Some(b'-' | b'+')) {
+        index += 1;
     }
-    if (first == '-' || first == '+') && !characters.next()?.is_ascii_digit() {
+    let starts_with_digit = bytes.get(index).is_some_and(u8::is_ascii_digit);
+    let starts_with_fraction =
+        bytes.get(index) == Some(&b'.') && bytes.get(index + 1).is_some_and(u8::is_ascii_digit);
+    if !starts_with_digit && !starts_with_fraction {
         return None;
     }
     if let Ok(value) = word.parse::<i64>() {
         return Some(Json::from(value));
+    }
+    if let Ok(value) = word.parse::<u64>() {
+        return Some(Json::from(value));
+    }
+    let digits_start = usize::from(matches!(bytes.first(), Some(b'-' | b'+')));
+    if bytes
+        .get(digits_start..)
+        .is_some_and(|digits| !digits.is_empty() && digits.iter().all(u8::is_ascii_digit))
+        && let Ok(value) = serde_json::from_str::<Json>(word)
+    {
+        return Some(value);
     }
     word.parse::<f64>()
         .ok()
@@ -993,12 +1153,29 @@ impl Engine<'_> {
         dot: &Json,
         output: &mut String,
     ) -> Result<(), LangError> {
+        stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+            self.render_nodes_impl(nodes, dot, output)
+        })
+    }
+
+    fn render_nodes_impl(
+        &self,
+        nodes: &[Node],
+        dot: &Json,
+        output: &mut String,
+    ) -> Result<(), LangError> {
         for node in nodes {
             match node {
                 Node::Text(text) => output.push_str(text),
                 Node::Output(pipeline) => {
                     let value = self.eval_pipeline(pipeline, dot)?;
                     output.push_str(&stringify(&value));
+                }
+                Node::LegacyPath { path, position } => {
+                    let segments: Vec<String> = path.split('.').map(str::to_owned).collect();
+                    let value = lookup_segments(self.root, &segments, path)
+                        .map_err(|error| locate_error(error, *position))?;
+                    output.push_str(&stringify(value));
                 }
                 Node::If {
                     condition,
@@ -1042,6 +1219,7 @@ impl Engine<'_> {
                                 }
                             }
                         }
+                        Json::Null => self.render_nodes(otherwise, dot, output)?,
                         other => {
                             return Err(error_at(
                                 *position,
@@ -1068,6 +1246,12 @@ impl Engine<'_> {
     }
 
     fn eval_pipeline(&self, pipeline: &Pipeline, dot: &Json) -> Result<Json, LangError> {
+        stacker::maybe_grow(4 * 1024 * 1024, 64 * 1024 * 1024, || {
+            self.eval_pipeline_impl(pipeline, dot)
+        })
+    }
+
+    fn eval_pipeline_impl(&self, pipeline: &Pipeline, dot: &Json) -> Result<Json, LangError> {
         let mut value: Option<Json> = None;
         for command in &pipeline.commands {
             value = Some(self.eval_command(command, dot, value, pipeline.position)?);
@@ -1154,6 +1338,16 @@ impl Engine<'_> {
         match operand {
             Operand::Literal(value) => Ok(value.clone()),
             Operand::Group(pipeline) => self.eval_pipeline(pipeline, dot),
+            Operand::Postfix {
+                base,
+                segments,
+                display,
+            } => {
+                let value = self.eval_operand(base, dot, position)?;
+                lookup_segments(&value, segments, display)
+                    .cloned()
+                    .map_err(|error| locate_error(error, position))
+            }
             Operand::Function(name) => Err(error_at(
                 position,
                 format!("function `{name}` used as a value"),
@@ -1351,6 +1545,9 @@ fn json_equal(left: &Json, right: &Json) -> bool {
             if left == right {
                 return true;
             }
+            if let Some(ordering) = exact_integer_ordering(left, right) {
+                return ordering == Ordering::Equal;
+            }
             match (left.as_f64(), right.as_f64()) {
                 (Some(left), Some(right)) => left == right,
                 _ => false,
@@ -1362,24 +1559,84 @@ fn json_equal(left: &Json, right: &Json) -> bool {
 
 fn compare(left: &Json, right: &Json) -> Option<Ordering> {
     match (left, right) {
-        (Json::Number(left), Json::Number(right)) => left.as_f64()?.partial_cmp(&right.as_f64()?),
+        (Json::Number(left), Json::Number(right)) => compare_numbers(left, right),
         (Json::String(left), Json::String(right)) => Some(left.cmp(right)),
         _ => None,
     }
 }
 
-fn integer_of(value: &Json) -> Option<i64> {
+fn compare_numbers(left: &serde_json::Number, right: &serde_json::Number) -> Option<Ordering> {
+    if let Some(ordering) = exact_integer_ordering(left, right) {
+        return Some(ordering);
+    }
+    left.as_f64()?.partial_cmp(&right.as_f64()?)
+}
+
+#[derive(Debug)]
+struct IntegerParts {
+    negative: bool,
+    digits: String,
+}
+
+fn exact_integer_ordering(
+    left: &serde_json::Number,
+    right: &serde_json::Number,
+) -> Option<Ordering> {
+    let left = integer_parts(&left.to_string())?;
+    let right = integer_parts(&right.to_string())?;
+    Some(compare_integer_parts(&left, &right))
+}
+
+fn integer_parts(text: &str) -> Option<IntegerParts> {
+    if text.contains(['.', 'e', 'E']) {
+        return None;
+    }
+    let (negative, rest) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    if rest.is_empty() || !rest.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let digits = rest.trim_start_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
+    Some(IntegerParts {
+        negative: negative && digits != "0",
+        digits: digits.to_owned(),
+    })
+}
+
+fn compare_integer_parts(left: &IntegerParts, right: &IntegerParts) -> Ordering {
+    if left.negative != right.negative {
+        return if left.negative {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
+    }
+    let ordering = match left.digits.len().cmp(&right.digits.len()) {
+        Ordering::Equal => left.digits.cmp(&right.digits),
+        other => other,
+    };
+    if left.negative {
+        ordering.reverse()
+    } else {
+        ordering
+    }
+}
+
+fn integer_of(value: &Json) -> Option<i128> {
     match value {
         Json::Number(number) => {
             if let Some(value) = number.as_i64() {
-                Some(value)
+                Some(i128::from(value))
             } else if let Some(value) = number.as_u64() {
-                i64::try_from(value).ok()
+                Some(i128::from(value))
             } else {
-                number.as_f64().map(|value| value as i64)
+                number.as_f64().map(|value| value as i128)
             }
         }
-        Json::Bool(value) => Some(i64::from(*value)),
+        Json::Bool(value) => Some(i128::from(*value)),
         _ => None,
     }
 }
@@ -1406,6 +1663,22 @@ fn go_print(arguments: &[Json]) -> String {
     output
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct PrintfFlags {
+    left: bool,
+    plus: bool,
+    space: bool,
+    zero: bool,
+    alternate: bool,
+}
+
+#[derive(Debug)]
+struct FormattedValue {
+    text: String,
+    prefix_len: usize,
+    numeric: bool,
+}
+
 fn go_printf(format: &str, arguments: &[Json], position: Position) -> Result<String, LangError> {
     let mut output = String::new();
     let mut characters = format.chars().peekable();
@@ -1421,63 +1694,100 @@ fn go_printf(format: &str, arguments: &[Json], position: Position) -> Result<Str
             output.push('%');
             continue;
         }
-        let mut flags = String::new();
+        let mut flags = PrintfFlags::default();
         while let Some(&flag) = characters.peek() {
-            if matches!(flag, '-' | '+' | ' ' | '0' | '#') {
-                flags.push(flag);
-                characters.next();
-            } else {
-                break;
+            match flag {
+                '-' => flags.left = true,
+                '+' => flags.plus = true,
+                ' ' => flags.space = true,
+                '0' => flags.zero = true,
+                '#' => flags.alternate = true,
+                _ => break,
             }
-        }
-        let mut width = String::new();
-        while let Some(&digit) = characters.peek() {
-            if digit.is_ascii_digit() {
-                width.push(digit);
-                characters.next();
-            } else {
-                break;
-            }
-        }
-        let mut precision = String::new();
-        if characters.peek() == Some(&'.') {
             characters.next();
+        }
+        let width_from_argument = characters.peek() == Some(&'*');
+        let mut width_digits = String::new();
+        if width_from_argument {
+            characters.next();
+        } else {
             while let Some(&digit) = characters.peek() {
                 if digit.is_ascii_digit() {
-                    precision.push(digit);
+                    width_digits.push(digit);
                     characters.next();
                 } else {
                     break;
                 }
             }
         }
+        let mut precision_digits: Option<String> = None;
+        let mut precision_from_argument = false;
+        if characters.peek() == Some(&'.') {
+            characters.next();
+            if characters.peek() == Some(&'*') {
+                characters.next();
+                precision_from_argument = true;
+            } else {
+                let mut digits = String::new();
+                while let Some(&digit) = characters.peek() {
+                    if digit.is_ascii_digit() {
+                        digits.push(digit);
+                        characters.next();
+                    } else {
+                        break;
+                    }
+                }
+                precision_digits = Some(digits);
+            }
+        }
         let Some(verb) = characters.next() else {
             return Err(error_at(position, "printf: trailing `%` in format string"));
         };
-        let Some(argument) = arguments.get(argument_index) else {
-            return Err(error_at(
-                position,
-                format!("printf: not enough arguments for `%{verb}`"),
-            ));
-        };
-        argument_index += 1;
-        let mut rendered = format_value(verb, argument, &precision, position)?;
-        if let Ok(width) = width.parse::<usize>() {
-            let length = rendered.chars().count();
-            if length < width {
-                let padding = width - length;
-                if flags.contains('-') {
-                    rendered.push_str(&" ".repeat(padding));
-                } else if flags.contains('0')
-                    && matches!(verb, 'd' | 'i' | 'f' | 'e' | 'g' | 'x' | 'X' | 'o' | 'b')
-                {
-                    rendered = format!("{}{rendered}", "0".repeat(padding));
-                } else {
-                    rendered = format!("{}{rendered}", " ".repeat(padding));
-                }
+
+        let mut width = if width_from_argument {
+            let value = next_printf_argument(arguments, &mut argument_index, position)?;
+            let value = integer_of(value)
+                .ok_or_else(|| error_at(position, "printf: width argument must be an integer"))?;
+            if value < 0 {
+                flags.left = true;
+                Some(checked_printf_size(
+                    value.unsigned_abs(),
+                    "width",
+                    position,
+                )?)
+            } else {
+                Some(checked_printf_size(value as u128, "width", position)?)
             }
+        } else {
+            fixed_printf_size(&width_digits, "width", position)?
+        };
+
+        let precision = if precision_from_argument {
+            let value = next_printf_argument(arguments, &mut argument_index, position)?;
+            let value = integer_of(value).ok_or_else(|| {
+                error_at(position, "printf: precision argument must be an integer")
+            })?;
+            if value < 0 {
+                None
+            } else {
+                Some(checked_printf_size(value as u128, "precision", position)?)
+            }
+        } else {
+            match precision_digits {
+                Some(digits) => {
+                    Some(fixed_printf_size(&digits, "precision", position)?.unwrap_or(0))
+                }
+                None => None,
+            }
+        };
+
+        let argument = next_printf_argument(arguments, &mut argument_index, position)?;
+        let formatted = format_value(verb, argument, &flags, precision, position)?;
+        if let Some(width) = width.take() {
+            output.push_str(&apply_width(formatted, width, &flags));
+        } else {
+            output.push_str(&formatted.text);
         }
-        output.push_str(&rendered);
     }
 
     if argument_index < arguments.len() {
@@ -1492,31 +1802,106 @@ fn go_printf(format: &str, arguments: &[Json], position: Position) -> Result<Str
     Ok(output)
 }
 
+fn fixed_printf_size(
+    text: &str,
+    label: &str,
+    position: Position,
+) -> Result<Option<usize>, LangError> {
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let value = text.parse::<u128>().map_err(|_| {
+        error_at(
+            position,
+            format!("printf: invalid {label} `{text}` in format string"),
+        )
+    })?;
+    checked_printf_size(value, label, position).map(Some)
+}
+
+fn next_printf_argument<'a>(
+    arguments: &'a [Json],
+    index: &mut usize,
+    position: Position,
+) -> Result<&'a Json, LangError> {
+    let Some(argument) = arguments.get(*index) else {
+        return Err(error_at(position, "printf: not enough arguments"));
+    };
+    *index += 1;
+    Ok(argument)
+}
+
+fn checked_printf_size(value: u128, label: &str, position: Position) -> Result<usize, LangError> {
+    if value > MAX_PRINTF_FIELD as u128 {
+        return Err(error_at(
+            position,
+            format!("printf: {label} {value} exceeds the maximum of {MAX_PRINTF_FIELD}"),
+        ));
+    }
+    usize::try_from(value)
+        .map_err(|_| error_at(position, format!("printf: {label} {value} is too large")))
+}
+
+fn apply_width(value: FormattedValue, width: usize, flags: &PrintfFlags) -> String {
+    let length = value.text.chars().count();
+    if length >= width {
+        return value.text;
+    }
+    let padding = width.saturating_sub(length);
+    if flags.left {
+        let mut text = value.text;
+        text.push_str(&" ".repeat(padding));
+        text
+    } else if flags.zero && value.numeric {
+        let prefix_len = value.prefix_len.min(value.text.len());
+        let (prefix, rest) = value.text.split_at(prefix_len);
+        format!("{prefix}{}{rest}", "0".repeat(padding))
+    } else {
+        format!("{}{}", " ".repeat(padding), value.text)
+    }
+}
+
 fn format_value(
     verb: char,
     argument: &Json,
-    precision: &str,
+    flags: &PrintfFlags,
+    precision: Option<usize>,
     position: Position,
-) -> Result<String, LangError> {
+) -> Result<FormattedValue, LangError> {
     match verb {
-        'v' => Ok(stringify(argument)),
+        'v' => Ok(FormattedValue {
+            text: stringify(argument),
+            prefix_len: 0,
+            numeric: false,
+        }),
         's' => {
-            let mut value = stringify(argument);
-            if !precision.is_empty() {
-                let limit = precision.parse::<usize>().unwrap_or(0);
-                value = value.chars().take(limit).collect();
+            let mut text = stringify(argument);
+            if let Some(limit) = precision {
+                text = text.chars().take(limit).collect();
             }
-            Ok(value)
+            Ok(FormattedValue {
+                text,
+                prefix_len: 0,
+                numeric: false,
+            })
         }
-        'q' => Ok(format!("{:?}", stringify(argument))),
+        'q' => Ok(FormattedValue {
+            text: go_quote(&stringify(argument)),
+            prefix_len: 0,
+            numeric: false,
+        }),
         't' => match argument {
-            Json::Bool(value) => Ok(value.to_string()),
+            Json::Bool(value) => Ok(FormattedValue {
+                text: value.to_string(),
+                prefix_len: 0,
+                numeric: false,
+            }),
             other => Err(error_at(
                 position,
                 format!("printf: `%t` requires a boolean, got {}", type_name(other)),
             )),
         },
-        'd' | 'i' => {
+        'd' | 'i' | 'x' | 'X' | 'o' | 'b' => {
             let value = integer_of(argument).ok_or_else(|| {
                 error_at(
                     position,
@@ -1526,7 +1911,7 @@ fn format_value(
                     ),
                 )
             })?;
-            Ok(value.to_string())
+            Ok(format_integer(verb, value, flags, precision))
         }
         'f' | 'e' | 'g' => {
             let value = float_of(argument).ok_or_else(|| {
@@ -1538,39 +1923,176 @@ fn format_value(
                     ),
                 )
             })?;
-            let digits = if precision.is_empty() {
-                6
-            } else {
-                precision.parse::<usize>().map_or(6, |value| value.min(100))
-            };
-            Ok(match verb {
-                'f' => format!("{value:.digits$}"),
-                'e' => format!("{value:.digits$e}"),
-                _ => format!("{value}"),
-            })
-        }
-        'x' | 'X' | 'o' | 'b' => {
-            let value = integer_of(argument).ok_or_else(|| {
-                error_at(
-                    position,
-                    format!(
-                        "printf: `%{verb}` requires a number, got {}",
-                        type_name(argument)
-                    ),
-                )
-            })?;
-            Ok(match verb {
-                'x' => format!("{value:x}"),
-                'X' => format!("{value:X}"),
-                'o' => format!("{value:o}"),
-                _ => format!("{value:b}"),
-            })
+            Ok(format_float(verb, value, flags, precision))
         }
         _ => Err(error_at(
             position,
             format!("printf: unsupported verb `%{verb}`"),
         )),
     }
+}
+
+fn format_integer(
+    verb: char,
+    value: i128,
+    flags: &PrintfFlags,
+    precision: Option<usize>,
+) -> FormattedValue {
+    let negative = value < 0;
+    let magnitude = value.unsigned_abs();
+    let mut digits = match verb {
+        'd' | 'i' => magnitude.to_string(),
+        'x' => format!("{magnitude:x}"),
+        'X' => format!("{magnitude:X}"),
+        'o' => format!("{magnitude:o}"),
+        _ => format!("{magnitude:b}"),
+    };
+    if let Some(precision) = precision {
+        if precision == 0 && magnitude == 0 {
+            digits.clear();
+        } else if digits.len() < precision {
+            digits = format!("{}{digits}", "0".repeat(precision - digits.len()));
+        }
+    }
+    let mut prefix = String::new();
+    if negative {
+        prefix.push('-');
+    } else if flags.plus {
+        prefix.push('+');
+    } else if flags.space {
+        prefix.push(' ');
+    }
+    if flags.alternate {
+        match verb {
+            'x' => prefix.push_str("0x"),
+            'X' => prefix.push_str("0X"),
+            'o' if !digits.starts_with('0') => prefix.push('0'),
+            'b' => prefix.push_str("0b"),
+            _ => {}
+        }
+    }
+    FormattedValue {
+        text: format!("{prefix}{digits}"),
+        prefix_len: prefix.len(),
+        numeric: true,
+    }
+}
+
+fn format_float(
+    verb: char,
+    value: f64,
+    flags: &PrintfFlags,
+    precision: Option<usize>,
+) -> FormattedValue {
+    let negative = value.is_sign_negative();
+    let magnitude = value.abs();
+    let precision = precision.unwrap_or(6);
+    let mut prefix = String::new();
+    if negative {
+        prefix.push('-');
+    } else if flags.plus {
+        prefix.push('+');
+    } else if flags.space {
+        prefix.push(' ');
+    }
+    let body = match verb {
+        'f' => format!("{magnitude:.precision$}"),
+        'e' => go_exponent(magnitude, precision),
+        _ => go_general(magnitude, precision, flags.alternate),
+    };
+    FormattedValue {
+        text: format!("{prefix}{body}"),
+        prefix_len: prefix.len(),
+        numeric: true,
+    }
+}
+
+fn go_exponent(magnitude: f64, precision: usize) -> String {
+    let formatted = format!("{magnitude:.precision$e}");
+    match formatted.split_once('e') {
+        Some((mantissa, exponent)) => {
+            let exponent = exponent.parse::<i32>().unwrap_or(0);
+            format!(
+                "{mantissa}e{}{:02}",
+                if exponent < 0 { '-' } else { '+' },
+                exponent.unsigned_abs()
+            )
+        }
+        None => formatted,
+    }
+}
+
+fn go_general(magnitude: f64, precision: usize, alternate: bool) -> String {
+    let precision = if precision == 0 { 1 } else { precision };
+    if magnitude == 0.0 {
+        return if alternate {
+            format!("{magnitude:.precision$}")
+        } else {
+            "0".to_owned()
+        };
+    }
+    let exponent = magnitude.log10().floor() as i32;
+    if exponent < -4 || exponent >= precision as i32 {
+        let mut output = go_exponent(magnitude, precision.saturating_sub(1));
+        if !alternate {
+            output = trim_exponent_zeros(&output);
+        }
+        output
+    } else {
+        let fractional = (precision as i32 - exponent - 1).max(0) as usize;
+        let output = format!("{magnitude:.fractional$}");
+        if alternate {
+            output
+        } else {
+            trim_decimal_zeros(&output)
+        }
+    }
+}
+
+fn trim_exponent_zeros(text: &str) -> String {
+    match text.split_once('e') {
+        Some((mantissa, exponent)) => format!("{}e{exponent}", trim_decimal_zeros(mantissa)),
+        None => text.to_owned(),
+    }
+}
+
+fn trim_decimal_zeros(text: &str) -> String {
+    if !text.contains('.') {
+        return text.to_owned();
+    }
+    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() {
+        "0".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn go_quote(value: &str) -> String {
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            '\u{8}' => output.push_str("\\b"),
+            '\u{c}' => output.push_str("\\f"),
+            '\u{b}' => output.push_str("\\v"),
+            character if character.is_control() => {
+                if (character as u32) < 0x100 {
+                    output.push_str(&format!("\\x{:02x}", character as u32));
+                } else {
+                    output.push_str(&format!("\\u{:04x}", character as u32));
+                }
+            }
+            character => output.push(character),
+        }
+    }
+    output.push('"');
+    output
 }
 
 // ---------------------------------------------------------------------------
