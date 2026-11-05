@@ -23,6 +23,10 @@ fn matches_arm64_go_f64_expectations() {
     let expected: serde_json::Value = serde_json::from_str(EXPECTED).expect("expected json");
     assert_eq!(actual, expected);
 
+    assert_eq!(actual["sin075"].as_f64(), Some(0.6816387600233341));
+    assert_eq!(actual["tanbig"].as_f64(), Some(-1.6724147821275834));
+    assert_eq!(actual["sinh40"].as_f64(), Some(1.1769263341850998e17));
+    assert_eq!(actual["cosh40"].as_f64(), Some(1.1769263341850998e17));
     assert_eq!(
         actual["sinh_internal"].as_f64(),
         Some(1.5229731293746392e96)

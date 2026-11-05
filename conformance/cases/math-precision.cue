@@ -26,39 +26,16 @@ params: {
 	pow_low:    math.Pow(10, -99957)
 	pow_frac_low: math.Pow(10, -99913.5)
 
-	// float64-backed functions follow Go's math package exactly.
+	// Sqrt is a correctly-rounded hardware operation and is architecture-stable.
+	// Float64 transcendentals (Sin/Cos/Tan/Asin/Acos/Atan/Atan2/Sinh/Cosh/Tanh/
+	// Asinh/Acosh/Atanh/Mod/Remainder) are Rust-only tests because Go's f64 math
+	// is architecture-dependent (arm64 fuses multiply-adds).
 	sqrt2:   math.Sqrt(2)
 	sqrt4:   math.Sqrt(4)
-	sin1:    math.Sin(1)
-	cos1:    math.Cos(1)
-	tan1:    math.Tan(1)
-	sin075:  math.Sin(0.75)
-	sinbig:  math.Sin(1e9)
-	cosbig:  math.Cos(1e15)
-	tanbig:  math.Tan(1e15)
-	asin:    math.Asin(0.5)
-	acos:    math.Acos(0.5)
-	asin_neg: math.Asin(-0.35069589196500495)
-	acos_neg: math.Acos(-0.35069589196500495)
-	atan2_large: math.Atan2(937476.8313145018, 682531.0038061256)
-	acosh_large: math.Acosh(1e6)
-	atan:    math.Atan(1)
-	atan2:   math.Atan2(1, -2)
-	sinh2:   math.Sinh(2)
-	sinh40:  math.Sinh(40)
-	cosh40:  math.Cosh(40)
-	cosh2:   math.Cosh(2)
-	tanh2:   math.Tanh(2)
-	asinh:   math.Asinh(2)
-	acosh:   math.Acosh(2)
-	atanh:   math.Atanh(0.1)
-	mod:     math.Mod(1234567890123456789012345678901234567890, 7)
-	rem:     math.Remainder(1234567890123456789012345678901234567890, 7)
 
 	// String interpolation uses the same decimal representation as export.
 	exp_interp: "\(math.Exp(1))"
 	pow_interp: "\(math.Pow(2, 0.5))"
-	sin_interp: "\(math.Sin(1))"
 }
 
 workflow: {
