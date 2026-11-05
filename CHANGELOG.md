@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.47.0
+
+Remaining category gaps from the v0.46.1 reviews.
+
+- **tool/http**: `Do/Get/Post/Put/Delete` with request/response body, headers, redirects, TLS verify/caCert, status/statusCode/header/body outputs, local-server differential tests and a deterministic macOS test server. `Serve`, trailers, HTTP/2 and non-UTF-8 bodies remain documented limits.
+- **Imported tool/os aliases**: imported struct env bases and command aliases expand for unambiguous defaults and fail like CUE on ambiguous defaults.
+- **Runtime templates**: mixed exponent/plain arbitrary-precision comparisons are exact; `%#g` default precision matches Go; `%q` exponent integers and over-cap errors fixed.
+- **Optional semantics**: unmaterialized optional references in disjunction branches are unavailable alternatives, while hard errors beneath them still propagate; hidden incomplete alternatives align with CUE.
+- Added local TLS coverage and stabilized the HTTP e2e server.
+
+- 652 tests; fmt/clippy/conformance green.
+
+## v0.46.1
 ## v0.46.1
 
 Final review hardening for the three feature tracks.
