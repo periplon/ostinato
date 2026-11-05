@@ -1,4 +1,4 @@
-ostinato 0.47.0
+ostinato 0.48.0
 cue: cue version v0.17.1
 rust: rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)
 cargo: cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)
