@@ -11516,6 +11516,358 @@ command: c: {
 }
 
 #[test]
+fn tool_command_residual_scheduling_matches_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"package lib
+
+import e "tool/exec"
+
+run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+"#;
+    let cases: Vec<(&str, String)> = vec![
+        (
+            "rescmdlocal",
+            r#"package res
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: rescmdlocal: {
+	a: base
+	t: cli.Print & {text: "R=\(a.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "resinvalidsub",
+            r#"package res
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resinvalidsub: {
+	t: cli.Print & {text: "v=\(run.stdout - 2)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "resinvalidadd",
+            r#"package res
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resinvalidadd: {
+	t: cli.Print & {text: "v=\(run.success + 1)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "resmodulelocal",
+            r#"package res
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+prep: lib.run
+p2: prep
+command: resmodulelocal: {
+	a: prep
+	t: cli.Print & {text: "R=\(p2.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "resmodulehopr2",
+            r#"package res
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+prep: lib.run
+p2: prep
+p3: p2
+command: resmodulehopr2: {
+	r: p2
+	t: cli.Print & {text: "R=\(p3.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "resmodulehopr3",
+            r#"package res
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+prep: lib.run
+p2: prep
+p3: p2
+command: resmodulehopr3: {
+	r: p3
+	t: cli.Print & {text: "R=\(prep.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "resaliasindex",
+            r#"package res
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resaliasindex: {
+	a: base
+	t: cli.Print & {text: "R=\(a["stdout"])"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "resmoduledirecttarget",
+            r#"package res
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+prep: lib.run
+command: resmoduledirecttarget: prep & {t: cli.Print & {text: "R=\(prep.stdout)"}}
+"#
+            .to_owned(),
+        ),
+        (
+            "resifpending",
+            r#"package res
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resifpending: {
+	if true {
+		t: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "resforpending",
+            r#"package res
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resforpending: {
+	for x in ["a", "b"] {
+		t: cli.Print & {text: "x=\(x) r=\(run.stdout)"}
+	}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "resindexinput",
+            r#"package res
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resindexinput: {
+	t: exec.Run & {cmd: ["sh", "-c", "printf %s " + run["stdout"]], stdout: string}
+	p: cli.Print & {text: "out=\(t.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "rescmdtargetodd",
+            r#"package res
+import "tool/exec"
+base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+p2: base
+p3: p2
+p4: p3
+p5: p4
+command: rescmdtargetodd: p5
+"#
+            .to_owned(),
+        ),
+        (
+            "rescmdtargeteven",
+            r#"package res
+import "tool/exec"
+base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+p2: base
+p3: p2
+p4: p3
+command: rescmdtargeteven: p4
+"#
+            .to_owned(),
+        ),
+        (
+            "resplainodd",
+            r#"package res
+import "tool/exec"
+base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+p2: base
+p3: p2
+p4: p3
+p5: p4
+command: resplainodd: {
+	r: p5
+	q: "\(p5.stdout)"
+}
+"#
+            .to_owned(),
+        ),
+    ];
+    for (name, source) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+            std::fs::create_dir_all(directory.join("lib")).expect("lib");
+            write(&directory.join("cue.mod/module.cue"), module);
+            write(&directory.join("lib/lib.cue"), library);
+            write(&directory.join("x_tool.cue"), &source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {} ostinato stderr: {}",
+            String::from_utf8_lossy(&expected.stderr),
+            String::from_utf8_lossy(&actual.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+        if expected.status.success() {
+            assert_eq!(actual.stderr, expected.stderr, "{name}: stderr differs");
+        }
+        assert_eq!(
+            std::fs::read(cue_dir.path().join("order.txt")).ok(),
+            std::fs::read(rust_dir.path().join("order.txt")).ok(),
+            "{name}: order.txt differs"
+        );
+    }
+}
+
+#[test]
+fn tool_command_non_scalar_and_if_pending_docs_examples() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases: &[(&str, &str)] = &[
+        (
+            "resifsuccess",
+            r#"package docs
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resifsuccess: {
+	if run.success {
+		t: cli.Print & {text: "yes"}
+	}
+}
+"#,
+        ),
+        (
+            "resstructwhole",
+            r#"package docs
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resstructwhole: {
+	t: cli.Print & {text: "v=\(run)"}
+}
+"#,
+        ),
+        (
+            "resstructinterp",
+            r#"package docs
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resstructinterp: {
+	t: cli.Print & {text: "v=\({x: run.stdout})"}
+}
+"#,
+        ),
+        (
+            "reslistinterp",
+            r#"package docs
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: reslistinterp: {
+	t: cli.Print & {text: "v=\([run.stdout])"}
+}
+"#,
+        ),
+    ];
+    for (name, source) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            write(&directory.join("x_tool.cue"), source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert!(!expected.status.success(), "{name}: cue accepted the input");
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: exit codes differ"
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+        let cue_order = std::fs::read(cue_dir.path().join("order.txt")).ok();
+        let rust_order = std::fs::read(rust_dir.path().join("order.txt")).ok();
+        if *name == "reslistinterp" || *name == "resstructinterp" {
+            // Documented residual: CUE rejects literal list interpolation
+            // before the producer; Ostinato schedules it and then rejects.
+            assert!(cue_order.is_none(), "{name}: cue executed the producer");
+            assert!(rust_order.is_some(), "{name}: ostinato did not execute");
+        } else {
+            assert_eq!(cue_order, rust_order, "{name}: order.txt differs");
+        }
+    }
+}
+
+#[test]
 fn tool_command_module_alias_plain_reads_match_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");

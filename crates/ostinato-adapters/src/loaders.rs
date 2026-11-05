@@ -1723,6 +1723,44 @@ pub fn run_tool_command_paths(
                 .to_owned(),
         ));
     }
+    // Command-target alias chains (`command: c: p3`). CUE runs the command
+    // task itself at the target and materialises the odd hops below it, just
+    // like a command field alias. Module targets stay single instances.
+    let (command_target_candidates, command_target_extra_instances): (
+        Vec<Vec<String>>,
+        Vec<Vec<String>>,
+    ) = {
+        let command_scopes: Vec<&[StructItem]> = combined
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                StructItem::Field(field)
+                    if matches!(&field.label, Label::Name(name, _) if name == "command") =>
+                {
+                    match &field.value {
+                        Expr::Struct(items, _) => Some(items.as_slice()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        let mut paths = Vec::new();
+        let mut extras = Vec::new();
+        for value in &selected_values {
+            let before = paths.len();
+            command_target_paths(&command_scopes, &combined.items, value, &mut paths);
+            if command_target_uses_local_field(&command_scopes, &combined.items, value) {
+                for path in &paths[before..] {
+                    if alias_chain_instances(&combined.items, path).is_empty() {
+                        extras.push(path.clone());
+                    }
+                }
+            }
+        }
+        paths.retain(|path| !path.first().is_some_and(|root| imports.contains_key(root)));
+        (paths, extras)
+    };
     apply_os_value_schema(&mut combined.items, command_name, &imports);
     // Schema expansion can replace the last reference to an imported value;
     // drop declarations that are no longer referenced by the pruned package.
@@ -1772,6 +1810,7 @@ pub fn run_tool_command_paths(
             &imports,
         );
     }
+    let raw_task_input_read_paths = external_paths.clone();
     plain_read_paths.retain(|path| {
         if find_field_expr_at_path(&combined.items, path).is_some_and(|value| {
             is_task_expr(
@@ -1843,9 +1882,45 @@ pub fn run_tool_command_paths(
     // Task-input reads through package aliases (`\(p2.stdout)`) must be part
     // of the read order too: CUE keeps them non-concrete when the underlying
     // claimed task was declared earlier in the command.
-    let task_input_read_paths = external_paths.clone();
+    // Task-input reads that reach a module task through a local alias chain
+    // that a command alias also traverses. CUE materialises those producers
+    // differently from ordinary reads; a bare container read such as
+    // `r.run.stdout` (with `r: {run: lib.run}`) still deadlocks.
+    let command_alias_chain_nodes: std::collections::BTreeSet<Vec<String>> = command_aliases
+        .values()
+        .filter_map(|target| target.local.as_ref())
+        .flat_map(|local| alias_chain_nodes(&combined.items, local))
+        .chain(
+            command_target_candidates
+                .iter()
+                .flat_map(|path| alias_chain_nodes(&combined.items, path))
+                .chain(command_target_extra_instances.iter().cloned()),
+        )
+        .collect();
+    let module_backed_task_reads: Vec<Vec<String>> = raw_task_input_read_paths
+        .iter()
+        .filter(|path| {
+            if path.first().is_some_and(|root| imports.contains_key(root)) {
+                return false;
+            }
+            let read_nodes = alias_chain_nodes(&combined.items, path);
+            if !read_nodes
+                .iter()
+                .any(|node| command_alias_chain_nodes.contains(node))
+            {
+                return false;
+            }
+            let root = task_read_root(&combined.items, path);
+            path_is_module_terminal(&combined.items, &imports, &root)
+        })
+        .cloned()
+        .collect();
+    let module_read_chain: std::collections::BTreeSet<Vec<String>> = module_backed_task_reads
+        .iter()
+        .flat_map(|path| alias_chain_nodes(&combined.items, path))
+        .collect();
     let mut read_claimed = command_claimed.clone();
-    read_claimed.extend(task_input_read_paths.iter().cloned());
+    read_claimed.extend(raw_task_input_read_paths.iter().cloned());
     let order = package_read_order(
         task_items.as_slice(),
         &combined.items,
@@ -1905,6 +1980,22 @@ pub fn run_tool_command_paths(
             );
         }
     }
+    // Reads that occur inside a task-valued field are task inputs; plain
+    // interpolation reads are not. CUE schedules the alias chain root only
+    // for the former (a task-input read materialises the concrete task).
+    let mut command_task_field_reads = std::collections::BTreeSet::new();
+    let mut command_task_field_read_paths = std::collections::BTreeSet::new();
+    {
+        let mut scopes = Vec::new();
+        collect_command_task_output_reads(
+            &Expr::Struct(task_items.clone(), Span::default()),
+            &mut scopes,
+            &combined.items,
+            &non_task_imports,
+            &mut command_task_field_reads,
+            &mut command_task_field_read_paths,
+        );
+    }
     for (name, target) in &command_aliases {
         let Some(local) = &target.local else {
             continue;
@@ -1916,6 +2007,11 @@ pub fn run_tool_command_paths(
         }
         // Direct aliases keep CUE's declaration-first non-concrete behaviour.
         if alias_chain_nodes(&combined.items, local).len() <= 2 {
+            continue;
+        }
+        let task_read = command_task_field_reads.contains(name)
+            || command_task_field_read_paths.contains(local);
+        if !task_read {
             continue;
         }
         let root = task_read_root(&combined.items, local);
@@ -1939,11 +2035,58 @@ pub fn run_tool_command_paths(
     // CUE materialises every other package alias hop as its own task instance,
     // so `p5: p4; p4: p3; p3: p2; p2: base` runs `p4` and `p2` in addition to
     // the command alias task itself.
-    let alias_instance_paths: std::collections::BTreeSet<Vec<String>> = command_aliases
-        .values()
-        .filter_map(|target| target.local.as_ref())
-        .flat_map(|local| alias_chain_instances(&combined.items, local))
-        .collect();
+    let mut alias_instance_paths: std::collections::BTreeSet<Vec<String>> =
+        std::collections::BTreeSet::new();
+    for target in command_aliases.values() {
+        let Some(local) = target.local.as_ref() else {
+            continue;
+        };
+        let target_nodes = alias_chain_nodes(&combined.items, local);
+        let instances = alias_chain_instances(&combined.items, local);
+        // A module-backed task-input read materialises only the alias hops on
+        // its own read path. `r: p3` with a `prep.stdout` read does not run
+        // `p2`; `r: p2` with a `p3.stdout` read runs the shared `prep` hop.
+        let mut related = false;
+        let mut allowed = std::collections::BTreeSet::new();
+        for path in &module_backed_task_reads {
+            let read_nodes = alias_chain_nodes(&combined.items, path);
+            if target_nodes.iter().any(|node| read_nodes.contains(node)) {
+                related = true;
+                allowed.extend(read_nodes);
+            }
+        }
+        if related {
+            alias_instance_paths.extend(
+                instances
+                    .into_iter()
+                    .filter(|instance| allowed.contains(instance)),
+            );
+        } else {
+            alias_instance_paths.extend(instances);
+        }
+    }
+    for path in &command_target_candidates {
+        alias_instance_paths.extend(alias_chain_instances(&combined.items, path));
+    }
+    alias_instance_paths.extend(command_target_extra_instances.iter().cloned());
+    // When a module-backed task-input read is covered by materialised alias
+    // instances on its chain, CUE coalesces the module hop instead of running
+    // an extra local module-root producer (`group.prep`).
+    let mut covered_module_roots = std::collections::BTreeSet::new();
+    for path in &module_backed_task_reads {
+        let root = task_read_root(&combined.items, path);
+        let read_nodes = alias_chain_nodes(&combined.items, path);
+        // A materialised hop can cover a direct module-root read either by
+        // sitting on the read chain or by injecting the root as its alias
+        // target (`group.p2` injects `group.prep`).
+        if alias_instance_paths.iter().any(|instance| {
+            read_nodes.contains(instance)
+                || alias_instance_root(&combined.items, instance).as_ref() == Some(&root)
+        }) {
+            covered_module_roots.insert(root);
+        }
+    }
+    external_paths.retain(|path| !covered_module_roots.contains(path));
     let alias_instance_roots: std::collections::BTreeSet<Vec<String>> = alias_instance_paths
         .iter()
         .filter_map(|local| alias_instance_root(&combined.items, local))
@@ -2019,10 +2162,28 @@ pub fn run_tool_command_paths(
     };
     if module_input_candidates
         .iter()
-        .any(|path| module_backed(path))
+        .any(|path| !module_read_chain.contains(path) && module_backed(path))
     {
         return Err(ostinato_lang::LangError::Workflow(
             "tool task inputs cannot read module task outputs".to_owned(),
+        ));
+    }
+    // A command target that is itself the module task (`command: c: prep & {t:
+    // cli.Print ...prep.stdout}`) deadlocks in CUE instead of executing the
+    // module producer. Reject before scheduling.
+    let direct_module_target_deadlock = command_target_candidates.iter().any(|target| {
+        path_is_module_terminal(&combined.items, &imports, target)
+            && alias_chain_instances(&combined.items, target).is_empty()
+            && module_backed_task_reads.iter().any(|read| {
+                let read_root = task_read_root(&combined.items, read);
+                read_root == *target
+                    || read == target
+                    || alias_chain_nodes(&combined.items, read).contains(target)
+            })
+    });
+    if direct_module_target_deadlock {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool command target reads its own module task output".to_owned(),
         ));
     }
 
@@ -2221,6 +2382,37 @@ pub fn run_tool_command_paths(
             && let Some(leaf) = path.last()
         {
             task_name_set.remove(leaf);
+        }
+    }
+    // Module-backed task-input reads stay pending until the scheduled hops
+    // inject their outputs, so evaluation can reach the scheduler.
+    for path in &module_backed_task_reads {
+        for node in alias_chain_nodes(&combined.items, path) {
+            if let Some(leaf) = node.last() {
+                task_name_set.insert(leaf.clone());
+            }
+        }
+        if let Some(leaf) = path.last() {
+            task_name_set.insert(leaf.clone());
+        }
+    }
+    // A direct command-alias task-input read (`a.stdout` where `a: base`) has
+    // no task dependency edge in CUE: evaluation fails before the producer
+    // runs. Keep it eager by not admitting the alias name as a pending task.
+    for (name, target) in &command_aliases {
+        if !command_task_field_reads.contains(name) {
+            continue;
+        }
+        let Some(local) = target.local.as_ref() else {
+            continue;
+        };
+        let module_backed = path_is_module_terminal(&combined.items, &imports, local)
+            || find_field_expr_at_path_in_root(&combined.items, local, &combined.items)
+                .is_some_and(|value| module_task_path(value, &imports).is_some());
+        let pure_alias = find_field_expr_at_path(&task_items, std::slice::from_ref(name))
+            .is_some_and(is_pure_alias_expr);
+        if pure_alias && !module_backed && alias_chain_nodes(&combined.items, local).len() == 1 {
+            task_name_set.remove(name);
         }
     }
     let value = eval_file_with_imports_mode_allow_outputs(
@@ -4318,6 +4510,15 @@ fn resolve_command_items(
             resolve_command_items(items, left, visited, out);
             resolve_command_items(items, right, visited, out);
         }
+        Expr::Disjunction(left, right, _) => {
+            let mut left_items = Vec::new();
+            resolve_command_items(items, left, visited, &mut left_items);
+            if left_items.is_empty() {
+                resolve_command_items(items, right, visited, out);
+            } else {
+                out.extend(left_items);
+            }
+        }
         Expr::Struct(task_items, _) => out.extend(task_items.iter().cloned()),
         _ => {}
     }
@@ -4774,6 +4975,16 @@ fn collect_command_field_output_reads(
             collect_command_field_output_reads(base, out, paths);
         }
         Expr::Index(base, index, _) => {
+            if index_field_name(index)
+                .is_some_and(|field| matches!(field.as_str(), "stdout" | "stderr" | "success"))
+            {
+                if let Some(name) = command_field_read_name(base) {
+                    out.insert(name);
+                }
+                if let Some(path) = selector_names(base, None) {
+                    paths.insert(path);
+                }
+            }
             collect_command_field_output_reads(base, out, paths);
             collect_command_field_output_reads(index, out, paths);
         }
@@ -4838,6 +5049,92 @@ fn collect_command_field_output_reads(
         | Expr::Float(..)
         | Expr::Bytes(..)
         | Expr::Ident(..) => {}
+    }
+}
+
+/// Task-input reads: output selectors that occur inside a task-valued field.
+///
+/// `t: cli.Print & {text: "\(p.stdout)"}` is a task input, while
+/// `q: "\(p.stdout)"` is plain field interpolation. CUE's alias-instance
+/// scheduling differs between the two shapes, so keep them apart.
+fn collect_command_task_output_reads<'a>(
+    expr: &'a Expr,
+    scopes: &mut Vec<&'a [StructItem]>,
+    root: &'a [StructItem],
+    imports: &ImportKinds,
+    out: &mut std::collections::BTreeSet<String>,
+    paths: &mut std::collections::BTreeSet<Vec<String>>,
+) {
+    fn walk_items<'a>(
+        items: &'a [StructItem],
+        scopes: &mut Vec<&'a [StructItem]>,
+        root: &'a [StructItem],
+        imports: &ImportKinds,
+        out: &mut std::collections::BTreeSet<String>,
+        paths: &mut std::collections::BTreeSet<Vec<String>>,
+    ) {
+        for item in items {
+            match item {
+                StructItem::Field(field) => {
+                    let child_is_task = is_task_expr(
+                        &field.value,
+                        scopes,
+                        root,
+                        &mut std::collections::BTreeSet::new(),
+                        imports,
+                    );
+                    if child_is_task {
+                        collect_command_field_output_reads(&field.value, out, paths);
+                    } else {
+                        collect_command_task_output_reads(
+                            &field.value,
+                            scopes,
+                            root,
+                            imports,
+                            out,
+                            paths,
+                        );
+                    }
+                }
+                StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                    collect_command_task_output_reads(value, scopes, root, imports, out, paths);
+                }
+                StructItem::For { source, body, .. } => {
+                    collect_command_task_output_reads(source, scopes, root, imports, out, paths);
+                    walk_items(body, scopes, root, imports, out, paths);
+                }
+                StructItem::If { cond, body, .. } => {
+                    collect_command_task_output_reads(cond, scopes, root, imports, out, paths);
+                    walk_items(body, scopes, root, imports, out, paths);
+                }
+                StructItem::Ellipsis(_) => {}
+            }
+        }
+    }
+    match expr {
+        Expr::Struct(items, _) => {
+            scopes.push(items);
+            walk_items(items, scopes, root, imports, out, paths);
+            scopes.pop();
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            collect_command_task_output_reads(left, scopes, root, imports, out, paths);
+            collect_command_task_output_reads(right, scopes, root, imports, out, paths);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            collect_command_task_output_reads(inner, scopes, root, imports, out, paths);
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                collect_command_task_output_reads(item, scopes, root, imports, out, paths);
+            }
+        }
+        Expr::OpenList(Some(inner), _) => {
+            collect_command_task_output_reads(inner, scopes, root, imports, out, paths);
+        }
+        _ => {}
     }
 }
 
@@ -7231,6 +7528,153 @@ fn alias_chain_instances(items: &[StructItem], target: &[String]) -> Vec<Vec<Str
         .step_by(2)
         .cloned()
         .collect()
+}
+
+/// Immediate package paths a command value aliases.
+///
+/// `command: c: p3`, `command: c: group.p3`, `command: c: group["p3"]` and
+/// `command: c: p3 & q` each contribute their task operands. Transparent
+/// `let` bindings are followed; package field aliases are not (the chain walk
+/// takes care of those).
+fn command_target_paths(
+    scopes: &[&[StructItem]],
+    items: &[StructItem],
+    expr: &Expr,
+    out: &mut Vec<Vec<String>>,
+) {
+    match expr {
+        Expr::Ident(name, _) => match local_binding_location(scopes, items, name) {
+            Some((_, StructItem::Let { value, .. })) => {
+                command_target_paths(scopes, items, value, out);
+            }
+            // Command-scoped task fields are transparent aliases:
+            // `command: {c1: base; c2: c1}` targets `base`.
+            Some((false, StructItem::Field(field))) => {
+                command_target_paths(scopes, items, &field.value, out);
+            }
+            _ => push_target(out, vec![name.clone()]),
+        },
+        Expr::Select(base, field, _, _) => {
+            // Inline container selection: `{a: p4}.a`. A selector rooted at
+            // a package field (`group.p5`) stays a path.
+            if is_inline_container(base)
+                && let Some(value) =
+                    field_in_expr(items, base, field, &mut std::collections::BTreeSet::new())
+            {
+                command_target_paths(scopes, items, value, out);
+                return;
+            }
+            let mut paths = Vec::new();
+            command_target_paths(scopes, items, base, &mut paths);
+            for mut path in paths {
+                path.push(field.clone());
+                push_target(out, path);
+            }
+        }
+        Expr::Index(base, index, _) => {
+            // Inline list/struct indexing: `([p4])[0]`, `{a: p4}["a"]`.
+            // Import/package paths such as `group["p4"]` stay paths.
+            if is_inline_container(base)
+                && let Some(value) = command_target_container_item(base, index)
+            {
+                command_target_paths(scopes, items, value, out);
+                return;
+            }
+            let Some(field) = index_field_name(index) else {
+                return;
+            };
+            let mut paths = Vec::new();
+            command_target_paths(scopes, items, base, &mut paths);
+            for mut path in paths {
+                path.push(field.clone());
+                push_target(out, path);
+            }
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            command_target_paths(scopes, items, inner, out);
+        }
+        Expr::Unify(left, right, _) => {
+            command_target_paths(scopes, items, left, out);
+            command_target_paths(scopes, items, right, out);
+        }
+        Expr::Disjunction(left, right, _) => {
+            // CUE's command target picks the first resolvable alternative.
+            let mut paths = Vec::new();
+            command_target_paths(scopes, items, left, &mut paths);
+            if paths.is_empty() {
+                command_target_paths(scopes, items, right, &mut paths);
+            }
+            for path in paths {
+                push_target(out, path);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether resolving a command target passes through a command-local field
+/// alias (`command: {c1: base; c2: c1}`). CUE materialises one extra producer
+/// even when the resolved task has no further alias hops.
+fn command_target_uses_local_field(
+    scopes: &[&[StructItem]],
+    items: &[StructItem],
+    expr: &Expr,
+) -> bool {
+    match expr {
+        Expr::Ident(name, _) => match local_binding_location(scopes, items, name) {
+            Some((false, StructItem::Field(_))) => true,
+            Some((_, StructItem::Let { value, .. })) => {
+                command_target_uses_local_field(scopes, items, value)
+            }
+            _ => false,
+        },
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+            !is_inline_container(base) && command_target_uses_local_field(scopes, items, base)
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            command_target_uses_local_field(scopes, items, left)
+                || command_target_uses_local_field(scopes, items, right)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            command_target_uses_local_field(scopes, items, inner)
+        }
+        _ => false,
+    }
+}
+
+/// Select a literal field/list element from an inline container expression.
+fn command_target_container_item<'a>(base: &'a Expr, index: &Expr) -> Option<&'a Expr> {
+    let base = strip_expr_parens(base);
+    let name = index_field_name(index)?;
+    match base {
+        Expr::Struct(struct_items, _) => named_field(struct_items, &name),
+        Expr::List(list, _) => {
+            let position = name.parse::<usize>().ok()?;
+            list.get(position)
+        }
+        Expr::Unify(left, right, _) => command_target_container_item(left, index)
+            .or_else(|| command_target_container_item(right, index)),
+        _ => None,
+    }
+}
+
+fn is_inline_container(expr: &Expr) -> bool {
+    match strip_expr_parens(expr) {
+        Expr::Struct(..) | Expr::List(..) => true,
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            is_inline_container(left) || is_inline_container(right)
+        }
+        _ => false,
+    }
+}
+
+fn strip_expr_parens(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            strip_expr_parens(inner)
+        }
+        _ => expr,
+    }
 }
 
 /// A value that only references another binding (`p3: p2`, `p3: l`, `#a: #b`).
@@ -10173,7 +10617,21 @@ fn extract_command_tasks(
             "no `command` field in tool files".to_owned(),
         ));
     };
-    let Some(tasks) = command.get(command_name).and_then(value_fields) else {
+    let Some(command_value) = command.get(command_name) else {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "unknown tool command `{command_name}`"
+        )));
+    };
+    let command_value = match command_value {
+        Value::Disjunction(alternatives, _) => alternatives
+            .iter()
+            .find(|alternative| {
+                value_fields(alternative).is_some_and(|fields| fields.contains_key("$id"))
+            })
+            .unwrap_or(command_value),
+        value => value,
+    };
+    let Some(tasks) = value_fields(command_value) else {
         return Err(ostinato_lang::LangError::Workflow(format!(
             "unknown tool command `{command_name}`"
         )));
