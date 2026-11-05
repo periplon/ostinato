@@ -8847,3 +8847,35 @@ fn numeric_unification_uses_value_equality_but_keeps_int_float_types() {
     assert!(unify("1", "1.0").is_err());
     assert!(unify("1", "2").is_err());
 }
+
+#[test]
+fn hyperbolic_boundary_values_remain_finite_without_the_oracle() {
+    let source = r#"
+package demo
+import "math"
+a: math.Sinh(709.7)
+b: math.Cosh(709.437)
+c: math.Sinh(-709.78)
+d: math.Cosh(709.78)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "math".to_owned(),
+        ostinato_lang::builtin_module("math").expect("math builtin"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    for field in ["a", "b", "c", "d"] {
+        assert!(
+            json[field].as_f64().is_some_and(f64::is_finite),
+            "{field} should be finite: {}",
+            json[field]
+        );
+    }
+    assert_eq!(json["a"].as_f64(), Some(8.274920138401322e307));
+    assert_eq!(json["b"].as_f64(), Some(6.361277807292747e307));
+    assert_eq!(json["c"].as_f64(), Some(-8.964113971972578e307));
+    assert_eq!(json["d"].as_f64(), Some(8.964113971972578e307));
+}

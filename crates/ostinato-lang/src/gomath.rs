@@ -797,6 +797,10 @@ mod tests {
         assert_eq!(sinh(-709.7), -8.274920138401322e307);
         assert_eq!(cosh(709.437), 6.361277807292747e307);
         assert_eq!(cosh(709.78), 8.964113971972578e307);
+        assert!(sinh(709.78).is_finite());
+        assert!(cosh(-709.78).is_finite());
+        assert!(sinh(710.0).is_infinite());
+        assert!(cosh(710.0).is_infinite());
     }
 
     #[test]
