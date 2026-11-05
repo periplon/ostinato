@@ -1599,8 +1599,8 @@ fn exact_integer_ordering(
     left: &serde_json::Number,
     right: &serde_json::Number,
 ) -> Option<Ordering> {
-    let left = integer_parts(&left.to_string())?;
-    let right = integer_parts(&right.to_string())?;
+    let left = exact_decimal_integer(&left.to_string())?;
+    let right = exact_decimal_integer(&right.to_string())?;
     Some(compare_integer_parts(&left, &right))
 }
 
@@ -1634,36 +1634,90 @@ fn exact_integer(value: &Json) -> Option<IntegerParts> {
     exact_decimal_integer(&text)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecimalIntegerError {
+    NotInteger,
+    TooLarge,
+}
+
 fn exact_decimal_integer(text: &str) -> Option<IntegerParts> {
-    let decimal = text.parse::<BigDecimal>().ok()?;
+    exact_decimal_integer_result(text).ok()
+}
+
+fn exact_decimal_integer_result(text: &str) -> Result<IntegerParts, DecimalIntegerError> {
+    let decimal = text
+        .parse::<BigDecimal>()
+        .map_err(|_| DecimalIntegerError::NotInteger)?;
     let (bigint, exponent) = decimal.as_bigint_and_exponent();
     if bigint == BigInt::from(0) {
-        return Some(IntegerParts {
+        return Ok(IntegerParts {
             negative: false,
             digits: "0".to_owned(),
         });
     }
-    let scale = usize::try_from(exponent.unsigned_abs()).ok()?;
-    if scale > MAX_TEMPLATE_INTEGER_DIGITS {
-        return None;
+    let scale =
+        usize::try_from(exponent.unsigned_abs()).map_err(|_| DecimalIntegerError::TooLarge)?;
+    if exponent <= 0 && scale > MAX_TEMPLATE_INTEGER_DIGITS {
+        return Err(DecimalIntegerError::TooLarge);
     }
     let digits = bigint.to_string();
     let digits = digits.trim_start_matches('-');
     if exponent <= 0 {
-        let expanded_len = digits.len().checked_add(scale)?;
+        let expanded_len = digits
+            .len()
+            .checked_add(scale)
+            .ok_or(DecimalIntegerError::TooLarge)?;
         if expanded_len > MAX_TEMPLATE_INTEGER_DIGITS {
-            return None;
+            return Err(DecimalIntegerError::TooLarge);
         }
-        let power = BigInt::from(10u32).pow(u32::try_from(scale).ok()?);
-        integer_parts(&(bigint * power).to_string())
+        let power = BigInt::from(10u32)
+            .pow(u32::try_from(scale).map_err(|_| DecimalIntegerError::TooLarge)?);
+        integer_parts(&(bigint * power).to_string()).ok_or(DecimalIntegerError::NotInteger)
     } else {
-        digits.len().checked_sub(scale)?;
-        let power = BigInt::from(10u32).pow(u32::try_from(scale).ok()?);
-        if (&bigint % &power) != BigInt::from(0) {
-            return None;
+        if digits.len() < scale {
+            return Err(DecimalIntegerError::NotInteger);
         }
-        integer_parts(&(bigint / power).to_string())
+        let power = BigInt::from(10u32)
+            .pow(u32::try_from(scale).map_err(|_| DecimalIntegerError::TooLarge)?);
+        if (&bigint % &power) != BigInt::from(0) {
+            return Err(DecimalIntegerError::NotInteger);
+        }
+        integer_parts(&(bigint / power).to_string()).ok_or(DecimalIntegerError::NotInteger)
     }
+}
+
+fn exact_integer_checked(
+    value: &Json,
+    verb: char,
+    position: Position,
+) -> Result<IntegerParts, LangError> {
+    let Json::Number(number) = value else {
+        return Err(error_at(
+            position,
+            format!(
+                "printf: `%{verb}` requires an integer, got {}",
+                type_name(value)
+            ),
+        ));
+    };
+    let text = number.to_string();
+    if let Some(parts) = integer_parts(&text) {
+        return Ok(parts);
+    }
+    exact_decimal_integer_result(&text).map_err(|error| match error {
+        DecimalIntegerError::NotInteger => error_at(
+            position,
+            format!(
+                "printf: `%{verb}` requires an integer, got a non-integral number"
+            ),
+        ),
+        DecimalIntegerError::TooLarge => error_at(
+            position,
+            format!(
+                "printf: integer expansion exceeds the maximum of {MAX_TEMPLATE_INTEGER_DIGITS} digits"
+            ),
+        ),
+    })
 }
 
 fn exact_integer_index(value: &Json) -> Result<usize, &'static str> {
@@ -1995,15 +2049,7 @@ fn format_value(
             )),
         },
         'd' | 'i' | 'x' | 'X' | 'o' | 'b' => {
-            let value = exact_integer(argument).ok_or_else(|| {
-                error_at(
-                    position,
-                    format!(
-                        "printf: `%{verb}` requires an integer, got {}",
-                        type_name(argument)
-                    ),
-                )
-            })?;
+            let value = exact_integer_checked(argument, verb, position)?;
             format_integer(verb, &value, flags, precision, position)
         }
         'f' | 'e' | 'g' => {
@@ -2157,20 +2203,61 @@ fn go_general(magnitude: f64, precision: Option<usize>, alternate: bool) -> Stri
     }
     match precision {
         Some(places) => go_general_explicit(magnitude, places, alternate),
-        None if alternate => go_general_explicit(magnitude, 6, true),
-        None => {
-            let (mantissa, exponent) = shortest_exponent(magnitude);
-            if !(-4..6).contains(&exponent) {
-                format!(
-                    "{mantissa}e{}{:02}",
-                    if exponent < 0 { '-' } else { '+' },
-                    exponent.unsigned_abs()
-                )
-            } else {
-                format!("{magnitude}")
+        None if alternate => apply_sharp_default(&shortest_general(magnitude)),
+        None => shortest_general(magnitude),
+    }
+}
+
+fn shortest_general(magnitude: f64) -> String {
+    let (mantissa, exponent) = shortest_exponent(magnitude);
+    if !(-4..6).contains(&exponent) {
+        format!(
+            "{mantissa}e{}{:02}",
+            if exponent < 0 { '-' } else { '+' },
+            exponent.unsigned_abs()
+        )
+    } else {
+        format!("{magnitude}")
+    }
+}
+
+fn apply_sharp_default(text: &str) -> String {
+    let (mantissa, exponent) = match text.split_once('e') {
+        Some((mantissa, exponent)) => (mantissa, Some(exponent)),
+        None => (text, None),
+    };
+    let mut remaining = 6i32;
+    let mut saw_nonzero = false;
+    let mut has_decimal_point = false;
+    for character in mantissa.chars() {
+        match character {
+            '.' => has_decimal_point = true,
+            '0'..='9' => {
+                if character != '0' {
+                    saw_nonzero = true;
+                }
+                if saw_nonzero {
+                    remaining -= 1;
+                }
             }
+            _ => {}
         }
     }
+    let mut output = mantissa.to_owned();
+    if !has_decimal_point {
+        if mantissa == "0" {
+            remaining -= 1;
+        }
+        output.push('.');
+    }
+    if remaining > 0 {
+        output.push_str(&"0".repeat(remaining as usize));
+    }
+    if let Some(exponent) = exponent {
+        output.push('e');
+        output.push_str(exponent);
+    }
+    output
 }
 
 fn shortest_exponent(magnitude: f64) -> (String, i32) {
@@ -2233,14 +2320,8 @@ fn trim_decimal_zeros(text: &str) -> String {
 fn go_quote(value: &Json, position: Position) -> Result<String, LangError> {
     match value {
         Json::String(text) => Ok(quote_go(text, '"')),
-        Json::Number(number) => {
-            let text = number.to_string();
-            let Some(parts) = integer_parts(&text) else {
-                return Err(error_at(
-                    position,
-                    "printf: `%q` requires a string or integer, got a float",
-                ));
-            };
+        Json::Number(_) => {
+            let parts = exact_integer_checked(value, 'q', position)?;
             let character = if parts.negative {
                 '\u{fffd}'
             } else {

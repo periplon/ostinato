@@ -826,6 +826,39 @@ fn printf_general_explicit_precision_uses_rounded_exponent() {
 }
 
 #[test]
+fn printf_alternate_general_without_precision_matches_go() {
+    let context = template_context();
+    for (template, expected) in [
+        ("{{printf \"%#g\" 0}}", "0.00000"),
+        ("{{printf \"%#g\" 1.5}}", "1.50000"),
+        ("{{printf \"%#g\" 100}}", "100.000"),
+        ("{{printf \"%#g\" 999999.9}}", "999999.9"),
+        ("{{printf \"%#g\" 999999.5}}", "999999.5"),
+        ("{{printf \"%#g\" 1e6}}", "1.00000e+06"),
+        ("{{printf \"%#g\" 1234567}}", "1.234567e+06"),
+        ("{{printf \"%#g\" 0.0001}}", "0.000100000"),
+        ("{{printf \"%#g\" 1e-5}}", "1.00000e-05"),
+        (
+            "{{printf \"%#g\" 1.2345678901234567}}",
+            "1.2345678901234567",
+        ),
+        ("{{printf \"%#g\" 123456}}", "123456."),
+        ("{{printf \"%#g\" 999999.4}}", "999999.4"),
+        ("{{printf \"%#g\" 99999.9}}", "99999.9"),
+        ("{{printf \"%#g\" 9.9}}", "9.90000"),
+        ("{{printf \"%#g\" 0.1}}", "0.100000"),
+        ("{{printf \"%#g\" 1.0}}", "1.00000"),
+        ("{{printf \"%#g\" -1.5}}", "-1.50000"),
+    ] {
+        assert_eq!(
+            render(template, &context).expect("render"),
+            expected,
+            "template {template}"
+        );
+    }
+}
+
+#[test]
 fn printf_integer_zero_padding_and_alternate_forms_match_go() {
     let context = template_context();
     assert_eq!(
@@ -860,6 +893,69 @@ fn printf_integer_zero_padding_and_alternate_forms_match_go() {
             "template {template}"
         );
     }
+}
+
+#[test]
+fn compares_mixed_exponent_and_plain_big_integers_exactly() {
+    let context = template_context();
+    assert_eq!(
+        render("{{eq 1e30 1000000000000000000000000000001}}", &context).expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render("{{lt 1e30 1000000000000000000000000000001}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{gt 1000000000000000000000000000001 1e30}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{eq 1e30 1000000000000000000000000000000}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{eq 1e20 100000000000000000001}}", &context).expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render("{{lt 1e20 100000000000000000001}}", &context).expect("render"),
+        "true"
+    );
+
+    let big: serde_json::Value =
+        serde_json::from_str(r#"{"big": 1000000000000000000000000000001}"#).expect("json");
+    assert_eq!(render("{{eq .big 1e30}}", &big).expect("render"), "false");
+    assert_eq!(render("{{gt .big 1e30}}", &big).expect("render"), "true");
+    assert_eq!(
+        render("{{lt .big 1000000000000000000000000000002}}", &big).expect("render"),
+        "true"
+    );
+
+    assert_eq!(
+        render("{{printf \"%d\" 1e30}}", &context).expect("render"),
+        "1000000000000000000000000000000"
+    );
+    assert_eq!(
+        render(
+            "{{printf \"%d\" 1000000000000000000000000000000}}",
+            &context
+        )
+        .expect("render"),
+        "1000000000000000000000000000000"
+    );
+    assert_eq!(
+        render("{{printf \"%x\" 1e30}}", &context).expect("render"),
+        "c9f2c9cd04674edea40000000"
+    );
+    assert_eq!(
+        render(
+            "{{printf \"%x\" 1000000000000000000000000000000}}",
+            &context
+        )
+        .expect("render"),
+        "c9f2c9cd04674edea40000000"
+    );
 }
 
 #[test]
@@ -976,11 +1072,30 @@ fn printf_quotes_runes_strings_and_unicode_like_go() {
         ("{{printf \"%q\" \"\\U0010ffff\"}}", "\"\\U0010ffff\""),
         ("{{printf \"%q\" 4294967296}}", "'�'"),
         ("{{printf \"%q\" 1114112}}", "'�'"),
+        ("{{printf \"%q\" 1e30}}", "'�'"),
     ] {
         assert_eq!(
             render(template, &context).expect("render"),
             expected,
             "template {template}"
+        );
+    }
+}
+
+#[test]
+fn printf_reports_over_cap_integer_expansion() {
+    let context = template_context();
+    for template in [
+        "{{printf \"%d\" 1e2000000}}",
+        "{{printf \"%x\" 1e2000000}}",
+        "{{printf \"%q\" 1e2000000}}",
+    ] {
+        let message = render(template, &context)
+            .expect_err("over-cap expansion must fail")
+            .to_string();
+        assert!(
+            message.contains("exceeds the maximum"),
+            "template {template:?} produced {message:?}"
         );
     }
 }
