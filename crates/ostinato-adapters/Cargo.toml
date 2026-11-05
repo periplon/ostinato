@@ -21,6 +21,8 @@ chrono = { workspace = true }
 glob = { workspace = true }
 libc = { workspace = true }
 walkdir = { workspace = true }
+bigdecimal = "0.4.11"
+num-bigint = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

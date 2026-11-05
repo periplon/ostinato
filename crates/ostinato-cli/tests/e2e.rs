@@ -11928,3 +11928,641 @@ workflow: {
         "ok|ab|world|world"
     );
 }
+#[test]
+fn tool_command_stderr_outputs_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    // `accepted` fixtures run to completion in both implementations; rejected
+    // fixtures only require exit/status and stdout parity because CUE's error
+    // text includes fixture-specific positions.
+    let cases = [
+        (
+            "stderrfail",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: stderrfail: {
+	run: exec.Run & {
+		cmd: ["sh", "-c", "echo OUT; echo ERR >&2; exit 7"]
+		stdout: string
+		stderr: string
+		mustSucceed: false
+	}
+	print: cli.Print & {text: "out=[\(run.stdout)]err=[\(run.stderr)]ok=\(run.success)"}
+}
+"#,
+            true,
+        ),
+        (
+            "stderronly",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: stderronly: {
+	run: exec.Run & {cmd: ["sh", "-c", "echo ERR >&2; exit 2"], stderr: string, mustSucceed: false}
+	print: cli.Print & {text: "err=[\(run.stderr)]ok=\(run.success)"}
+}
+"#,
+            true,
+        ),
+        (
+            "stderrspawn",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: stderrspawn: {
+	run: exec.Run & {cmd: ["no-such-bin-for-e2e"], stdout: string, stderr: string, mustSucceed: false}
+	print: cli.Print & {text: "out=[\(run.stdout)]err=[\(run.stderr)]ok=\(run.success)"}
+}
+"#,
+            true,
+        ),
+        (
+            "stderrspawnonly",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: stderrspawnonly: {
+	run: exec.Run & {cmd: ["no-such-bin-for-e2e"], stderr: string, mustSucceed: false}
+	print: cli.Print & {text: "err=[\(run.stderr)]ok=\(run.success)"}
+}
+"#,
+            true,
+        ),
+        (
+            "stderrsuccess",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: stderrsuccess: {
+	run: exec.Run & {cmd: ["sh", "-c", "echo ERR >&2"], stderr: string}
+	print: cli.Print & {text: "err=[\(run.stderr)]"}
+}
+"#,
+            false,
+        ),
+        (
+            "stderrsuccessboth",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: stderrsuccessboth: {
+	run: exec.Run & {cmd: ["sh", "-c", "echo OUT; echo ERR >&2"], stdout: string, stderr: string}
+	print: cli.Print & {text: "out=[\(run.stdout)]err=[\(run.stderr)]"}
+}
+"#,
+            false,
+        ),
+        (
+            "stdoutfail",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: stdoutfail: {
+	run: exec.Run & {cmd: ["sh", "-c", "echo OUT; exit 3"], stdout: string, mustSucceed: false}
+	print: cli.Print & {text: "out=[\(run.stdout)]ok=\(run.success)"}
+}
+"#,
+            true,
+        ),
+        (
+            "stdoutinherit",
+            r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: stdoutinherit: {
+	run: exec.Run & {cmd: ["sh", "-c", "echo OUT; echo ERR >&2"], stderr: string, mustSucceed: false}
+	print: cli.Print & {text: "done"}
+}
+"#,
+            true,
+        ),
+    ];
+    for (name, source, accepted) in cases {
+        let directory = tempfile::tempdir().expect("tempdir");
+        write(&directory.path().join("fixture_tool.cue"), source);
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, directory.path().to_str().expect("path")]);
+        assert_eq!(actual.status.code(), expected.status.code(), "{name}");
+        assert_eq!(actual.stdout, expected.stdout, "{name}");
+        if accepted {
+            assert_eq!(actual.stderr, expected.stderr, "{name}");
+        }
+        assert_eq!(actual.status.success(), accepted, "{name}: acceptance");
+    }
+}
+
+#[test]
+fn tool_command_multi_instance_inputs_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let first = directory.path().join("first");
+    let second = directory.path().join("second");
+    std::fs::create_dir_all(&first).expect("first");
+    std::fs::create_dir_all(&second).expect("second");
+    write(&first.join("a.cue"), "package merged\nname: \"one\"\n");
+    write(
+        &first.join("a_tool.cue"),
+        r#"
+package merged
+import "tool/cli"
+command: hello: {p: cli.Print & {text: "hello \(name)"}}
+"#,
+    );
+    write(&second.join("b.cue"), "package merged\nother: \"two\"\n");
+    write(
+        &second.join("b_tool.cue"),
+        r#"
+package merged
+import "tool/cli"
+command: hi: {p: cli.Print & {text: "hi \(other)"}}
+"#,
+    );
+    for command in ["hello", "hi"] {
+        let expected = Command::new(&cue)
+            .args(["cmd", command, "./first", "./second"])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&[
+            "cmd",
+            command,
+            first.to_str().expect("first"),
+            second.to_str().expect("second"),
+        ]);
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+
+    // Conflicting package names are rejected by both implementations.
+    let conflicting = directory.path().join("conflicting");
+    std::fs::create_dir_all(&conflicting).expect("conflicting");
+    write(
+        &conflicting.join("c_tool.cue"),
+        r#"
+package other
+import "tool/cli"
+command: hello: {p: cli.Print & {text: "other"}}
+"#,
+    );
+    let expected = Command::new(&cue)
+        .args(["cmd", "hello", "./first", "./conflicting"])
+        .current_dir(directory.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&[
+        "cmd",
+        "hello",
+        first.to_str().expect("first"),
+        conflicting.to_str().expect("conflicting"),
+    ]);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert!(!actual.status.success());
+}
+
+#[test]
+fn tool_command_usage_short_long_help_matches_cue_metadata() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("meta_tool.cue"),
+        r#"
+package meta
+import "tool/cli"
+// Meta command.
+//
+// Longer description.
+command: meta: {
+	$usage: "meta [-y] name"
+	$short: "short summary"
+	$long: "long text\nsecond line"
+	p: cli.Print & {text: "ran"}
+}
+command: nodoc: {
+	$usage: "nodoc [-z] arg"
+	$short: "nodoc summary"
+	p: cli.Print & {text: "ran"}
+}
+"#,
+    );
+    let listing = ost(&["cmd", "-h", directory.path().to_str().expect("path")]);
+    assert!(listing.status.success(), "listing failed");
+    let listing_stdout = String::from_utf8_lossy(&listing.stdout);
+    assert!(listing_stdout.contains("meta"), "{listing_stdout}");
+    assert!(listing_stdout.contains("short summary"), "{listing_stdout}");
+
+    let detail = ost(&[
+        "cmd",
+        "meta",
+        "-h",
+        directory.path().to_str().expect("path"),
+    ]);
+    assert!(detail.status.success(), "detail failed");
+    let detail_stdout = String::from_utf8_lossy(&detail.stdout);
+    assert!(
+        detail_stdout.contains("long text\nsecond line"),
+        "{detail_stdout}"
+    );
+    assert!(
+        detail_stdout.contains("ostinato cmd meta [-y] name [flags]"),
+        "{detail_stdout}"
+    );
+
+    // The same metadata is what CUE exposes for the command.
+    let expected = Command::new(&cue)
+        .args(["help", "cmd", "meta"])
+        .current_dir(directory.path())
+        .output()
+        .expect("run cue help");
+    let expected_stdout = String::from_utf8_lossy(&expected.stdout);
+    assert!(expected_stdout.contains("long text\nsecond line"));
+    assert!(expected_stdout.contains("cue cmd meta [-y] name [flags]"));
+
+    // CUE only applies `$usage` when the command has a doc comment; the
+    // fallback is the bare command name.
+    let nodoc = ost(&[
+        "cmd",
+        "nodoc",
+        "-h",
+        directory.path().to_str().expect("path"),
+    ]);
+    assert!(nodoc.status.success(), "nodoc detail failed");
+    let nodoc_stdout = String::from_utf8_lossy(&nodoc.stdout);
+    assert!(
+        nodoc_stdout.contains("ostinato cmd nodoc [flags]"),
+        "{nodoc_stdout}"
+    );
+    assert!(nodoc_stdout.contains("nodoc summary"), "{nodoc_stdout}");
+    let expected_nodoc = Command::new(&cue)
+        .args(["help", "cmd", "nodoc"])
+        .current_dir(directory.path())
+        .output()
+        .expect("run cue help");
+    let expected_nodoc_stdout = String::from_utf8_lossy(&expected_nodoc.stdout);
+    assert!(
+        expected_nodoc_stdout.contains("cue cmd nodoc [flags]"),
+        "{expected_nodoc_stdout}"
+    );
+}
+
+#[test]
+fn tool_command_cmd_attributes_are_ignored_like_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("attr_tool.cue"),
+        r#"
+package foo
+import "tool/cli"
+command: attr: {
+	p: cli.Print & {text: "attribute ignored"} @cmd(name="ignored")
+} @cmd(name="attr", usage="attr [x]")
+"#,
+    );
+    let expected = Command::new(&cue)
+        .args(["cmd", "attr"])
+        .current_dir(directory.path())
+        .output()
+        .expect("run cue cmd");
+    let actual = ost(&["cmd", "attr", directory.path().to_str().expect("path")]);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.stdout, expected.stdout);
+    assert_eq!(actual.stderr, expected.stderr);
+}
+
+#[test]
+fn tool_command_os_tasks_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let source = r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+command: osenv: {
+	env: os.Getenv & {
+		OSTINATO_E2E_STR: string
+		OSTINATO_E2E_BOOL: bool
+		OSTINATO_E2E_INT: int
+	}
+	print: cli.Print & {text: "str=\(env.OSTINATO_E2E_STR) bool=\(env.OSTINATO_E2E_BOOL) int=\(env.OSTINATO_E2E_INT)"}
+}
+command: osall: {
+	env: os.Environ & {OSTINATO_E2E_STR: string}
+	print: cli.Print & {text: "str=\(env.OSTINATO_E2E_STR)"}
+}
+"#;
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(&directory.path().join("os_tool.cue"), source);
+    for command in ["osenv", "osall"] {
+        let expected = Command::new(&cue)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env("OSTINATO_E2E_STR", "hello")
+            .env("OSTINATO_E2E_BOOL", "true")
+            .env("OSTINATO_E2E_INT", "42")
+            .output()
+            .expect("run cue cmd");
+        let actual = Command::new(bin())
+            .args(["cmd", command, directory.path().to_str().expect("path")])
+            .env("OSTINATO_E2E_STR", "hello")
+            .env("OSTINATO_E2E_BOOL", "true")
+            .env("OSTINATO_E2E_INT", "42")
+            .output()
+            .expect("run ostinato cmd");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+}
+
+#[test]
+fn tool_command_os_env_scalars_and_unset_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("os_scalars_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+command: unsettype: {
+	env: os.Getenv & {OSTINATO_E2E_UNSET: string}
+	print: cli.Print & {text: "ok"}
+}
+command: unsetdef: {
+	env: os.Getenv & {OSTINATO_E2E_UNSET: *"d" | string}
+	print: cli.Print & {text: "v=[\(env.OSTINATO_E2E_UNSET)]"}
+}
+command: envunsettype: {
+	env: os.Environ & {OSTINATO_E2E_UNSET: string}
+	print: cli.Print & {text: "ok"}
+}
+command: envunsetdef: {
+	env: os.Environ & {OSTINATO_E2E_UNSET: *"d" | string}
+	print: cli.Print & {text: "v=[\(env.OSTINATO_E2E_UNSET)]"}
+}
+command: scalars: {
+	env: os.Getenv & {
+		OSTINATO_E2E_BOOL: bool
+		OSTINATO_E2E_INT: int
+		OSTINATO_E2E_NUM: number
+		OSTINATO_E2E_FLOAT: float
+		OSTINATO_E2E_CONCI: 42
+		OSTINATO_E2E_CONCB: true
+	}
+	print: cli.Print & {text: "bool=\(env.OSTINATO_E2E_BOOL) int=\(env.OSTINATO_E2E_INT) num=\(env.OSTINATO_E2E_NUM) float=\(env.OSTINATO_E2E_FLOAT) conci=\(env.OSTINATO_E2E_CONCI) concb=\(env.OSTINATO_E2E_CONCB)"}
+}
+command: enumscalars: {
+	env: os.Environ & {OSTINATO_E2E_INT: int}
+	print: cli.Print & {text: "int=\(env.OSTINATO_E2E_INT)"}
+}
+command: badlist: {
+	env: os.Getenv & {OSTINATO_E2E_BAD: [string]}
+	print: cli.Print & {text: "never"}
+}
+"#,
+    );
+    let run = |implementation: &Path, command: &str, value: Option<(&str, &str)>| {
+        let mut process = Command::new(implementation);
+        process
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env_remove("OSTINATO_E2E_UNSET")
+            .env_remove("OSTINATO_E2E_BAD")
+            .env("OSTINATO_E2E_BOOL", "True")
+            .env("OSTINATO_E2E_INT", "0x10")
+            .env("OSTINATO_E2E_NUM", "1.5e-3")
+            .env("OSTINATO_E2E_FLOAT", "1e3")
+            .env("OSTINATO_E2E_CONCI", "42")
+            .env("OSTINATO_E2E_CONCB", "T");
+        if let Some((name, value)) = value {
+            process.env(name, value);
+        }
+        process.output().expect("run command")
+    };
+    let cases: [(&str, Option<(&str, &str)>); 6] = [
+        ("unsettype", None),
+        ("unsetdef", None),
+        ("envunsettype", None),
+        ("envunsetdef", None),
+        ("scalars", None),
+        ("enumscalars", None),
+    ];
+    for (command, value) in cases {
+        let expected = run(Path::new(&cue), command, value);
+        let actual = run(&bin(), command, value);
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+    // Invalid declared types are rejected by both implementations.
+    let expected = run(Path::new(&cue), "badlist", None);
+    let actual = run(&bin(), "badlist", None);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert!(!actual.status.success());
+    assert_eq!(actual.stdout, expected.stdout);
+
+    // Bool spellings and integer bases.
+    for (command, name, value) in [
+        ("unsetdef", "OSTINATO_E2E_UNSET", "set"),
+        ("scalars", "OSTINATO_E2E_BOOL", " true "),
+        ("scalars", "OSTINATO_E2E_INT", "1_000"),
+        ("scalars", "OSTINATO_E2E_INT", "9223372036854775808"),
+        ("scalars", "OSTINATO_E2E_NUM", "0b101"),
+        ("scalars", "OSTINATO_E2E_FLOAT", "1.5"),
+    ] {
+        let expected = run(Path::new(&cue), command, Some((name, value)));
+        let actual = run(&bin(), command, Some((name, value)));
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{command}/{name}={value}"
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{command}/{name}={value}");
+    }
+}
+
+#[test]
+fn tool_command_help_edge_cases() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    // Help in an empty directory ignores missing build inputs.
+    let empty = tempfile::tempdir().expect("tempdir");
+    let empty_help = ost(&["cmd", "-h", empty.path().to_str().expect("path")]);
+    assert!(empty_help.status.success(), "empty help failed");
+    let empty_stdout = String::from_utf8_lossy(&empty_help.stdout);
+    assert!(empty_stdout.contains("Usage:"), "{empty_stdout}");
+    assert!(empty_stdout.contains("-p, --param"), "{empty_stdout}");
+    assert!(empty_help.stderr.is_empty());
+
+    let unknown = Command::new(bin())
+        .args(["cmd", "-h", "nosuch"])
+        .current_dir(empty.path())
+        .output()
+        .expect("unknown help");
+    assert!(!unknown.status.success());
+    assert!(unknown.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("Unknown cmd command: nosuch"),
+        "{}",
+        String::from_utf8_lossy(&unknown.stderr)
+    );
+    let reversed = Command::new(bin())
+        .args(["cmd", "nosuch", "-h"])
+        .current_dir(empty.path())
+        .output()
+        .expect("unknown help reversed");
+    assert!(!reversed.status.success());
+    assert!(reversed.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&reversed.stderr).contains("Unknown cmd command: nosuch"));
+
+    let no_args = Command::new(bin())
+        .arg("cmd")
+        .current_dir(empty.path())
+        .output()
+        .expect("no args");
+    assert!(!no_args.status.success());
+    assert!(no_args.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&no_args.stderr).contains("cmd must be run"));
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("doc_tool.cue"),
+        r#"
+package foo
+import "tool/cli"
+
+// Short doc line.
+//
+// Usage: doccmd [-q] file
+//
+// Long line one.
+// Long line two.
+command: doccmd: {
+	p: cli.Print & {text: "doc"}
+}
+
+// Explicit short.
+//
+// Usage: overridden [-z]
+//
+// Doc long.
+command: overridden: {
+	$short: "explicit short"
+	$usage: "overridden [-e] file"
+	$long: "explicit long"
+	p: cli.Print & {text: "over"}
+}
+
+command: visible: {p: cli.Print & {text: "visible"}}
+command: _hidden: {p: cli.Print & {text: "hidden"}}
+"#,
+    );
+    std::fs::create_dir_all(directory.path().join("doccmd")).expect("command-named dir");
+    let listing = ost(&["cmd", "-h", directory.path().to_str().expect("path")]);
+    assert!(listing.status.success());
+    let listing_stdout = String::from_utf8_lossy(&listing.stdout);
+    assert!(
+        listing_stdout.contains("Short doc line."),
+        "{listing_stdout}"
+    );
+    assert!(
+        listing_stdout.contains("explicit short"),
+        "{listing_stdout}"
+    );
+    assert!(!listing_stdout.contains("_hidden"), "{listing_stdout}");
+    assert!(!listing_stdout.contains("hidden"), "{listing_stdout}");
+
+    let doc = ost(&[
+        "cmd",
+        "doccmd",
+        "-h",
+        directory.path().to_str().expect("path"),
+    ]);
+    assert!(doc.status.success());
+    let doc_stdout = String::from_utf8_lossy(&doc.stdout);
+    assert!(doc_stdout.contains("Long line one.\nLong line two."));
+    assert!(doc_stdout.contains("ostinato cmd doccmd [-q] file [flags]"));
+
+    let doc_expected = Command::new(&cue)
+        .args(["help", "cmd", "doccmd"])
+        .current_dir(directory.path())
+        .output()
+        .expect("cue doc help");
+    let doc_expected_stdout = String::from_utf8_lossy(&doc_expected.stdout);
+    assert!(doc_expected_stdout.contains("Long line one.\nLong line two."));
+    assert!(doc_expected_stdout.contains("cue cmd doccmd [-q] file [flags]"));
+
+    let overridden = ost(&[
+        "cmd",
+        "overridden",
+        "-h",
+        directory.path().to_str().expect("path"),
+    ]);
+    assert!(overridden.status.success());
+    let overridden_stdout = String::from_utf8_lossy(&overridden.stdout);
+    assert!(overridden_stdout.contains("explicit long"));
+    assert!(overridden_stdout.contains("ostinato cmd overridden [-e] file [flags]"));
+
+    // A declared command wins over an existing directory with the same name.
+    let named_like_dir = Command::new(bin())
+        .args(["cmd", "doccmd", "-h"])
+        .current_dir(directory.path())
+        .output()
+        .expect("command named like dir");
+    assert!(named_like_dir.status.success());
+    let named_stdout = String::from_utf8_lossy(&named_like_dir.stdout);
+    assert!(named_stdout.contains("ostinato cmd doccmd [-q] file [flags]"));
+}

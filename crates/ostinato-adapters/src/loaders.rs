@@ -2,8 +2,11 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::str::FromStr;
 use std::sync::Arc;
 
+use bigdecimal::BigDecimal;
+use num_bigint::{BigInt, ToBigInt};
 use ostinato_application::{LoadRequest, LoadedWorkflow, PortError, PortResult, SpecLoader};
 use ostinato_lang::ast::{Expr, Field, Label, Span, StructItem};
 use ostinato_lang::{
@@ -1017,28 +1020,102 @@ fn json_type_name(value: &Json) -> &'static str {
     }
 }
 
-/// Run a CUE tool command declared in `*_tool.cue` files.
-///
-/// Implements the `command: <name>: { <task>: tool/exec.Run & {...} }` surface,
-/// including `@tag` injection, `$after` ordering, `cmd` string/argv, `env`,
-/// `dir`, `stdin`, `stdout`/`stderr` capture fields and `mustSucceed`. Tasks
-/// that consume other task outputs and other `tool/...` packages are documented
-/// limits (see `docs/SCOPE.md`).
-///
-/// # Errors
-/// Returns a language or workflow error for unreadable packages, unknown
-/// commands, malformed tasks or unsupported task kinds.
-pub fn run_tool_command(
-    path: &Path,
-    command_name: &str,
-    overrides: &BTreeMap<String, String>,
-) -> Result<i32, ostinato_lang::LangError> {
-    let canonical_path = canonical(path);
-    let files = collect_package_files(&canonical_path, true)?;
-    let source_dir = if canonical_path.is_dir() {
-        canonical_path.clone()
+/// A loaded tool package: the merged syntax, its import values and the
+/// classification used by the task scheduler.
+/// A command's doc-comment metadata, mirroring CUE's help derivation.
+#[derive(Debug, Clone, Default)]
+struct CommandDoc {
+    short: Option<String>,
+    usage: Option<String>,
+    long: Option<String>,
+}
+
+struct ToolPackage {
+    combined: ostinato_lang::ast::File,
+    source_dir: PathBuf,
+    imports: BTreeMap<String, Value>,
+    non_task_imports: ImportKinds,
+    command_docs: BTreeMap<String, CommandDoc>,
+}
+
+/// Parse a contiguous doc comment into CUE's short/usage/long shape.
+fn parse_command_doc(lines: &[String]) -> CommandDoc {
+    let text = lines.join("\n");
+    let text = text.trim();
+    if text.is_empty() {
+        return CommandDoc::default();
+    }
+    let (first, mut tail) = match text.split_once('\n') {
+        Some((first, tail)) => (first.trim(), tail.trim()),
+        None => (text, ""),
+    };
+    let mut doc = CommandDoc {
+        short: (!first.is_empty()).then(|| first.to_owned()),
+        usage: None,
+        long: None,
+    };
+    if let Some(rest) = tail.strip_prefix("Usage:") {
+        let (usage, rest) = match rest.split_once('\n') {
+            Some((usage, rest)) => (usage.trim(), rest.trim()),
+            None => (rest.trim(), ""),
+        };
+        doc.usage = (!usage.is_empty()).then(|| usage.to_owned());
+        tail = rest;
+    }
+    doc.long = (!tail.is_empty()).then(|| tail.to_owned());
+    doc
+}
+
+/// Command names declared with a preceding doc comment. CUE only applies
+/// `$usage`/doc metadata when the command has documentation.
+fn documented_command_docs(text: &str) -> BTreeMap<String, CommandDoc> {
+    let mut docs = BTreeMap::new();
+    let mut comments: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(comment) = trimmed.strip_prefix("//") {
+            comments.push(comment.strip_prefix(' ').unwrap_or(comment).to_owned());
+            continue;
+        }
+        if trimmed.is_empty() {
+            comments.clear();
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("command:") {
+            let name = rest.trim_start().split(':').next().unwrap_or("").trim();
+            let name = name.trim_matches('"');
+            if !name.is_empty() && !comments.is_empty() {
+                docs.insert(name.to_owned(), parse_command_doc(&comments));
+            }
+        }
+        comments.clear();
+    }
+    docs
+}
+
+/// Load one or more package instances (directories or `_tool.cue` files) and
+/// merge them the way `cue cmd <name> [inputs...]` does.
+fn load_tool_package(paths: &[PathBuf]) -> Result<ToolPackage, ostinato_lang::LangError> {
+    if paths.is_empty() {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool command requires a package path".to_owned(),
+        ));
+    }
+    let mut canonical_paths: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        let canonical_path = canonical(path);
+        if !canonical_paths.contains(&canonical_path) {
+            canonical_paths.push(canonical_path);
+        }
+    }
+    let first = canonical_paths
+        .first()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("."));
+    let source_dir = if first.is_dir() {
+        first.clone()
     } else {
-        canonical_path
+        first
             .parent()
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
     };
@@ -1047,17 +1124,40 @@ pub fn run_tool_command(
         imports: Vec::new(),
         items: Vec::new(),
     };
-    for (index, file) in files.iter().enumerate() {
-        let text = std::fs::read_to_string(file).map_err(|err| {
-            ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
-        })?;
-        let mut parsed = parse(&text)?;
-        rename_file_locals(&mut parsed, index)?;
-        if combined.package.is_none() {
-            combined.package = parsed.package.clone();
+    let mut package_name: Option<String> = None;
+    let mut command_docs: BTreeMap<String, CommandDoc> = BTreeMap::new();
+    let mut seen_files = std::collections::BTreeSet::new();
+    let mut index = 0;
+    for path in &canonical_paths {
+        for file in collect_package_files(path, true)? {
+            if !seen_files.insert(file.clone()) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).map_err(|err| {
+                ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
+            })?;
+            command_docs.extend(documented_command_docs(&text));
+            let mut parsed = parse(&text)?;
+            rename_file_locals(&mut parsed, index)?;
+            index += 1;
+            if let Some(package) = &parsed.package
+                && package != "_"
+            {
+                match &package_name {
+                    Some(existing) if existing != package => {
+                        return Err(ostinato_lang::LangError::Workflow(format!(
+                            "package name \"{package}\" conflicts with previous package name \"{existing}\""
+                        )));
+                    }
+                    _ => package_name = Some(package.clone()),
+                }
+            }
+            if combined.package.is_none() {
+                combined.package = parsed.package.clone();
+            }
+            combined.imports.extend(parsed.imports);
+            combined.items.extend(parsed.items);
         }
-        combined.imports.extend(parsed.imports);
-        combined.items.extend(parsed.items);
     }
 
     let mut imports = BTreeMap::new();
@@ -1097,6 +1197,93 @@ pub fn run_tool_command(
             non_task_imports.task_paths.insert(alias.clone(), paths);
         }
     }
+
+    Ok(ToolPackage {
+        combined,
+        source_dir,
+        imports,
+        non_task_imports,
+        command_docs,
+    })
+}
+
+/// Metadata surfaced by `$usage`, `$short` and `$long` on a tool command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCommandInfo {
+    pub name: String,
+    pub usage: Option<String>,
+    pub short: Option<String>,
+    pub long: Option<String>,
+}
+
+/// Load the `$usage`/`$short`/`$long` metadata for every command in a tool
+/// package. Matches CUE's command help lookup: `$usage` (or `usage`),
+/// `$short`, and `$long`.
+///
+/// # Errors
+/// Returns a language or workflow error for unreadable packages.
+pub fn tool_command_metadata(
+    paths: &[PathBuf],
+) -> Result<Vec<ToolCommandInfo>, ostinato_lang::LangError> {
+    let package = load_tool_package(paths)?;
+    let injected = BTreeMap::new();
+    let value = eval_file_with_imports_mode_allow_incomplete(
+        &package.combined,
+        &package.imports,
+        &injected,
+        false,
+    )?;
+    let Some(root) = value_fields(&value) else {
+        return Ok(Vec::new());
+    };
+    let Some(command) = root.get("command").and_then(value_fields) else {
+        return Ok(Vec::new());
+    };
+    let mut infos = Vec::new();
+    for (name, value) in command {
+        if name.starts_with('$') || name.starts_with('\u{3}') || name.starts_with('#') {
+            continue;
+        }
+        let Some(fields) = value_fields(value) else {
+            continue;
+        };
+        let lookup = |key: &str| match fields.get(key).map(Value::concretize) {
+            Some(Value::String(text)) => Some(text.clone()),
+            _ => None,
+        };
+        let doc = package.command_docs.get(name);
+        infos.push(ToolCommandInfo {
+            name: name.clone(),
+            usage: doc.and_then(|doc| {
+                lookup("$usage")
+                    .or_else(|| lookup("usage"))
+                    .or_else(|| doc.usage.clone())
+            }),
+            short: lookup("$short").or_else(|| doc.and_then(|doc| doc.short.clone())),
+            long: lookup("$long").or_else(|| doc.and_then(|doc| doc.long.clone())),
+        });
+    }
+    Ok(infos)
+}
+
+/// Run a CUE tool command from one or more package instances (the `inputs` of
+/// `cue cmd <name> [inputs...]`).
+///
+/// # Errors
+/// Returns a language or workflow error for unreadable packages, unknown
+/// commands, malformed tasks or unsupported task kinds.
+pub fn run_tool_command_paths(
+    paths: &[PathBuf],
+    command_name: &str,
+    overrides: &BTreeMap<String, String>,
+) -> Result<i32, ostinato_lang::LangError> {
+    let ToolPackage {
+        mut combined,
+        source_dir,
+        mut imports,
+        non_task_imports,
+        ..
+    } = load_tool_package(paths)?;
     ostinato_lang::assign_field_ids(&mut combined);
     sanitize_after_fields(&mut combined.items, &non_task_imports, &imports);
     let tags = ostinato_lang::parameter_tags(&combined)?;
@@ -1733,6 +1920,17 @@ fn value_fields(value: &Value) -> Option<&BTreeMap<String, Value>> {
     }
 }
 
+/// `tool/os` tasks expose `Value: bool | number | *string | null` for every
+/// regular field. The constraint is validated per scheduled task (see
+/// `validate_task_inputs`) rather than as a marker pattern: CUE's flow only
+/// evaluates the requested command, while Ostinato evaluates the package
+/// eagerly and an invalid field in an unrelated command must not fail it.
+fn os_task_marker(id: &str) -> Value {
+    let mut fields = BTreeMap::new();
+    fields.insert("$id".to_owned(), Value::String(id.to_owned()));
+    Value::Struct(fields)
+}
+
 fn tool_module(path: &str) -> Option<Value> {
     let mut exports = BTreeMap::new();
     let marker = |id: &str| {
@@ -1758,6 +1956,12 @@ fn tool_module(path: &str) -> Option<Value> {
         "tool/file" => {
             exports.insert("Append".to_owned(), marker("tool/file.Append"));
             exports.insert("Create".to_owned(), marker("tool/file.Create"));
+        }
+        "tool/os" => {
+            exports.insert("Getenv".to_owned(), os_task_marker("tool/os.Getenv"));
+            exports.insert("Environ".to_owned(), os_task_marker("tool/os.Environ"));
+            exports.insert("Setenv".to_owned(), os_task_marker("tool/os.Setenv"));
+            exports.insert("Clearenv".to_owned(), os_task_marker("tool/os.Clearenv"));
         }
         _ => return None,
     }
@@ -2497,7 +2701,7 @@ fn collect_output_task_paths<'a>(
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success") {
+            if matches!(field.as_str(), "stdout" | "stderr" | "success") {
                 let local_path = resolved_read_path(
                     base,
                     scopes,
@@ -4409,7 +4613,7 @@ fn scan_package_order_expr(
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success") {
+            if matches!(field.as_str(), "stdout" | "stderr" | "success") {
                 if allow_read
                     && let Some(path) = resolved_read_path(
                         base,
@@ -5253,6 +5457,28 @@ fn output_expr(value: &Value) -> Option<Expr> {
             Span::default(),
         )),
         Value::Bool(value) => Some(Expr::Bool(*value, Span::default())),
+        Value::Int(value) => Some(Expr::Int(*value, Span::default())),
+        Value::BigInt(value) => Some(Expr::BigInt(value.clone(), Span::default())),
+        Value::Float(value) => Some(Expr::Float(value.clone(), Span::default())),
+        Value::Bytes(value) => Some(Expr::Bytes(value.clone(), Span::default())),
+        Value::Null => Some(Expr::Null(Span::default())),
+        Value::Disjunction(alternatives, defaults) => {
+            let mut exprs = Vec::with_capacity(alternatives.len());
+            for (index, alternative) in alternatives.iter().enumerate() {
+                let expr = output_expr(alternative)?;
+                exprs.push(if defaults.contains(&index) {
+                    Expr::Default(Box::new(expr), Span::default())
+                } else {
+                    expr
+                });
+            }
+            let mut iter = exprs.into_iter();
+            let mut expr = iter.next()?;
+            for next in iter {
+                expr = Expr::Disjunction(Box::new(expr), Box::new(next), Span::default());
+            }
+            Some(expr)
+        }
         _ => None,
     }
 }
@@ -5760,7 +5986,7 @@ fn collect_output_refs<'a>(
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success") {
+            if matches!(field.as_str(), "stdout" | "stderr" | "success") {
                 match unwrap_ref_base(base) {
                     Expr::Ident(name, _) => {
                         if names.contains(name)
@@ -6833,7 +7059,7 @@ fn is_direct_output_read(expr: &Expr) -> bool {
     while let Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) = value {
         value = inner;
     }
-    matches!(value, Expr::Select(_, field, _, _) if matches!(field.as_str(), "stdout" | "success"))
+    matches!(value, Expr::Select(_, field, _, _) if matches!(field.as_str(), "stdout" | "stderr" | "success"))
 }
 
 fn alias_operand<'a>(
@@ -6943,7 +7169,7 @@ fn scan_order_expr(
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success") {
+            if matches!(field.as_str(), "stdout" | "stderr" | "success") {
                 if allow_read
                     && let Some(path) = resolved_read_path(
                         base,
@@ -7657,6 +7883,18 @@ fn validate_task_inputs(
                     ));
                 }
             }
+            "tool/os.Getenv" | "tool/os.Environ" | "tool/os.Setenv" | "tool/os.Clearenv" => {
+                for (name, value) in task {
+                    if name.starts_with('$') {
+                        continue;
+                    }
+                    if !env_constraint_allowed(value) {
+                        return Err(ostinato_lang::LangError::Workflow(format!(
+                            "invalid type for environment variable {name}"
+                        )));
+                    }
+                }
+            }
             "tool/file.Append" | "tool/file.Create" => {
                 if let Some(value) = task.get("filename") {
                     match value.concretize() {
@@ -7704,10 +7942,414 @@ fn execute_tool_task(
         "tool/cli.Print" => execute_print(task),
         "tool/file.Append" => execute_file(task, package_dir, false),
         "tool/file.Create" => execute_file(task, package_dir, true),
+        "tool/os.Getenv" => execute_os_getenv(task),
+        "tool/os.Environ" => execute_os_environ(task),
         other => Err(ostinato_lang::LangError::Workflow(format!(
             "tool task `{other}` is not implemented"
         ))),
     }
+}
+
+fn execute_os_getenv(
+    task: &BTreeMap<String, Value>,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let mut outputs = Vec::new();
+    for (name, constraint) in task {
+        if name.starts_with('$') {
+            continue;
+        }
+        if let Some(raw) = std::env::var_os(name) {
+            let value = env_parse(name, &raw.to_string_lossy(), constraint)?;
+            outputs.push((name.clone(), value));
+        }
+        // Unset variables are left untouched: CUE does not overwrite the
+        // declared field or its default.
+    }
+    Ok(ToolTaskOutcome::Done { outputs })
+}
+
+fn execute_os_environ(
+    task: &BTreeMap<String, Value>,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let mut outputs = Vec::new();
+    for (name, raw) in std::env::vars_os() {
+        let name = name.to_string_lossy().into_owned();
+        if name.starts_with('$') {
+            continue;
+        }
+        let value = match task.get(&name) {
+            Some(constraint) => env_parse(&name, &raw.to_string_lossy(), constraint)?,
+            None => Value::String(raw.to_string_lossy().into_owned()),
+        };
+        outputs.push((name, value));
+    }
+    Ok(ToolTaskOutcome::Done { outputs })
+}
+
+const ENV_STRING: u8 = 1;
+const ENV_BOOL: u8 = 2;
+const ENV_INT: u8 = 4;
+const ENV_FLOAT: u8 = 8;
+const ENV_NULL: u8 = 16;
+const ENV_OTHER: u8 = 32;
+const ENV_NUMBER: u8 = ENV_INT | ENV_FLOAT;
+
+/// The kinds accepted by `tool/os`'s `Value: bool | number | *string | null`.
+fn env_value_kinds(value: &Value) -> u8 {
+    match value {
+        Value::Type(ostinato_lang::TypeKind::String) | Value::String(_) => ENV_STRING,
+        Value::Type(ostinato_lang::TypeKind::Bool) | Value::Bool(_) => ENV_BOOL,
+        Value::Type(ostinato_lang::TypeKind::Int) | Value::Int(_) | Value::BigInt(_) => ENV_INT,
+        Value::Type(ostinato_lang::TypeKind::Float) | Value::Float(_) => ENV_FLOAT,
+        Value::Type(ostinato_lang::TypeKind::Number) | Value::Bounds(_) => ENV_NUMBER,
+        Value::Null => ENV_NULL,
+        Value::Disjunction(alternatives, _) => alternatives
+            .iter()
+            .fold(0, |kinds, alternative| kinds | env_value_kinds(alternative)),
+        _ => ENV_OTHER,
+    }
+}
+
+fn env_constraint_allowed(value: &Value) -> bool {
+    env_value_kinds(value) & ENV_OTHER == 0
+}
+
+fn bool_env_value(text: &str) -> Option<bool> {
+    match text.trim() {
+        "1" | "t" | "T" | "true" | "TRUE" | "True" => Some(true),
+        "0" | "f" | "F" | "false" | "FALSE" | "False" => Some(false),
+        _ => None,
+    }
+}
+
+struct EnvNumber {
+    is_int: bool,
+    int: Option<BigInt>,
+    float: Option<BigDecimal>,
+}
+
+/// Parse the CUE number literal grammar used by `ParseValue` (decimal,
+/// hexadecimal, octal, binary, underscores, fractions, exponents and
+/// K/M/G/T/P multipliers).
+fn parse_env_number(text: &str) -> Result<EnvNumber, String> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let mut negative = false;
+    if let Some(sign) = bytes.first()
+        && (*sign == b'-' || *sign == b'+')
+    {
+        negative = *sign == b'-';
+        index += 1;
+    }
+    if index >= bytes.len() {
+        return Err(format!("invalid number {text:?}"));
+    }
+
+    if bytes[index] == b'0'
+        && let Some(prefix) = bytes.get(index + 1)
+    {
+        let (radix, skip) = match prefix {
+            b'x' | b'X' => (16, 2),
+            b'b' => (2, 2),
+            b'o' => (8, 2),
+            _ => (0, 0),
+        };
+        if radix != 0 {
+            index += skip;
+            let (digits, next) = scan_env_digits(bytes, index, radix)?;
+            if next != bytes.len() {
+                return Err(format!("invalid number {text:?}"));
+            }
+            let cleaned: String = digits.chars().filter(|c| *c != '_').collect();
+            let mut value = BigInt::parse_bytes(cleaned.as_bytes(), radix)
+                .ok_or_else(|| format!("invalid number {text:?}"))?;
+            if negative {
+                value = -value;
+            }
+            return Ok(EnvNumber {
+                is_int: true,
+                int: Some(value),
+                float: None,
+            });
+        }
+    }
+
+    let mut is_float = false;
+    let mut int_digits = String::from("0");
+    let mut frac_digits = String::new();
+    if bytes[index] == b'0' {
+        index += 1;
+        if index < bytes.len()
+            && matches!(
+                bytes[index],
+                b'.' | b'e' | b'E' | b'K' | b'M' | b'G' | b'T' | b'P'
+            )
+        {
+            // keep going below
+        } else if index < bytes.len() {
+            return Err(format!("invalid number {text:?}"));
+        }
+    } else {
+        let (digits, next) = scan_env_digits(bytes, index, 10)?;
+        int_digits = if digits.is_empty() {
+            String::from("0")
+        } else {
+            digits
+        };
+        index = next;
+    }
+
+    if index < bytes.len() && bytes[index] == b'.' {
+        is_float = true;
+        index += 1;
+        let (digits, next) = scan_env_digits(bytes, index, 10)?;
+        frac_digits = digits;
+        index = next;
+    }
+
+    let mut exponent: i64 = 0;
+    let mut saw_exponent = false;
+    if index < bytes.len() && matches!(bytes[index], b'e' | b'E') {
+        is_float = true;
+        saw_exponent = true;
+        index += 1;
+        let mut exp_negative = false;
+        if index < bytes.len() && matches!(bytes[index], b'+' | b'-') {
+            exp_negative = bytes[index] == b'-';
+            index += 1;
+        }
+        let (digits, next) = scan_env_digits(bytes, index, 10)?;
+        if digits.is_empty() {
+            return Err(format!("invalid number {text:?}"));
+        }
+        exponent = digits
+            .replace('_', "")
+            .parse::<i64>()
+            .map_err(|_| format!("invalid number {text:?}"))?;
+        if exp_negative {
+            exponent = -exponent;
+        }
+        index = next;
+    }
+
+    let mut multiplier: Option<BigInt> = None;
+    if !saw_exponent
+        && index < bytes.len()
+        && let Some(power) = match bytes[index] {
+            b'K' => Some(3u32),
+            b'M' => Some(6),
+            b'G' => Some(9),
+            b'T' => Some(12),
+            b'P' => Some(15),
+            _ => None,
+        }
+    {
+        index += 1;
+        let binary = index < bytes.len() && bytes[index] == b'i';
+        if binary {
+            index += 1;
+        }
+        multiplier = Some(if binary {
+            BigInt::from(2u32).pow(power * 10 / 3)
+        } else {
+            BigInt::from(10u32).pow(power)
+        });
+    }
+    if index != bytes.len() {
+        return Err(format!("invalid number {text:?}"));
+    }
+
+    if is_float {
+        let mut literal = if frac_digits.is_empty() {
+            int_digits.clone()
+        } else {
+            format!("{int_digits}.{frac_digits}")
+        };
+        if exponent != 0 {
+            literal.push('e');
+            literal.push_str(&exponent.to_string());
+        }
+        let mut value =
+            BigDecimal::from_str(&literal).map_err(|_| format!("invalid number {text:?}"))?;
+        if negative {
+            value = -value;
+        }
+        if let Some(multiplier) = multiplier {
+            value *= BigDecimal::from(multiplier);
+            let integer = value
+                .to_bigint()
+                .ok_or_else(|| format!("number cannot be represented as int: {text:?}"))?;
+            if BigDecimal::from(integer.clone()) != value {
+                return Err(format!("number cannot be represented as int: {text:?}"));
+            }
+            return Ok(EnvNumber {
+                is_int: true,
+                int: Some(integer),
+                float: None,
+            });
+        }
+        return Ok(EnvNumber {
+            is_int: false,
+            int: None,
+            float: Some(value),
+        });
+    }
+
+    let cleaned: String = int_digits.chars().filter(|c| *c != '_').collect();
+    let mut value = BigInt::parse_bytes(cleaned.as_bytes(), 10)
+        .ok_or_else(|| format!("invalid number {text:?}"))?;
+    if let Some(multiplier) = multiplier {
+        value *= multiplier;
+    }
+    if negative {
+        value = -value;
+    }
+    Ok(EnvNumber {
+        is_int: true,
+        int: Some(value),
+        float: None,
+    })
+}
+
+fn scan_env_digits(bytes: &[u8], start: usize, radix: u32) -> Result<(String, usize), String> {
+    let mut index = start;
+    let mut digits = String::new();
+    let mut previous_underscore = false;
+    while index < bytes.len() {
+        let ch = bytes[index] as char;
+        let valid = match radix {
+            2 => matches!(ch, '0' | '1'),
+            8 => ('0'..='7').contains(&ch),
+            10 => ch.is_ascii_digit(),
+            16 => ch.is_ascii_hexdigit(),
+            _ => false,
+        };
+        if ch == '_' {
+            if previous_underscore {
+                return Err("illegal '_' in number".to_owned());
+            }
+            previous_underscore = true;
+            index += 1;
+            continue;
+        }
+        if !valid {
+            break;
+        }
+        digits.push(ch);
+        previous_underscore = false;
+        index += 1;
+    }
+    if previous_underscore {
+        return Err("illegal '_' in number".to_owned());
+    }
+    Ok((digits, index))
+}
+
+fn env_number_value(
+    name: &str,
+    text: &str,
+    number: EnvNumber,
+    kinds: u8,
+) -> Result<Value, ostinato_lang::LangError> {
+    if number.is_int {
+        let value = number.int.ok_or_else(|| {
+            ostinato_lang::LangError::Workflow(format!(
+                "invalid number for injection tag \"{name}\": {text:?}"
+            ))
+        })?;
+        return match i64::try_from(&value) {
+            Ok(value) => Ok(Value::Int(value)),
+            Err(_) => Ok(Value::BigInt(value)),
+        };
+    }
+    if kinds & ENV_FLOAT == 0 {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "invalid int {text:?} for injection tag \"{name}\""
+        )));
+    }
+    number.float.map(Value::Float).ok_or_else(|| {
+        ostinato_lang::LangError::Workflow(format!(
+            "invalid number for injection tag \"{name}\": {text:?}"
+        ))
+    })
+}
+
+/// Parse an environment value using the type constraints of the task field
+/// that requests it, mirroring CUE's `internal/cli.ParseValue`.
+fn env_parse(
+    name: &str,
+    text: &str,
+    constraint: &Value,
+) -> Result<Value, ostinato_lang::LangError> {
+    let kinds = env_value_kinds(constraint);
+    if kinds & ENV_OTHER != 0 || kinds == 0 {
+        return Err(ostinato_lang::LangError::Workflow(format!(
+            "invalid type for injection tag \"{name}\""
+        )));
+    }
+    let mut parts = Vec::new();
+    let mut single = None;
+    let mut first_error: Option<String> = None;
+
+    if kinds & ENV_NUMBER != 0 {
+        match parse_env_number(text) {
+            Ok(number) => match env_number_value(name, text, number, kinds) {
+                Ok(value) => {
+                    if kinds & (ENV_BOOL | ENV_STRING) != 0 {
+                        parts.push(value);
+                    } else {
+                        single = Some(value);
+                    }
+                }
+                Err(err) => first_error = Some(err.to_string()),
+            },
+            Err(err) => {
+                first_error = Some(format!(
+                    "invalid number for injection tag \"{name}\": {err}"
+                ))
+            }
+        }
+    }
+
+    if kinds & ENV_BOOL != 0 {
+        match bool_env_value(text) {
+            Some(value) => {
+                if parts.is_empty() && kinds & ENV_STRING == 0 {
+                    single = Some(Value::Bool(value));
+                } else {
+                    parts.push(Value::Bool(value));
+                }
+            }
+            None => {
+                let err = format!("invalid boolean {text:?} for injection tag \"{name}\"");
+                first_error.get_or_insert(err);
+            }
+        }
+    }
+
+    if kinds & ENV_STRING != 0 {
+        if parts.is_empty() {
+            single = Some(Value::String(text.to_owned()));
+        } else {
+            parts.push(Value::String(text.to_owned()));
+        }
+    }
+
+    if !parts.is_empty() {
+        if parts.len() == 1 {
+            return Ok(parts.remove(0));
+        }
+        return Ok(Value::Disjunction(parts, Vec::new()));
+    }
+    if let Some(value) = single {
+        return Ok(value);
+    }
+    if let Some(error) = first_error {
+        return Err(ostinato_lang::LangError::Workflow(error));
+    }
+    Err(ostinato_lang::LangError::Workflow(format!(
+        "invalid type for injection tag \"{name}\""
+    )))
 }
 
 fn execute_print(
@@ -8062,11 +8704,6 @@ fn execute_exec(
     let mut child = match process.spawn() {
         Ok(child) => child,
         Err(err) => {
-            if !must_succeed {
-                return Ok(ToolTaskOutcome::Done {
-                    outputs: Vec::new(),
-                });
-            }
             let printable = argv
                 .iter()
                 .map(|arg| format!("{arg:?}"))
@@ -8093,6 +8730,19 @@ fn execute_exec(
             } else {
                 spawn_detail(&err, &argv[0])
             };
+            if !must_succeed {
+                // CUE reports `success: false` and, when stderr is captured,
+                // the spawn error text; stdout, when captured, stays empty.
+                let mut outputs = Vec::new();
+                if capture_stdout {
+                    outputs.push(("stdout".to_owned(), Value::String(String::new())));
+                }
+                if capture_stderr {
+                    outputs.push(("stderr".to_owned(), Value::String(detail)));
+                }
+                outputs.push(("success".to_owned(), Value::Bool(false)));
+                return Ok(ToolTaskOutcome::Done { outputs });
+            }
             eprintln!("task failed: command [{printable}] failed: {detail}");
             return Ok(ToolTaskOutcome::Failed);
         }
@@ -8139,6 +8789,19 @@ fn execute_exec(
             "stdout".to_owned(),
             Value::String(String::from_utf8_lossy(&output.stdout).into_owned()),
         ));
+    }
+    if capture_stderr && !status.success() {
+        // CUE only injects stderr when the command fails. When stdout is not
+        // captured it runs `cmd.Run()`, whose `ExitError` does not carry
+        // stderr, so the injected value is empty.
+        let stderr = if capture_stdout {
+            output.as_ref().map_or_else(String::new, |output| {
+                String::from_utf8_lossy(&output.stderr).into_owned()
+            })
+        } else {
+            String::new()
+        };
+        outputs.push(("stderr".to_owned(), Value::String(stderr)));
     }
     outputs.push(("success".to_owned(), Value::Bool(status.success())));
     Ok(ToolTaskOutcome::Done { outputs })
