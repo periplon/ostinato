@@ -32,11 +32,13 @@ workflow outside the Rust surface has a supported escape hatch.
   results, a 34-digit division expansion, apd exponent limits and
   apd-compatible JSON formatting, CUE signed-zero results such as
   `0.0 * -1` -> `-0.0` and `math.Mod(-1, 1)` -> `-0`, and CUE's lexical
-  representation choice for numerically equal unifications (literal over
-  expression over reference, including named-definition references),
-  `(1.0 + 0) & 1.00` -> `1.00` and signed-zero sign priority follow the
-  same ordering; see the residual rows for the remaining
-  representation-only differences),
+  representation choice for numerically equal unifications (the right
+  operand's syntactic literal wins when the left is not a syntactic literal;
+  otherwise the left operand keeps its form, including references and
+  named-definition references), `(1.0 + 0) & 1.00` -> `1.00`, plus CUE's
+  signed-zero sign hierarchy where a syntactic literal outranks an expression
+  or reference-to-literal, which outranks a reference-to-computed value; see
+  the residual rows for the remaining representation-only differences),
   optional fields, type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - recursive definition materialization through optional fields and lists
@@ -136,10 +138,10 @@ workflow outside the Rust surface has a supported escape hatch.
 |---|---|
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
-| Duplicate-key JSON emission for colliding raw-bytes labels | Raw non-UTF-8 labels keep their own identity and are not selectable by their rendered U+FFFD character, matching CUE. CUE's JSON export can emit duplicate keys for distinct raw labels that both render as U+FFFD; Ostinato's map representation cannot, so export fails closed with a typed error naming the colliding raw labels instead of silently dropping a field. `ostinato export --out json|yaml` uses this typed error |
+| Duplicate-key JSON emission for colliding raw-bytes labels | Raw non-UTF-8 labels keep their own identity and are not selectable by their rendered U+FFFD character, matching CUE. CUE's JSON export can emit duplicate keys for distinct raw labels that both render as U+FFFD; Ostinato's map representation cannot, so the native evaluator's `ostinato export --out json|yaml` fails closed with a typed error naming the colliding raw labels instead of silently dropping a field. `--evaluator cue` delegates to the oracle's JSON export and keeps the last duplicate key |
 | `%` operator | CUE has no `%` operator (so there is no oracle for it); Ostinato keeps exact integer modulo as an extension. Use `math.Mod`/`math.Remainder` for CUE-compatible modulo/remainder |
 | `--evaluator cue` YAML number kind | Native CUE export preserves integer/float zero kinds in YAML (`0`/`0.`, `-0`/`-0.`). The official-CUE evaluator currently loads the oracle's JSON export, which cannot distinguish float-kind integral zeros, so `--evaluator cue --out yaml` may emit `0` instead of CUE's `0.`. Use the native evaluator for byte-identical YAML number kinds |
-| Two signed-zero defaults | `a: *(0 / -1) \| *(0 * -1)` is exported as concrete `0` while CUE reports an incomplete `0 \| -0`; the two defaults differ only by zero sign. Contrived shape, documented here rather than silently collapsing the ambiguity |
+| Two signed-zero defaults | `a: *(0 / -1) \| *(0 * -1)` is exported as concrete `0` and the reverse `b: *(0 * -1) \| *(0 / -1)` as `-0`, while CUE reports an incomplete `0 \| -0` in both orders. The defaults differ only by zero sign. Contrived shape, documented here rather than silently collapsing the ambiguity |
 | Zero-result exponent representation | `1e-10 - 1e-10` keeps CUE's exponent form in Ostinato (`0E-10`), while the oracle exports an expanded decimal (`0.0000000000`). The values compare equal; only the chosen zero spelling differs |
 | Go float64 last-bit parity | The exposed float64-backed `math` functions are pinned to the Go/arm64 FMA model (`ostinato_lang::GO_F64_MODEL == "arm64-go-fma"`): the port uses Rust's fused `f64::mul_add`, so Ostinato's own results are platform-independent. This is not a claim of universal oracle parity: Go only fuses on arm64, so a Go/amd64 oracle can differ in the last bit, and rare `math.Asinh`, `math.Acosh` or `math.Atanh` inputs can still differ by 1 ulp (for example `math.Atanh(-0.1731958024477226)`, `math.Acosh(204534.80525878677)`). `Asin`, `Acos` and `Atan2` are covered by the oracle fuzz and match |
 | Bare identifiers across operands of a composed definition | `#D: {a: 1} & {b: a}` is accepted although CUE rejects the bare reference to a sibling operand's field; with an enclosing `a: 9`, `b` resolves to `1` instead of CUE's `9`. Non-definition composition, selectors and definition-valued narrowing match CUE |

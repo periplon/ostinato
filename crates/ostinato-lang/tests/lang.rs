@@ -9645,6 +9645,18 @@ r2a: 0.0*-1 & math.Sqrt(0)
 r2b: math.Mod(-1,1) & -0.0
 r2c: math.Sqrt(0) & (0.0*-1)
 r2d: -0.0 & math.Mod(-1,1)
+z: 0.0
+nz: 0.0 * -1
+za: nz & z
+zb: z & (0.0 * -1)
+ni: 0 * -1
+zi: 0
+ai: ni & zi
+p: 1.00
+r: p & (1.0 + 0)
+#ND: {v: 0 * -1}
+#NE: {v: 0}
+c2: #ND & #NE
 "#;
     let file = ostinato_lang::parse(source).expect("parse");
     let mut imports = BTreeMap::new();
@@ -9664,14 +9676,19 @@ r2d: -0.0 & math.Mod(-1,1)
         ("r2b", "-0"),
         ("r2c", "0"),
         ("r2d", "0.0"),
+        ("za", "0.0"),
+        ("zb", "0.0"),
+        ("ai", "0"),
+        ("r", "1.00"),
     ] {
-        let actual = if field.len() == 1 {
+        let actual = if matches!(field, "b" | "c" | "d" | "e") {
             json[field]["v"].to_string()
         } else {
             json[field].to_string()
         };
         assert_eq!(actual, expected, "{field}");
     }
+    assert_eq!(json["c2"]["v"].to_string(), "0");
 }
 
 #[test]

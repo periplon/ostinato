@@ -147,11 +147,14 @@ pub fn cue_decimal_string(value: &BigDecimal) -> String {
 pub struct Decimal {
     value: BigDecimal,
     negative_zero: bool,
-    /// True when the value came directly from a numeric literal (including a
-    /// non-zero negated literal). Arithmetic and builtin results are computed.
+    /// True when the expression currently being evaluated is a syntactic
+    /// numeric literal (including a non-zero negated literal). Used for the
+    /// lexical/scale choice in unification.
     literal: bool,
-    /// True when the value was read through a reference. References have the
-    /// lowest priority when CUE chooses the sign of an equal zero.
+    /// True when the underlying value originated from a literal, even after it
+    /// is read through a reference. Used for signed-zero sign priority.
+    value_literal: bool,
+    /// True when the value was read through a reference.
     reference: bool,
 }
 
@@ -163,6 +166,7 @@ impl Decimal {
             value,
             negative_zero: false,
             literal: true,
+            value_literal: true,
             reference: false,
         }
     }
@@ -174,6 +178,7 @@ impl Decimal {
             value,
             negative_zero: false,
             literal: false,
+            value_literal: false,
             reference: false,
         }
     }
@@ -186,6 +191,7 @@ impl Decimal {
             value: BigDecimal::new(BigInt::from(0), scale),
             negative_zero: true,
             literal: false,
+            value_literal: false,
             reference: false,
         }
     }
@@ -225,12 +231,14 @@ impl Decimal {
     }
 
     /// Priority used when choosing the sign of an equal zero:
-    /// literal (2) > expression/result (1) > reference (0).
+    /// syntactic literal (2), then expression/result or reference-to-literal
+    /// (1), then reference-to-computed (0). A reference to a literal therefore
+    /// ties with an expression, so the left operand still wins on a tie.
     #[must_use]
     pub fn sign_priority(&self) -> u8 {
         if self.literal {
             2
-        } else if self.reference {
+        } else if self.reference && !self.value_literal {
             0
         } else {
             1

@@ -15604,6 +15604,95 @@ fn export_multi_source_preserves_signed_zero_and_typed_collisions() {
 }
 
 #[test]
+fn signed_zero_unification_matrix_matches_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("zero_matrix.cue");
+    let operands = [
+        "0.0",
+        "z",
+        "n",
+        "p",
+        "s",
+        "m",
+        "(0.0 * -1)",
+        "(0.0 * 1)",
+        "-0.0",
+    ];
+    let mut source = String::from(
+        "package zeromatrix\nimport \"math\"\n\
+         z: 0.0\nn: 0.0 * -1\np: 0.0 * 1\n\
+         s: math.Sqrt(0)\nm: math.Mod(-1, 1)\n",
+    );
+    for (index, left) in operands.iter().enumerate() {
+        for (partner, right) in operands.iter().enumerate() {
+            source.push_str(&format!(
+                "m_{}_{}: {} & {}\n",
+                index + 1,
+                partner + 1,
+                left,
+                right
+            ));
+        }
+    }
+    write(&path, &source);
+
+    let expected = Command::new(&cue)
+        .args(["export", "--out", "json", path.to_str().expect("path")])
+        .output()
+        .expect("run cue");
+    assert!(
+        expected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&expected.stderr)
+    );
+    let actual = ost(&["export", "--out", "json", path.to_str().expect("path")]);
+    assert!(
+        actual.status.success(),
+        "{}",
+        String::from_utf8_lossy(&actual.stderr)
+    );
+    let compact = |text: &str| {
+        text.chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>()
+    };
+    let actual: Value = serde_json::from_slice(&actual.stdout).expect("actual json");
+    let expected: Value = serde_json::from_slice(&expected.stdout).expect("expected json");
+    assert_eq!(actual, expected, "9x9 float signed-zero matrix");
+
+    let int_path = directory.path().join("zero_int_matrix.cue");
+    write(
+        &int_path,
+        "package zeroint\n\
+         a: ni & zi\n\
+         b: zi & ni\n\
+         c: #ND & #NE\n\
+         d: {v: 0 * -1} & {v: 0}\n\
+         e: {v: 0} & {v: 0 * -1}\n\
+         ni: 0 * -1\n\
+         zi: 0\n\
+         #ND: {v: 0 * -1}\n\
+         #NE: {v: 0}\n",
+    );
+    let expected = Command::new(cue)
+        .args(["export", "--out", "json", int_path.to_str().expect("path")])
+        .output()
+        .expect("run cue");
+    assert!(expected.status.success());
+    let actual = ost(&["export", "--out", "json", int_path.to_str().expect("path")]);
+    assert!(actual.status.success());
+    assert_eq!(
+        compact(&String::from_utf8_lossy(&actual.stdout)),
+        compact(&String::from_utf8_lossy(&expected.stdout)),
+        "integer signed-zero matrix"
+    );
+}
+
+#[test]
 fn tool_command_http2_matches_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");

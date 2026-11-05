@@ -10021,6 +10021,19 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
             }
             Ok(Value::List(out))
         }
+        // A computed integer-kind signed zero unified with a positive integer
+        // literal keeps the literal's positive sign, matching CUE. The generic
+        // equal-value fallback below would otherwise keep the left `-0`.
+        (Value::DecimalInt(a), Value::Int(0)) | (Value::Int(0), Value::DecimalInt(a))
+            if a.is_negative_zero() =>
+        {
+            Ok(Value::Int(0))
+        }
+        (Value::DecimalInt(a), Value::BigInt(b)) | (Value::BigInt(b), Value::DecimalInt(a))
+            if a.is_negative_zero() && b == &BigInt::from(0) =>
+        {
+            Ok(Value::BigInt(BigInt::from(0)))
+        }
         (a, b) if !numeric_kind_mismatch(a, b) && values_equal(a, b) => Ok(a.clone()),
         (a, b) => Err(LangError::conflict(
             span.line,
