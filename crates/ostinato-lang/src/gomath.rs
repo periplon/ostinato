@@ -563,6 +563,54 @@ pub(crate) fn log1p(x: f64) -> f64 {
     f64::from(k) * LN2_HI - ((hfsq - (s * (hfsq + r) + (f64::from(k) * LN2_LO + c))) - f)
 }
 
+/// Go's `math.Exp`.
+#[must_use]
+pub(crate) fn exp(x: f64) -> f64 {
+    const LN2_HI: f64 = 6.93147180369123816490e-01;
+    const LN2_LO: f64 = 1.90821492927058770002e-10;
+    const LOG2E: f64 = 1.44269504088896338700e+00;
+    const OVERFLOW: f64 = 7.09782712893383973096e+02;
+    const UNDERFLOW: f64 = -7.45133219101941108420e+02;
+    const NEAR_ZERO: f64 = 1.0 / (1u64 << 28) as f64;
+
+    if x.is_nan() {
+        return x;
+    }
+    if x > OVERFLOW {
+        return f64::INFINITY;
+    }
+    if x < UNDERFLOW {
+        return 0.0;
+    }
+    if -NEAR_ZERO < x && x < NEAR_ZERO {
+        return 1.0 + x;
+    }
+    let k = if x < 0.0 {
+        (LOG2E * x - 0.5) as i32
+    } else if x > 0.0 {
+        (LOG2E * x + 0.5) as i32
+    } else {
+        0
+    };
+    let hi = x - f64::from(k) * LN2_HI;
+    let lo = f64::from(k) * LN2_LO;
+    expmulti(hi, lo, k)
+}
+
+fn expmulti(hi: f64, lo: f64, k: i32) -> f64 {
+    const P1: f64 = 1.66666666666666657415e-01;
+    const P2: f64 = -2.77777777770155933842e-03;
+    const P3: f64 = 6.61375632143793436117e-05;
+    const P4: f64 = -1.65339022054652515390e-06;
+    const P5: f64 = 4.13813679705723846039e-08;
+    let r = hi - lo;
+    let t = r * r;
+    let inner = horner(&[P5, P4, P3, P2, P1], t);
+    let c = r - t * inner;
+    let y = 1.0 - ((lo - (r * c) / (2.0 - c)) - hi);
+    ldexp(y, k)
+}
+
 /// Go's `math.Sinh`.
 #[must_use]
 pub(crate) fn sinh(x: f64) -> f64 {
@@ -576,9 +624,9 @@ pub(crate) fn sinh(x: f64) -> f64 {
     let sign = x < 0.0;
     let x = x.abs();
     let temp = if x > 21.0 {
-        x.exp() * 0.5
+        exp(x) * 0.5
     } else if x > 0.5 {
-        let ex = x.exp();
+        let ex = exp(x);
         (ex - 1.0 / ex) * 0.5
     } else {
         let sq = x * x;
@@ -594,9 +642,9 @@ pub(crate) fn sinh(x: f64) -> f64 {
 pub(crate) fn cosh(x: f64) -> f64 {
     let x = x.abs();
     if x > 21.0 {
-        return x.exp() * 0.5;
+        return exp(x) * 0.5;
     }
-    let ex = x.exp();
+    let ex = exp(x);
     (ex + 1.0 / ex) * 0.5
 }
 
@@ -619,7 +667,7 @@ pub(crate) fn tanh(x: f64) -> f64 {
         return if x < 0.0 { -1.0 } else { 1.0 };
     }
     if z >= 0.625 {
-        let s = (2.0 * z).exp();
+        let s = exp(2.0 * z);
         let mut result = 1.0 - 2.0 / (s + 1.0);
         if x < 0.0 {
             result = -result;
@@ -716,6 +764,14 @@ mod tests {
         assert_eq!(acos(0.5), 1.047_197_551_196_597_6);
         assert_eq!(atan(1.0), 0.785_398_163_397_448_3);
         assert_eq!(atan2(1.0, -2.0), 2.677_945_044_588_987);
+    }
+
+    #[test]
+    fn matches_go_hyperbolics() {
+        assert_eq!(exp(40.0), 2.3538526683701997e17);
+        assert_eq!(sinh(40.0), 1.1769263341850998e17);
+        assert_eq!(cosh(40.0), 1.1769263341850998e17);
+        assert_eq!(tanh(40.0), 1.0);
     }
 
     #[test]

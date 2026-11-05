@@ -47,19 +47,34 @@ pub enum UnOp {
 /// fields even though both render as U+FFFD in JSON.
 pub const RAW_LABEL_PREFIX: char = '\u{7}';
 
+fn encode_raw_label(bytes: &[u8]) -> String {
+    let mut out = String::from(RAW_LABEL_PREFIX);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Encode a string label. Labels that already start with the internal prefix
+/// are escaped in the same `prefix + hex(bytes)` form so the encoding stays
+/// injective (a valid `"\u0007ff"` label must not be mistaken for a raw-byte
+/// sentinel).
+#[must_use]
+pub fn encode_string_label(text: &str) -> String {
+    if text.starts_with(RAW_LABEL_PREFIX) {
+        encode_raw_label(text.as_bytes())
+    } else {
+        text.to_owned()
+    }
+}
+
 /// Encode a bytes field label, preserving raw bytes when they are not valid
-/// UTF-8. Valid UTF-8 labels keep their normal spelling.
+/// UTF-8.
 #[must_use]
 pub fn encode_bytes_label(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
-        Ok(text) => text.to_owned(),
-        Err(_) => {
-            let mut out = String::from(RAW_LABEL_PREFIX);
-            for byte in bytes {
-                out.push_str(&format!("{byte:02x}"));
-            }
-            out
-        }
+        Ok(text) => encode_string_label(text),
+        Err(_) => encode_raw_label(bytes),
     }
 }
 

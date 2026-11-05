@@ -25,7 +25,9 @@ workflow outside the Rust surface has a supported escape hatch.
   defaults, disjunctions with defaults and narrowing, numeric bounds
   (`>=`, `>`, `<=`, `<`, `!=`, `=~`, `!~`), CUE-compatible decimal
   arithmetic (exact literals, 34-significant-digit half-up rounding for
-  results, a 34-digit division expansion and apd-compatible JSON formatting),
+  results, a 34-digit division expansion, apd exponent limits and
+  apd-compatible JSON formatting; see the residual rows for the few
+  representation-only differences),
   optional fields, type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - recursive definition materialization through optional fields and lists
@@ -52,10 +54,14 @@ workflow outside the Rust surface has a supported escape hatch.
   parameters;
 - `strings`, `list`, `regexp`, `math` and `time` builtins (including the full
   Go layout language, `FormatString`, `Split`, `ToUnix`/`ToUnixNano`,
-  `FormatDuration` and time constants), bytes literals (single-line, multiline
-  and interpolated), raw-byte bytes field labels (non-UTF-8 labels keep their
-  own identity and are not selectable by their rendered U+FFFD character) and
-  global `len`;
+  `FormatDuration` and time constants). The exposed `math` functions
+  (`Abs`, rounding, `Pow`/`Exp`/`Exp2`/`Log`/`Log10`/`Log2`/`Cbrt`/`Sqrt`,
+  circular/hyperbolic functions, `Atan2`, `Mod`, `Remainder`) are matched
+  against the oracle for the tested surface; bytes literals (single-line,
+  multiline and interpolated), raw-byte bytes field labels (non-UTF-8 labels
+  keep their own identity, valid labels beginning with the internal escape
+  byte stay distinct, and raw labels are not selectable by their rendered
+  U+FFFD character) and global `len`;
 - constraint-based parameter overrides for split/definition-backed params and
   dependent params;
 - CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files) for workflow loading;
@@ -115,6 +121,9 @@ workflow outside the Rust surface has a supported escape hatch.
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
 | Lossy JSON export of colliding raw-bytes labels | Raw non-UTF-8 labels keep their own identity and are not selectable by their rendered U+FFFD character, matching CUE. CUE's JSON export can emit duplicate keys for distinct raw labels that both render as U+FFFD; Ostinato's map representation cannot, so exporting a struct with such a collision is rejected instead of silently dropping a field |
 | Arithmetic negative zero | `BigDecimal` has no signed zero. Literal `-0`/`-0.0` canonicalizes like CUE, but an arithmetic result such as `0.0 * -1` is exported as `0.0` instead of `-0.0` |
+| YAML exponent casing | YAML emits the canonical uppercase `E` decimal token; CUE's YAML emitter lowercases arithmetic exponents. Values and parsed numbers agree |
+| `%` operator | CUE has no `%` operator (so there is no oracle for it); Ostinato keeps exact integer modulo as an extension. Use `math.Mod`/`math.Remainder` for CUE-compatible modulo/remainder |
+| Numeric unification lexical form | Numerically equal decimals keep the first operand's scale in some unifications (`(1.0 + 0) & 1.00` exports `1.0`; CUE exports `1.00`). Values compare equal; only the chosen representation differs |
 | Narrowing a defaulted constraint through a definition-valued definition | `#B: #A & {n: 4}` conflicts; narrowing inline/unified values and #A & {n: 4} directly recompute dependent fields |
 | Narrowing defaulted fields inside recursive definitions | `#Node: {n: *1|int, total: n+1, children?: [...#Node]}` does not recompute dependents when `n` is narrowed; recursive defaults themselves are preserved |
 | Default narrowing with a shadowing nested same-name definition | `#A: {n:*1|int, y:n+1, inner:{#A:5, v:#A}}` does not recompute `y` when `n` is narrowed; rename the nested definition or use the oracle |

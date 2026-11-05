@@ -459,7 +459,7 @@ impl Parser {
                             StrPart::Interp(_) => None,
                         })
                         .collect();
-                    Ok(Label::Name(text, span))
+                    Ok(Label::Name(crate::ast::encode_string_label(&text), span))
                 }
             }
             Tok::Bytes(raw, _, _) => {

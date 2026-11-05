@@ -53,7 +53,13 @@ params: {
 	lit_frac:  1.2300
 	lit_zero:  0.000
 	lit_small: 1e-38
+	lit_over_exp:  1.2300e100001
+	lit_under_exp: 1e-100001
 	mul_scale: 1.0 * 2.00
+	// apd exponent boundary values that remain in range.
+	exp_boundary_add:  1e100000 + 0
+	exp_boundary_mul:  1e99999 * 10
+	exp_boundary_pair: 1e50000 * 1e50000
 	// Interpolation and type checks see the same kind and digits.
 	interp_big:  "\(d35 + 1)"
 	interp_div:  "\(1 / 3)"

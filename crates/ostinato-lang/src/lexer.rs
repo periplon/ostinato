@@ -1,6 +1,24 @@
 use std::str::FromStr;
 
 use bigdecimal::BigDecimal;
+
+/// If a numeric literal's exponent is outside `apd`'s ±100000 range, return
+/// the mantissa digits with the decimal point removed (CUE's fallback
+/// representation for such literals).
+fn exponent_out_of_range(text: &str) -> Option<String> {
+    let (mantissa, exponent) = text.split_once(['e', 'E'])?;
+    let exponent = exponent.parse::<i64>().ok();
+    if exponent.is_some_and(|exponent| (-100_000..=100_000).contains(&exponent)) {
+        return None;
+    }
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let digits = digits.trim_start_matches('0');
+    Some(if digits.is_empty() {
+        "0".to_owned()
+    } else {
+        digits.to_owned()
+    })
+}
 use num_bigint::BigInt;
 
 use crate::error::LangError;
@@ -407,6 +425,13 @@ impl Lexer {
         if is_float {
             if text.ends_with('.') {
                 text.push('0');
+            }
+            // CUE's decimal parser falls back to the mantissa's digits with
+            // exponent zero when the exponent is outside apd's range.
+            if let Some(mantissa) = exponent_out_of_range(&text) {
+                let value = BigDecimal::from_str(&mantissa)
+                    .map_err(|_| LangError::parse(line, col, format!("invalid float `{text}`")))?;
+                return Ok(Tok::Float(value));
             }
             let value = BigDecimal::from_str(&text)
                 .map_err(|_| LangError::parse(line, col, format!("invalid float `{text}`")))?;

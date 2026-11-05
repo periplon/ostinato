@@ -8356,6 +8356,23 @@ struct_comp: {for i in [1] {'k': i}}
     let value = ostinato_lang::eval_file(&file).expect("eval raw label");
     assert_eq!(value.to_json().expect("json")["x"]["�"], 1);
 
+    let control = "package demo\nx: {'\\a': 1}\n";
+    let file = ostinato_lang::parse(control).expect("parse control label");
+    let value = ostinato_lang::eval_file(&file).expect("eval control label");
+    assert_eq!(value.to_json().expect("json")["x"]["\u{7}"], 1);
+
+    let mixed = "package demo\nx: {'\\xff': 1, '\\x07ff': 2}\n";
+    let file = ostinato_lang::parse(mixed).expect("parse mixed labels");
+    let value = ostinato_lang::eval_file(&file).expect("eval mixed labels");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["�"], 1);
+    assert_eq!(json["x"]["\u{7}ff"], 2);
+
+    let escaped_prefix = "package demo\nx: {\"\\u0007ff\": 1}\n";
+    let file = ostinato_lang::parse(escaped_prefix).expect("parse escaped-prefix label");
+    let value = ostinato_lang::eval_file(&file).expect("eval escaped-prefix label");
+    assert_eq!(value.to_json().expect("json")["x"]["\u{7}ff"], 1);
+
     let unselectable = "package demo\nx: {'\\xff': 1}\ny: x[\"�\"]\n";
     let file = ostinato_lang::parse(unselectable).expect("parse raw selection");
     assert!(

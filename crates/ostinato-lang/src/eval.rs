@@ -1129,6 +1129,7 @@ impl<'a> Frame<'a> {
                             "dynamic field label must evaluate to a string",
                         ));
                     };
+                    let key = crate::ast::encode_string_label(&key);
                     self.insert_field(
                         key.clone(),
                         field.value.clone(),
@@ -5022,10 +5023,12 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     .map(Value::Int)
                     .ok_or_else(|| LangError::eval(span.line, span.col, "integer overflow")),
                 (UnOp::Neg, Value::BigInt(value)) => Ok(Value::BigInt(-value)),
-                (UnOp::Neg, Value::DecimalInt(value)) => {
-                    Ok(decimal_int_value(numeric::negate(&value)))
-                }
-                (UnOp::Neg, Value::Float(value)) => Ok(Value::Float(numeric::negate(&value))),
+                (UnOp::Neg, Value::DecimalInt(value)) => Ok(decimal_int_value(
+                    numeric::negate(&value).map_err(|error| numeric_error(error, *span))?,
+                )),
+                (UnOp::Neg, Value::Float(value)) => Ok(Value::Float(
+                    numeric::negate(&value).map_err(|error| numeric_error(error, *span))?,
+                )),
                 (UnOp::Neg, other) => Err(LangError::conflict(
                     span.line,
                     span.col,
@@ -6584,8 +6587,12 @@ fn math_decimal(arguments: &[Value], index: usize, span: Span) -> Result<BigDeci
 /// Convert a decimal `math` result exactly like CUE's `fromGoValue` does for
 /// `*apd.Decimal`: an integral result becomes an integer (expanded to exponent
 /// zero), otherwise it stays a float-kind decimal.
-fn math_decimal_result(value: BigDecimal) -> Value {
-    numeric::expand_integral(&value).map_or(Value::Float(value), decimal_int_value)
+fn math_decimal_result(value: BigDecimal, span: Span) -> Result<Value, LangError> {
+    match numeric::expand_integral(&value) {
+        Ok(Some(expanded)) => Ok(decimal_int_value(expanded)),
+        Ok(None) => Ok(Value::Float(value)),
+        Err(error) => Err(numeric_error(error, span)),
+    }
 }
 
 fn math_float_result(value: f64) -> Value {
@@ -6663,10 +6670,8 @@ fn math_decimal_builtin(
         Builtin::MathLog2 => numeric::log2(&first),
         _ => unreachable!("decimal math builtin"),
     }
-    .ok_or_else(|| {
-        LangError::conflict(span.line, span.col, "math function result is not a number")
-    })?;
-    Ok(math_decimal_result(numeric::round_cue(&result)))
+    .map_err(|error| numeric_error(error, span))?;
+    math_decimal_result(numeric::round_cue(&result), span)
 }
 
 fn apply_math_builtin(
@@ -6714,11 +6719,12 @@ fn apply_math_builtin(
                 value.clone()
             })),
             Some(Value::DecimalInt(value) | Value::Float(value)) => {
-                Ok(math_decimal_result(if value < &BigDecimal::from(0) {
-                    numeric::negate(value)
+                let magnitude = if value < &BigDecimal::from(0) {
+                    numeric::negate(value).map_err(|error| numeric_error(error, span))?
                 } else {
                     value.clone()
-                }))
+                };
+                math_decimal_result(magnitude, span)
             }
             _ => Err(LangError::conflict(
                 span.line,
@@ -6768,10 +6774,9 @@ fn apply_math_builtin(
             }
             let base = math_decimal(arguments, 0, span)?;
             let exponent = math_decimal(arguments, 1, span)?;
-            let value = numeric::pow(&base, &exponent).ok_or_else(|| {
-                LangError::conflict(span.line, span.col, "math.Pow: invalid operation")
-            })?;
-            Ok(math_decimal_result(numeric::round_cue(&value)))
+            let value =
+                numeric::pow(&base, &exponent).map_err(|error| numeric_error(error, span))?;
+            math_decimal_result(numeric::round_cue(&value), span)
         }
         _ => unreachable!("math builtin"),
     }
@@ -7042,6 +7047,7 @@ fn value_is_pending(value: &Value) -> bool {
         | Value::Bool(_)
         | Value::Int(_)
         | Value::BigInt(_)
+        | Value::DecimalInt(_)
         | Value::Float(_)
         | Value::String(_)
         | Value::Bytes(_)
@@ -7535,11 +7541,15 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
     match op {
         BinOp::Add => {
             if let (Some(a), Some(b)) = (integer_decimal(left), integer_decimal(right)) {
-                return Ok(decimal_int_value(numeric::add(&a, &b)));
+                return Ok(decimal_int_value(
+                    numeric::add(&a, &b).map_err(|error| numeric_error(error, span))?,
+                ));
             }
             if let (Some(a), Some(b)) = (numeric_value_decimal(left), numeric_value_decimal(right))
             {
-                return Ok(Value::Float(numeric::add(&a, &b)));
+                return Ok(Value::Float(
+                    numeric::add(&a, &b).map_err(|error| numeric_error(error, span))?,
+                ));
             }
             match (left, right) {
                 (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
@@ -7576,16 +7586,22 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
         }
         BinOp::Sub => {
             if let (Some(a), Some(b)) = (integer_decimal(left), integer_decimal(right)) {
-                return Ok(decimal_int_value(numeric::sub(&a, &b)));
+                return Ok(decimal_int_value(
+                    numeric::sub(&a, &b).map_err(|error| numeric_error(error, span))?,
+                ));
             }
             match (numeric_value_decimal(left), numeric_value_decimal(right)) {
-                (Some(a), Some(b)) => Ok(Value::Float(numeric::sub(&a, &b))),
+                (Some(a), Some(b)) => Ok(Value::Float(
+                    numeric::sub(&a, &b).map_err(|error| numeric_error(error, span))?,
+                )),
                 _ => type_error("subtract", left, right, span),
             }
         }
         BinOp::Mul => {
             if let (Some(a), Some(b)) = (integer_decimal(left), integer_decimal(right)) {
-                return Ok(decimal_int_value(numeric::mul(&a, &b)));
+                return Ok(decimal_int_value(
+                    numeric::mul(&a, &b).map_err(|error| numeric_error(error, span))?,
+                ));
             }
             match (left, right) {
                 (Value::String(text), Value::Int(count))
@@ -7593,7 +7609,9 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
                 (Value::Bytes(bytes), Value::Int(count))
                 | (Value::Int(count), Value::Bytes(bytes)) => repeat_bytes(bytes, *count, span),
                 _ => match (numeric_value_decimal(left), numeric_value_decimal(right)) {
-                    (Some(a), Some(b)) => Ok(Value::Float(numeric::mul(&a, &b))),
+                    (Some(a), Some(b)) => Ok(Value::Float(
+                        numeric::mul(&a, &b).map_err(|error| numeric_error(error, span))?,
+                    )),
                     _ => type_error("multiply", left, right, span),
                 },
             }
@@ -7608,8 +7626,8 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
                 return Err(LangError::conflict(span.line, span.col, "division by zero"));
             }
             match numeric::divide(&left_value, &right_value) {
-                Some(value) => Ok(Value::Float(value)),
-                None => Err(LangError::conflict(span.line, span.col, "division by zero")),
+                Ok(value) => Ok(Value::Float(value)),
+                Err(error) => Err(numeric_error(error, span)),
             }
         }
         BinOp::Mod => match (left, right) {
@@ -7748,6 +7766,10 @@ fn params_cycle_error(error: &LangError) -> bool {
     let text = error.to_string();
     text.contains("cyclic reference while evaluating `params.")
         || text.contains("circular reference while evaluating `params.")
+}
+
+fn numeric_error(error: numeric::NumericError, span: Span) -> LangError {
+    LangError::conflict(span.line, span.col, error.message())
 }
 
 fn type_error(op: &str, left: &Value, right: &Value, span: Span) -> Result<Value, LangError> {
