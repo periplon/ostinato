@@ -6935,6 +6935,76 @@ list: #PL & {ls: [[{a: 2}]]}
 }
 
 #[test]
+fn nested_defaults_and_let_injection_match_cue() {
+    let eval_params = |source: &str| {
+        let file = ostinato_lang::parse(source).expect("parse nested default params");
+        let value = ostinato_lang::eval_file(&file).expect("eval nested default params");
+        value.to_json().expect("json")["params"].clone()
+    };
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {cfg?: {n: *2 | int, m: n * 3}, v: cfg.m}\nparams: #P & {cfg: {n: 5}}\n"
+        ),
+        serde_json::json!({"cfg": {"n": 5, "m": 15}, "v": 15})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {cfg: {n: *2 | int, m: n * 3}, v: cfg.m}\nparams: #P & {cfg: {n: 5}}\n"
+        ),
+        serde_json::json!({"cfg": {"n": 5, "m": 15}, "v": 15})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {e?: #E, v: e.m}\nparams: #P & {e: {n: 5}}\n"
+        ),
+        serde_json::json!({"e": {"n": 5, "m": 15}, "v": 15})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {ls?: [{n: *2 | int, m: n * 3}], v: ls[0].m}\nparams: #P & {ls: [{n: 5}]}\n"
+        ),
+        serde_json::json!({"ls": [{"n": 5, "m": 15}], "v": 15})
+    );
+
+    let source = r#"
+package demo
+#P: {a?: int, b: a + 1}
+let base = #P & {}
+let plain = (#P)
+x: base & {a: 2}
+y: plain & {a: 4}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse injected let bases");
+    let value = ostinato_lang::eval_file(&file).expect("eval injected let bases");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"], serde_json::json!({"a": 2, "b": 3}));
+    assert_eq!(json["y"], serde_json::json!({"a": 4, "b": 5}));
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {a?: int, b: a + 1}\nlet base = #P\nparams: base & {a: 2}\n"
+        ),
+        serde_json::json!({"a": 2, "b": 3})
+    );
+
+    let hidden = "package demo\n_h: 1 + int\nx: 1\n";
+    let file = ostinato_lang::parse(hidden).expect("parse hidden operation error");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "hidden operation errors must not be skipped"
+    );
+    for source in [
+        "package demo\n_h: int\nx: 1\n",
+        "package demo\n_h: {a?: int, c: a}\nx: 1\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse incomplete hidden");
+        assert!(
+            ostinato_lang::eval_file(&file).is_ok(),
+            "incomplete hidden fields are allowed: {source:?}"
+        );
+    }
+}
+
+#[test]
 fn arbitrary_precision_integer_literals_keep_exact_values() {
     let source = r#"
 package demo

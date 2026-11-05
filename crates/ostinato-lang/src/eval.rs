@@ -2343,7 +2343,35 @@ impl<'a> Frame<'a> {
                     Err(err) => return Err(err),
                 }
             }
-            if evaluated.iter().any(Option::is_none) {
+            let literal_injection = exprs.iter().enumerate().find_map(|(index, expr)| {
+                if !expr_is_narrowing_source(expr) {
+                    return None;
+                }
+                let value = evaluated[index].as_ref()?;
+                match value.concretize() {
+                    Value::Struct(_)
+                    | Value::Definition { .. }
+                    | Value::List(_)
+                    | Value::OpenListPrefix(..) => Some(value.clone()),
+                    _ => None,
+                }
+            });
+            if let Some(injection) = literal_injection
+                && exprs.len() > 1
+            {
+                // A literal sibling declaration supplies the concrete fields
+                // that narrow defaults in the other declarations.
+                for (index, expr) in exprs.iter().enumerate() {
+                    let previous = segment
+                        .as_ref()
+                        .map(|segment| self.params_segment.replace(Some(segment.clone())));
+                    let value = eval_declaration_part(self, expr, &injection, span);
+                    if let Some(previous) = previous {
+                        *self.params_segment.borrow_mut() = previous;
+                    }
+                    evaluated[index] = Some(value?);
+                }
+            } else if evaluated.iter().any(Option::is_none) {
                 // A sibling declaration in the same field supplied a concrete
                 // struct/list. Re-evaluate the incomplete declaration against
                 // it so nested optionals see the concrete values.
@@ -2506,7 +2534,12 @@ impl<'a> Frame<'a> {
                         unify_values(&declared, &part, span)?
                     };
                 }
-                let unified = unify_values(&close_nested(&declared), &value, span)?;
+                let declared = if closed_by_default {
+                    close_nested(&declared)
+                } else {
+                    declared
+                };
+                let unified = unify_values(&declared, &value, span)?;
                 child.values.borrow_mut().insert(key.clone(), unified);
                 child.materialized.borrow_mut().insert(key.clone());
                 child
@@ -2870,6 +2903,37 @@ impl<'a> Frame<'a> {
         Ok(())
     }
 
+    fn eval_let_with_injections(
+        &self,
+        name: &str,
+        injections: &Value,
+        span: Span,
+    ) -> Result<Value, LangError> {
+        if self.evaluating.borrow().contains(name) {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("cyclic let binding while evaluating `{name}`"),
+            ));
+        }
+        let expr = self.lets.borrow().get(name).cloned();
+        let Some(expr) = expr else {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("undefined let binding `{name}`"),
+            ));
+        };
+        self.evaluating.borrow_mut().insert(name.to_owned());
+        let previous = self.self_rhs.replace(Some(name.to_owned()));
+        let previous_cache = self.skip_cache.replace(true);
+        let result = eval_declaration_part(self, &expr, injections, span);
+        self.skip_cache.set(previous_cache);
+        *self.self_rhs.borrow_mut() = previous;
+        self.evaluating.borrow_mut().remove(name);
+        result
+    }
+
     fn eval_let(&self, name: &str, span: Span) -> Result<Value, LangError> {
         if !self.skip_cache.get()
             && let Some(value) = self.vars.borrow().get(name)
@@ -2969,7 +3033,7 @@ impl<'a> Frame<'a> {
                 Ok(value) => value,
                 // Hidden fields are not exported; like CUE, allow them to stay
                 // incomplete until a unification supplies the missing values.
-                Err(err) if is_hidden_key(&name) && is_deferrable_incomplete_error(&err) => {
+                Err(err) if is_hidden_key(&name) && is_optional_incomplete_error(&err) => {
                     continue;
                 }
                 Err(err) => return Err(err),
@@ -3116,10 +3180,12 @@ fn concrete_fields(value: &Value) -> Option<BTreeMap<String, Value>> {
     }
 }
 
+fn is_optional_incomplete_error(err: &LangError) -> bool {
+    err.is_incomplete_optional() || err.to_string().contains("cannot reference optional field")
+}
+
 fn is_deferrable_incomplete_error(err: &LangError) -> bool {
-    err.is_incomplete_optional()
-        || err.to_string().contains("cannot reference optional field")
-        || err.to_string().contains("non-concrete value")
+    is_optional_incomplete_error(err) || err.to_string().contains("non-concrete value")
 }
 
 fn lookup_with_injections(
@@ -3178,12 +3244,10 @@ fn eval_definition_with_injections(
     let mut cursor = Some(frame);
     while let Some(current) = cursor {
         if current.lets.borrow().contains_key(name) {
-            let previous = current.next_injections.replace(Some(injections));
-            let previous_cache = current.skip_cache.replace(true);
-            let result = current.eval_let(name, span);
-            current.skip_cache.set(previous_cache);
-            current.next_injections.replace(previous);
-            return result.map(Some);
+            let value = Value::Struct(injections);
+            return current
+                .eval_let_with_injections(name, &value, span)
+                .map(Some);
         }
         if current.vars.borrow().contains_key(name) || current.aliases.borrow().contains_key(name) {
             return Ok(None);
@@ -3325,7 +3389,7 @@ fn injection_may_help(
     injections: &BTreeMap<String, Value>,
     err: &LangError,
 ) -> bool {
-    if err.is_incomplete_optional() || err.to_string().contains("cannot reference optional field") {
+    if is_optional_incomplete_error(err) {
         return true;
     }
     if !err.to_string().contains("non-concrete value") {
@@ -3537,6 +3601,14 @@ fn eval_declaration_part(
         }
         _ => eval_expr(expr, frame),
     }
+}
+
+fn expr_is_narrowing_source(expr: &Expr) -> bool {
+    !contains_default(expr)
+        && matches!(
+            strip_expr_parens(expr),
+            Expr::Struct(_, _) | Expr::List(_, _) | Expr::OpenListPrefix(_, _, _)
+        )
 }
 
 fn contains_default(expr: &Expr) -> bool {
