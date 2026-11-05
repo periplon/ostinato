@@ -4,6 +4,10 @@ import "math"
 
 params: {
 	// sinh/cosh overflow boundary
+	sinh_internal: math.Sinh(222.16198053852486)
+	sinh_negative_internal: math.Sinh(-35.16858567424799)
+	cosh_internal: math.Cosh(222.16198053852486)
+	tanh_internal: math.Tanh(222.16198053852486)
 	sinh_709_7: math.Sinh(709.7)
 	cosh_709_7: math.Cosh(709.7)
 	sinh_neg709_7: math.Sinh(-709.7)

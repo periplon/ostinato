@@ -1006,6 +1006,30 @@ fn token_text(token: &Tok) -> String {
     }
 }
 
+/// Decode a double-quoted CUE string literal (including its quotes) for
+/// selectors and other non-expression consumers. Interpolation is rejected.
+pub(crate) fn decode_string_literal(raw: &str) -> Result<String, LangError> {
+    let inner = raw
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .ok_or_else(|| LangError::parse(0, 0, "invalid quoted selector"))?;
+    let parts = parse_str_parts(inner, Span::default())?;
+    let mut text = String::new();
+    for part in parts {
+        match part {
+            StrPart::Text(value) => text.push_str(&value),
+            StrPart::Interp(_) => {
+                return Err(LangError::parse(
+                    0,
+                    0,
+                    "interpolation is not allowed in selectors",
+                ));
+            }
+        }
+    }
+    Ok(text)
+}
+
 fn parse_str_parts(raw: &str, span: Span) -> Result<Vec<StrPart>, LangError> {
     let chars: Vec<char> = raw.chars().collect();
     let mut parts = Vec::new();

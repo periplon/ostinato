@@ -145,23 +145,14 @@ pub fn decimal_from_f64(value: f64) -> Option<BigDecimal> {
     if !value.is_finite() {
         return None;
     }
-    let text = format!("{value:e}");
-    let (mantissa, exponent) = text.split_once('e')?;
-    let exponent: i64 = exponent.parse().ok()?;
-    let (negative, mantissa) = match mantissa.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, mantissa),
-    };
-    let digits: String = mantissa.chars().filter(|ch| *ch != '.').collect();
-    let digits = digits.trim_start_matches('0');
-    let digits = if digits.is_empty() { "0" } else { digits };
-    let digit_len = i64::try_from(digits.len()).ok()?;
-    let scale = digit_len.saturating_sub(1).saturating_sub(exponent);
-    let mut coefficient: BigInt = digits.parse().ok()?;
-    if negative && coefficient != BigInt::from(0) {
-        coefficient = -coefficient;
-    }
-    Some(BigDecimal::new(coefficient, scale))
+    // Go's `apd.Decimal.SetFloat64` uses `strconv.FormatFloat(f, 'E', -1, 64)`.
+    // `ryu` produces the same shortest round-trip digits; normalizing removes
+    // the `.0` spelling for integral values so the decimal exponent matches
+    // Go's `E` form.
+    let mut buffer = ryu::Buffer::new();
+    let text = buffer.format_finite(value);
+    let value: BigDecimal = text.parse().ok()?;
+    Some(value.normalized())
 }
 
 /// Errors raised by CUE-compatible arithmetic.

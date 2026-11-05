@@ -42,6 +42,7 @@ tempfile = "3"
 walkdir = "2"
 stacker = "0.1"
 num-bigint = "0.4"
+ryu = "1"
 
 [profile.release]
 lto = "thin"

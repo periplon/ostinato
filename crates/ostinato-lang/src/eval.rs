@@ -614,7 +614,7 @@ fn parse_selector(expression: &str) -> Result<Vec<String>, LangError> {
                     return Err(LangError::Workflow("empty `[]` index".to_owned()));
                 }
                 if inner.starts_with('"') {
-                    let key: String = serde_json::from_str(inner).map_err(|_| {
+                    let key = crate::parser::decode_string_literal(inner).map_err(|_| {
                         LangError::Workflow(format!("invalid quoted selector {inner}"))
                     })?;
                     segments.push(key);
@@ -643,7 +643,7 @@ fn parse_selector(expression: &str) -> Result<Vec<String>, LangError> {
                     }
                 }
                 let literal: String = chars[start..index].iter().collect();
-                let key: String = serde_json::from_str(&literal).map_err(|_| {
+                let key = crate::parser::decode_string_literal(&literal).map_err(|_| {
                     LangError::Workflow(format!("invalid quoted selector {literal}"))
                 })?;
                 segments.push(key);

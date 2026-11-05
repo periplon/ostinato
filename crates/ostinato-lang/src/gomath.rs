@@ -254,7 +254,8 @@ fn xatan(x: f64) -> f64 {
     let z = x * x;
     let numerator = horner(&[P0, P1, P2, P3, P4], z);
     let denominator = horner(&[1.0, Q0, Q1, Q2, Q3, Q4], z);
-    (x * z).mul_add(numerator / denominator, x)
+    let z = (z * numerator) / denominator;
+    x.mul_add(z, x)
 }
 
 fn satan(x: f64) -> f64 {
@@ -579,7 +580,7 @@ pub(crate) fn log1p(x: f64) -> f64 {
     if k == 0 {
         return f - (hfsq - s * (hfsq + r));
     }
-    f64::from(k) * LN2_HI - ((hfsq - (s * (hfsq + r) + (f64::from(k) * LN2_LO + c))) - f)
+    (f64::from(k) * LN2_HI - (hfsq - (s * (hfsq + r) + (f64::from(k) * LN2_LO + c)))) + f
 }
 
 /// Go's `math.Exp`.
@@ -625,7 +626,7 @@ fn expmulti(hi: f64, lo: f64, k: i32) -> f64 {
     let r = hi - lo;
     let t = r * r;
     let inner = horner(&[P5, P4, P3, P2, P1], t);
-    let c = r - t * inner;
+    let c = (-t).mul_add(inner, r);
     let y = 1.0 - ((lo - (r * c) / (2.0 - c)) - hi);
     ldexp(y, k)
 }
@@ -699,7 +700,7 @@ pub(crate) fn tanh(x: f64) -> f64 {
     let s = x * x;
     let numerator = horner(&P, s);
     let denominator = horner(&[1.0, Q[0], Q[1], Q[2]], s);
-    x + x * s * (numerator / denominator)
+    x + ((x * s) * numerator) / denominator
 }
 
 /// Go's `math.Asinh`.
@@ -738,7 +739,8 @@ pub(crate) fn acosh(x: f64) -> f64 {
         return log(x) + LN2;
     }
     if x > 2.0 {
-        return log(2.0 * x - 1.0 / (x + (x * x - 1.0).sqrt()));
+        let root = x.mul_add(x, -1.0).sqrt();
+        return log(2.0f64.mul_add(x, -(1.0 / (x + root))));
     }
     let t = x - 1.0;
     log1p(t + (2.0 * t + t * t).sqrt())
