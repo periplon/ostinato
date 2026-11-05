@@ -221,6 +221,10 @@ struct AliasCtx {
     let_edges: Vec<((usize, String), (usize, String))>,
     import_aliases: HashSet<String>,
     import_used: HashSet<String>,
+    /// Scopes materialized while walking a `let` value. Cycles that pass
+    /// through a field declared here are static let-cycle errors.
+    let_value_scopes: HashSet<usize>,
+    let_value_depth: usize,
 }
 
 impl AliasCtx {
@@ -459,6 +463,9 @@ impl AliasCtx {
         from: Option<&(usize, String)>,
     ) -> Result<usize, LangError> {
         let id = self.scopes.len();
+        if self.let_value_depth > 0 {
+            self.let_value_scopes.insert(id);
+        }
         self.scopes.push(AliasScope {
             parent,
             fields: HashSet::new(),
@@ -584,7 +591,9 @@ impl AliasCtx {
                     // identifier resolves to an enclosing let or alias.
                     let hidden = self.scopes[id].lets.remove(name);
                     let from = (id, name.clone());
+                    self.let_value_depth += 1;
                     let result = self.expr(value, &chain, &local_shadow, Some(&from));
+                    self.let_value_depth -= 1;
                     if hidden {
                         self.scopes[id].lets.insert(name.clone());
                     }
@@ -875,6 +884,8 @@ pub fn validate_imports(file: &File) -> Result<(), LangError> {
         let_edges: Vec::new(),
         import_aliases,
         import_used: HashSet::new(),
+        let_value_scopes: HashSet::new(),
+        let_value_depth: 0,
     };
     let root = ctx.scope(&file.items, None, &[], &HashSet::new(), None)?;
     let mut seen = HashSet::new();
@@ -921,6 +932,8 @@ pub fn validate_aliases(items: &[StructItem], import_aliases: &[String]) -> Resu
         let_edges: Vec::new(),
         import_aliases: import_aliases.iter().cloned().collect(),
         import_used: HashSet::new(),
+        let_value_scopes: HashSet::new(),
+        let_value_depth: 0,
     };
     let root = ctx.scope(items, None, &[], &HashSet::new(), None)?;
     detect_let_cycles(&ctx)?;
@@ -1031,9 +1044,25 @@ fn detect_let_cycles(ctx: &AliasCtx) -> Result<(), LangError> {
         adjacency: &Map<(usize, String), Vec<(usize, String)>>,
         state: &mut Map<(usize, String), u8>,
         ctx: &AliasCtx,
+        stack: &mut Vec<(usize, String)>,
     ) -> Result<(), LangError> {
         match state.get(node).copied().unwrap_or(0) {
             1 => {
+                let start = stack.iter().position(|item| item == node).unwrap_or(0);
+                let cycle = &stack[start..];
+                let has_let = cycle.iter().any(|(_, name)| !is_field_node(name));
+                if !has_let {
+                    // A field-only cycle reached through a `let` traversal is
+                    // not a let cycle; the evaluator resolves or rejects it
+                    // when the field is demanded. Cycles rooted at an alias
+                    // target keep their static diagnostic.
+                    if stack.first().is_some_and(|(_, name)| !is_field_node(name)) {
+                        return Ok(());
+                    }
+                }
+                if let_cycle_defers_to_evaluation(cycle, ctx) {
+                    return Ok(());
+                }
                 let span = ctx.scopes[node.0]
                     .let_spans
                     .get(&node.1)
@@ -1049,11 +1078,13 @@ fn detect_let_cycles(ctx: &AliasCtx) -> Result<(), LangError> {
             _ => {}
         }
         state.insert(node.clone(), 1);
+        stack.push(node.clone());
         if let Some(neighbors) = adjacency.get(node) {
             for neighbor in neighbors {
-                visit(neighbor, adjacency, state, ctx)?;
+                visit(neighbor, adjacency, state, ctx, stack)?;
             }
         }
+        stack.pop();
         state.insert(node.clone(), 2);
         Ok(())
     }
@@ -1075,9 +1106,34 @@ fn detect_let_cycles(ctx: &AliasCtx) -> Result<(), LangError> {
         .cloned()
         .collect();
     for node in roots {
-        visit(&node, &adjacency, &mut state, ctx)?;
+        visit(&node, &adjacency, &mut state, ctx, &mut Vec::new())?;
     }
     Ok(())
+}
+
+/// A let cycle that reaches a field declared outside any `let` value is not a
+/// static error: CUE resolves it during evaluation, either as an incomplete
+/// value (`let X = f, f: X`) or as a field-specific cycle error.
+fn let_cycle_defers_to_evaluation(cycle: &[(usize, String)], ctx: &AliasCtx) -> bool {
+    let has_let = cycle.iter().any(|(_, name)| !is_field_node(name));
+    let has_field = cycle.iter().any(|(_, name)| is_field_node(name));
+    if !has_let || !has_field {
+        return false;
+    }
+    let mut defers = true;
+    for (scope, name) in cycle {
+        if !is_field_node(name) {
+            continue;
+        }
+        // Definition cycles (and fields declared inside a `let` value) are
+        // static errors; CUE reports structural cycles for these.
+        if name.trim_start_matches('\u{2}').starts_with('#') || ctx.let_value_scopes.contains(scope)
+        {
+            defers = false;
+            break;
+        }
+    }
+    defers
 }
 
 fn rename_items(

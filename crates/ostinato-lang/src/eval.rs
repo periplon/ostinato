@@ -840,6 +840,8 @@ fn json_frame(context: &Json) -> Frame<'static> {
         generated_optionals: RefCell::new(BTreeMap::new()),
         materialized: RefCell::new(BTreeSet::new()),
         injected: RefCell::new(HashSet::new()),
+        generated_labels: RefCell::new(HashSet::new()),
+        selector_peers: RefCell::new(BTreeMap::new()),
         patterns: RefCell::new(Vec::new()),
         aliases: RefCell::new(BTreeMap::new()),
         closed: Cell::new(false),
@@ -989,6 +991,13 @@ struct Frame<'a> {
     /// Self-selection must ignore these, matching CUE's standalone evaluation
     /// of a definition's own selectors.
     injected: RefCell<HashSet<String>>,
+    /// Labels materialized by a comprehension body (`if`/`for`). CUE only
+    /// exposes these through selectors (`x.b`), never as bare identifiers.
+    generated_labels: RefCell<HashSet<String>>,
+    /// Concrete fields from sibling unification operands. They are visible to
+    /// selectors rooted at the field being defined (`x.b`), but never as bare
+    /// identifiers in another operand's lexical scope.
+    selector_peers: RefCell<BTreeMap<String, Value>>,
     patterns: RefCell<Vec<(Pattern, Expr)>>,
     aliases: RefCell<BTreeMap<String, AliasTarget>>,
     closed: Cell<bool>,
@@ -1037,6 +1046,8 @@ impl<'a> Frame<'a> {
             generated_optionals: RefCell::new(BTreeMap::new()),
             materialized: RefCell::new(BTreeSet::new()),
             injected: RefCell::new(HashSet::new()),
+            generated_labels: RefCell::new(HashSet::new()),
+            selector_peers: RefCell::new(BTreeMap::new()),
             patterns: RefCell::new(Vec::new()),
             aliases: RefCell::new(BTreeMap::new()),
             closed: Cell::new(parent.is_some_and(|parent| parent.closed.get())),
@@ -1463,7 +1474,9 @@ impl<'a> Frame<'a> {
         body: &[StructItem],
         bindings: HashMap<String, Value>,
     ) -> Result<(), LangError> {
-        let child = Frame::new(body, Some(self), bindings)?;
+        let child = Frame::from_static(body, Some(self), bindings)?;
+        *child.definition_context.borrow_mut() = self.definition_context.borrow().clone();
+        child.expand(body)?;
         let value = child.to_struct_value_mode(true)?;
         let Value::Definition {
             fields: values,
@@ -1489,12 +1502,16 @@ impl<'a> Frame<'a> {
                 }
                 None => None,
             };
+            let declared = self.display_storage_key(&key).is_some();
             let merged = match existing {
                 Some(existing) => unify_values(&existing, &value, Span::default())?,
                 None => value,
             };
             self.materialized.borrow_mut().insert(key.clone());
             self.values.borrow_mut().insert(storage_key, merged);
+            if !declared {
+                self.generated_labels.borrow_mut().insert(key.clone());
+            }
         }
         for (key, value) in definitions {
             let prior = self.generated_definitions.borrow().get(&key).cloned();
@@ -1505,7 +1522,11 @@ impl<'a> Frame<'a> {
                     .get(&key)
                     .is_some_and(|definition| definition.definition)
             {
-                Some(self.eval_field_key(&key, Span::default())?)
+                let injections = concrete_fields(&value).unwrap_or_default();
+                match eval_definition_with_injections(self, &key, injections, Span::default())? {
+                    Some(declared) => Some(declared),
+                    None => Some(self.eval_field_key(&key, Span::default())?),
+                }
             } else {
                 None
             };
@@ -1618,6 +1639,7 @@ impl<'a> Frame<'a> {
             return self.eval_field_key(&key, span);
         }
         if !self.fields.borrow().contains_key(name)
+            && !self.generated_labels.borrow().contains(name)
             && let Some(value) = self.values.borrow().get(name)
         {
             return Ok(value.clone());
@@ -1649,7 +1671,9 @@ impl<'a> Frame<'a> {
             || self.vars.borrow().contains_key(name)
             || self.lets.borrow().contains_key(name)
             || self.aliases.borrow().contains_key(name)
-            || (!self.fields.borrow().contains_key(name) && self.values.borrow().contains_key(name))
+            || (!self.fields.borrow().contains_key(name)
+                && !self.generated_labels.borrow().contains(name)
+                && self.values.borrow().contains_key(name))
     }
 
     fn has_name(&self, name: &str) -> bool {
@@ -1657,7 +1681,9 @@ impl<'a> Frame<'a> {
             || self.vars.borrow().contains_key(name)
             || self.lets.borrow().contains_key(name)
             || self.aliases.borrow().contains_key(name)
-            || (!self.fields.borrow().contains_key(name) && self.values.borrow().contains_key(name))
+            || (!self.fields.borrow().contains_key(name)
+                && !self.generated_labels.borrow().contains(name)
+                && self.values.borrow().contains_key(name))
             || self.parent.is_some_and(|parent| parent.has_name(name))
     }
 
@@ -2243,9 +2269,17 @@ impl<'a> Frame<'a> {
                 }
                 crate::ast::BytePart::Text(_) => false,
             }),
-            Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => items
+            Expr::List(items, _) => items
                 .iter()
                 .any(|item| self.expr_reaches_task_output(item, allowed, seen)),
+            Expr::OpenListPrefix(items, tail, _) => {
+                items
+                    .iter()
+                    .any(|item| self.expr_reaches_task_output(item, allowed, seen))
+                    || tail
+                        .as_deref()
+                        .is_some_and(|tail| self.expr_reaches_task_output(tail, allowed, seen))
+            }
             Expr::OpenList(Some(inner), _) => self.expr_reaches_task_output(inner, allowed, seen),
             Expr::ListComp { clauses, body, .. } => {
                 self.expr_reaches_task_output(body, allowed, seen)
@@ -2313,19 +2347,33 @@ impl<'a> Frame<'a> {
         };
         if self.evaluating.borrow().contains(key) {
             if is_definition {
-                let slot = self
-                    .recursive_handles
-                    .borrow_mut()
-                    .entry(key.to_owned())
-                    .or_insert_with(|| Rc::new(RecursiveSlot::new()))
-                    .clone();
-                return Ok(Value::Recursive(slot));
+                let injecting = self
+                    .next_injections
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|fields| !fields.is_empty());
+                if !injecting {
+                    let slot = self
+                        .recursive_handles
+                        .borrow_mut()
+                        .entry(key.to_owned())
+                        .or_insert_with(|| Rc::new(RecursiveSlot::new()))
+                        .clone();
+                    return Ok(Value::Recursive(slot));
+                }
+                // A recursive definition re-entered with concrete injected
+                // fields is evaluated afresh so dependent fields see the
+                // narrowed values at every level.
+            } else {
+                if self.cycle_through_let() {
+                    return Ok(Value::Bottom);
+                }
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("cyclic reference while evaluating `{name}`"),
+                ));
             }
-            return Err(LangError::eval(
-                span.line,
-                span.col,
-                format!("cyclic reference while evaluating `{name}`"),
-            ));
         }
         if name == "params" {
             let items = self.params_items(&exprs);
@@ -2414,7 +2462,13 @@ impl<'a> Frame<'a> {
                 if reference == name {
                     continue;
                 }
-                match self.eval_field(&reference, span) {
+                let injections = concrete_fields(&result).unwrap_or_default();
+                let referenced =
+                    match eval_definition_with_injections(self, &reference, injections, span)? {
+                        Some(value) => Ok(value),
+                        None => self.eval_field(&reference, span),
+                    };
+                match referenced {
                     Ok(value) => {
                         result = unify_values(&result, &value, span)?;
                     }
@@ -2438,6 +2492,9 @@ impl<'a> Frame<'a> {
             .within_params()
             .then(|| display_field_name(key).into_owned());
         let outcome = (|| -> Result<Value, LangError> {
+            if exprs.iter().any(|expr| expr_selects_key(expr, &name, self)) {
+                return eval_split_field(self, &exprs, &name, span);
+            }
             let mut evaluated: Vec<Option<Value>> = Vec::with_capacity(exprs.len());
             let mut deferred: Option<LangError> = None;
             for expr in &exprs {
@@ -3068,6 +3125,9 @@ impl<'a> Frame<'a> {
         span: Span,
     ) -> Result<Value, LangError> {
         if self.evaluating.borrow().contains(name) {
+            if self.cycle_reaches_field() {
+                return Ok(Value::Bottom);
+            }
             return Err(LangError::eval(
                 span.line,
                 span.col,
@@ -3126,6 +3186,66 @@ impl<'a> Frame<'a> {
         Ok(Value::Struct(fields))
     }
 
+    fn resolve_transparent_let(&self, name: &str) -> String {
+        let mut current = name.to_owned();
+        let mut seen = HashSet::new();
+        while seen.insert(current.clone()) {
+            let mut cursor = Some(self);
+            let mut next = None;
+            while let Some(frame) = cursor {
+                if let Some(expr) = frame.lets.borrow().get(&current).cloned() {
+                    if let Expr::Ident(target, _) = strip_expr_parens(&expr)
+                        && target != &current
+                    {
+                        next = Some(target.clone());
+                    }
+                    break;
+                }
+                cursor = frame.parent;
+            }
+            let Some(target) = next else {
+                break;
+            };
+            current = target;
+        }
+        current
+    }
+
+    fn transparent_self_selection(&self, key: &str, name: &str, field: &str) -> bool {
+        let fields = self.fields.borrow();
+        let Some(definition) = fields.get(key) else {
+            return false;
+        };
+        !definition.exprs.is_empty()
+            && definition
+                .exprs
+                .iter()
+                .all(|expr| expr_is_transparent_self_select(expr, name, field))
+    }
+
+    fn selector_peer(&self, field: &str) -> Option<Value> {
+        let mut cursor = Some(self);
+        while let Some(current) = cursor {
+            if let Some(value) = current.selector_peers.borrow().get(field) {
+                return Some(value.clone());
+            }
+            cursor = current.parent;
+        }
+        None
+    }
+
+    fn cycle_through_let(&self) -> bool {
+        let evaluating = self.evaluating.borrow();
+        let lets = self.lets.borrow();
+        evaluating.iter().any(|name| lets.contains_key(name))
+    }
+
+    fn cycle_reaches_field(&self) -> bool {
+        let evaluating = self.evaluating.borrow();
+        let fields = self.fields.borrow();
+        evaluating.iter().any(|active| fields.contains_key(active))
+    }
+
     fn eval_let(&self, name: &str, span: Span) -> Result<Value, LangError> {
         if !self.skip_cache.get()
             && let Some(value) = self.vars.borrow().get(name)
@@ -3133,6 +3253,9 @@ impl<'a> Frame<'a> {
             return Ok(value.clone());
         }
         if self.evaluating.borrow().contains(name) {
+            if self.cycle_reaches_field() {
+                return Ok(Value::Bottom);
+            }
             return Err(LangError::eval(
                 span.line,
                 span.col,
@@ -3153,7 +3276,7 @@ impl<'a> Frame<'a> {
         *self.self_rhs.borrow_mut() = previous;
         self.evaluating.borrow_mut().remove(name);
         let value = result?;
-        if !self.skip_cache.get() {
+        if !self.skip_cache.get() && !matches!(&value, Value::Bottom) {
             self.vars
                 .borrow_mut()
                 .insert(name.to_owned(), value.clone());
@@ -3302,6 +3425,35 @@ fn quoted_lookup<'m, V>(map: &'m BTreeMap<String, V>, field: &str) -> Option<&'m
     }
 }
 
+fn expr_is_transparent_self_select(expr: &Expr, name: &str, field: &str) -> bool {
+    match strip_expr_parens(expr) {
+        Expr::Select(base, selected, quoted, _) => {
+            !quoted
+                && selected == field
+                && matches!(strip_expr_parens(base), Expr::Ident(root, _) if root == name)
+        }
+        Expr::Index(base, index, _) => {
+            matches!(strip_expr_parens(base), Expr::Ident(root, _) if root == name)
+                && literal_index_key(index).as_deref() == Some(field)
+        }
+        _ => false,
+    }
+}
+
+fn literal_index_key(index: &Expr) -> Option<String> {
+    let Expr::Str(parts, _) = strip_expr_parens(index) else {
+        return None;
+    };
+    let mut text = String::new();
+    for part in parts {
+        match part {
+            crate::ast::StrPart::Text(value) => text.push_str(value),
+            crate::ast::StrPart::Interp(_) => return None,
+        }
+    }
+    Some(text)
+}
+
 fn self_definition_select(
     frame: &Frame<'_>,
     base: &Expr,
@@ -3316,6 +3468,8 @@ fn self_definition_select(
     let Expr::Ident(name, _) = base else {
         return Ok(None);
     };
+    let resolved = frame.resolve_transparent_let(name);
+    let name = &resolved;
     let mut candidate = Some(frame);
     while let Some(current) = candidate {
         if current.has_local_name(name) {
@@ -3341,6 +3495,12 @@ fn self_definition_select(
                         format!("cannot reference optional field `{field}`"),
                     ));
                 }
+                if current.evaluating.borrow().contains(&key)
+                    && current.transparent_self_selection(&key, name, field)
+                    && let Some(value) = current.selector_peer(field)
+                {
+                    return Ok(Some(value));
+                }
                 if injected {
                     return current
                         .eval_field_key_without_injection(&key, span)
@@ -3363,6 +3523,9 @@ fn self_definition_select(
             if let Some(key) = current.generated_value_key(field, quoted)
                 && let Some(value) = current.values.borrow().get(&key).cloned()
             {
+                return Ok(Some(value));
+            }
+            if let Some(value) = current.selector_peer(field) {
                 return Ok(Some(value));
             }
         }
@@ -3399,6 +3562,319 @@ fn collect_unify_operands<'e>(expr: &'e Expr, out: &mut Vec<&'e Expr>) {
 
 fn expr_is_struct_literal(expr: &Expr) -> bool {
     matches!(strip_expr_parens(expr), Expr::Struct(_, _))
+}
+
+fn selector_root(expr: &Expr) -> Option<&str> {
+    match strip_expr_parens(expr) {
+        Expr::Ident(name, _) => Some(name),
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => selector_root(base),
+        _ => None,
+    }
+}
+
+/// Whether `expr` contains a selector rooted at `name` (`name.field` or
+/// `name["field"]`), including selectors nested inside structs, lists and
+/// comprehension bodies.
+fn expr_selects_key(expr: &Expr, name: &str, frame: &Frame<'_>) -> bool {
+    match expr {
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+            if selector_root(expr).is_some_and(|root| frame.resolve_transparent_let(root) == name) {
+                return true;
+            }
+            if expr_selects_key(base, name, frame) {
+                return true;
+            }
+            if let Expr::Index(_, index, _) = expr {
+                return expr_selects_key(index, name, frame);
+            }
+            false
+        }
+        Expr::Ident(_, _)
+        | Expr::Bytes(_, _)
+        | Expr::Null(_)
+        | Expr::Bool(_, _)
+        | Expr::Int(_, _)
+        | Expr::BigInt(_, _)
+        | Expr::Float(_, _) => false,
+        Expr::Call(callee, arguments, _) => {
+            expr_selects_key(callee, name, frame)
+                || arguments
+                    .iter()
+                    .any(|argument| expr_selects_key(argument, name, frame))
+        }
+        Expr::Bound(_, operand, _)
+        | Expr::Paren(operand, _)
+        | Expr::Default(operand, _)
+        | Expr::Unary(_, operand, _) => expr_selects_key(operand, name, frame),
+        Expr::Binary(_, left, right, _)
+        | Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _) => {
+            expr_selects_key(left, name, frame) || expr_selects_key(right, name, frame)
+        }
+        Expr::Struct(items, _) => struct_items_select_key(items, name, frame),
+        Expr::List(items, _) => items.iter().any(|item| expr_selects_key(item, name, frame)),
+        Expr::OpenListPrefix(items, tail, _) => {
+            items.iter().any(|item| expr_selects_key(item, name, frame))
+                || tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_selects_key(tail, name, frame))
+        }
+        Expr::OpenList(Some(item), _) => expr_selects_key(item, name, frame),
+        Expr::OpenList(None, _) => false,
+        Expr::Str(parts, _) => parts.iter().any(|part| match part {
+            crate::ast::StrPart::Text(_) => false,
+            crate::ast::StrPart::Interp(expr) => expr_selects_key(expr, name, frame),
+        }),
+        Expr::BytesInterp(parts, _) => parts.iter().any(|part| match part {
+            crate::ast::BytePart::Text(_) => false,
+            crate::ast::BytePart::Interp(expr) => expr_selects_key(expr, name, frame),
+        }),
+        Expr::ListComp { clauses, body, .. } => {
+            expr_selects_key(body, name, frame)
+                || clauses.iter().any(|clause| match clause {
+                    crate::ast::CompClause::For { source, .. } => {
+                        expr_selects_key(source, name, frame)
+                    }
+                    crate::ast::CompClause::If { cond, .. } => expr_selects_key(cond, name, frame),
+                })
+        }
+    }
+}
+
+fn struct_items_select_key(items: &[StructItem], name: &str, frame: &Frame<'_>) -> bool {
+    items.iter().any(|item| match item {
+        StructItem::Field(field) => expr_selects_key(&field.value, name, frame),
+        StructItem::Pattern { value, .. } => expr_selects_key(value, name, frame),
+        StructItem::Let { value, .. } => expr_selects_key(value, name, frame),
+        StructItem::For { source, body, .. } => {
+            expr_selects_key(source, name, frame) || struct_items_select_key(body, name, frame)
+        }
+        StructItem::If { cond, body, .. } => {
+            expr_selects_key(cond, name, frame) || struct_items_select_key(body, name, frame)
+        }
+        StructItem::Ellipsis(_) => false,
+    })
+}
+
+fn add_selector_peers(
+    peers: &mut BTreeMap<String, Value>,
+    value: &Value,
+    required: &BTreeSet<String>,
+    span: Span,
+) -> Result<(), LangError> {
+    let Some(mut fields) = concrete_fields(value) else {
+        return Ok(());
+    };
+    if let Value::Definition { optional, .. } = value {
+        for (key, value) in optional {
+            if required.contains(key) {
+                fields.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+    for (key, value) in fields {
+        if let Some(existing) = peers.get(&key).cloned() {
+            match unify_values(&existing, &value, span) {
+                Ok(merged) => {
+                    peers.insert(key, merged);
+                }
+                Err(_) => {
+                    // Conflicting sibling declarations are reported by the
+                    // final unification; selectors see the latest concrete
+                    // value meanwhile (default narrowing may still resolve).
+                    peers.insert(key, value);
+                }
+            }
+        } else {
+            peers.insert(key, value);
+        }
+    }
+    Ok(())
+}
+
+fn is_cyclic_reference_error(err: &LangError) -> bool {
+    let text = err.to_string();
+    text.contains("cyclic reference") || text.contains("cannot select")
+}
+
+fn seed_independent_peers(
+    frame: &Frame<'_>,
+    part: &Expr,
+    name: &str,
+    peers: &mut BTreeMap<String, Value>,
+    required: &BTreeSet<String>,
+    span: Span,
+) {
+    let Expr::Struct(items, struct_span) = strip_expr_parens(part) else {
+        return;
+    };
+    let independent: Vec<StructItem> = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                StructItem::Field(field) if !expr_selects_key(&field.value, name, frame)
+            )
+        })
+        .cloned()
+        .collect();
+    if independent.is_empty() {
+        return;
+    }
+    let pending = frame.next_injections.take();
+    let previous = frame.selector_peers.replace(peers.clone());
+    let result = frame.eval_struct_items(&independent, *struct_span, false);
+    frame.selector_peers.replace(previous);
+    frame.next_injections.replace(pending);
+    if let Ok(value) = result {
+        let _ = add_selector_peers(peers, &value, required, span);
+    }
+}
+
+fn split_struct_part(frame: &Frame<'_>, name: &str, part: &Expr) -> Option<Vec<Expr>> {
+    let Expr::Struct(items, struct_span) = strip_expr_parens(part) else {
+        return None;
+    };
+    if !expr_selects_key(part, name, frame) {
+        return None;
+    }
+    let mut independent = Vec::new();
+    let mut dependent = Vec::new();
+    for item in items {
+        let StructItem::Field(field) = item else {
+            return None;
+        };
+        if field.alias.is_some() || !matches!(field.label, crate::ast::Label::Name(_, _)) {
+            return None;
+        }
+        if expr_selects_key(&field.value, name, frame) {
+            let mut identifiers = Vec::new();
+            collect_identifiers(&field.value, &mut identifiers);
+            if identifiers.iter().any(|identifier| {
+                frame.resolve_transparent_let(identifier) != name && !is_type_keyword(identifier)
+            }) {
+                return None;
+            }
+            dependent.push(field.clone());
+        } else {
+            independent.push(StructItem::Field(field.clone()));
+        }
+    }
+    if dependent.len() < 2 {
+        return None;
+    }
+    let mut out = Vec::new();
+    if !independent.is_empty() {
+        out.push(Expr::Struct(independent, *struct_span));
+    }
+    for field in dependent {
+        out.push(Expr::Struct(vec![StructItem::Field(field)], *struct_span));
+    }
+    Some(out)
+}
+
+/// Evaluate a field whose operands use self-selection (`x.b`) against sibling
+/// operands. Each operand keeps its own lexical scope; concrete fields from
+/// operands that do not reference the field being defined are exposed to
+/// selectors only (never as bare identifiers), matching CUE.
+fn eval_split_field(
+    frame: &Frame<'_>,
+    exprs: &[Expr],
+    name: &str,
+    span: Span,
+) -> Result<Value, LangError> {
+    let mut operands = Vec::new();
+    for expr in exprs {
+        collect_unify_operands(expr, &mut operands);
+    }
+    let mut parts = Vec::new();
+    for operand in operands {
+        if let Some(split) = split_struct_part(frame, name, operand) {
+            parts.extend(split);
+        } else {
+            parts.push(operand.clone());
+        }
+    }
+    let mut values: Vec<Option<Value>> = vec![None; parts.len()];
+    let mut required = BTreeSet::new();
+    for part in &parts {
+        if let Expr::Struct(items, _) = strip_expr_parens(part) {
+            for item in items {
+                if let StructItem::Field(field) = item
+                    && !field.optional
+                    && let crate::ast::Label::Name(field_name, _) = &field.label
+                {
+                    required.insert(field_name.clone());
+                }
+            }
+        }
+    }
+    let mut peers = BTreeMap::new();
+    for part in &parts {
+        if expr_selects_key(part, name, frame) {
+            seed_independent_peers(frame, part, name, &mut peers, &required, span);
+        }
+    }
+    let mut remaining = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        if expr_selects_key(part, name, frame) {
+            remaining.push(index);
+            continue;
+        }
+        let value = eval_expr(part, frame)?;
+        add_selector_peers(&mut peers, &value, &required, span)?;
+        values[index] = Some(value);
+    }
+    let mut deferred = Vec::new();
+    while !remaining.is_empty() {
+        let mut progress = false;
+        let mut next = Vec::new();
+        for index in remaining {
+            let previous = frame.selector_peers.replace(peers.clone());
+            let result = eval_expr(&parts[index], frame);
+            frame.selector_peers.replace(previous);
+            match result {
+                Ok(value) => {
+                    add_selector_peers(&mut peers, &value, &required, span)?;
+                    values[index] = Some(value);
+                    progress = true;
+                }
+                Err(err) if is_cyclic_reference_error(&err) => {
+                    deferred.push(err);
+                    next.push(index);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        if !progress {
+            return Err(deferred.pop().unwrap_or_else(|| {
+                LangError::eval(
+                    span.line,
+                    span.col,
+                    format!("cyclic reference while evaluating `{name}`"),
+                )
+            }));
+        }
+        remaining = next;
+    }
+    let mut result = Value::Bottom;
+    let mut first = true;
+    for value in values {
+        let Some(value) = value else {
+            return Err(LangError::eval(
+                span.line,
+                span.col,
+                format!("cyclic reference while evaluating `{name}`"),
+            ));
+        };
+        if first {
+            result = value;
+            first = false;
+        } else {
+            result = unify_values(&result, &value, span)?;
+        }
+    }
+    Ok(result)
 }
 
 fn split_base_index(operands: &[&Expr]) -> Option<usize> {
@@ -3567,13 +4043,64 @@ fn eval_definition_with_injections(
             {
                 return eval_definition_with_injections(current, target, injections, span);
             }
+            let (injections, recursive) = split_injections(current, name, injections);
             current.values.borrow_mut().remove(&key);
             let previous = current.next_injections.replace(Some(injections));
             let previous_cache = current.skip_cache.replace(true);
             let result = current.eval_field_key(&key, span);
             current.skip_cache.set(previous_cache);
             current.next_injections.replace(previous);
-            return result.map(Some);
+            let mut result = result?;
+            for (key, value) in recursive {
+                let target =
+                    recursive_field_target(current, name, &key).unwrap_or_else(|| name.to_owned());
+                let exprs = declared_field_exprs(current, name, &key);
+                let value = if exprs.is_empty() {
+                    let constraint = field_constraint(&result, &key);
+                    materialize_recursive_injection(
+                        current,
+                        &target,
+                        constraint.as_ref(),
+                        value,
+                        span,
+                    )?
+                } else if exprs.iter().any(expr_contains_disjunction) {
+                    // Materialize through the declared constraint so every
+                    // alternative's element/shape constraints are enforced.
+                    let mut materialized: Option<Value> = None;
+                    for expr in exprs {
+                        let part = eval_declaration_part(current, &expr, &value, span)?;
+                        let part = unify_values(&part, &value, span)?;
+                        materialized = Some(match materialized {
+                            Some(existing) => unify_values(&existing, &part, span)?,
+                            None => part,
+                        });
+                    }
+                    materialized.unwrap_or(value)
+                } else {
+                    // Validate the declared composite shape cheaply, then use
+                    // the bottom-up materializer so recursion stays linear.
+                    for expr in &exprs {
+                        if !expr_shape_accepts(expr, &value) {
+                            return Err(LangError::conflict(
+                                span.line,
+                                span.col,
+                                "recursive injection does not satisfy its declared shape",
+                            ));
+                        }
+                    }
+                    let constraint = field_constraint(&result, &key);
+                    materialize_recursive_injection(
+                        current,
+                        &target,
+                        constraint.as_ref(),
+                        value,
+                        span,
+                    )?
+                };
+                result = insert_materialized_field(result, &key, value, span)?;
+            }
+            return Ok(Some(result));
         }
         cursor = current.parent;
     }
@@ -3674,13 +4201,6 @@ fn definition_needs_narrowing_inner(
                 .get(&key)
                 .map(|definition| definition.exprs.clone())
                 .unwrap_or_default();
-            let self_keys: BTreeSet<String> = std::iter::once(name.to_owned()).collect();
-            if exprs
-                .iter()
-                .any(|expr| expr_references_keys(expr, &self_keys))
-            {
-                return false;
-            }
             if exprs
                 .iter()
                 .any(|expr| expr_narrows_key(current, expr, injections))
@@ -3688,11 +4208,15 @@ fn definition_needs_narrowing_inner(
                 return true;
             }
             for expr in &exprs {
-                if let Expr::Ident(target, _) = strip_expr_parens(expr)
-                    && target != name
-                    && definition_needs_narrowing_inner(current, target, injections, visited)
-                {
-                    return true;
+                let mut operands = Vec::new();
+                collect_unify_operands(expr, &mut operands);
+                for operand in operands {
+                    if let Expr::Ident(target, _) = strip_expr_parens(operand)
+                        && target != name
+                        && definition_needs_narrowing_inner(current, target, injections, visited)
+                    {
+                        return true;
+                    }
                 }
             }
             return false;
@@ -3834,6 +4358,694 @@ fn definition_exprs(frame: &Frame<'_>, name: &str) -> Vec<Expr> {
     Vec::new()
 }
 
+#[derive(Default)]
+struct FieldUsage {
+    used: BTreeSet<String>,
+    recursive: BTreeSet<String>,
+    optional: BTreeSet<String>,
+    composite: BTreeSet<String>,
+}
+
+fn collect_definition_usage(
+    frame: &Frame<'_>,
+    name: &str,
+    usage: &mut FieldUsage,
+    visited: &mut BTreeSet<String>,
+) {
+    if !visited.insert(name.to_owned()) {
+        return;
+    }
+    let self_keys: BTreeSet<String> = std::iter::once(name.to_owned()).collect();
+    for expr in definition_exprs(frame, name) {
+        let mut identifiers = Vec::new();
+        collect_identifiers(&expr, &mut identifiers);
+        usage.used.extend(identifiers);
+        collect_self_selected_fields(&expr, name, &mut usage.used);
+        collect_recursive_fields(&expr, &self_keys, &mut usage.recursive);
+        collect_optional_fields(&expr, &mut usage.optional);
+        collect_composite_fields(&expr, &mut usage.composite);
+        let mut operands = Vec::new();
+        collect_unify_operands(&expr, &mut operands);
+        for operand in operands {
+            if let Expr::Ident(target, _) = strip_expr_parens(operand)
+                && target != name
+            {
+                collect_definition_usage(frame, target, usage, visited);
+            }
+        }
+    }
+}
+
+/// Split injections into fields consumed by another declaration and recursive
+/// fields that carry a concrete subtree. Consumed fields are injected normally;
+/// recursive subtrees are materialized bottom-up after the definition's own
+/// scalar fields, avoiding repeated whole-subtree re-evaluation.
+fn split_injections(
+    frame: &Frame<'_>,
+    name: &str,
+    injections: BTreeMap<String, Value>,
+) -> (BTreeMap<String, Value>, BTreeMap<String, Value>) {
+    if injections.is_empty() {
+        return (injections, BTreeMap::new());
+    }
+    let mut usage = FieldUsage::default();
+    collect_definition_usage(frame, name, &mut usage, &mut BTreeSet::new());
+    let has_ident_base = definition_exprs(frame, name).iter().any(|expr| {
+        let mut operands = Vec::new();
+        collect_unify_operands(expr, &mut operands);
+        operands
+            .iter()
+            .any(|operand| matches!(strip_expr_parens(operand), Expr::Ident(_, _)))
+    });
+    let mut consumed = BTreeMap::new();
+    let mut recursive_values = BTreeMap::new();
+    for (key, value) in injections {
+        // Recursive fields are handled bottom-up instead of injecting the
+        // whole subtree at every level. Other consumed/optional/composite
+        // fields are injected normally so their body sees concrete siblings.
+        if usage.recursive.contains(&key) && !usage.used.contains(&key) {
+            recursive_values.insert(key, value);
+            continue;
+        }
+        let structural = usage.optional.contains(&key) || usage.composite.contains(&key);
+        if usage.used.contains(&key) || structural || has_ident_base {
+            consumed.insert(key, value);
+        }
+    }
+    (consumed, recursive_values)
+}
+
+fn expr_is_recursive_value(expr: &Expr, keys: &BTreeSet<String>) -> bool {
+    match strip_expr_parens(expr) {
+        Expr::Ident(name, _) => keys.contains(name),
+        Expr::List(items, _) => items.iter().any(|item| expr_is_recursive_value(item, keys)),
+        Expr::OpenListPrefix(items, tail, _) => {
+            items.iter().any(|item| expr_is_recursive_value(item, keys))
+                || tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_is_recursive_value(tail, keys))
+        }
+        Expr::OpenList(Some(item), _) => expr_is_recursive_value(item, keys),
+        Expr::OpenList(None, _) => false,
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            expr_is_recursive_value(left, keys) || expr_is_recursive_value(right, keys)
+        }
+        _ => false,
+    }
+}
+
+fn collect_recursive_fields(expr: &Expr, keys: &BTreeSet<String>, out: &mut BTreeSet<String>) {
+    fn collect_items(items: &[StructItem], keys: &BTreeSet<String>, out: &mut BTreeSet<String>) {
+        for item in items {
+            match item {
+                StructItem::Field(field) => {
+                    if let crate::ast::Label::Name(name, _) = &field.label
+                        && expr_is_recursive_value(&field.value, keys)
+                    {
+                        out.insert(name.clone());
+                    }
+                }
+                StructItem::If { body, .. } | StructItem::For { body, .. } => {
+                    collect_items(body, keys, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    match expr {
+        Expr::Struct(items_list, _) => collect_items(items_list, keys, out),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+            collect_recursive_fields(inner, keys, out);
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            collect_recursive_fields(left, keys, out);
+            collect_recursive_fields(right, keys, out);
+        }
+        _ => {}
+    }
+}
+
+fn expr_is_structural(expr: &Expr) -> bool {
+    match strip_expr_parens(expr) {
+        Expr::Struct(_, _)
+        | Expr::List(_, _)
+        | Expr::OpenList(_, _)
+        | Expr::OpenListPrefix(_, _, _) => true,
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            expr_is_structural(left) || expr_is_structural(right)
+        }
+        _ => false,
+    }
+}
+
+fn collect_composite_fields(expr: &Expr, out: &mut BTreeSet<String>) {
+    fn collect_items(items: &[StructItem], out: &mut BTreeSet<String>) {
+        for item in items {
+            match item {
+                StructItem::Field(field) => {
+                    if let crate::ast::Label::Name(name, _) = &field.label
+                        && expr_is_structural(&field.value)
+                    {
+                        out.insert(name.clone());
+                    }
+                }
+                StructItem::If { body, .. } | StructItem::For { body, .. } => {
+                    collect_items(body, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    match expr {
+        Expr::Struct(items, _) => collect_items(items, out),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => collect_composite_fields(inner, out),
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            collect_composite_fields(left, out);
+            collect_composite_fields(right, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_optional_fields(expr: &Expr, out: &mut BTreeSet<String>) {
+    fn collect_items(items: &[StructItem], out: &mut BTreeSet<String>) {
+        for item in items {
+            match item {
+                StructItem::Field(field) => {
+                    if field.optional
+                        && let crate::ast::Label::Name(name, _) = &field.label
+                    {
+                        out.insert(name.clone());
+                    }
+                }
+                StructItem::If { body, .. } | StructItem::For { body, .. } => {
+                    collect_items(body, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    match expr {
+        Expr::Struct(items, _) => collect_items(items, out),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => collect_optional_fields(inner, out),
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            collect_optional_fields(left, out);
+            collect_optional_fields(right, out);
+        }
+        _ => {}
+    }
+}
+
+/// Materialize a recursive injected value bottom-up. Each node is evaluated
+/// with its own consumed scalar fields, then its recursive children are
+/// attached directly so the raw subtree is never re-injected at every level.
+fn materialize_recursive_injection(
+    frame: &Frame<'_>,
+    target: &str,
+    constraint: Option<&Value>,
+    value: Value,
+    span: Span,
+) -> Result<Value, LangError> {
+    match value {
+        Value::List(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (index, item) in items.into_iter().enumerate() {
+                let element = list_prefix_constraint(constraint, index);
+                out.push(materialize_recursive_injection(
+                    frame, target, element, item, span,
+                )?);
+            }
+            Ok(Value::List(out))
+        }
+        Value::OpenListPrefix(prefix, tail) => {
+            let mut out = Vec::with_capacity(prefix.len());
+            for (index, item) in prefix.into_iter().enumerate() {
+                let element = list_prefix_constraint(constraint, index);
+                out.push(materialize_recursive_injection(
+                    frame, target, element, item, span,
+                )?);
+            }
+            let tail = match tail {
+                Some(tail) => {
+                    let element = match constraint {
+                        Some(Value::OpenList(Some(element))) => Some(&**element),
+                        Some(Value::OpenListPrefix(_, Some(element))) => Some(&**element),
+                        _ => None,
+                    };
+                    Some(Box::new(materialize_recursive_injection(
+                        frame, target, element, *tail, span,
+                    )?))
+                }
+                None => None,
+            };
+            Ok(Value::OpenListPrefix(out, tail))
+        }
+        Value::OpenList(inner) => {
+            let element = list_prefix_constraint(constraint, 0);
+            let inner = match inner {
+                Some(inner) => Some(Box::new(materialize_recursive_injection(
+                    frame, target, element, *inner, span,
+                )?)),
+                None => None,
+            };
+            Ok(Value::OpenList(inner))
+        }
+        Value::Struct(fields) => {
+            match eval_definition_with_injections(frame, target, fields, span)? {
+                Some(value) => Ok(value),
+                None => Ok(Value::Bottom),
+            }
+        }
+        Value::Definition { fields, .. } => {
+            match eval_definition_with_injections(frame, target, fields, span)? {
+                Some(value) => Ok(value),
+                None => Ok(Value::Bottom),
+            }
+        }
+        other => match constraint {
+            Some(constraint) => unify_values(constraint, &other, span),
+            None => Ok(other),
+        },
+    }
+}
+
+fn list_prefix_constraint(constraint: Option<&Value>, index: usize) -> Option<&Value> {
+    match constraint {
+        Some(Value::List(items)) => items.get(index),
+        Some(Value::OpenListPrefix(prefix, tail)) => {
+            prefix.get(index).map_or_else(|| tail.as_deref(), Some)
+        }
+        Some(Value::OpenList(Some(element))) => Some(&**element),
+        // A disjunction alternative cannot supply a single element
+        // constraint; the injected value's shape decides which alternative
+        // applies. Let the recursive target materialize without a fixed leaf
+        // constraint.
+        Some(Value::Disjunction(_, _)) => None,
+        _ => None,
+    }
+}
+
+fn expr_contains_disjunction(expr: &Expr) -> bool {
+    match strip_expr_parens(expr) {
+        Expr::Disjunction(_, _, _) => true,
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            expr_contains_disjunction(inner)
+        }
+        Expr::Unify(left, right, _) | Expr::Binary(_, left, right, _) => {
+            expr_contains_disjunction(left) || expr_contains_disjunction(right)
+        }
+        Expr::List(items, _) => items.iter().any(expr_contains_disjunction),
+        Expr::OpenListPrefix(items, tail, _) => {
+            items.iter().any(expr_contains_disjunction)
+                || tail.as_deref().is_some_and(expr_contains_disjunction)
+        }
+        Expr::OpenList(Some(item), _) => expr_contains_disjunction(item),
+        Expr::Struct(items, _) => items.iter().any(|item| match item {
+            StructItem::Field(field) => expr_contains_disjunction(&field.value),
+            StructItem::Pattern { value, .. } | StructItem::Let { value, .. } => {
+                expr_contains_disjunction(value)
+            }
+            StructItem::If { cond, body, .. } => {
+                expr_contains_disjunction(cond)
+                    || body.iter().any(|item| match item {
+                        StructItem::Field(field) => expr_contains_disjunction(&field.value),
+                        _ => false,
+                    })
+            }
+            StructItem::For { source, body, .. } => {
+                expr_contains_disjunction(source)
+                    || body.iter().any(|item| match item {
+                        StructItem::Field(field) => expr_contains_disjunction(&field.value),
+                        _ => false,
+                    })
+            }
+            StructItem::Ellipsis(_) => false,
+        }),
+        _ => false,
+    }
+}
+
+fn expr_shape_accepts(expr: &Expr, value: &Value) -> bool {
+    match strip_expr_parens(expr) {
+        Expr::Ident(name, _) => match name.as_str() {
+            "int" => matches!(value, Value::Int(_) | Value::BigInt(_)),
+            "number" => matches!(value, Value::Int(_) | Value::BigInt(_) | Value::Float(_)),
+            "float" => matches!(value, Value::Float(_) | Value::Int(_) | Value::BigInt(_)),
+            "string" => matches!(value, Value::String(_)),
+            "bytes" => matches!(value, Value::Bytes(_)),
+            "bool" => matches!(value, Value::Bool(_)),
+            other if other.starts_with('#') => {
+                matches!(value, Value::Struct(_) | Value::Definition { .. })
+            }
+            _ => true,
+        },
+        Expr::OpenList(Some(element), _) => match value {
+            Value::List(items) => items.iter().all(|item| expr_shape_accepts(element, item)),
+            Value::OpenList(_) | Value::OpenListPrefix(_, _) => true,
+            _ => false,
+        },
+        Expr::OpenList(None, _) => matches!(
+            value,
+            Value::List(_) | Value::OpenList(_) | Value::OpenListPrefix(_, _)
+        ),
+        Expr::OpenListPrefix(prefix, tail, _) => match value {
+            Value::List(items) => {
+                if prefix.len() > items.len() {
+                    return false;
+                }
+                items.iter().enumerate().all(|(index, item)| {
+                    prefix
+                        .get(index)
+                        .or(tail.as_deref())
+                        .is_none_or(|constraint| expr_shape_accepts(constraint, item))
+                })
+            }
+            Value::OpenListPrefix(items, value_tail) => {
+                if prefix.len() > items.len() {
+                    return false;
+                }
+                items.iter().enumerate().all(|(index, item)| {
+                    prefix
+                        .get(index)
+                        .or(tail.as_deref())
+                        .is_none_or(|constraint| expr_shape_accepts(constraint, item))
+                }) && match (tail.as_deref(), value_tail.as_deref()) {
+                    (Some(constraint), Some(value)) => expr_shape_accepts(constraint, value),
+                    _ => true,
+                }
+            }
+            _ => false,
+        },
+        Expr::List(prefix, _) => match value {
+            Value::List(items) => {
+                prefix.len() == items.len()
+                    && prefix
+                        .iter()
+                        .zip(items)
+                        .all(|(constraint, item)| expr_shape_accepts(constraint, item))
+            }
+            _ => false,
+        },
+        Expr::Struct(_, _) => matches!(value, Value::Struct(_) | Value::Definition { .. }),
+        _ => true,
+    }
+}
+
+/// Collect the declared expression(s) of `key`, traversing definition bases.
+fn declared_field_exprs(frame: &Frame<'_>, name: &str, key: &str) -> Vec<Expr> {
+    fn collect_items(items: &[StructItem], key: &str, out: &mut Vec<Expr>) {
+        for item in items {
+            match item {
+                StructItem::Field(field) => {
+                    if let crate::ast::Label::Name(name, _) = &field.label
+                        && name == key
+                    {
+                        out.push(field.value.clone());
+                    }
+                }
+                StructItem::If { body, .. } | StructItem::For { body, .. } => {
+                    collect_items(body, key, out)
+                }
+                _ => {}
+            }
+        }
+    }
+    fn collect_expr(
+        frame: &Frame<'_>,
+        definition: &str,
+        expr: &Expr,
+        key: &str,
+        out: &mut Vec<Expr>,
+        visited: &mut BTreeSet<String>,
+    ) {
+        match strip_expr_parens(expr) {
+            Expr::Struct(items, _) => collect_items(items, key, out),
+            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+                collect_expr(frame, definition, left, key, out, visited);
+                collect_expr(frame, definition, right, key, out, visited);
+            }
+            Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+                collect_expr(frame, definition, inner, key, out, visited)
+            }
+            Expr::Ident(base, _) if base != definition && visited.insert(base.clone()) => {
+                for nested in definition_exprs(frame, base) {
+                    collect_expr(frame, definition, &nested, key, out, visited);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    let mut visited = BTreeSet::new();
+    visited.insert(name.to_owned());
+    for expr in definition_exprs(frame, name) {
+        collect_expr(frame, name, &expr, key, &mut out, &mut visited);
+    }
+    out
+}
+
+fn field_constraint(result: &Value, key: &str) -> Option<Value> {
+    match result {
+        Value::Struct(fields) => fields.get(key).cloned(),
+        Value::Definition {
+            fields, optional, ..
+        } => fields.get(key).or_else(|| optional.get(key)).cloned(),
+        _ => None,
+    }
+}
+
+fn recursive_field_target(frame: &Frame<'_>, definition: &str, key: &str) -> Option<String> {
+    fn target_from_value(expr: &Expr) -> Option<String> {
+        match strip_expr_parens(expr) {
+            Expr::Ident(name, _) if !is_type_keyword(name) => Some(name.clone()),
+            Expr::OpenList(Some(item), _) => target_from_value(item),
+            Expr::OpenListPrefix(_, Some(tail), _) => target_from_value(tail),
+            Expr::List(items, _) => items.iter().find_map(target_from_value),
+            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+                target_from_value(left).or_else(|| target_from_value(right))
+            }
+            _ => None,
+        }
+    }
+    fn find(
+        frame: &Frame<'_>,
+        definition: &str,
+        name: &str,
+        key: &str,
+        visited: &mut BTreeSet<String>,
+    ) -> Option<String> {
+        if !visited.insert(name.to_owned()) {
+            return None;
+        }
+        for expr in definition_exprs(frame, name) {
+            if let Some(target) = find_in_expr(frame, definition, &expr, key, visited) {
+                return Some(target);
+            }
+        }
+        None
+    }
+    fn find_in_expr(
+        frame: &Frame<'_>,
+        definition: &str,
+        expr: &Expr,
+        key: &str,
+        visited: &mut BTreeSet<String>,
+    ) -> Option<String> {
+        match strip_expr_parens(expr) {
+            Expr::Struct(items, _) => items.iter().find_map(|item| match item {
+                StructItem::Field(field) => match &field.label {
+                    crate::ast::Label::Name(name, _) if name == key => {
+                        target_from_value(&field.value)
+                    }
+                    _ => None,
+                },
+                StructItem::If { body, .. } | StructItem::For { body, .. } => {
+                    body.iter().find_map(|item| match item {
+                        StructItem::Field(field) => match &field.label {
+                            crate::ast::Label::Name(name, _) if name == key => {
+                                target_from_value(&field.value)
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                }
+                _ => None,
+            }),
+            Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+                find_in_expr(frame, definition, left, key, visited)
+                    .or_else(|| find_in_expr(frame, definition, right, key, visited))
+            }
+            Expr::Ident(base, _) if base != definition => {
+                find(frame, definition, base, key, visited)
+            }
+            _ => None,
+        }
+    }
+    find(frame, definition, definition, key, &mut BTreeSet::new())
+}
+
+fn insert_materialized_field(
+    result: Value,
+    key: &str,
+    value: Value,
+    span: Span,
+) -> Result<Value, LangError> {
+    let _ = span;
+    match result {
+        Value::Struct(mut fields) => {
+            fields.insert(key.to_owned(), value);
+            Ok(Value::Struct(fields))
+        }
+        Value::Definition {
+            mut fields,
+            mut optional,
+            definitions,
+            patterns,
+            closed,
+            open,
+            admissions,
+        } => {
+            optional.remove(key);
+            fields.insert(key.to_owned(), value);
+            Ok(Value::Definition {
+                fields,
+                optional,
+                definitions,
+                patterns,
+                closed,
+                open,
+                admissions,
+            })
+        }
+        other => Ok(other),
+    }
+}
+
+/// Collect field names selected from `root` itself (`root.field`,
+/// `root["field"]`).
+fn collect_self_selected_fields(expr: &Expr, root: &str, out: &mut BTreeSet<String>) {
+    match expr {
+        Expr::Select(base, field, _, _) => {
+            if selector_root(base) == Some(root) {
+                out.insert(field.clone());
+            }
+            collect_self_selected_fields(base, root, out);
+        }
+        Expr::Index(base, index, _) => {
+            if selector_root(base) == Some(root)
+                && let Expr::Str(parts, _) = strip_expr_parens(index)
+            {
+                let mut text = String::new();
+                let mut literal = true;
+                for part in parts {
+                    match part {
+                        crate::ast::StrPart::Text(value) => text.push_str(value),
+                        crate::ast::StrPart::Interp(_) => {
+                            literal = false;
+                            break;
+                        }
+                    }
+                }
+                if literal {
+                    out.insert(text);
+                }
+            }
+            collect_self_selected_fields(base, root, out);
+            collect_self_selected_fields(index, root, out);
+        }
+        Expr::Ident(_, _)
+        | Expr::Bytes(_, _)
+        | Expr::Null(_)
+        | Expr::Bool(_, _)
+        | Expr::Int(_, _)
+        | Expr::BigInt(_, _)
+        | Expr::Float(_, _) => {}
+        Expr::Call(callee, arguments, _) => {
+            collect_self_selected_fields(callee, root, out);
+            for argument in arguments {
+                collect_self_selected_fields(argument, root, out);
+            }
+        }
+        Expr::Bound(_, operand, _)
+        | Expr::Paren(operand, _)
+        | Expr::Default(operand, _)
+        | Expr::Unary(_, operand, _) => collect_self_selected_fields(operand, root, out),
+        Expr::Binary(_, left, right, _)
+        | Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _) => {
+            collect_self_selected_fields(left, root, out);
+            collect_self_selected_fields(right, root, out);
+        }
+        Expr::Struct(items, _) => collect_self_selected_fields_items(items, root, out),
+        Expr::List(items, _) => {
+            for item in items {
+                collect_self_selected_fields(item, root, out);
+            }
+        }
+        Expr::OpenListPrefix(items, tail, _) => {
+            for item in items {
+                collect_self_selected_fields(item, root, out);
+            }
+            if let Some(tail) = tail {
+                collect_self_selected_fields(tail, root, out);
+            }
+        }
+        Expr::OpenList(Some(item), _) => collect_self_selected_fields(item, root, out),
+        Expr::OpenList(None, _) => {}
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let crate::ast::StrPart::Interp(expr) = part {
+                    collect_self_selected_fields(expr, root, out);
+                }
+            }
+        }
+        Expr::BytesInterp(parts, _) => {
+            for part in parts {
+                if let crate::ast::BytePart::Interp(expr) = part {
+                    collect_self_selected_fields(expr, root, out);
+                }
+            }
+        }
+        Expr::ListComp { clauses, body, .. } => {
+            collect_self_selected_fields(body, root, out);
+            for clause in clauses {
+                match clause {
+                    crate::ast::CompClause::For { source, .. } => {
+                        collect_self_selected_fields(source, root, out);
+                    }
+                    crate::ast::CompClause::If { cond, .. } => {
+                        collect_self_selected_fields(cond, root, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_self_selected_fields_items(
+    items: &[StructItem],
+    root: &str,
+    out: &mut BTreeSet<String>,
+) {
+    for item in items {
+        match item {
+            StructItem::Field(field) => collect_self_selected_fields(&field.value, root, out),
+            StructItem::Pattern { value, .. } => collect_self_selected_fields(value, root, out),
+            StructItem::Let { value, .. } => collect_self_selected_fields(value, root, out),
+            StructItem::For { source, body, .. } => {
+                collect_self_selected_fields(source, root, out);
+                collect_self_selected_fields_items(body, root, out);
+            }
+            StructItem::If { cond, body, .. } => {
+                collect_self_selected_fields(cond, root, out);
+                collect_self_selected_fields_items(body, root, out);
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+}
+
 fn expr_references_keys(expr: &Expr, keys: &BTreeSet<String>) -> bool {
     match expr {
         Expr::Ident(name, _) => keys.contains(name),
@@ -3855,8 +5067,12 @@ fn expr_references_keys(expr: &Expr, keys: &BTreeSet<String>) -> bool {
             expr_references_keys(left, keys) || expr_references_keys(right, keys)
         }
         Expr::Struct(items, _) => struct_items_reference_keys(items, keys),
-        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+        Expr::List(items, _) => items.iter().any(|item| expr_references_keys(item, keys)),
+        Expr::OpenListPrefix(items, tail, _) => {
             items.iter().any(|item| expr_references_keys(item, keys))
+                || tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_references_keys(tail, keys))
         }
         Expr::OpenList(Some(item), _) => expr_references_keys(item, keys),
         Expr::OpenList(None, _) => false,
@@ -3958,6 +5174,23 @@ fn eval_declaration_part(
             }
             Ok(Value::List(out))
         }
+        (Expr::OpenList(element, _), Value::OpenListPrefix(values, value_tail)) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(match element {
+                    Some(element) => eval_declaration_part(frame, element, value, span)?,
+                    None => value.clone(),
+                });
+            }
+            let tail = match (element, value_tail) {
+                (Some(element), Some(value)) => Some(Box::new(eval_declaration_part(
+                    frame, element, value, span,
+                )?)),
+                (None, Some(value)) => Some(value.clone()),
+                _ => None,
+            };
+            Ok(Value::OpenListPrefix(out, tail))
+        }
         (Expr::OpenListPrefix(prefix, tail, _), Value::List(values)) => {
             if prefix.len() > values.len() {
                 return Err(LangError::eval(
@@ -3975,6 +5208,58 @@ fn eval_declaration_part(
                 });
             }
             Ok(Value::List(out))
+        }
+        (Expr::OpenListPrefix(prefix, tail, _), Value::OpenListPrefix(values, value_tail)) => {
+            if prefix.len() > values.len() {
+                return Err(LangError::eval(
+                    span.line,
+                    span.col,
+                    "list prefix is longer than the concrete list",
+                ));
+            }
+            let mut out = Vec::with_capacity(values.len());
+            for (index, value) in values.iter().enumerate() {
+                let expected = prefix.get(index).or(tail.as_deref());
+                out.push(match expected {
+                    Some(expected) => eval_declaration_part(frame, expected, value, span)?,
+                    None => value.clone(),
+                });
+            }
+            let tail = match (tail, value_tail) {
+                (Some(expected), Some(value)) => Some(Box::new(eval_declaration_part(
+                    frame, expected, value, span,
+                )?)),
+                (None, Some(value)) => Some(value.clone()),
+                _ => None,
+            };
+            Ok(Value::OpenListPrefix(out, tail))
+        }
+        (Expr::Disjunction(_, _, _), value) => {
+            let mut ast = Vec::new();
+            collect_disjunction(expr, &mut ast);
+            let mut alternatives = Vec::new();
+            let mut defaults = Vec::new();
+            for alternative in ast {
+                match alternative {
+                    Expr::Default(inner, _) => {
+                        let evaluated = eval_expr(inner, frame)?;
+                        if !alternatives.contains(&evaluated) {
+                            defaults.push(alternatives.len());
+                            alternatives.push(evaluated);
+                        }
+                    }
+                    other => {
+                        let evaluated = eval_declaration_part(frame, other, value, span)?;
+                        if !alternatives.contains(&evaluated) {
+                            alternatives.push(evaluated);
+                        }
+                    }
+                }
+            }
+            if alternatives.is_empty() {
+                return Err(LangError::eval(span.line, span.col, "empty disjunction"));
+            }
+            Ok(Value::Disjunction(alternatives, defaults))
         }
         _ => eval_expr(expr, frame),
     }
@@ -4020,9 +5305,17 @@ fn collect_identifiers(expr: &Expr, out: &mut Vec<String>) {
             collect_identifiers(right, out);
         }
         Expr::Struct(items, _) => collect_struct_identifiers(items, out),
-        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+        Expr::List(items, _) => {
             for item in items {
                 collect_identifiers(item, out);
+            }
+        }
+        Expr::OpenListPrefix(items, tail, _) => {
+            for item in items {
+                collect_identifiers(item, out);
+            }
+            if let Some(tail) = tail {
+                collect_identifiers(tail, out);
             }
         }
         Expr::OpenList(Some(item), _) => collect_identifiers(item, out),
@@ -4683,6 +5976,12 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 {
                     return Ok(value);
                 }
+            }
+            if let Expr::Ident(_, _) = strip_expr_parens(base)
+                && let Ok(Value::String(key)) = eval_expr(index, frame)
+                && let Some(value) = self_definition_select(frame, base, &key, true, *span)?
+            {
+                return Ok(value);
             }
             if frame.params_context.borrow().is_some()
                 && !frame.params_shadowed()

@@ -272,7 +272,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and SOLID mapping. Th
 
 - `--evaluator rust` is the default (`native` is an alias).
 - `--evaluator cue` requires CUE **>= v0.17.1**; CI installs and pins v0.17.1.
-- The Rust evaluator targets the workflow-relevant CUE semantics, not every CUE feature. Clause-sequence/list comprehensions and file-scoped `let` are implemented; tool packages beyond `tool/exec.Run`/`tool/cli.Print`/`tool/file.Append`/`Create`/`tool/os.Getenv`/`Environ`/`tool/http.Do`/`Get`/`Post`/`Put`/`Delete`, self-selection through split composed non-definition literals and the full disjunction lattice over bounds/patterns are explicitly out of scope in [docs/SCOPE.md](docs/SCOPE.md).
+- The Rust evaluator targets the workflow-relevant CUE semantics, not every CUE feature. Clause-sequence/list comprehensions and file-scoped `let` are implemented; tool packages beyond `tool/exec.Run`/`tool/cli.Print`/`tool/file.Append`/`Create`/`tool/os.Getenv`/`Environ`/`tool/http.Do`/`Get`/`Post`/`Put`/`Delete` and the full disjunction lattice over bounds/patterns are explicitly out of scope in [docs/SCOPE.md](docs/SCOPE.md).
 - There is **no silent fallback**: the default is Rust; `--evaluator cue` errors if the oracle is missing.
 
 ## Evidence

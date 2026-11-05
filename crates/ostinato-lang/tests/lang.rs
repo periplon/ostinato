@@ -7153,13 +7153,20 @@ mf: #MF
 }
 
 #[test]
-fn self_selection_same_body_comprehension_is_a_documented_limit() {
+fn self_selection_resolves_same_body_comprehension_fields() {
     let source = "package demo\n#D: {if true {b: 1, y: #D.b}, a: #D.y}\nx: #D.a\n";
     let file = ostinato_lang::parse(source).expect("parse");
-    assert!(
-        ostinato_lang::eval_file(&file).is_err(),
-        "self-selection into the same comprehension body remains a documented limit"
-    );
+    let value = ostinato_lang::eval_file(&file).expect("eval same-body comprehension");
+    assert_eq!(value.to_json().expect("json")["x"], 1);
+
+    let generated = "package demo\n#M: {b?: int, if true {b: 5, y: #M.b}}\nx: #M\n";
+    let file = ostinato_lang::parse(generated).expect("parse");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval generated body field")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["b"], 5);
+    assert_eq!(json["x"]["y"], 5);
 }
 
 #[test]
@@ -7925,10 +7932,10 @@ if true {#P: {env: "prod"}}
 x: #P
 "#;
     let file = ostinato_lang::parse(dependent).expect("parse dependent merge");
-    assert!(
-        ostinato_lang::eval_file(&file).is_err(),
-        "dependent fields after a generated declaration merge remain a documented limit"
-    );
+    let value = ostinato_lang::eval_file(&file).expect("eval dependent merge");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["env"], "prod");
+    assert_eq!(json["x"]["greeting"], "hello prod");
 }
 
 #[test]
@@ -8104,26 +8111,510 @@ composed_decl: #Composed & {l: [{b: 5}]}
     let value = ostinato_lang::eval_file(&file).expect("eval shadowing narrowing");
     let json = value.to_json().expect("json");
     assert_eq!(
-        json["a"]["y"], 2,
-        "shadowing nested definition narrowing remains documented"
+        json["a"]["y"], 4,
+        "shadowing narrowing recomputes dependents"
     );
+    assert_eq!(json["a"]["inner"]["v"], 5);
 
     let definition_chain = "package demo\n#A: {n: *1 | int, y: n + 1}\n#B: #A & {n: 4}\nx: #B\n";
     let file = ostinato_lang::parse(definition_chain).expect("parse definition chain");
-    assert!(
-        ostinato_lang::eval_file(&file).is_err(),
-        "narrowing through a definition-valued definition remains a documented limit"
-    );
+    let value = ostinato_lang::eval_file(&file).expect("eval definition chain");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["n"], 4);
+    assert_eq!(json["x"]["y"], 5);
 
     let recursive = "package demo\n#Node: {n: *1 | int, total: n + 1, children?: [...#Node]}\nx: #Node & {n: 3, children: [{n: 5}]}\n";
     let file = ostinato_lang::parse(recursive).expect("parse recursive narrowing");
     let value = ostinato_lang::eval_file(&file).expect("eval recursive narrowing");
     let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["total"], 4);
+    assert_eq!(json["x"]["children"][0]["total"], 6);
+}
+
+#[test]
+fn split_composition_keeps_operand_lexical_scope() {
+    let source = r#"
+package demo
+a: 2
+x: {a: 1} & {b: a}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse sibling lexical scope");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval sibling lexical scope")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["a"], 1);
+    assert_eq!(json["x"]["b"], 2, "bare `a` sees the enclosing field");
+
+    let defaults = "package demo\nx: {a: x.b} & {b: *1 | int} & {b: 2}\n";
+    let file = ostinato_lang::parse(defaults).expect("parse selector default");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval selector default")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["a"], 2);
+    assert_eq!(json["x"]["b"], 2);
+
+    let cross = r#"
+package demo
+one: {a: one.b} & {b: 1, c: one.a}
+two: {a: two.b} & {b: 1, c: two.d} & {d: two.a}
+"#;
+    let file = ostinato_lang::parse(cross).expect("parse cross-dependent operands");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval cross-dependent operands")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["one"], serde_json::json!({"a": 1, "b": 1, "c": 1}));
     assert_eq!(
-        json["x"]["total"], 2,
-        "recursive narrowing remains documented"
+        json["two"],
+        serde_json::json!({"a": 1, "b": 1, "c": 1, "d": 1})
     );
-    assert_eq!(json["x"]["children"][0]["total"], 2);
+
+    for source in [
+        "package demo
+x: {a: 1} & {b: a}
+",
+        "package demo
+x: {#D: 1} & {v: #D}
+",
+        "package demo
+x: {a: 1} & {c: x.a} & {b: c}
+",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse composed lexical scope");
+        let error = ostinato_lang::eval_file(&file)
+            .expect_err("sibling operand fields are not bare identifiers");
+        assert!(error.to_string().contains("undefined reference"), "{error}");
+    }
+}
+
+#[test]
+fn self_cycles_through_defaults_are_rejected() {
+    for source in [
+        "package demo\nx: {a: x.a + 1} & {a: *2 | int}\n",
+        "package demo\nx: {a: x.a + 1} & {a: int | *2}\n",
+        "package demo\nx: {a: x.a + 1} & {a: *2 | number}\n",
+        "package demo\nx: {a: x.a + 1} & {a: *2 | *3}\n",
+        "package demo\nlet d = *2 | int\nx: {a: x.a + 1} & {a: d}\n",
+        "package demo\nbase: *2 | int\nx: {a: x.a + 1} & {a: base}\n",
+        "package demo\n#D: *2 | int\nx: {a: x.a + 1} & {a: #D}\n",
+        "package demo\nx: {a: \"\\(x.a)\"} & {a: *2 | int}\n",
+        "package demo\nx: {o: {a: x.o.a + 1}} & {o: {a: *2 | int}}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse self-cycle default");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "self-cycle through a default must not resolve: {source:?}"
+        );
+    }
+
+    let transparent = "package demo\nx: {a: x.a} & {a: *2 | int}\n";
+    let file = ostinato_lang::parse(transparent).expect("parse transparent self-selection");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval transparent self-selection")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["a"], 2);
+}
+
+#[test]
+fn dependent_definition_fields_unify_with_injected_values() {
+    let conflict = "package demo\n#D: {a: *1 | int, b: #D.a + 1}\nx: #D & {b: 9}\n";
+    let file = ostinato_lang::parse(conflict).expect("parse dependent definition");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "a dependent definition field must conflict with an injected value"
+    );
+
+    let nested = "package demo\n#D: {a: *1 | int, b: {c: #D.a}, ...}\nx: #D & {b: {c: 9}}\n";
+    let file = ostinato_lang::parse(nested).expect("parse nested dependent definition");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval nested dependent definition")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"], serde_json::json!({"a": 1, "b": {"c": 9}}));
+}
+
+#[test]
+fn recursive_bases_mutual_optionals_and_let_aliases_match_cue() {
+    let recursive_base = r#"
+package demo
+#Node: {n: *1 | int, total: n + 1, child?: #Node}
+#B: #Node & {n: 4}
+x: #B & {child: {n: 5}}
+"#;
+    let file = ostinato_lang::parse(recursive_base).expect("parse recursive base");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval recursive base")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["n"], 4);
+    assert_eq!(json["x"]["total"], 5);
+    assert_eq!(json["x"]["child"]["total"], 6);
+
+    let mutual = r#"
+package demo
+#A: {n?: #B | *{m: 1}}
+#B: {m: *2 | int, w: m + 1}
+x: #A & {n: {m: 5}}
+"#;
+    let file = ostinato_lang::parse(mutual).expect("parse mutual optional defaults");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval mutual optional defaults")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["n"]["w"], 6);
+
+    let let_alias = "package demo\nlet X = f\nf: {a: 1, b: X.a}\nx: f\n";
+    let file = ostinato_lang::parse(let_alias).expect("parse let alias self-selection");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval let alias self-selection")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["b"], 1);
+}
+
+#[test]
+fn split_composition_self_selection_resolves_non_literal_operands() {
+    let source = r#"
+package demo
+let base = {b: 4}
+from_let: {a: from_let.b} & base
+field_base: {b: 4}
+from_field: {a: from_field.b} & field_base
+reversed: field_base & {a: reversed.b}
+self_field: {a: self_field.a} & {a: 1}
+quoted: {a: quoted["b"]} & {b: 1}
+let key = "b"
+computed: {"\(key)": 1, a: computed["\(key)"]}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse non-literal operands");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval non-literal operands")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["from_let"], serde_json::json!({"a": 4, "b": 4}));
+    assert_eq!(json["from_field"], serde_json::json!({"a": 4, "b": 4}));
+    assert_eq!(json["reversed"], serde_json::json!({"a": 4, "b": 4}));
+    assert_eq!(json["self_field"], serde_json::json!({"a": 1}));
+    assert_eq!(json["quoted"], serde_json::json!({"a": 1, "b": 1}));
+    assert_eq!(json["computed"], serde_json::json!({"a": 1, "b": 1}));
+}
+
+#[test]
+fn nested_comprehension_bodies_self_select_and_let_field_cycles_are_not_static() {
+    let nested = "package demo
+#M: {if true {if true {b: 5, y: #M.b}}}
+x: #M
+";
+    let file = ostinato_lang::parse(nested).expect("parse nested comprehension");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval nested comprehension")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["y"], 5);
+
+    let let_over_selector = "package demo
+x: {b: 1, a: x.b, let Y = x.b, c: Y}
+";
+    let file = ostinato_lang::parse(let_over_selector).expect("parse let over selector");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval let over selector")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"], serde_json::json!({"a": 1, "b": 1, "c": 1}));
+}
+
+#[test]
+fn recursive_narrowing_materializes_deep_subtrees_quickly() {
+    use std::time::{Duration, Instant};
+
+    const DEPTH: usize = 200;
+    let mut inner = "{n: 1}".to_owned();
+    for index in 0..DEPTH {
+        inner = format!("{{n: {}, children: [{}]}}", index + 2, inner);
+    }
+    let source = format!(
+        "package demo
+#Node: {{n: *1 | int, total: n + 1, children?: [...#Node]}}
+x: #Node & {{children: [{inner}]}}
+"
+    );
+    let file = ostinato_lang::parse(&source).expect("parse deep recursive narrowing");
+    let started = Instant::now();
+    let value = ostinato_lang::eval_file(&file).expect("eval deep recursive narrowing");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "deep recursive narrowing took {elapsed:?}"
+    );
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["n"], 1);
+    assert_eq!(json["x"]["total"], 2);
+    let mut node = &json["x"];
+    for _ in 0..=DEPTH {
+        node = &node["children"][0];
+    }
+    assert_eq!(node["n"], 1);
+    assert_eq!(node["total"], 2);
+    assert_eq!(json["x"]["children"][0]["n"], DEPTH + 1);
+    assert_eq!(json["x"]["children"][0]["total"], DEPTH + 2);
+}
+
+#[test]
+fn recursive_injection_rejects_invalid_leaves() {
+    for leaf in ["1", "null", "true", "\"a\"", "{children: [1]}"] {
+        let source = format!(
+            "package demo\n#Node: {{n: *1 | int, total: n + 1, children?: [...#Node]}}\nx: #Node & {{children: [{leaf}]}}\n"
+        );
+        let file = ostinato_lang::parse(&source).expect("parse invalid recursive leaf");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "recursive injection must reject leaf {leaf}"
+        );
+    }
+
+    let union = "package demo\n#N: {child?: #N | int}\nx: #N & {child: 3}\n";
+    let file = ostinato_lang::parse(union).expect("parse recursive union leaf");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval recursive union leaf")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["child"], 3);
+}
+
+#[test]
+fn recursive_union_alternatives_materialize_in_either_order() {
+    for source in [
+        "package demo\n#N: {n: *1|int, total: n+1, child?: int | #N}\nx: #N & {child: {n: 5}}\n",
+        "package demo\n#N: {n: *1|int, total: n+1, child?: #N | int}\nx: #N & {child: {n: 5}}\n",
+        "package demo\n#N: {n: *1|int, total: n+1, child?: [...int] | #N}\nx: #N & {child: {n: 5}}\n",
+        "package demo\n#N: {n: *1|int, total: n+1, children?: [...int] | [...#N]}\nx: #N & {children: [{n: 5}, ...]}\n",
+        "package demo\n#N: {n: *1|int, total: n+1, children?: [...#N] | [...int]}\nx: #N & {children: [{n: 5}, ...]}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse recursive union");
+        let json = ostinato_lang::eval_file(&file)
+            .expect("eval recursive union")
+            .to_json()
+            .expect("json");
+        let node = json["x"].get("child").unwrap_or(&json["x"]["children"][0]);
+        assert_eq!(node["total"], 6);
+    }
+
+    for children in [
+        "[null]",
+        "[true]",
+        "[\"s\"]",
+        "[[1]]",
+        "[null, ...]",
+        "[{n: 2}, 3, ...]",
+        "[1, {n: 5}]",
+    ] {
+        let source = format!(
+            "package demo\n#N: {{n: *1|int, total: n+1, children?: [...int] | [...#N]}}\nx: #N & {{children: {children}}}\n"
+        );
+        let file = ostinato_lang::parse(&source).expect("parse invalid disjunction leaf");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "disjunction constraint must reject {children}"
+        );
+    }
+
+    let shape = "package demo\n#N: {n: *1|int, total: n+1, child?: int | [...#N]}\nx: #N & {child: {n: 5}}\n";
+    let file = ostinato_lang::parse(shape).expect("parse invalid disjunction shape");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "struct must not satisfy int | [...#N]"
+    );
+
+    let scalar =
+        "package demo\n#N: {n: *1|int, total: n+1, child?: int | #N}\nx: #N & {child: 3}\n";
+    let file = ostinato_lang::parse(scalar).expect("parse recursive union scalar");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval recursive union scalar")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["child"], 3);
+}
+
+#[test]
+fn transparent_let_alias_chains_resolve_in_three_operand_splits() {
+    let source = "package demo\nlet X = f\nf: {a: X.b} & {b: X.c} & {c: 1}\nx: f\n";
+    let file = ostinato_lang::parse(source).expect("parse let alias chain");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval let alias chain")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["f"], serde_json::json!({"a": 1, "b": 1, "c": 1}));
+
+    let multi = "package demo\nlet X = f\nf: {a: X.b, d: X.c} & {b: 1, c: X.a}\nx: f\n";
+    let file = ostinato_lang::parse(multi).expect("parse let alias multi-dependent");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval let alias multi-dependent")
+        .to_json()
+        .expect("json");
+    assert_eq!(
+        json["f"],
+        serde_json::json!({"a": 1, "b": 1, "c": 1, "d": 1})
+    );
+}
+
+#[test]
+fn recursive_injection_validates_composite_shapes() {
+    for source in [
+        "package demo\n#N: {n: *1|int, total: n+1, children?: [...#N]}\nx: #N & {children: [[1]]}\n",
+        "package demo\n#N: {n: *1|int, total: n+1, children?: [...#N]}\nx: #N & {children: {n: 5}}\n",
+        "package demo\n#N: {n: *1|int, total: n+1, child?: #N}\nx: #N & {child: [1]}\n",
+        "package demo\n#N: {n: *1|int, total: n+1, children?: [...#N]}\nx: #N & {children: [{children: [[1]]}]}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse invalid recursive shape");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "recursive shape must be rejected: {source:?}"
+        );
+    }
+
+    let required = "package demo\n#N: {n: *1|int, total: n+1, children: [...#N]}\nx: #N & {children: [{n: 5}, {n: 6}]}\n";
+    let file = ostinato_lang::parse(required).expect("parse required recursive list");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval required recursive list")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["children"][0]["total"], 6);
+    assert_eq!(json["x"]["children"][1]["total"], 7);
+
+    let prefix = "package demo\n#N: {n: *1|int, total: n+1, children?: [int, ...#N]}\nx: #N & {children: [1, {n: 2}]}\n";
+    let file = ostinato_lang::parse(prefix).expect("parse prefix recursive list");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval prefix recursive list")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["children"][1]["total"], 3);
+}
+
+#[test]
+fn recursive_injection_materializes_open_lists() {
+    let plain = "package demo\n#Node: {n: *1 | int, total: n + 1, children?: [...#Node]}\nx: #Node & {children: [{n: 5}, ...]}\n";
+    let file = ostinato_lang::parse(plain).expect("parse open-list recursion");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval open-list recursion")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["children"][0]["total"], 6);
+
+    let base = "package demo\n#Node: {n: *1 | int, total: n + 1, children?: [...#Node]}\n#B: #Node & {n: 4}\nx: #B & {children: [{n: 5}, ...]}\n";
+    let file = ostinato_lang::parse(base).expect("parse base open-list recursion");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval base open-list recursion")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["total"], 5);
+    assert_eq!(json["x"]["children"][0]["total"], 6);
+}
+
+#[test]
+fn field_mediated_let_cycles_resolve_in_split_forms() {
+    for source in [
+        "package demo\nlet X = f\nf: {a: X.b} & {b: 1}\nx: f\n",
+        "package demo\nlet X = f\nf: {a: 1} & {b: X.a}\nx: f\n",
+        "package demo\nlet X = f\nf: {a: X.b} & {b: *1 | int}\nx: f\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse split let cycle");
+        let json = ostinato_lang::eval_file(&file)
+            .expect("eval split let cycle")
+            .to_json()
+            .expect("json");
+        assert_eq!(json["f"], serde_json::json!({"a": 1, "b": 1}));
+        assert_eq!(json["x"], serde_json::json!({"a": 1, "b": 1}));
+    }
+}
+
+#[test]
+fn multi_dependent_split_operands_reach_a_fixpoint() {
+    let source = "package demo\nx: {a: x.b, e: x.c} & {b: 1, c: x.a}\n";
+    let file = ostinato_lang::parse(source).expect("parse multi-dependent operands");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval multi-dependent operands")
+        .to_json()
+        .expect("json");
+    assert_eq!(
+        json["x"],
+        serde_json::json!({"a": 1, "b": 1, "c": 1, "e": 1})
+    );
+
+    let optional = "package demo\nx: {a: x.a} & {a?: *2 | int}\n";
+    let file = ostinato_lang::parse(optional).expect("parse optional self-selection");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval optional self-selection")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["a"], 2);
+}
+
+#[test]
+fn selection_and_narrowing_scope_rows_match_cue() {
+    let source = r#"
+package demo
+#A: {n: *1 | int, m: n + 1}
+#B: #A & {n: 4}
+definition_chain: #B
+#Node: {n: *1 | int, total: n + 1, children?: [...#Node]}
+recursive: #Node & {n: 3, children: [{n: 2}]}
+#Shadow: {n: *1 | int, y: n + 1, inner: {#Shadow: 5, v: #Shadow}}
+shadow: #Shadow & {n: 3}
+split: {a: split.b} & {b: 1}
+#P: {env: string, greeting: "hello \(env)"}
+if true {#P: {env: "prod"}}
+merged: #P
+#M: {b?: int, if true {b: 5, y: #M.b}}
+body_local: #M
+"#;
+    let file = ostinato_lang::parse(source).expect("parse selection rows");
+    let value = ostinato_lang::eval_file(&file).expect("eval selection rows");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["definition_chain"]["n"], 4);
+    assert_eq!(json["definition_chain"]["m"], 5);
+    assert_eq!(json["recursive"]["total"], 4);
+    assert_eq!(json["recursive"]["children"][0]["total"], 3);
+    assert_eq!(json["shadow"]["y"], 4);
+    assert_eq!(json["shadow"]["inner"]["v"], 5);
+    assert_eq!(json["split"]["a"], 1);
+    assert_eq!(json["split"]["b"], 1);
+    assert_eq!(json["merged"]["env"], "prod");
+    assert_eq!(json["merged"]["greeting"], "hello prod");
+    assert_eq!(json["body_local"]["b"], 5);
+    assert_eq!(json["body_local"]["y"], 5);
+
+    for source in [
+        "package demo\nx: {if true {b: 1}, a: b}\n",
+        "package demo\nif true {b: 1}\na: b\n",
+        "package demo\nx: {if true {b: 1}, y: {a: b}}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse bare generated label");
+        let error = ostinato_lang::eval_file(&file).expect_err("bare generated label must fail");
+        assert!(error.to_string().contains("undefined reference"), "{error}");
+    }
+
+    let selected = "package demo\nx: {if true {b: 1}, a: x.b}\n";
+    let file = ostinato_lang::parse(selected).expect("parse generated selector");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("selector reaches generated label")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["a"], 1);
+
+    let let_cycle = "package demo\nlet X = f\nf: X\nx: f\n";
+    let file = ostinato_lang::parse(let_cycle).expect("parse let cycle");
+    let value = ostinato_lang::eval_file(&file).expect("let cycle is incomplete, not an error");
+    assert!(
+        value.to_json().is_none(),
+        "field-mediated let cycle stays incomplete"
+    );
+
+    let direct = "package demo\nlet X = Y\nlet Y = X\nx: X\n";
+    let file = ostinato_lang::parse(direct).expect("parse direct let cycle");
+    assert!(ostinato_lang::eval_file(&file).is_err());
 }
 
 #[test]
