@@ -215,8 +215,8 @@ impl std::fmt::Display for JsonExportError {
             Self::Incomplete => formatter.write_str("value contains incomplete fields"),
             Self::LabelCollision { rendered, labels } => write!(
                 formatter,
-                "cannot export JSON: distinct labels {} both render as {rendered:?}; \
-                 CUE emits duplicate JSON keys for this collision, which this exporter \
+                "cannot export: distinct labels {} both render as {rendered:?}; \
+                 CUE emits duplicate keys for this collision, which this exporter \
                  cannot represent without dropping a field",
                 labels.join(" and ")
             ),
@@ -937,22 +937,41 @@ fn json_frame(context: &Json) -> Frame<'static> {
     frame
 }
 
+fn negative_zero_token(text: &str) -> bool {
+    let Some(unsigned) = text.strip_prefix('-') else {
+        return false;
+    };
+    let mantissa = unsigned.split(['e', 'E']).next().unwrap_or(unsigned);
+    mantissa.chars().any(|ch| ch == '0') && mantissa.chars().all(|ch| ch == '0' || ch == '.')
+}
+
 fn json_to_value(value: &Json) -> Option<Value> {
     Some(match value {
         Json::Null => Value::Null,
         Json::Bool(value) => Value::Bool(*value),
         Json::Number(number) => {
-            if let Some(int) = number.as_i64() {
-                Value::Int(int)
-            } else {
-                let text = number.to_string();
-                if !text.contains(['.', 'e', 'E'])
-                    && let Ok(value) = text.parse::<BigInt>()
-                {
-                    i64::try_from(&value).map_or(Value::BigInt(value), Value::Int)
+            let text = number.to_string();
+            // Preserve a JSON `-0`/`-0.0` token as CUE's signed zero. The
+            // serde number representation treats both as zero, so this must
+            // run before the integer/float branches. This also lets the
+            // official-CUE loader carry signed zero through multi-source
+            // unification.
+            if negative_zero_token(&text) {
+                let parsed = text.parse::<BigDecimal>().ok()?;
+                let scale = parsed.as_bigint_and_exponent().1;
+                if text.contains(['.', 'e', 'E']) {
+                    Value::Float(numeric::Decimal::negative_zero(scale))
                 } else {
-                    Value::Float(numeric::Decimal::new(text.parse::<BigDecimal>().ok()?))
+                    Value::DecimalInt(numeric::Decimal::negative_zero(scale))
                 }
+            } else if let Some(int) = number.as_i64() {
+                Value::Int(int)
+            } else if !text.contains(['.', 'e', 'E'])
+                && let Ok(value) = text.parse::<BigInt>()
+            {
+                i64::try_from(&value).map_or(Value::BigInt(value), Value::Int)
+            } else {
+                Value::Float(numeric::Decimal::new(text.parse::<BigDecimal>().ok()?))
             }
         }
         Json::String(value) => Value::String(value.clone()),
@@ -3672,6 +3691,20 @@ fn numeric_values_share_kind(left: &Value, right: &Value) -> bool {
     }
 }
 
+/// CUE keeps the literal operand's lexical form when a computed value is
+/// unified with an equal literal. Two literals (or two computed values) keep
+/// the left representation.
+fn prefer_decimal_representation(
+    left: &numeric::Decimal,
+    right: &numeric::Decimal,
+) -> numeric::Decimal {
+    if right.is_literal() && !left.is_literal() {
+        right.clone()
+    } else {
+        left.clone()
+    }
+}
+
 fn selector_root(expr: &Expr) -> Option<&str> {
     match strip_expr_parens(expr) {
         Expr::Ident(name, _) => Some(name),
@@ -6277,20 +6310,21 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             }
             let left_value = eval_expr(left, frame)?;
             let right_value = eval_expr(right, frame)?;
+            let unified = unify_values(&left_value, &right_value, *span)?;
             // CUE keeps the lexical representation of the first syntactically
-            // literal numeric operand of a flattened `&` chain; computed
-            // operands contribute their numerical value but not their scale.
-            if numeric_values_share_kind(&left_value, &right_value)
-                && let Some(literal) = operands
-                    .iter()
-                    .find(|operand| is_numeric_literal_expr(operand))
+            // literal numeric operand of a flattened `&` chain; computed and
+            // disjunction operands contribute their numerical value but not
+            // their scale.
+            if let Some(literal) = operands
+                .iter()
+                .find(|operand| is_numeric_literal_expr(operand))
             {
                 let literal_value = eval_expr(literal, frame)?;
-                if numeric_values_share_kind(&literal_value, &left_value) {
+                if numeric_values_share_kind(&literal_value, &unified) {
                     return Ok(literal_value);
                 }
             }
-            unify_values(&left_value, &right_value, *span)
+            Ok(unified)
         }
         Expr::Disjunction(_, _, span) => {
             let mut ast_alternatives = Vec::new();
@@ -6471,9 +6505,15 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 (UnOp::Neg, Value::DecimalInt(value)) => Ok(decimal_int_value(
                     numeric::negate(&value).map_err(|error| numeric_error(error, *span))?,
                 )),
-                (UnOp::Neg, Value::Float(value)) => Ok(Value::Float(numeric::Decimal::new(
-                    numeric::negate(&value).map_err(|error| numeric_error(error, *span))?,
-                ))),
+                (UnOp::Neg, Value::Float(value)) => {
+                    let negated =
+                        numeric::negate(&value).map_err(|error| numeric_error(error, *span))?;
+                    Ok(Value::Float(if is_numeric_literal_expr(inner) {
+                        numeric::Decimal::new(negated)
+                    } else {
+                        numeric::Decimal::computed(negated)
+                    }))
+                }
                 (UnOp::Neg, other) => Err(LangError::conflict(
                     span.line,
                     span.col,
@@ -8035,7 +8075,7 @@ fn math_decimal(arguments: &[Value], index: usize, span: Span) -> Result<BigDeci
 fn math_decimal_result(value: BigDecimal, span: Span) -> Result<Value, LangError> {
     match numeric::expand_integral(&value) {
         Ok(Some(expanded)) => Ok(decimal_int_value(expanded)),
-        Ok(None) => Ok(Value::Float(numeric::Decimal::new(value))),
+        Ok(None) => Ok(Value::Float(numeric::Decimal::computed(value))),
         Err(error) => Err(numeric_error(error, span)),
     }
 }
@@ -8106,6 +8146,7 @@ fn math_decimal_builtin(
     span: Span,
 ) -> Result<Value, LangError> {
     let first = math_decimal(arguments, 0, span)?;
+    let negative_zero_input = arguments.first().is_some_and(numeric_is_negative_zero);
     let result = match builtin {
         Builtin::MathCbrt => numeric::cbrt(&first),
         Builtin::MathExp => numeric::exp(&first),
@@ -8116,7 +8157,12 @@ fn math_decimal_builtin(
         _ => unreachable!("decimal math builtin"),
     }
     .map_err(|error| numeric_error(error, span))?;
-    math_decimal_result(numeric::round_cue(&result), span)
+    let rounded = numeric::round_cue(&result);
+    if rounded.is_zero() && negative_zero_input && matches!(builtin, Builtin::MathCbrt) {
+        // CUE's `math.Cbrt(-0)` is an integer-kind `-0`.
+        return Ok(Value::DecimalInt(numeric::Decimal::negative_zero(0)));
+    }
+    math_decimal_result(rounded, span)
 }
 
 fn apply_math_builtin(
@@ -8221,7 +8267,17 @@ fn apply_math_builtin(
             let exponent = math_decimal(arguments, 1, span)?;
             let value =
                 numeric::pow(&base, &exponent).map_err(|error| numeric_error(error, span))?;
-            math_decimal_result(numeric::round_cue(&value), span)
+            let rounded = numeric::round_cue(&value);
+            if rounded.is_zero()
+                && arguments.first().is_some_and(numeric_is_negative_zero)
+                && exponent.is_integer()
+                && exponent.with_scale(0).as_bigint_and_exponent().0.bit(0)
+            {
+                // CUE keeps `Pow(-0, odd-integer)` as an integer-kind `-0`;
+                // even exponents yield positive zero.
+                return Ok(Value::DecimalInt(numeric::Decimal::negative_zero(0)));
+            }
+            math_decimal_result(rounded, span)
         }
         _ => unreachable!("math builtin"),
     }
@@ -8922,7 +8978,7 @@ fn apply_builtin(callee: &Value, arguments: &[Value], span: Span) -> Result<Valu
                 } else if let Ok(value) = text.parse::<BigInt>() {
                     out.push(Value::BigInt(value));
                 } else {
-                    out.push(Value::Float(numeric::Decimal::new(current.clone())));
+                    out.push(Value::Float(numeric::Decimal::computed(current.clone())));
                 }
                 current += &step;
             }
@@ -9095,7 +9151,7 @@ fn binary(op: &BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, 
                 return Err(LangError::conflict(span.line, span.col, "division by zero"));
             }
             match numeric::divide(&left_value, &right_value) {
-                Ok(value) => Ok(Value::Float(numeric::Decimal::new(value))),
+                Ok(value) => Ok(Value::Float(numeric::Decimal::computed(value))),
                 Err(error) => Err(numeric_error(error, span)),
             }
         }
@@ -9204,7 +9260,10 @@ fn decimal_int_value_signed(value: BigDecimal, negative_zero: bool) -> Value {
         }
         return Value::BigInt(coefficient);
     }
-    Value::DecimalInt(numeric::Decimal::new(BigDecimal::new(coefficient, scale)))
+    Value::DecimalInt(numeric::Decimal::computed(BigDecimal::new(
+        coefficient,
+        scale,
+    )))
 }
 
 fn numeric_float_value(value: BigDecimal, negative_zero: bool) -> Value {
@@ -9212,7 +9271,7 @@ fn numeric_float_value(value: BigDecimal, negative_zero: bool) -> Value {
         let scale = value.as_bigint_and_exponent().1;
         return Value::Float(numeric::Decimal::negative_zero(scale));
     }
-    Value::Float(numeric::Decimal::new(value))
+    Value::Float(numeric::Decimal::computed(value))
 }
 
 fn numeric_is_negative(value: &Value) -> bool {
@@ -9222,6 +9281,10 @@ fn numeric_is_negative(value: &Value) -> bool {
         Value::DecimalInt(value) | Value::Float(value) => value.is_negative(),
         _ => false,
     }
+}
+
+fn numeric_is_negative_zero(value: &Value) -> bool {
+    matches!(value, Value::DecimalInt(decimal) | Value::Float(decimal) if decimal.is_negative_zero())
 }
 
 fn integer_decimal(value: &Value) -> Option<BigDecimal> {
@@ -9667,7 +9730,14 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
         }
         (Value::Float(a), Value::Float(b)) => {
             if a == b {
-                Ok(Value::Float(a.clone()))
+                Ok(Value::Float(prefer_decimal_representation(a, b)))
+            } else {
+                Err(conflict(span))
+            }
+        }
+        (Value::DecimalInt(a), Value::DecimalInt(b)) => {
+            if a == b {
+                Ok(Value::DecimalInt(prefer_decimal_representation(a, b)))
             } else {
                 Err(conflict(span))
             }
@@ -10113,18 +10183,30 @@ pub fn value_from_json(value: &Json) -> Value {
         Json::Bool(value) => Value::Bool(*value),
         Json::Number(number) => {
             let text = number.to_string();
-            let integral = !text.contains(['.', 'e', 'E']);
-            if integral {
-                if let Some(int) = number.as_i64() {
-                    Value::Int(int)
+            if negative_zero_token(&text) {
+                let Ok(parsed) = text.parse::<BigDecimal>() else {
+                    return float_value_or_token(&text);
+                };
+                let scale = parsed.as_bigint_and_exponent().1;
+                if text.contains(['.', 'e', 'E']) {
+                    Value::Float(numeric::Decimal::negative_zero(scale))
                 } else {
-                    match text.parse::<BigInt>() {
-                        Ok(big) => Value::BigInt(big),
-                        Err(_) => float_value_or_token(&text),
-                    }
+                    Value::DecimalInt(numeric::Decimal::negative_zero(scale))
                 }
             } else {
-                float_value_or_token(&text)
+                let integral = !text.contains(['.', 'e', 'E']);
+                if integral {
+                    if let Some(int) = number.as_i64() {
+                        Value::Int(int)
+                    } else {
+                        match text.parse::<BigInt>() {
+                            Ok(big) => Value::BigInt(big),
+                            Err(_) => float_value_or_token(&text),
+                        }
+                    }
+                } else {
+                    float_value_or_token(&text)
+                }
             }
         }
         Json::String(value) => Value::String(value.clone()),

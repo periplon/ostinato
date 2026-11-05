@@ -33,6 +33,7 @@ use std::rc::Rc;
 
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
+use ostinato_lang::Value as CueValue;
 use saphyr::{Mapping, Scalar, ScalarStyle, Yaml, YamlEmitter, YamlLoader};
 use saphyr_parser::{BufferedInput, Event, Parser, Span, SpannedEventReceiver};
 use serde::Deserializer;
@@ -362,12 +363,15 @@ fn to_yaml_with_policy(value: &Json, canonicalize_zero: bool) -> Result<String, 
     } else {
         value.clone()
     };
-    let yaml = json_to_yaml(&normalized);
+    emit_yaml(&json_to_yaml(&normalized))
+}
+
+fn emit_yaml(yaml: &Yaml<'_>) -> Result<String, DataError> {
     let mut out = String::new();
     {
         let mut emitter = YamlEmitter::new(&mut out);
         emitter.quoted_value(true);
-        emitter.dump(&yaml).map_err(|error| DataError::Encode {
+        emitter.dump(yaml).map_err(|error| DataError::Encode {
             path: "<output>".to_owned(),
             message: error.to_string(),
         })?;
@@ -375,6 +379,86 @@ fn to_yaml_with_policy(value: &Json, canonicalize_zero: bool) -> Result<String, 
     let body = out.strip_prefix("---\n").unwrap_or(&out);
     let body = body.trim_end_matches('\n');
     Ok(format!("{body}\n"))
+}
+
+/// Encode CUE export values as YAML while retaining the integer/float number
+/// kind. `serde_json` only carries the numeric token, so a positive zero from
+/// `0 / -1` and an integer zero both look like `0`. The typed `CueValue` tree
+/// disambiguates them: CUE prints `0` for integer-kind and `0.` for
+/// float-kind; the same split applies to `-0`/`-0.`.
+///
+/// # Errors
+/// Returns [`DataError::Encode`] if the YAML emitter fails.
+pub fn to_yaml_with_cue_kinds(
+    json_values: &[Json],
+    cue_values: &[CueValue],
+) -> Result<String, DataError> {
+    let mut encoded = Vec::with_capacity(json_values.len());
+    for (index, json) in json_values.iter().enumerate() {
+        let stripped = cue_values
+            .get(index)
+            .map(|value| ostinato_lang::strip_hidden(value.clone()));
+        let yaml = json_to_yaml_with_kind(json, stripped.as_ref());
+        encoded.push(emit_yaml(&yaml)?);
+    }
+    Ok(encoded.join("---\n"))
+}
+
+fn json_to_yaml_with_kind(value: &Json, cue: Option<&CueValue>) -> Yaml<'static> {
+    match value {
+        Json::Number(number) => {
+            let text = cue_number_text(number);
+            // A float-kind integral zero/integer is printed with a trailing
+            // `.` in CUE's YAML; integer-kind values never get one.
+            let text = if matches!(cue, Some(CueValue::Float(_))) && !text.contains(['.', 'e', 'E'])
+            {
+                format!("{text}.")
+            } else {
+                text
+            };
+            Yaml::Representation(Cow::Owned(text), ScalarStyle::Plain, None)
+        }
+        Json::Array(items) => {
+            let cue_items = match cue {
+                Some(CueValue::List(items)) | Some(CueValue::OpenListPrefix(items, _)) => {
+                    Some(items)
+                }
+                _ => None,
+            };
+            let sequence = items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    json_to_yaml_with_kind(item, cue_items.and_then(|items| items.get(index)))
+                })
+                .collect();
+            Yaml::Sequence(sequence)
+        }
+        Json::Object(fields) => {
+            let cue_fields = match cue {
+                Some(CueValue::Struct(fields)) | Some(CueValue::Definition { fields, .. }) => {
+                    Some(fields)
+                }
+                _ => None,
+            };
+            let mut mapping = Mapping::default();
+            let cue_values = cue_fields.map(|fields| fields.values());
+            if let Some(mut cue_values) = cue_values {
+                for (key, value) in fields {
+                    mapping.insert(
+                        yaml_quoted(key),
+                        json_to_yaml_with_kind(value, cue_values.next()),
+                    );
+                }
+            } else {
+                for (key, value) in fields {
+                    mapping.insert(yaml_quoted(key), json_to_yaml_with_kind(value, None));
+                }
+            }
+            Yaml::Mapping(mapping)
+        }
+        other => json_to_yaml(other),
+    }
 }
 
 /// Encode a JSON value as pretty JSON with a trailing newline.
@@ -1501,12 +1585,11 @@ fn json_to_yaml(value: &Json) -> Yaml<'static> {
     match value {
         Json::Null => Yaml::Representation(Cow::Owned("null".to_owned()), ScalarStyle::Plain, None),
         Json::Bool(value) => Yaml::Value(Scalar::Boolean(*value)),
-        Json::Number(number) => {
-            let text = cue_number_text(number);
-            // CUE renders integer-kind signed zero as `-0.` in YAML.
-            let text = if text == "-0" { "-0.".to_owned() } else { text };
-            Yaml::Representation(Cow::Owned(text), ScalarStyle::Plain, None)
-        }
+        Json::Number(number) => Yaml::Representation(
+            Cow::Owned(cue_number_text(number)),
+            ScalarStyle::Plain,
+            None,
+        ),
         Json::String(value) => yaml_quoted(value),
         Json::Array(values) => Yaml::Sequence(values.iter().map(json_to_yaml).collect()),
         Json::Object(fields) => {
@@ -2793,7 +2876,7 @@ mod tests {
         assert!(preserved_json.contains("\"c\": 0.0"), "{preserved_json}");
         let preserved_yaml = to_yaml_preserving_negative_zero(&value).expect("yaml");
         assert!(preserved_yaml.contains("\"a\": -0.0"), "{preserved_yaml}");
-        assert!(preserved_yaml.contains("\"b\": -0."), "{preserved_yaml}");
+        assert!(preserved_yaml.contains("\"b\": -0"), "{preserved_yaml}");
         assert!(preserved_yaml.contains("\"c\": 0.0"), "{preserved_yaml}");
     }
 }

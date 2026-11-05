@@ -209,6 +209,18 @@ fn json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("valid json output")
 }
 
+fn yaml_scalar<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        let name = name.trim();
+        let name = name
+            .strip_prefix('"')
+            .and_then(|name| name.strip_suffix('"'))
+            .unwrap_or(name);
+        (name == key).then(|| value.trim())
+    })
+}
+
 fn run_id(db: &Path) -> String {
     let db = db.to_str().expect("utf8 db");
     let output = ost(&["--db", db, "--json", "runs"]);
@@ -15364,6 +15376,8 @@ k: (1.0 + 0) & 1.00
 l: 1.0 & 1.00
 m: 1.00 & 1.0
 n: x & 1.00
+o: -1 * 0
+p: math.Sqrt(0)
 x: 1.0
 "#;
     let directory = tempfile::tempdir().expect("tempdir");
@@ -15397,6 +15411,8 @@ x: 1.0
         "\"l\":1.0",
         "\"m\":1.00",
         "\"n\":1.00",
+        "\"o\":-0",
+        "\"p\":0",
     ] {
         assert!(json.contains(snippet), "missing {snippet} in {json}");
     }
@@ -15412,14 +15428,17 @@ x: 1.0
         "\"a\": -0.0",
         "\"c\": -0.0",
         "\"d\": -0.",
-        "\"g\": -0.",
+        "\"g\": -0",
         "\"h\": -0.00",
+        "\"j\": 0.",
+        "\"o\": -0",
+        "\"p\": 0.",
     ] {
         assert!(yaml.contains(snippet), "missing {snippet} in {yaml}");
     }
 
     if let Some(cue) = cue_command() {
-        let expected = Command::new(cue)
+        let expected = Command::new(&cue)
             .args(["export", "--out", "json", path.to_str().expect("path")])
             .output()
             .expect("run cue");
@@ -15429,6 +15448,22 @@ x: 1.0
             json,
             "JSON number tokens and lexical forms"
         );
+
+        let expected_yaml = Command::new(cue)
+            .args(["export", "--out", "yaml", path.to_str().expect("path")])
+            .output()
+            .expect("run cue");
+        assert!(expected_yaml.status.success());
+        let expected_yaml = String::from_utf8(expected_yaml.stdout).expect("utf8");
+        for key in [
+            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
+        ] {
+            assert_eq!(
+                yaml_scalar(&yaml, key),
+                yaml_scalar(&expected_yaml, key),
+                "YAML scalar for {key}\nactual:\n{yaml}\nexpected:\n{expected_yaml}"
+            );
+        }
     }
 }
 
@@ -15444,8 +15479,114 @@ fn export_colliding_raw_labels_names_the_collision() {
         assert!(stderr.contains("distinct labels"), "{stderr}");
         assert!(stderr.contains("'\\xfe'"), "{stderr}");
         assert!(stderr.contains("'\\xff'"), "{stderr}");
-        assert!(stderr.contains("duplicate JSON keys"), "{stderr}");
+        assert!(stderr.contains("duplicate keys"), "{stderr}");
         assert!(!stderr.contains("incomplete fields"), "{stderr}");
+    }
+}
+
+#[test]
+fn export_multi_source_preserves_signed_zero_and_typed_collisions() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let first = directory.path().join("first.cue");
+    let second = directory.path().join("second.cue");
+    write(&first, "package x\nx: 0.0 * -1\n");
+    write(&second, "package x\ny: 1\n");
+
+    let output = ost(&[
+        "export",
+        "--out",
+        "json",
+        first.to_str().expect("path"),
+        second.to_str().expect("path"),
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let actual = String::from_utf8(output.stdout).expect("utf8");
+    assert!(actual.contains("\"x\": -0.0"), "{actual}");
+
+    let yaml = ost(&[
+        "export",
+        "--out",
+        "yaml",
+        first.to_str().expect("path"),
+        second.to_str().expect("path"),
+    ]);
+    assert!(
+        yaml.status.success(),
+        "{}",
+        String::from_utf8_lossy(&yaml.stderr)
+    );
+    let yaml = String::from_utf8(yaml.stdout).expect("utf8");
+    assert!(yaml.contains("\"x\": -0.0"), "{yaml}");
+
+    if let Some(cue) = cue_command() {
+        let expected = Command::new(&cue)
+            .args([
+                "export",
+                "--out",
+                "json",
+                first.to_str().expect("path"),
+                second.to_str().expect("path"),
+            ])
+            .output()
+            .expect("run cue");
+        assert!(expected.status.success());
+        let compact = |text: &str| {
+            text.chars()
+                .filter(|ch| !ch.is_whitespace())
+                .collect::<String>()
+        };
+        assert_eq!(
+            compact(&String::from_utf8_lossy(&expected.stdout)),
+            compact(&actual)
+        );
+
+        // The official-CUE evaluator must also preserve signed zero through
+        // multi-source JSON -> Value unification.
+        let oracle = Command::new(bin())
+            .env("CUE_BIN", &cue)
+            .args([
+                "--evaluator",
+                "cue",
+                "export",
+                "--out",
+                "json",
+                first.to_str().expect("path"),
+                second.to_str().expect("path"),
+            ])
+            .output()
+            .expect("run ostinato with cue evaluator");
+        assert!(
+            oracle.status.success(),
+            "{}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+        let oracle = String::from_utf8(oracle.stdout).expect("utf8");
+        assert!(oracle.contains("\"x\": -0.0"), "{oracle}");
+    }
+
+    // Colliding raw labels across two files still use the typed error.
+    let collision_a = directory.path().join("collision_a.cue");
+    let collision_b = directory.path().join("collision_b.cue");
+    write(&collision_a, "package collision\nv: {'\\xff': 1}\n");
+    write(&collision_b, "package collision\nv: {'\\xfe': 2}\n");
+    for out in ["json", "yaml"] {
+        let output = ost(&[
+            "export",
+            "--out",
+            out,
+            collision_a.to_str().expect("path"),
+            collision_b.to_str().expect("path"),
+        ]);
+        assert!(!output.status.success(), "{out} must fail closed");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("distinct labels"), "{stderr}");
+        assert!(stderr.contains("'\\xfe'"), "{stderr}");
+        assert!(stderr.contains("'\\xff'"), "{stderr}");
+        assert!(!stderr.contains("incomplete"), "{stderr}");
     }
 }
 

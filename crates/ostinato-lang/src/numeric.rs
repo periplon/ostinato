@@ -147,6 +147,9 @@ pub fn cue_decimal_string(value: &BigDecimal) -> String {
 pub struct Decimal {
     value: BigDecimal,
     negative_zero: bool,
+    /// True when the value came directly from a numeric literal (including a
+    /// negated literal). Arithmetic and builtin results are computed.
+    literal: bool,
 }
 
 impl Decimal {
@@ -156,6 +159,17 @@ impl Decimal {
         Self {
             value,
             negative_zero: false,
+            literal: true,
+        }
+    }
+
+    /// Wrap an arithmetic or builtin result.
+    #[must_use]
+    pub fn computed(value: BigDecimal) -> Self {
+        Self {
+            value,
+            negative_zero: false,
+            literal: false,
         }
     }
 
@@ -166,6 +180,7 @@ impl Decimal {
         Self {
             value: BigDecimal::new(BigInt::from(0), scale),
             negative_zero: true,
+            literal: false,
         }
     }
 
@@ -185,6 +200,12 @@ impl Decimal {
     #[must_use]
     pub fn is_negative_zero(&self) -> bool {
         self.negative_zero
+    }
+
+    /// Whether the value came from a syntactic numeric literal.
+    #[must_use]
+    pub fn is_literal(&self) -> bool {
+        self.literal
     }
 
     /// Whether the value is negative for sign-propagation purposes (either a
@@ -263,7 +284,7 @@ pub fn decimal_from_f64(value: f64) -> Option<Decimal> {
     if negative_zero && value.is_zero() {
         Some(Decimal::negative_zero(0))
     } else {
-        Some(Decimal::new(value))
+        Some(Decimal::computed(value))
     }
 }
 

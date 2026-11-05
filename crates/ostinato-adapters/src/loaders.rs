@@ -26,17 +26,19 @@ use crate::data;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NativeLoader;
 
-impl DocumentEvaluator for NativeLoader {
-    fn evaluator(&self) -> &'static str {
-        "rust"
-    }
-
-    fn evaluate(
+impl NativeLoader {
+    /// Evaluate the source and return typed CUE values, preserving number
+    /// kinds (integer vs float) that the JSON document boundary cannot carry.
+    ///
+    /// # Errors
+    /// Returns loader errors for invalid sources, missing expressions or
+    /// incomplete selections.
+    pub fn evaluate_values(
         &self,
         request: &LoadRequest,
         expressions: &[String],
         _list: bool,
-    ) -> PortResult<Vec<Json>> {
+    ) -> PortResult<Vec<Value>> {
         let (root, _) = evaluate_request(
             request,
             EvalOptions {
@@ -46,10 +48,7 @@ impl DocumentEvaluator for NativeLoader {
             },
         )?;
         if expressions.is_empty() {
-            let value = root.to_json_checked().map_err(|error| {
-                PortError::Loader(format!("cannot export the root value: {error}"))
-            })?;
-            return Ok(vec![value]);
+            return Ok(vec![root]);
         }
         let optional_paths =
             collect_optional_paths(&canonical(&request.source)).unwrap_or_default();
@@ -67,12 +66,39 @@ impl DocumentEvaluator for NativeLoader {
                     return Err(PortError::Loader(error.to_string()));
                 }
             };
-            let value = selected.to_json_checked().map_err(|error| {
-                PortError::Loader(format!("cannot export `{expression}`: {error}"))
-            })?;
-            out.push(value);
+            out.push(selected);
         }
         Ok(out)
+    }
+}
+
+impl DocumentEvaluator for NativeLoader {
+    fn evaluator(&self) -> &'static str {
+        "rust"
+    }
+
+    fn evaluate(
+        &self,
+        request: &LoadRequest,
+        expressions: &[String],
+        list: bool,
+    ) -> PortResult<Vec<Json>> {
+        let values = self.evaluate_values(request, expressions, list)?;
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                if let Some(expression) = expressions.get(index) {
+                    value.to_json_checked().map_err(|error| {
+                        PortError::Loader(format!("cannot export `{expression}`: {error}"))
+                    })
+                } else {
+                    value.to_json_checked().map_err(|error| {
+                        PortError::Loader(format!("cannot export the root value: {error}"))
+                    })
+                }
+            })
+            .collect()
     }
 }
 

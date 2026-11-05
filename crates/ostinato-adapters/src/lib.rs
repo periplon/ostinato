@@ -28,7 +28,7 @@ pub use data::{
     DataError, DataFile, DataFormat, MAX_ALIAS_EXPANSION_NODES, MAX_DEPTH, MAX_EXPANDED_BYTES,
     MAX_INPUT_BYTES, MAX_JSON_NODES, MAX_YAML_ALIASES, MAX_YAML_DOCUMENTS, MAX_YAML_NODES, encode,
     parse_documents, read_documents, read_object_document, select_json_path, to_json, to_yaml,
-    unify_objects, unify_values,
+    to_yaml_with_cue_kinds, unify_objects, unify_values,
 };
 pub use loaders::{
     CueCliLoader, NativeLoader, ToolCommandInfo, official_loader, run_tool_command_paths,

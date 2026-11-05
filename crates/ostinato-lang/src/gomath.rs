@@ -406,7 +406,9 @@ pub(crate) fn modulo(x: f64, y: f64) -> f64 {
     }
     let y = y.abs();
     let (yfr, yexp) = frexp(y);
-    let mut r = x.abs();
+    // Keep the sign of negative zero: `r = x` (not `x.abs()`) mirrors Go's
+    // `mod`, which returns `-0` for `Mod(-0, y)`.
+    let mut r = if x < 0.0 { -x } else { x };
     while r >= y {
         let (rfr, rexp) = frexp(r);
         let rexp = if rfr < yfr { rexp - 1 } else { rexp };
@@ -427,7 +429,7 @@ pub(crate) fn remainder(x: f64, y: f64) -> f64 {
         return x;
     }
     let sign = x < 0.0;
-    let mut x = x.abs();
+    let mut x = if sign { -x } else { x };
     let mut y = y.abs();
     if x == y {
         return if sign { -0.0 } else { 0.0 };

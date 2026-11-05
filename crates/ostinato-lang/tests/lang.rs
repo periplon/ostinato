@@ -9509,3 +9509,58 @@ x: {'\xff': 1, '\xfe': 2}
     assert!(message.contains("'\\xff'"), "{message}");
     assert!(value.to_json().is_none());
 }
+
+#[test]
+fn math_builtins_preserve_signed_zero_like_cue() {
+    let source = r#"
+package mathzero
+import "math"
+x: 0.0 * -1
+a: math.Mod(x, 1)
+b: math.Remainder(x, 1)
+c: math.Cbrt(x)
+d: math.Pow(x, 3)
+e: math.Pow(x, 2)
+f: math.Cbrt(0.0)
+g: math.Pow(0.0, 3)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "math".to_owned(),
+        ostinato_lang::builtin_module("math").expect("math builtin"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    for (field, expected) in [
+        ("a", "-0"),
+        ("b", "-0"),
+        ("c", "-0"),
+        ("d", "-0"),
+        ("e", "0"),
+        ("f", "0"),
+        ("g", "0"),
+    ] {
+        assert_eq!(json[field].to_string(), expected, "{field}");
+    }
+}
+
+#[test]
+fn numeric_unification_handles_disjunctions_and_struct_fields_like_cue() {
+    let source = r#"
+package lexicalnested
+a: (1.0 | 2.0) & 1.00
+b: (1.0 | *2.0) & 1.00
+c: {x: (1.0 + 0)} & {x: 1.00}
+d: {x: 1.00} & {x: (1.0 + 0)}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    for field in ["a", "b"] {
+        assert_eq!(json[field].to_string(), "1.00", "{field}");
+    }
+    assert_eq!(json["c"]["x"].to_string(), "1.00");
+    assert_eq!(json["d"]["x"].to_string(), "1.00");
+}
