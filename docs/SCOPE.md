@@ -117,6 +117,9 @@ workflow outside the Rust surface has a supported escape hatch.
 
 ## Extensions beyond CUE
 
+- **Durable workflow events.** CUE has no event bus: Ostinato steps emit internal/external events, external processes inject events with `ostinato event`, and `await` steps consume them with per-consumer cursors, timeouts, cancellation and resume. See `docs/EVENTS.md`.
+- **JSON/YAML document I/O.** `ostinato import`/`export`, workflow `--input` JSON/YAML data and `--out json|yaml` extend CUE's evaluation surface with hardened document codecs; deviations (exit codes, no-clobber, YAML subset) are documented in `docs/JSON-YAML.md`.
+
 Ostinato intentionally accepts a small number of programs that CUE v0.17.1
 rejects:
 

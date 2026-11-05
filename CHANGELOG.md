@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.46.0
+
+JSON/YAML document I/O, durable events, Go-style runtime templates, optional-template semantics, and tool-command parity.
+
+- **JSON/YAML**: `ostinato import`/`export`, workflow `--input`/`--out`, CUE-compatible values, legacy-octal/underscore numbers, hardened alias/byte/node/depth limits, atomic no-clobber outputs, NFC/NFD collision handling.
+- **Events**: internal/external emission, CLI injection/streaming, durable per-consumer cursors, await with timeout/cancel/resume, audit/metrics, same-group validation.
+- **Runtime templates**: Go-style `if`/`range`/`with`, pipelines and functions, dot/$ context, trim/comment/escape, bounded nesting/printf, exact integers.
+- **CUE template semantics**: compound optional structs/lists/definitions, nested optionals, reusable bases, root `params: #P & {...}`, injection soundness and export validation.
+- **Tool commands**: stderr injection, non-stdout outputs, `$usage`/`$short`/`$long` incl. doc comments, multi-instance inputs, `@cmd`, `tool/os.Getenv`/`Environ` schema/semantics, help fixes.
+- **Aliases**: module definition targets and second-hop package chains.
+
+- 627 tests (131 CLI E2E, 4 conformance, 1 tool conformance, 41 JSON/YAML, 9 events, 284 language, 6 language agents, 9 language unit, 59 adapters unit, 16 store, 8 workspace, 22 application, 9 analysis, 0 domain unit, 28 domain).
+
+## v0.41.2
 ## v0.41.2
 
 Definition-rooted alias reads in second-hop chains.
