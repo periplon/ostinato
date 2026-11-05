@@ -3029,17 +3029,25 @@ fn command_values_for_name<'a>(expr: &'a Expr, name: &str, out: &mut Vec<&'a Exp
     }
 }
 
+fn command_name_shadowed(
+    scopes: &[&[StructItem]],
+    bound: &std::collections::BTreeSet<String>,
+    name: &str,
+) -> bool {
+    bound.contains(name) || local_binding(scopes, &[], name).is_some()
+}
+
 fn collect_command_references(
     expr: &Expr,
     scopes: &[&[StructItem]],
     root: &[StructItem],
     known: &std::collections::BTreeSet<String>,
-    in_command_container: bool,
+    bound: &std::collections::BTreeSet<String>,
     out: &mut std::collections::BTreeSet<String>,
 ) {
     match expr {
         Expr::Ident(name, _) => {
-            if known.contains(name) && local_binding(scopes, root, name).is_none() {
+            if known.contains(name) && !command_name_shadowed(scopes, bound, name) {
                 out.insert(name.clone());
             }
         }
@@ -3049,112 +3057,87 @@ fn collect_command_references(
                     out.insert(path[1].clone());
                 } else if path.len() >= 2
                     && known.contains(&path[0])
-                    && local_binding(scopes, root, &path[0]).is_none()
+                    && !command_name_shadowed(scopes, bound, &path[0])
                 {
                     out.insert(path[0].clone());
                 }
             }
-            collect_command_references(base, scopes, root, known, in_command_container, out);
+            collect_command_references(base, scopes, root, known, bound, out);
         }
         Expr::Index(base, index, _) => {
-            collect_command_references(base, scopes, root, known, in_command_container, out);
-            collect_command_references(index, scopes, root, known, in_command_container, out);
+            collect_command_references(base, scopes, root, known, bound, out);
+            collect_command_references(index, scopes, root, known, bound, out);
         }
         Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _)
         | Expr::Binary(_, left, right, _) => {
-            collect_command_references(left, scopes, root, known, in_command_container, out);
-            collect_command_references(right, scopes, root, known, in_command_container, out);
+            collect_command_references(left, scopes, root, known, bound, out);
+            collect_command_references(right, scopes, root, known, bound, out);
         }
         Expr::Paren(inner, _)
         | Expr::Default(inner, _)
         | Expr::Bound(_, inner, _)
         | Expr::Unary(_, inner, _)
         | Expr::OpenList(Some(inner), _) => {
-            collect_command_references(inner, scopes, root, known, in_command_container, out)
-        }
-        Expr::Struct(items, _) if in_command_container => {
-            for item in items {
-                match item {
-                    StructItem::Field(field) => {
-                        if let Label::Dynamic(label, _) = &field.label {
-                            collect_command_references(label, scopes, root, known, false, out);
-                        }
-                        collect_command_references(&field.value, scopes, root, known, false, out);
-                    }
-                    StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-                        collect_command_references(value, scopes, root, known, false, out);
-                    }
-                    StructItem::For { source, body, .. } => {
-                        collect_command_references(source, scopes, root, known, false, out);
-                        for item in body {
-                            collect_command_references_in_item(
-                                item, scopes, root, known, false, out,
-                            );
-                        }
-                    }
-                    StructItem::If { cond, body, .. } => {
-                        collect_command_references(cond, scopes, root, known, false, out);
-                        for item in body {
-                            collect_command_references_in_item(
-                                item, scopes, root, known, false, out,
-                            );
-                        }
-                    }
-                    StructItem::Ellipsis(_) => {}
-                }
-            }
+            collect_command_references(inner, scopes, root, known, bound, out)
         }
         Expr::Struct(items, _) => {
             let mut nested = scopes.to_vec();
             nested.push(items);
             for item in items {
-                collect_command_references_in_item(item, &nested, root, known, false, out);
+                collect_command_references_in_item(item, &nested, root, known, bound, out);
             }
         }
         Expr::List(items, _) => {
             for item in items {
-                collect_command_references(item, scopes, root, known, false, out);
+                collect_command_references(item, scopes, root, known, bound, out);
             }
         }
         Expr::OpenListPrefix(items, tail, _) => {
             for item in items {
-                collect_command_references(item, scopes, root, known, false, out);
+                collect_command_references(item, scopes, root, known, bound, out);
             }
             if let Some(tail) = tail {
-                collect_command_references(tail, scopes, root, known, false, out);
+                collect_command_references(tail, scopes, root, known, bound, out);
             }
         }
         Expr::ListComp { clauses, body, .. } => {
+            let mut current = bound.clone();
             for clause in clauses {
                 match clause {
-                    CompClause::For { source, .. } => {
-                        collect_command_references(source, scopes, root, known, false, out);
+                    CompClause::For {
+                        key, value, source, ..
+                    } => {
+                        collect_command_references(source, scopes, root, known, &current, out);
+                        if let Some(key) = key {
+                            current.insert(key.clone());
+                        }
+                        current.insert(value.clone());
                     }
                     CompClause::If { cond, .. } => {
-                        collect_command_references(cond, scopes, root, known, false, out);
+                        collect_command_references(cond, scopes, root, known, &current, out);
                     }
                 }
             }
-            collect_command_references(body, scopes, root, known, false, out);
+            collect_command_references(body, scopes, root, known, &current, out);
         }
         Expr::Call(callee, arguments, _) => {
-            collect_command_references(callee, scopes, root, known, false, out);
+            collect_command_references(callee, scopes, root, known, bound, out);
             for argument in arguments {
-                collect_command_references(argument, scopes, root, known, false, out);
+                collect_command_references(argument, scopes, root, known, bound, out);
             }
         }
         Expr::Str(parts, _) => {
             for part in parts {
                 if let StrPart::Interp(inner) = part {
-                    collect_command_references(inner, scopes, root, known, false, out);
+                    collect_command_references(inner, scopes, root, known, bound, out);
                 }
             }
         }
         Expr::BytesInterp(parts, _) => {
             for part in parts {
                 if let BytePart::Interp(inner) = part {
-                    collect_command_references(inner, scopes, root, known, false, out);
+                    collect_command_references(inner, scopes, root, known, bound, out);
                 }
             }
         }
@@ -3167,40 +3150,44 @@ fn collect_command_references_in_item(
     scopes: &[&[StructItem]],
     root: &[StructItem],
     known: &std::collections::BTreeSet<String>,
-    in_command_container: bool,
+    bound: &std::collections::BTreeSet<String>,
     out: &mut std::collections::BTreeSet<String>,
 ) {
     match item {
         StructItem::Field(field) => {
             if let Label::Dynamic(label, _) = &field.label {
-                collect_command_references(label, scopes, root, known, in_command_container, out);
+                collect_command_references(label, scopes, root, known, bound, out);
             }
-            collect_command_references(
-                &field.value,
-                scopes,
-                root,
-                known,
-                in_command_container,
-                out,
-            );
+            collect_command_references(&field.value, scopes, root, known, bound, out);
         }
         StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
-            collect_command_references(value, scopes, root, known, in_command_container, out);
+            collect_command_references(value, scopes, root, known, bound, out);
         }
-        StructItem::For { source, body, .. } => {
-            collect_command_references(source, scopes, root, known, in_command_container, out);
+        StructItem::For {
+            key,
+            value,
+            source,
+            body,
+            ..
+        } => {
+            collect_command_references(source, scopes, root, known, bound, out);
             let mut nested = scopes.to_vec();
             nested.push(body);
+            let mut current = bound.clone();
+            if let Some(key) = key {
+                current.insert(key.clone());
+            }
+            current.insert(value.clone());
             for item in body {
-                collect_command_references_in_item(item, &nested, root, known, false, out);
+                collect_command_references_in_item(item, &nested, root, known, &current, out);
             }
         }
         StructItem::If { cond, body, .. } => {
-            collect_command_references(cond, scopes, root, known, in_command_container, out);
+            collect_command_references(cond, scopes, root, known, bound, out);
             let mut nested = scopes.to_vec();
             nested.push(body);
             for item in body {
-                collect_command_references_in_item(item, &nested, root, known, false, out);
+                collect_command_references_in_item(item, &nested, root, known, bound, out);
             }
         }
         StructItem::Ellipsis(_) => {}
@@ -3766,7 +3753,14 @@ fn selected_command_scope(
                 }
             }
             for value in values {
-                collect_command_references(value, &[], items, &known, false, &mut next);
+                collect_command_references(
+                    value,
+                    &[],
+                    items,
+                    &known,
+                    &std::collections::BTreeSet::new(),
+                    &mut next,
+                );
             }
         }
         if next.len() == keep.len() {

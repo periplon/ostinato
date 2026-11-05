@@ -13732,3 +13732,58 @@ command: {
         assert_eq!(actual.stderr, expected.stderr, "{command}");
     }
 }
+
+#[test]
+fn tool_command_comprehension_bindings_and_root_fields_do_not_shadow_commands() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("x_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+a: 1
+command: {
+	run: {x: 1 & 2}
+	b1: {
+		xs: [for run in [1] {run}]
+		p: cli.Print & {text: "B"}
+	}
+	b2: {
+		for run in [1] {
+			p: cli.Print & {text: "B\(run)"}
+		}
+	}
+	a: {
+		run: exec.Run & {cmd: ["sh", "-c", "echo A"], stdout: string}
+	}
+	bsel: {
+		run2: a.run
+		p: cli.Print & {text: "C"}
+	}
+	bare: a
+}
+"#,
+    );
+    let run = |implementation: &Path, command: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .output()
+            .expect("run command")
+    };
+    for command in ["b1", "b2", "bsel", "bare"] {
+        let expected = run(Path::new(&cue), command);
+        let actual = run(&bin(), command);
+        assert!(expected.status.success(), "{command}");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+}
