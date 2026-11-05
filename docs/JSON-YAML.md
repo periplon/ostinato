@@ -52,7 +52,9 @@ ostinato import config.json --package demo --force
   first, so absolute/relative and `./` spellings are also detected.
 * Input is fully decoded before any file is written. Invalid JSON/YAML,
   duplicate keys, unsupported tags, conflicts or missing documents produce a
-  typed error and no partial output.
+  typed error and no partial output. Multi-file imports preflight filesystem
+  name/path limits and stage every temporary file before committing; a late
+  commit failure rolls back already-written destinations.
 
 Generated CUE is intentionally small: object fields, structs, lists and
 scalars. Field and document order follows the source document; the value is
@@ -183,7 +185,7 @@ The e2e suite compares Ostinato with CUE v0.17.1 for:
 | Import | object, scalar, array, nested, `--list`, multi-document YAML, `--files`, `--merge`, `--files -o -`, `--force` last-input, anchors/merge keys, quoted `<<`, numeric underscores, key normalization, duplicate keys, big integers, custom tags, BOM |
 | Export | hidden/optional filtering, `-e` (dot, index, hidden, optional error), `--list`, `--list` multi-source zip, `--list`+`--input` rejection, `--out` inference, `--out` vs extension, no-clobber/`--force`, symlink/hardlink/input aliasing, data conflicts, array-vs-struct conflicts, stdout purity, broken pipe, repeated `-e` streams |
 | Workflow | `run --input` with JSON/YAML, native vs official CUE evaluators, `run --out yaml`, `run --dry-run`, `-p @file` rejection, `_id`/`_meta` input keys |
-| Numbers | >2^53 integers, 30-digit integers, `1e400`, YAML lexical integers, non-finite rejection |
+| Numbers | >2^53 integers, 30-digit integers, `1e400`, YAML lexical integers, legacy octal `010`/`08`, signed leading-zero integers/floats, base-prefixed floats, negative-zero merge order, non-finite rejection |
 | YAML safety | byte/depth/document/node/alias/expanded-byte limits, alias bombs, cyclic aliases, unknown tags, `!!binary` rejection, timestamps as strings, C1/noncharacter escaping, quoted keys, JSON node limit |
 
 ## Limits and security policy
@@ -205,6 +207,9 @@ The e2e suite compares Ostinato with CUE v0.17.1 for:
   `!!bool`, `!!null`, `!!float`) are accepted.
 * YAML 1.2 `yes`/`no`/`on`/`off` are strings, matching CUE's YAML decoder.
   Only `true`/`false` (and case variants) are booleans.
+* `!!bool` follows CUE rather than the YAML 1.2 core schema: only
+  `true`/`True`/`TRUE` are true; every other scalar (including `yes`, `1` and
+  unknown text) resolves to false.
 * `null`, `~`, `Null` and `NULL` are null.
 * Non-finite floats (`.inf`, `.nan`) are rejected because JSON cannot represent
   them.
@@ -215,22 +220,41 @@ The e2e suite compares Ostinato with CUE v0.17.1 for:
   are rejected, and YAML merge keys (`<<`) are expanded explicitly with
   explicit fields taking precedence. A quoted `"<<"` is a literal key; only a
   plain untagged (or `!!merge`) key triggers merging. `!!merge` is accepted;
-  invalid `!!bool` values produce a clear tag error rather than a numeric one.
+  `!!bool` non-true spellings resolve to false instead of producing a numeric
+  error.
 * YAML timestamps stay strings (YAML 1.2 core schema has no timestamp type).
 * `!!binary` is rejected: JSON has no byte type and silently decoding it would
   lose the bytes/text distinction. Core `!!str`, `!!int`, `!!bool`, `!!null`
   and `!!float` tags are accepted.
 * Empty JSON and YAML files decode to `null`; `{}` and `[]` are preserved.
 * UTF-8 BOMs are stripped before parsing in JSON and YAML.
-* YAML integer/float digit separators follow CUE: underscores between digits
-  are separators (`1_000.5`), underscores after `.`/`e`/exponent sign are
-  no-ops (`1._5` → 1.5, `1e_5` → 1e5), `0x_1`/`0b_1`/`0o_1` → 1, and
-  leading-zero forms such as `0_1`, `01.5`, `00.5` are rejected. `_`, `__`,
-  `+_`, `_1`, `-_`, `1..5`, `1.5.6`, `._5`, `-._5` remain strings.
-  `1e400`/`1e309` remain strings, matching CUE's lexical float parse;
-  `1.` is integer 1 and 30-digit integers are preserved exactly. JSON has an
-  explicit node limit, so wide adversarial arrays are rejected during
-  deserialization.
+* YAML integer resolution follows CUE:
+  - `0x`/`0b`/`0o` prefixes are parsed. Plain base integers above u64
+    (negative: i64) stay strings; `!!int` uses arbitrary precision.
+  - An unsigned leading-zero decimal with no separators is legacy octal when
+    every digit is 0-7 (`010` → 8, key `0o10`). Invalid octal such as `08`,
+    `09`, `019` and `0009` stays a string as a plain scalar and is an error
+    for `!!int`. Signed octal (`-010`, `-00`) is an error; signed invalid
+    octal (`-08`) stays a string as a plain scalar.
+  - Malformed base forms (`0x_`, `0b_`, `0b12`, `0b_2`) stay strings as plain
+    scalars and are errors for `!!int`. `-0` and `00` are zero; `-00`/`+00`
+    are errors. Decimal integers preserve arbitrary precision.
+* YAML float resolution follows CUE:
+  - Bare dots (`.`, `-.`, `+.`) remain strings.
+  - Unsigned `._5` is a string; signed `-._5`/`+._5` resolve to -0.5/0.5.
+  - Signed leading-zero floats normalize (`-01.5` → -1.5, `+01.5` → 1.5).
+    Unsigned `01.5`/`00.5` are illegal, while `0_0.1` → 0.1.
+  - Underscores between digits and after `.`/`e`/exponent sign are separators
+    (`1_000.5`, `1._5` → 1.5, `1e_5` → 1e5). Other illegal separators are
+    errors (`1_`, `1_.5`, `1.5_`, `1_e5`, `1e5_`), except when removing them
+    leaves no number (`1e_`), which remains a string.
+  - Base-prefixed float spellings (`0x1.0`, `0b1e2`, `0o1e2`, `0x1e2.0`) are
+    strings as plain scalars and errors for `!!float`.
+  - `1e400`/`1e309` remain strings for plain scalars, matching CUE's lexical
+    float parse; `!!float` preserves arbitrary precision. `1.` is integer 1;
+    30-digit integers are preserved exactly. `_`, `__`, `+_`, `_1`, `-_`,
+    `1..5`, `1.5.6` remain strings. JSON has an explicit node limit, so wide
+    adversarial arrays are rejected during deserialization.
 * Mapping keys may be strings or scalar numbers/booleans/null; scalars are
   stringified like CUE. Complex keys (maps/lists) are rejected.
 * YAML parsing uses [`saphyr`](https://crates.io/crates/saphyr) 0.3, a

@@ -34,7 +34,7 @@ pub use loaders::{
     CueCliLoader, NativeLoader, ToolCommandInfo, official_loader, run_tool_command_paths,
     tool_command_metadata,
 };
-pub use output::FileOutputSink;
+pub use output::{FileOutputSink, write_all_atomic};
 pub use process::{CommandAgent, ProcessExecutor};
 pub use store::SqliteStore;
 pub use telemetry::{TracingTelemetry, init_tracing};
