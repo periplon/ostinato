@@ -12319,3 +12319,250 @@ command: osall: {
         assert_eq!(actual.stderr, expected.stderr, "{command}");
     }
 }
+
+#[test]
+fn tool_command_os_env_scalars_and_unset_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("os_scalars_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+command: unsettype: {
+	env: os.Getenv & {OSTINATO_E2E_UNSET: string}
+	print: cli.Print & {text: "ok"}
+}
+command: unsetdef: {
+	env: os.Getenv & {OSTINATO_E2E_UNSET: *"d" | string}
+	print: cli.Print & {text: "v=[\(env.OSTINATO_E2E_UNSET)]"}
+}
+command: envunsettype: {
+	env: os.Environ & {OSTINATO_E2E_UNSET: string}
+	print: cli.Print & {text: "ok"}
+}
+command: envunsetdef: {
+	env: os.Environ & {OSTINATO_E2E_UNSET: *"d" | string}
+	print: cli.Print & {text: "v=[\(env.OSTINATO_E2E_UNSET)]"}
+}
+command: scalars: {
+	env: os.Getenv & {
+		OSTINATO_E2E_BOOL: bool
+		OSTINATO_E2E_INT: int
+		OSTINATO_E2E_NUM: number
+		OSTINATO_E2E_FLOAT: float
+		OSTINATO_E2E_CONCI: 42
+		OSTINATO_E2E_CONCB: true
+	}
+	print: cli.Print & {text: "bool=\(env.OSTINATO_E2E_BOOL) int=\(env.OSTINATO_E2E_INT) num=\(env.OSTINATO_E2E_NUM) float=\(env.OSTINATO_E2E_FLOAT) conci=\(env.OSTINATO_E2E_CONCI) concb=\(env.OSTINATO_E2E_CONCB)"}
+}
+command: enumscalars: {
+	env: os.Environ & {OSTINATO_E2E_INT: int}
+	print: cli.Print & {text: "int=\(env.OSTINATO_E2E_INT)"}
+}
+command: badlist: {
+	env: os.Getenv & {OSTINATO_E2E_BAD: [string]}
+	print: cli.Print & {text: "never"}
+}
+"#,
+    );
+    let run = |implementation: &Path, command: &str, value: Option<(&str, &str)>| {
+        let mut process = Command::new(implementation);
+        process
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env_remove("OSTINATO_E2E_UNSET")
+            .env_remove("OSTINATO_E2E_BAD")
+            .env("OSTINATO_E2E_BOOL", "True")
+            .env("OSTINATO_E2E_INT", "0x10")
+            .env("OSTINATO_E2E_NUM", "1.5e-3")
+            .env("OSTINATO_E2E_FLOAT", "1e3")
+            .env("OSTINATO_E2E_CONCI", "42")
+            .env("OSTINATO_E2E_CONCB", "T");
+        if let Some((name, value)) = value {
+            process.env(name, value);
+        }
+        process.output().expect("run command")
+    };
+    let cases: [(&str, Option<(&str, &str)>); 6] = [
+        ("unsettype", None),
+        ("unsetdef", None),
+        ("envunsettype", None),
+        ("envunsetdef", None),
+        ("scalars", None),
+        ("enumscalars", None),
+    ];
+    for (command, value) in cases {
+        let expected = run(Path::new(&cue), command, value);
+        let actual = run(&bin(), command, value);
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+    // Invalid declared types are rejected by both implementations.
+    let expected = run(Path::new(&cue), "badlist", None);
+    let actual = run(&bin(), "badlist", None);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert!(!actual.status.success());
+    assert_eq!(actual.stdout, expected.stdout);
+
+    // Bool spellings and integer bases.
+    for (command, name, value) in [
+        ("unsetdef", "OSTINATO_E2E_UNSET", "set"),
+        ("scalars", "OSTINATO_E2E_BOOL", " true "),
+        ("scalars", "OSTINATO_E2E_INT", "1_000"),
+        ("scalars", "OSTINATO_E2E_INT", "9223372036854775808"),
+        ("scalars", "OSTINATO_E2E_NUM", "0b101"),
+        ("scalars", "OSTINATO_E2E_FLOAT", "1.5"),
+    ] {
+        let expected = run(Path::new(&cue), command, Some((name, value)));
+        let actual = run(&bin(), command, Some((name, value)));
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{command}/{name}={value}"
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{command}/{name}={value}");
+    }
+}
+
+#[test]
+fn tool_command_help_edge_cases() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    // Help in an empty directory ignores missing build inputs.
+    let empty = tempfile::tempdir().expect("tempdir");
+    let empty_help = ost(&["cmd", "-h", empty.path().to_str().expect("path")]);
+    assert!(empty_help.status.success(), "empty help failed");
+    let empty_stdout = String::from_utf8_lossy(&empty_help.stdout);
+    assert!(empty_stdout.contains("Usage:"), "{empty_stdout}");
+    assert!(empty_stdout.contains("-p, --param"), "{empty_stdout}");
+    assert!(empty_help.stderr.is_empty());
+
+    let unknown = Command::new(bin())
+        .args(["cmd", "-h", "nosuch"])
+        .current_dir(empty.path())
+        .output()
+        .expect("unknown help");
+    assert!(!unknown.status.success());
+    assert!(unknown.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("Unknown cmd command: nosuch"),
+        "{}",
+        String::from_utf8_lossy(&unknown.stderr)
+    );
+    let reversed = Command::new(bin())
+        .args(["cmd", "nosuch", "-h"])
+        .current_dir(empty.path())
+        .output()
+        .expect("unknown help reversed");
+    assert!(!reversed.status.success());
+    assert!(reversed.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&reversed.stderr).contains("Unknown cmd command: nosuch"));
+
+    let no_args = Command::new(bin())
+        .arg("cmd")
+        .current_dir(empty.path())
+        .output()
+        .expect("no args");
+    assert!(!no_args.status.success());
+    assert!(no_args.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&no_args.stderr).contains("cmd must be run"));
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("doc_tool.cue"),
+        r#"
+package foo
+import "tool/cli"
+
+// Short doc line.
+//
+// Usage: doccmd [-q] file
+//
+// Long line one.
+// Long line two.
+command: doccmd: {
+	p: cli.Print & {text: "doc"}
+}
+
+// Explicit short.
+//
+// Usage: overridden [-z]
+//
+// Doc long.
+command: overridden: {
+	$short: "explicit short"
+	$usage: "overridden [-e] file"
+	$long: "explicit long"
+	p: cli.Print & {text: "over"}
+}
+
+command: visible: {p: cli.Print & {text: "visible"}}
+command: _hidden: {p: cli.Print & {text: "hidden"}}
+"#,
+    );
+    std::fs::create_dir_all(directory.path().join("doccmd")).expect("command-named dir");
+    let listing = ost(&["cmd", "-h", directory.path().to_str().expect("path")]);
+    assert!(listing.status.success());
+    let listing_stdout = String::from_utf8_lossy(&listing.stdout);
+    assert!(
+        listing_stdout.contains("Short doc line."),
+        "{listing_stdout}"
+    );
+    assert!(
+        listing_stdout.contains("explicit short"),
+        "{listing_stdout}"
+    );
+    assert!(!listing_stdout.contains("_hidden"), "{listing_stdout}");
+    assert!(!listing_stdout.contains("hidden"), "{listing_stdout}");
+
+    let doc = ost(&[
+        "cmd",
+        "doccmd",
+        "-h",
+        directory.path().to_str().expect("path"),
+    ]);
+    assert!(doc.status.success());
+    let doc_stdout = String::from_utf8_lossy(&doc.stdout);
+    assert!(doc_stdout.contains("Long line one.\nLong line two."));
+    assert!(doc_stdout.contains("ostinato cmd doccmd [-q] file [flags]"));
+
+    let doc_expected = Command::new(&cue)
+        .args(["help", "cmd", "doccmd"])
+        .current_dir(directory.path())
+        .output()
+        .expect("cue doc help");
+    let doc_expected_stdout = String::from_utf8_lossy(&doc_expected.stdout);
+    assert!(doc_expected_stdout.contains("Long line one.\nLong line two."));
+    assert!(doc_expected_stdout.contains("cue cmd doccmd [-q] file [flags]"));
+
+    let overridden = ost(&[
+        "cmd",
+        "overridden",
+        "-h",
+        directory.path().to_str().expect("path"),
+    ]);
+    assert!(overridden.status.success());
+    let overridden_stdout = String::from_utf8_lossy(&overridden.stdout);
+    assert!(overridden_stdout.contains("explicit long"));
+    assert!(overridden_stdout.contains("ostinato cmd overridden [-e] file [flags]"));
+
+    // A declared command wins over an existing directory with the same name.
+    let named_like_dir = Command::new(bin())
+        .args(["cmd", "doccmd", "-h"])
+        .current_dir(directory.path())
+        .output()
+        .expect("command named like dir");
+    assert!(named_like_dir.status.success());
+    let named_stdout = String::from_utf8_lossy(&named_like_dir.stdout);
+    assert!(named_stdout.contains("ostinato cmd doccmd [-q] file [flags]"));
+}

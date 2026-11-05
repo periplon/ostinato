@@ -16,8 +16,8 @@ pub mod workspace;
 
 pub use clock::{SystemClock, UuidGen};
 pub use loaders::{
-    CueCliLoader, NativeLoader, ToolCommandInfo, official_loader, run_tool_command,
-    run_tool_command_paths, tool_command_metadata,
+    CueCliLoader, NativeLoader, ToolCommandInfo, official_loader, run_tool_command_paths,
+    tool_command_metadata,
 };
 pub use process::{CommandAgent, ProcessExecutor};
 pub use store::SqliteStore;

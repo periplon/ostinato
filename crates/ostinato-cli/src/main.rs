@@ -103,7 +103,6 @@ enum Command {
     #[command(disable_help_flag = true)]
     Cmd {
         /// Tool command name (`command: <name>`).
-        #[arg(required_unless_present = "help")]
         name: Option<String>,
         /// Package file or directory (repeatable; `cue cmd` inputs).
         paths: Vec<PathBuf>,
@@ -389,37 +388,18 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             params,
             help,
         } => {
-            let (name, paths) = if help && paths.is_empty() {
-                match name {
-                    // `ostinato cmd -h <path>` lists that package instead of
-                    // treating the path as a command name.
-                    Some(value) if Path::new(&value).exists() => (None, vec![PathBuf::from(value)]),
-                    other => (other, paths),
-                }
-            } else {
-                (name, paths)
-            };
-            let paths = if paths.is_empty() {
-                vec![PathBuf::from(".")]
-            } else {
-                paths
-            };
             if help {
-                match ostinato_adapters::tool_command_metadata(&paths) {
-                    Ok(infos) => {
-                        print_tool_command_help(name.as_deref(), &infos);
-                        return Ok(ExitCode::SUCCESS);
-                    }
-                    Err(err) => {
-                        eprintln!("error: {err}");
-                        return Ok(ExitCode::from(1));
-                    }
-                }
+                return Ok(tool_command_help(name.as_deref(), &paths));
             }
             let Some(name) = name else {
                 eprintln!("cmd must be run as one of its subcommands");
                 eprintln!("Run 'ostinato cmd --help' for known subcommands.");
                 return Ok(ExitCode::from(1));
+            };
+            let paths = if paths.is_empty() {
+                vec![PathBuf::from(".")]
+            } else {
+                paths
             };
             let code = match ostinato_adapters::run_tool_command_paths(
                 &paths,
@@ -1323,26 +1303,63 @@ fn exit_for_status(status: RunStatus) -> ExitCode {
     }
 }
 
-fn print_tool_command_help(name: Option<&str>, infos: &[ostinato_adapters::ToolCommandInfo]) {
+fn tool_command_help(name: Option<&str>, paths: &[PathBuf]) -> ExitCode {
+    let load =
+        |paths: &[PathBuf]| ostinato_adapters::tool_command_metadata(paths).unwrap_or_default();
     if let Some(name) = name {
-        let Some(info) = infos.iter().find(|info| info.name == name) else {
-            println!("Unknown cmd command: {name}");
-            println!("Run 'ostinato cmd --help' for known subcommands.");
-            return;
+        let metadata_paths = if paths.is_empty() {
+            vec![PathBuf::from(".")]
+        } else {
+            paths.to_vec()
         };
-        if let Some(long) = &info.long {
-            println!("{long}\n");
-        } else if let Some(short) = &info.short {
-            println!("{short}\n");
+        let infos = load(&metadata_paths);
+        if let Some(info) = infos.iter().find(|info| info.name == name) {
+            print_tool_command_detail(info);
+            return ExitCode::SUCCESS;
         }
-        let prefixed = info
-            .usage
-            .as_deref()
-            .filter(|usage| usage.starts_with(&format!("{name} ")))
-            .unwrap_or(name);
-        println!("Usage:\n  ostinato cmd {prefixed} [flags]");
-        return;
+        // `cmd -h <path>` lists that package when `<path>` is not a command.
+        if paths.is_empty() && Path::new(name).exists() {
+            let infos = load(&[PathBuf::from(name)]);
+            print_tool_command_listing(&infos);
+            return ExitCode::SUCCESS;
+        }
+        eprintln!("Unknown cmd command: {name}");
+        eprintln!("Run 'ostinato cmd --help' for known subcommands.");
+        return ExitCode::from(1);
     }
+    let metadata_paths = if paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        paths.to_vec()
+    };
+    let infos = load(&metadata_paths);
+    print_tool_command_listing(&infos);
+    ExitCode::SUCCESS
+}
+
+fn print_tool_command_flags() {
+    println!();
+    println!("Flags:");
+    println!("  -h, --help             Show command help");
+    println!("  -p, --param <PARAM>    Set a @tag parameter override");
+}
+
+fn print_tool_command_detail(info: &ostinato_adapters::ToolCommandInfo) {
+    if let Some(long) = &info.long {
+        println!("{long}\n");
+    } else if let Some(short) = &info.short {
+        println!("{short}\n");
+    }
+    let prefixed = info
+        .usage
+        .as_deref()
+        .filter(|usage| usage.starts_with(&format!("{} ", info.name)))
+        .unwrap_or(&info.name);
+    println!("Usage:\n  ostinato cmd {prefixed} [flags]");
+    print_tool_command_flags();
+}
+
+fn print_tool_command_listing(infos: &[ostinato_adapters::ToolCommandInfo]) {
     println!("Usage:");
     println!("  ostinato cmd [flags] <name> [inputs]");
     println!("  ostinato cmd [command]\n");
@@ -1355,6 +1372,7 @@ fn print_tool_command_help(name: Option<&str>, infos: &[ostinato_adapters::ToolC
             info.short.as_deref().unwrap_or("")
         );
     }
+    print_tool_command_flags();
 }
 
 fn print_report(report: &ostinato_domain::RunReport, json: bool) -> Result<()> {

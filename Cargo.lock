@@ -536,9 +536,11 @@ dependencies = [
 name = "ostinato-adapters"
 version = "0.41.2"
 dependencies = [
+ "bigdecimal",
  "chrono",
  "glob",
  "libc",
+ "num-bigint",
  "ostinato-application",
  "ostinato-domain",
  "ostinato-lang",
