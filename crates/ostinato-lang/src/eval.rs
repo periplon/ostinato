@@ -8575,6 +8575,17 @@ fn deferred_binary_value(op: &BinOp, left: &Value, right: &Value) -> Option<Valu
             // right operand is not validated until then (`run.success || 1`).
             Some(Value::Type(TypeKind::Bool))
         }
+        // CUE's task flow materialises the producer before rejecting an
+        // arithmetic expression whose pending operand has an incompatible
+        // concrete type (`run.stdout - 2`, `run.success + 1`). Keep those
+        // expressions pending so the type error is reported during task
+        // evaluation, after injection, rather than during planning. `%` is an
+        // Ostinato extension with no CUE oracle and keeps its eager error.
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div
+            if value_is_pending(left) || value_is_pending(right) =>
+        {
+            Some(Value::Bottom)
+        }
         _ => None,
     }
 }
