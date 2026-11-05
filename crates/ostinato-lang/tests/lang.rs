@@ -2368,8 +2368,8 @@ fn unresolved_disjunctions_are_rejected_in_boolean_contexts() {
     for expression in [
         "(1 | 2) == 1",
         "!(1 | 2)",
-        "false && (1 | 2)",
-        "true || (1 | 2)",
+        "true && (1 | 2)",
+        "false || (1 | 2)",
     ] {
         let source = format!("package demo\na: {expression}\n");
         let file = ostinato_lang::parse(&source).expect("parse");
@@ -2378,6 +2378,18 @@ fn unresolved_disjunctions_are_rejected_in_boolean_contexts() {
             "expected unresolved error for {expression}"
         );
     }
+    // CUE short-circuits these operators, so the unresolved right operand is
+    // never placed in a boolean context.
+    let short_circuit = r#"
+package demo
+a: false && (1 | 2)
+b: true || (1 | 2)
+"#;
+    let file = ostinato_lang::parse(short_circuit).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["a"], false);
+    assert_eq!(json["b"], true);
     let ok = r#"
 package demo
 a: (*1 | 2) == 1

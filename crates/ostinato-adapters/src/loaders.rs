@@ -1840,24 +1840,42 @@ pub fn run_tool_command_paths(
         .flat_map(|target| target.module.iter().chain(target.local.iter()))
         .cloned()
         .collect();
+    // Task-input reads through package aliases (`\(p2.stdout)`) must be part
+    // of the read order too: CUE keeps them non-concrete when the underlying
+    // claimed task was declared earlier in the command.
+    let task_input_read_paths = external_paths.clone();
+    let mut read_claimed = command_claimed.clone();
+    read_claimed.extend(task_input_read_paths.iter().cloned());
     let order = package_read_order(
         task_items.as_slice(),
         &combined.items,
         &non_task_imports,
-        &command_claimed,
+        &read_claimed,
     );
     // A declaration-first task-input read keeps the target non-concrete in
     // CUE, even when a later plain read could be satisfied by the alias
     // instance; plain reads must not materialise the target in that case.
-    let declaration_first_targets: std::collections::BTreeSet<Vec<String>> = order
-        .iter()
-        .filter_map(
-            |(path, (declaration, _, task_read))| match (declaration, task_read) {
-                (Some(declaration), Some(read)) if read > declaration => Some(path.clone()),
-                _ => None,
-            },
-        )
-        .collect();
+    // Reads through a local alias hop resolve to the claimed task rather than
+    // to the read path itself, so compare the canonical root's declaration
+    // index with the read index. A claimed alias path (`r: #G.p2`) is its own
+    // instance in CUE and stays injectable.
+    let mut declaration_first_targets = std::collections::BTreeSet::new();
+    let mut declaration_first_roots = std::collections::BTreeSet::new();
+    for (path, (_, _, task_read)) in &order {
+        let Some(read) = task_read else {
+            continue;
+        };
+        let root = task_read_root(&combined.items, path);
+        if !command_claimed.contains(&root) {
+            continue;
+        }
+        if let Some((Some(declaration), _, _)) = order.get(&root)
+            && *read > *declaration
+        {
+            declaration_first_targets.insert(path.clone());
+            declaration_first_roots.insert(root);
+        }
+    }
     plain_read_paths.retain(|path| !declaration_first_targets.contains(path));
     let plain_alias_targets: std::collections::BTreeSet<Vec<String>> = command_claimed
         .intersection(&plain_read_paths)
@@ -1974,6 +1992,16 @@ pub fn run_tool_command_paths(
         if find_field_expr_at_path_in_root(&combined.items, path, &combined.items)
             .is_some_and(|value| expr_roots_local_binding(&combined.items, value))
         {
+            return false;
+        }
+        // A command that claims a direct alias hop (`r: p2` with `p2: prep`)
+        // materialises that local instance in CUE; reading the module terminal
+        // through the hop is allowed, unlike reading it directly.
+        if command_claimed.iter().any(|claimed| {
+            claimed != path
+                && alias_chain_nodes(&combined.items, claimed).len() == 2
+                && task_read_root(&combined.items, claimed) == path
+        }) {
             return false;
         }
         find_field_expr_at_path_in_root(&combined.items, path, &combined.items).is_some_and(
@@ -2132,6 +2160,13 @@ pub fn run_tool_command_paths(
             continue;
         }
         for node in nodes {
+            // A declaration-first read keeps the read path and the claimed
+            // task it reaches non-concrete; do not reintroduce either as an
+            // injectable task name.
+            if declaration_first_targets.contains(&node) || declaration_first_roots.contains(&node)
+            {
+                continue;
+            }
             if let Some(leaf) = node.last() {
                 task_name_set.insert(leaf.clone());
             }
@@ -2144,10 +2179,24 @@ pub fn run_tool_command_paths(
         let Some(local) = &target.local else {
             continue;
         };
-        if path_is_module_terminal(&combined.items, &imports, local) {
+        // Only a field whose own declaration is a module task selector stays
+        // non-concrete. Following local alias hops transitively (for example
+        // `p2: prep` where `prep: lib.run`) would incorrectly skip the local
+        // instance CUE materialises.
+        if find_field_expr_at_path_in_root(&combined.items, local, &combined.items)
+            .is_some_and(|value| module_task_path(value, &imports).is_some())
+        {
             continue;
         }
         let nodes = alias_chain_nodes(&combined.items, local);
+        // Direct command aliases (`a: base`) keep CUE's eager non-concrete
+        // behaviour for declaration-first output reads; the producer must not
+        // run before the error. An alias chain that reaches a module task
+        // through a local hop (`p2: prep`, `prep: lib.run`) is still a local
+        // instance in CUE, so it stays injectable.
+        if nodes.len() < 2 && !path_is_module_terminal(&combined.items, &imports, local) {
+            continue;
+        }
         let package_read = command_field_read_paths.contains(local) && nodes.len() > 2;
         if declaration_first_targets.contains(local)
             && !command_field_reads.contains(name)
@@ -2497,8 +2546,12 @@ fn http_task_marker(method: Option<&str>) -> Value {
             vec![0],
         ),
     );
-    response.insert("header".to_owned(), Value::Struct(BTreeMap::new()));
-    response.insert("trailer".to_owned(), Value::Struct(BTreeMap::new()));
+    // Header and trailer maps only exist once the response arrives. A concrete
+    // empty struct would make `len(header)` look complete during planning and
+    // make `header["X"]` fail before the producer runs. `Bottom` keeps the
+    // shape unknown until injection, matching CUE's pending behaviour.
+    response.insert("header".to_owned(), Value::Bottom);
+    response.insert("trailer".to_owned(), Value::Bottom);
     fields.insert("response".to_owned(), Value::Struct(response));
     Value::Struct(fields)
 }
@@ -4813,6 +4866,61 @@ fn path_is_module_terminal(
     })
 }
 
+/// Record a task-output read reached through a selector (`run.stdout`) or a
+/// string index (`run["stdout"]`) into the task-input or plain read set.
+#[allow(clippy::too_many_arguments)]
+fn collect_output_read_path(
+    base: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    out: &mut std::collections::BTreeSet<Vec<String>>,
+    plain: &mut std::collections::BTreeSet<Vec<String>>,
+    in_task: bool,
+    imports: &ImportKinds,
+    module_values: &BTreeMap<String, Value>,
+) {
+    let local_path = resolved_read_path(
+        base,
+        scopes,
+        root,
+        &mut std::collections::BTreeSet::new(),
+        imports,
+    )
+    .filter(|path| {
+        find_field_expr_at_path(root, path).is_some()
+            && path
+                .first()
+                .is_none_or(|first| !command_local_shadows_root(scopes, root, first))
+    })
+    .or_else(|| local_read_path(base, scopes, root, module_values));
+    let module_path = if local_path.is_none() {
+        module_task_path_scoped(
+            base,
+            scopes,
+            root,
+            module_values,
+            &mut std::collections::BTreeSet::new(),
+        )
+    } else {
+        None
+    };
+    if let Some(path) = local_path {
+        if in_task {
+            out.insert(path);
+        } else {
+            plain.insert(path);
+        }
+    } else if let Some(path) = module_path {
+        // Command-local task instances are scheduled on their own; reads
+        // through them behave like plain reads for injection.
+        if in_task && !command_local_task_read(base, scopes, root, imports) {
+            out.insert(path);
+        } else {
+            plain.insert(path);
+        }
+    }
+}
+
 /// Definition-rooted paths of task values whose outputs the command reads.
 #[allow(clippy::too_many_arguments)]
 fn collect_output_task_paths<'a>(
@@ -4829,46 +4937,16 @@ fn collect_output_task_paths<'a>(
     match expr {
         Expr::Select(base, field, _, _) => {
             if matches!(field.as_str(), "stdout" | "stderr" | "success") {
-                let local_path = resolved_read_path(
+                collect_output_read_path(
                     base,
                     scopes,
                     root,
-                    &mut std::collections::BTreeSet::new(),
+                    out,
+                    plain,
+                    in_task,
                     imports,
-                )
-                .filter(|path| {
-                    find_field_expr_at_path(root, path).is_some()
-                        && path
-                            .first()
-                            .is_none_or(|first| !command_local_shadows_root(scopes, root, first))
-                })
-                .or_else(|| local_read_path(base, scopes, root, module_values));
-                let module_path = if local_path.is_none() {
-                    module_task_path_scoped(
-                        base,
-                        scopes,
-                        root,
-                        module_values,
-                        &mut std::collections::BTreeSet::new(),
-                    )
-                } else {
-                    None
-                };
-                if let Some(path) = local_path {
-                    if in_task {
-                        out.insert(path);
-                    } else {
-                        plain.insert(path);
-                    }
-                } else if let Some(path) = module_path {
-                    // Command-local task instances are scheduled on their own;
-                    // reads through them behave like plain reads for injection.
-                    if in_task && !command_local_task_read(base, scopes, root, imports) {
-                        out.insert(path);
-                    } else {
-                        plain.insert(path);
-                    }
-                }
+                    module_values,
+                );
             }
             collect_output_task_paths(
                 base,
@@ -4971,13 +5049,21 @@ fn collect_output_task_paths<'a>(
                         );
                         for body_item in body {
                             if let StructItem::Field(field) = body_item {
+                                let child_in_task = in_task
+                                    || is_task_expr(
+                                        &field.value,
+                                        scopes,
+                                        root,
+                                        &mut std::collections::BTreeSet::new(),
+                                        imports,
+                                    );
                                 collect_output_task_paths(
                                     &field.value,
                                     scopes,
                                     root,
                                     out,
                                     plain,
-                                    in_task,
+                                    child_in_task,
                                     visited,
                                     imports,
                                     module_values,
@@ -4999,13 +5085,21 @@ fn collect_output_task_paths<'a>(
                         );
                         for body_item in body {
                             if let StructItem::Field(field) = body_item {
+                                let child_in_task = in_task
+                                    || is_task_expr(
+                                        &field.value,
+                                        scopes,
+                                        root,
+                                        &mut std::collections::BTreeSet::new(),
+                                        imports,
+                                    );
                                 collect_output_task_paths(
                                     &field.value,
                                     scopes,
                                     root,
                                     out,
                                     plain,
-                                    in_task,
+                                    child_in_task,
                                     visited,
                                     imports,
                                     module_values,
@@ -5059,6 +5153,20 @@ fn collect_output_task_paths<'a>(
             module_values,
         ),
         Expr::Index(base, index, _) => {
+            if index_field_name(index)
+                .is_some_and(|field| matches!(field.as_str(), "stdout" | "stderr" | "success"))
+            {
+                collect_output_read_path(
+                    base,
+                    scopes,
+                    root,
+                    out,
+                    plain,
+                    in_task,
+                    imports,
+                    module_values,
+                );
+            }
             collect_output_task_paths(
                 base,
                 scopes,
@@ -6842,7 +6950,23 @@ fn scan_package_order_expr(
             }
             visited.remove(name);
         }
-        Expr::Index(base, _, _) => {
+        Expr::Index(base, key, _) => {
+            if allow_read
+                && index_field_name(key)
+                    .is_some_and(|field| matches!(field.as_str(), "stdout" | "stderr" | "success"))
+                && let Some(path) = resolved_read_path(
+                    base,
+                    scopes,
+                    root,
+                    &mut std::collections::BTreeSet::new(),
+                    imports,
+                )
+                && claimed.contains(&path)
+            {
+                let entry = order.entry(path).or_insert((None, None, None));
+                let slot = if in_task { &mut entry.2 } else { &mut entry.1 };
+                *slot = Some(slot.map_or(index, |existing| existing.min(index)));
+            }
             record_package_declaration(
                 expr, allow_decl, index, scopes, root, imports, claimed, order,
             );
@@ -10860,6 +10984,19 @@ fn utf8_lossy_go(bytes: &[u8]) -> String {
     out
 }
 
+/// Response headers that Go's HTTP client consumes instead of exposing.
+fn go_consumed_response_header(name: &str, value: &str) -> bool {
+    match name {
+        "Transfer-Encoding" => value
+            .split(',')
+            .any(|token| token.trim().eq_ignore_ascii_case("chunked")),
+        "Connection" => value
+            .split(',')
+            .any(|token| token.trim().eq_ignore_ascii_case("close")),
+        _ => false,
+    }
+}
+
 fn http_canonical_header(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut upper = true;
@@ -11049,6 +11186,9 @@ fn execute_http(
             }
         };
         let status_code = i64::from(response.status().as_u16());
+        // CUE exposes the raw HTTP reason phrase from the status line. reqwest
+        // only surfaces the canonical reason, so we emit the canonical form;
+        // this is a documented divergence for non-standard reason phrases.
         let status = match response.status().canonical_reason() {
             Some(reason) => format!("{status_code} {reason}"),
             None => status_code.to_string(),
@@ -11066,8 +11206,15 @@ fn execute_http(
             let text = value
                 .to_str()
                 .map_or_else(|_| utf8_lossy_go(value.as_bytes()), str::to_owned);
+            let canonical = http_canonical_header(name.as_str());
+            // Mirror Go's net/http response header exposure: chunked framing
+            // is consumed by the transport and `Connection: close` is a
+            // hop-by-hop directive, so neither appears in CUE's header map.
+            if go_consumed_response_header(&canonical, &text) {
+                continue;
+            }
             let entry = header_fields
-                .entry(http_canonical_header(name.as_str()))
+                .entry(canonical)
                 .or_insert_with(|| Value::List(Vec::new()));
             if let Value::List(items) = entry {
                 items.push(Value::String(text));

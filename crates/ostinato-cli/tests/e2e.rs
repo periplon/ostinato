@@ -10590,21 +10590,21 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
         (
             "secondhopmoduleplain",
             format!(
-                "{module_import}prep: lib.run\np2: prep\ncommand: secondhopmoduleplain: {{\n\tr: p2\n\tq: \"\\\\(p2.stdout)\"\n}}\n"
+                "{module_import}prep: lib.run\np2: prep\ncommand: secondhopmoduleplain: {{\n\tr: p2\n\tq: \"\\(p2.stdout)\"\n}}\n"
             ),
             false,
         ),
         (
             "secondhopmoduleoutput",
             format!(
-                "{module_import}prep: lib.run\np2: prep\ncommand: secondhopmoduleoutput: {{\n\tr: p2\n\tq: \"\\\\(r.stdout)\"\n}}\n"
+                "{module_import}prep: lib.run\np2: prep\ncommand: secondhopmoduleoutput: {{\n\tr: p2\n\tq: \"\\(r.stdout)\"\n}}\n"
             ),
             false,
         ),
         (
             "secondhopmoduletask",
             format!(
-                "{module_cli}prep: lib.run\np2: prep\ncommand: secondhopmoduletask: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(p2.stdout)\"}}\n}}\n"
+                "{module_cli}prep: lib.run\np2: prep\ncommand: secondhopmoduletask: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\(p2.stdout)\"}}\n}}\n"
             ),
             false,
         ),
@@ -10628,14 +10628,14 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
         (
             "secondhoplocalplain",
             format!(
-                "{local}p2: base\ncommand: secondhoplocalplain: {{\n\tr: p2\n\tq: \"\\\\(p2.stdout)\"\n}}\n"
+                "{local}p2: base\ncommand: secondhoplocalplain: {{\n\tr: p2\n\tq: \"\\(p2.stdout)\"\n}}\n"
             ),
             false,
         ),
         (
             "secondhoplocaltask",
             format!(
-                "{local_cli}{base}p2: base\ncommand: secondhoplocaltask: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(p2.stdout)\"}}\n}}\n"
+                "{local_cli}{base}p2: base\ncommand: secondhoplocaltask: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\(p2.stdout)\"}}\n}}\n"
             ),
             false,
         ),
@@ -10671,7 +10671,7 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
         (
             "secondhoptaskbase",
             format!(
-                "{local_cli}{base}p2: base\ncommand: secondhoptaskbase: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(base.stdout)\"}}\n}}\n"
+                "{local_cli}{base}p2: base\ncommand: secondhoptaskbase: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\(base.stdout)\"}}\n}}\n"
             ),
             false,
         ),
@@ -10683,28 +10683,28 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
         (
             "secondhoptaskcomposed",
             format!(
-                "{local_cli}{base}p2: base & {{stdout: string}}\ncommand: secondhoptaskcomposed: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(base.stdout)\"}}\n}}\n"
+                "{local_cli}{base}p2: base & {{stdout: string}}\ncommand: secondhoptaskcomposed: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\(base.stdout)\"}}\n}}\n"
             ),
             false,
         ),
         (
             "secondhoptwonestedtask",
             format!(
-                "{local_cli}{base}p2: base\ncommand: secondhoptwonestedtask: {{\n\tx: {{\n\t\tr: p2\n\t\tt: cli.Print & {{text: \"R=\\\\(p2.stdout)\"}}\n\t}}\n}}\n"
+                "{local_cli}{base}p2: base\ncommand: secondhoptwonestedtask: {{\n\tx: {{\n\t\tr: p2\n\t\tt: cli.Print & {{text: \"R=\\(p2.stdout)\"}}\n\t}}\n}}\n"
             ),
             false,
         ),
         (
             "secondhopmoduletaskprep",
             format!(
-                "{module_cli}prep: lib.run\np2: prep\ncommand: secondhopmoduletaskprep: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(prep.stdout)\"}}\n}}\n"
+                "{module_cli}prep: lib.run\np2: prep\ncommand: secondhopmoduletaskprep: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\(prep.stdout)\"}}\n}}\n"
             ),
             false,
         ),
         (
             "secondhopmoduletaskp2",
             format!(
-                "{module_cli}prep: lib.run\np2: prep\ncommand: secondhopmoduletaskp2: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\\\(p2.stdout)\"}}\n}}\n"
+                "{module_cli}prep: lib.run\np2: prep\ncommand: secondhopmoduletaskp2: {{\n\tr: p2\n\tt: cli.Print & {{text: \"R=\\(p2.stdout)\"}}\n}}\n"
             ),
             false,
         ),
@@ -10734,6 +10734,11 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
             .current_dir(cue_dir.path())
             .output()
             .expect("run cue cmd");
+        assert!(
+            expected.status.success(),
+            "{name}: cue cmd failed: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
         let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
         assert_eq!(
             actual.status.code(),
@@ -10764,34 +10769,35 @@ import e "tool/exec"
 run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
 "#;
     let base = "base: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\n";
+    let local = "package foo\nimport \"tool/exec\"\n";
     let local_cli = "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n";
     let module_cli = "package foo\nimport (\n\t\"tool/cli\"\n\t\"example.com/k/lib\"\n)\n";
     let cases: Vec<(&str, String, bool)> = vec![
         (
             "chainthree",
             format!(
-                "{local_cli}{base}p2: base\np3: p2\ncommand: chainthree: {{\n\tr: p3\n\tq: \"\\\\(p3.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(p3.stdout)\"}}\n}}\n"
+                "{local_cli}{base}p2: base\np3: p2\ncommand: chainthree: {{\n\tr: p3\n\tq: \"\\(p3.stdout)\"\n\tt: cli.Print & {{text: \"R=\\(p3.stdout)\"}}\n}}\n"
             ),
             false,
         ),
         (
             "chainfour",
             format!(
-                "{local_cli}{base}p2: base\np3: p2\np4: p3\ncommand: chainfour: {{\n\tr: p4\n\tq: \"\\\\(p4.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(p4.stdout)\"}}\n}}\n"
+                "{local_cli}{base}p2: base\np3: p2\np4: p3\ncommand: chainfour: {{\n\tr: p4\n\tq: \"\\(p4.stdout)\"\n\tt: cli.Print & {{text: \"R=\\(p4.stdout)\"}}\n}}\n"
             ),
             false,
         ),
         (
             "chainfive",
             format!(
-                "{local_cli}{base}p2: base\np3: p2\np4: p3\np5: p4\ncommand: chainfive: {{\n\tr: p5\n\tt: cli.Print & {{text: \"R=\\\\(p5.stdout)\"}}\n}}\n"
+                "{local_cli}{base}p2: base\np3: p2\np4: p3\np5: p4\ncommand: chainfive: {{\n\tr: p5\n\tt: cli.Print & {{text: \"R=\\(p5.stdout)\"}}\n}}\n"
             ),
             false,
         ),
         (
             "chainmodule",
             format!(
-                "{module_cli}prep: lib.run\np2: prep\np3: p2\np4: p3\ncommand: chainmodule: {{\n\tr: p4\n\tq: \"\\\\(p4.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(p4.stdout)\"}}\n}}\n"
+                "{module_cli}prep: lib.run\np2: prep\np3: p2\np4: p3\ncommand: chainmodule: {{\n\tr: p4\n\tq: \"\\(p4.stdout)\"\n\tt: cli.Print & {{text: \"R=\\(p4.stdout)\"}}\n}}\n"
             ),
             true,
         ),
@@ -10803,21 +10809,21 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
         (
             "chainmixedlet",
             format!(
-                "{local_cli}{base}let first = base\np2: first\nlet second = p2\np3: second\np4: p3\ncommand: chainmixedlet: {{\n\tr: p4\n\tq: \"\\\\(p4.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(p4.stdout)\"}}\n}}\n"
+                "{local_cli}{base}let first = base\np2: first\nlet second = p2\np3: second\np4: p3\ncommand: chainmixedlet: {{\n\tr: p4\n\tq: \"\\(p4.stdout)\"\n\tt: cli.Print & {{text: \"R=\\(p4.stdout)\"}}\n}}\n"
             ),
             false,
         ),
         (
             "chainmulti",
             format!(
-                "{local_cli}{base}p2: base\np3: p2\np4: p3\ncommand: chainmulti: {{ r1: p4, r2: p3 }}\n"
+                "{local}{base}p2: base\np3: p2\np4: p3\ncommand: chainmulti: {{ r1: p4, r2: p3 }}\n"
             ),
             false,
         ),
         (
             "chainnested",
             format!(
-                "{local_cli}{base}p2: base\np3: p2\np4: p3\ncommand: chainnested: {{ x: {{ r: p4 }} }}\n"
+                "{local}{base}p2: base\np3: p2\np4: p3\ncommand: chainnested: {{ x: {{ r: p4 }} }}\n"
             ),
             false,
         ),
@@ -10844,6 +10850,11 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
             .current_dir(cue_dir.path())
             .output()
             .expect("run cue cmd");
+        assert!(
+            expected.status.success(),
+            "{name}: cue cmd failed: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
         let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
         assert_eq!(
             actual.status.code(),
@@ -10889,7 +10900,7 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
         cases.push((
             format!("container{depth}"),
             format!(
-                "{imports}{group}command: container{depth}: {{\n\tr: group.{previous}\n\tq: \"\\\\(group.{previous}.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(group.{previous}.stdout)\"}}\n}}\n"
+                "{imports}{group}command: container{depth}: {{\n\tr: group.{previous}\n\tq: \"\\(group.{previous}.stdout)\"\n\tt: cli.Print & {{text: \"R=\\(group.{previous}.stdout)\"}}\n}}\n"
             ),
             false,
         ));
@@ -10904,7 +10915,7 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
         cases.push((
             format!("fieldread{depth}"),
             format!(
-                "{imports}{chain}command: fieldread{depth}: {{\n\ta: {previous}\n\tt: cli.Print & {{text: \"R=\\\\(a.stdout)\"}}\n}}\n"
+                "{imports}{chain}command: fieldread{depth}: {{\n\ta: {previous}\n\tt: cli.Print & {{text: \"R=\\(a.stdout)\"}}\n}}\n"
             ),
             false,
         ));
@@ -10922,7 +10933,7 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
         cases.push((
             format!("defcontainer{depth}"),
             format!(
-                "{imports}{group}command: defcontainer{depth}: {{\n\tr: #G.{previous}\n\tq: \"\\\\(#G.{previous}.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(#G.{previous}.stdout)\"}}\n}}\n"
+                "{imports}{group}command: defcontainer{depth}: {{\n\tr: #G.{previous}\n\tq: \"\\(#G.{previous}.stdout)\"\n\tt: cli.Print & {{text: \"R=\\(#G.{previous}.stdout)\"}}\n}}\n"
             ),
             false,
         ));
@@ -10940,7 +10951,7 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
     cases.push((
         "letodd".to_owned(),
         format!(
-            "{imports}{base}let first = base\np2: first\np3: p2\ncommand: letodd: {{\n\tr: p3\n\tq: \"\\\\(p3.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(p3.stdout)\"}}\n}}\n"
+            "{imports}{base}let first = base\np2: first\np3: p2\ncommand: letodd: {{\n\tr: p3\n\tq: \"\\(p3.stdout)\"\n\tt: cli.Print & {{text: \"R=\\(p3.stdout)\"}}\n}}\n"
         ),
         false,
     ));
@@ -10966,6 +10977,11 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
             .current_dir(cue_dir.path())
             .output()
             .expect("run cue cmd");
+        assert!(
+            expected.status.success(),
+            "{name}: cue cmd failed: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
         let actual = ost(&["cmd", &name, rust_dir.path().to_str().expect("path")]);
         assert_eq!(
             actual.status.code(),
@@ -10994,35 +11010,35 @@ fn tool_command_pending_output_expressions_match_cue() {
         (
             "pendinglen",
             format!(
-                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendinglen: {{\n\tt: cli.Print & {{text: \"len=\\\\(len(run.stdout)) twice=\\\\(len(run.stdout) * 2) cmp=\\\\(len(run.stdout) > 2)\"}}\n}}\n"
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendinglen: {{\n\tt: cli.Print & {{text: \"len=\\(len(run.stdout)) twice=\\(len(run.stdout) * 2) cmp=\\(len(run.stdout) > 2)\"}}\n}}\n"
             ),
             None,
         ),
         (
             "pendingconcat",
             format!(
-                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendingconcat: {{\n\tt: cli.Print & {{text: \"x=\" + run.stdout}}\n\tq: \"\\\\(run.stdout == \"out\")\"\n}}\n"
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendingconcat: {{\n\tt: cli.Print & {{text: \"x=\" + run.stdout}}\n\tq: \"\\(run.stdout == \"out\")\"\n}}\n"
             ),
             None,
         ),
         (
             "pendingsplit",
             format!(
-                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n\t\"strings\"\n)\n{run}command: pendingsplit: {{\n\tt: cli.Print & {{text: \"first=\\\\(strings.Split(run.stdout, \"u\")[0]) joined=\\\\(strings.Join(strings.Split(run.stdout, \"u\"), \"-\")) prefix=\\\\(strings.HasPrefix(run.stdout, \"ou\"))\"}}\n}}\n"
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n\t\"strings\"\n)\n{run}command: pendingsplit: {{\n\tt: cli.Print & {{text: \"first=\\(strings.Split(run.stdout, \"u\")[0]) joined=\\(strings.Join(strings.Split(run.stdout, \"u\"), \"-\")) prefix=\\(strings.HasPrefix(run.stdout, \"ou\"))\"}}\n}}\n"
             ),
             None,
         ),
         (
             "pendinginput",
             format!(
-                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendinginput: {{\n\tt: exec.Run & {{cmd: [\"sh\", \"-c\", \"printf %s \" + run.stdout], stdout: string}}\n\tp: cli.Print & {{text: \"out=\\\\(t.stdout)\"}}\n}}\n"
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendinginput: {{\n\tt: exec.Run & {{cmd: [\"sh\", \"-c\", \"printf %s \" + run.stdout], stdout: string}}\n\tp: cli.Print & {{text: \"out=\\(t.stdout)\"}}\n}}\n"
             ),
             None,
         ),
         (
             "pendingstdin",
             format!(
-                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendingstdin: {{\n\tt: exec.Run & {{cmd: [\"cat\"], stdin: run.stdout, stdout: string}}\n\tp: cli.Print & {{text: \"out=\\\\(t.stdout)\"}}\n}}\n"
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendingstdin: {{\n\tt: exec.Run & {{cmd: [\"cat\"], stdin: run.stdout, stdout: string}}\n\tp: cli.Print & {{text: \"out=\\(t.stdout)\"}}\n}}\n"
             ),
             None,
         ),
@@ -11066,6 +11082,11 @@ fn tool_command_pending_output_expressions_match_cue() {
             .current_dir(cue_dir.path())
             .output()
             .expect("run cue cmd");
+        assert!(
+            expected.status.success(),
+            "{name}: cue cmd failed: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
         let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
         assert_eq!(
             actual.status.code(),
@@ -11086,6 +11107,411 @@ fn tool_command_pending_output_expressions_match_cue() {
                 "{name}: rust artifact"
             );
         }
+    }
+}
+
+#[test]
+fn tool_command_invalid_pending_expressions_fail_before_execution() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cases: &[(&str, &str, &str)] = &[
+        ("select", "", "run.stdout.foo"),
+        ("mathabs", "math", "math.Abs(run.stdout)"),
+        ("lenbool", "", "len(run.success)"),
+        ("upperbool", "strings", "strings.ToUpper(run.success)"),
+        ("indexstring", "", "run.stdout[0]"),
+        ("concatstring", "list", "list.Concat(run.stdout)[0]"),
+        ("modstring", "", "run.stdout % 2"),
+        ("listcompstring", "", "[for x in run.stdout {x}][0]"),
+    ];
+    for (name, extra_import, expression) in cases {
+        let extra = if extra_import.is_empty() {
+            String::new()
+        } else {
+            format!("\t\"{extra_import}\"\n")
+        };
+        let source = format!(
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+{extra})
+run: exec.Run & {{cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}}
+command: c: {{
+	t: cli.Print & {{text: "\({expression})"}}
+}}
+"#
+        );
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            write(&directory.join("x_tool.cue"), &source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", "c"])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", "c", rust_dir.path().to_str().expect("path")]);
+        assert!(
+            !expected.status.success(),
+            "{name}: cue unexpectedly accepted the expression"
+        );
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+        assert!(
+            std::fs::read(cue_dir.path().join("order.txt")).is_err(),
+            "{name}: cue executed the producer"
+        );
+        assert!(
+            std::fs::read(rust_dir.path().join("order.txt")).is_err(),
+            "{name}: ostinato executed the producer before rejecting"
+        );
+    }
+}
+
+#[test]
+#[allow(clippy::type_complexity)]
+fn tool_command_alias_and_residual_reads_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"package lib
+
+import e "tool/exec"
+
+run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+"#;
+    let cases: Vec<(&str, String)> = vec![
+        (
+            "modpre",
+            r#"package foo
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+prep: lib.run
+p2: prep
+msg: "pre=\(p2.stdout)"
+command: modpre: {
+	r: p2
+	t: cli.Print & {text: msg}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "declfirst",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+p2: base
+command: c: {
+	r: base
+	t: cli.Print & {text: "R=\(p2.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "declfirstreordered",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+p2: base
+command: c: {
+	t: cli.Print & {text: "R=\(p2.stdout)"}
+	r: base
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "directaliasread",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	a: base
+	t: cli.Print & {text: "R=\(base.stdout) a=\(a.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "definitioncontainer",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+#G: {
+	base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+	p2: base
+}
+command: c: {
+	r: #G.p2
+	t: cli.Print & {text: "R=\(#G.p2.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "composedalias",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+base: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+p2: base & {stdout: string}
+command: c: {
+	r: base
+	t: cli.Print & {text: "R=\(p2.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "indexstdout",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "R=\(run["stdout"])"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "ifpending",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	if true {
+		t: cli.Print & {text: "R=\(run.stdout)"}
+	}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "forpending",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	for x in ["a", "b"] {
+		t: cli.Print & {text: "x=\(x) r=\(run.stdout)"}
+	}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "stdoutmul",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\(run.stdout * 2)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "intmul",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\(2 * run.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "concatmul",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\((run.stdout + "x") * 2)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "splitmul",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"strings"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\(strings.Split(run.stdout, "u")[0] * 2)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "boolleftpending",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string, success: bool}
+command: c: {
+	t: cli.Print & {text: "v=\(run.success || 1)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "boolrightok",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string, success: bool}
+command: c: {
+	t: cli.Print & {text: "a=\(true && run.success) b=\(false || run.success)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "boolrightinvalidand",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\(true && run.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "boolrightinvalidor",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\(false || run.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "boolshortcircuit",
+            r#"package foo
+import "tool/cli"
+command: c: {
+	t: cli.Print & {text: "a=\(true || 1) b=\(false && 1)"}
+}
+"#
+            .to_owned(),
+        ),
+    ];
+    for (name, source) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+            std::fs::create_dir_all(directory.join("lib")).expect("lib");
+            write(&directory.join("cue.mod/module.cue"), module);
+            write(&directory.join("lib/lib.cue"), library);
+            write(&directory.join("x_tool.cue"), &source);
+        }
+        // Only `modpre` names its command after the case; every other fixture
+        // declares `command: c:`.
+        let command = if name == "modpre" { name } else { "c" };
+        let expected = Command::new(&cue)
+            .args(["cmd", command])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", command, rust_dir.path().to_str().expect("path")]);
+        for (implementation, output) in [("cue", &expected), ("ostinato", &actual)] {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !stderr.contains("not found") && !stderr.contains("no tasks"),
+                "{name}: {implementation} command did not resolve: {stderr}"
+            );
+        }
+        let expect_success = !matches!(
+            name,
+            "declfirst"
+                | "directaliasread"
+                | "forpending"
+                | "boolrightinvalidand"
+                | "boolrightinvalidor"
+        );
+        assert_eq!(
+            expected.status.success(),
+            expect_success,
+            "{name}: cue success mismatch: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+        assert_eq!(
+            std::fs::read(cue_dir.path().join("order.txt")).ok(),
+            std::fs::read(rust_dir.path().join("order.txt")).ok(),
+            "{name}: order.txt differs"
+        );
     }
 }
 
@@ -14357,6 +14783,22 @@ command: getok: {
 	r: http.Get & {url: "__BASE__/ok", response: {body: string}}
 	p: cli.Print & {text: "status=\(r.response.status) code=\(r.response.statusCode) body=[\(r.response.body)] test=\(r.response.header["X-Test"][0]) n=\(len(r.response.header["X-Multi"]))"}
 }
+command: headerfirst: {
+	r: http.Get & {url: "__BASE__/ok", response: {body: string}}
+	p: cli.Print & {text: "n=\(len(r.response.header)) test=\(r.response.header["X-Test"][0])"}
+}
+command: headerkeyfirst: {
+	r: http.Get & {url: "__BASE__/ok", response: {body: string}}
+	p: cli.Print & {text: "test=\(r.response.header["X-Test"][0]) n=\(len(r.response.header))"}
+}
+command: bodymul: {
+	r: http.Get & {url: "__BASE__/ok", response: {body: string}}
+	p: cli.Print & {text: "v=\(r.response.body * 2)"}
+}
+command: bodyadd: {
+	r: http.Get & {url: "__BASE__/ok", response: {body: string}}
+	p: cli.Print & {text: "v=\(r.response.body + "x")"}
+}
 command: get404: {
 	r: http.Get & {url: "__BASE__/status404", response: {body: string}}
 	p: cli.Print & {text: "status=\(r.response.status) code=\(r.response.statusCode) body=[\(r.response.body)]"}
@@ -14432,6 +14874,10 @@ command: gzip: {
     };
     for command in [
         "getok",
+        "headerfirst",
+        "headerkeyfirst",
+        "bodymul",
+        "bodyadd",
         "get404",
         "redirect",
         "redirectfalse",

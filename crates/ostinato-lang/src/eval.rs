@@ -2157,6 +2157,21 @@ impl<'a> Frame<'a> {
             | Expr::Paren(inner, _)
             | Expr::Unary(_, inner, _) => self.expr_reaches_task_output(inner, allowed, seen),
             Expr::Index(base, index, _) => {
+                // `run["stdout"]` is an output read just like `run.stdout`.
+                match unwrap_interp_base(base) {
+                    Expr::Ident(name, _) if allowed.contains(name) => return true,
+                    nested => {
+                        if selector_leaf_name(nested).is_some_and(|leaf| allowed.contains(&leaf)) {
+                            return true;
+                        }
+                        if self
+                            .ident_task_label(nested, &mut HashSet::new())
+                            .is_some_and(|label| allowed.contains(&label))
+                        {
+                            return true;
+                        }
+                    }
+                }
                 self.expr_reaches_task_output(base, allowed, seen)
                     || self.expr_reaches_task_output(index, allowed, seen)
             }
@@ -4456,11 +4471,21 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             }
             let base = eval_expr(base, frame)?.concretize().clone();
             if frame.allows_incomplete(expr)
-                && value_is_pending(&base)
-                && !matches!(base, Value::Struct(_) | Value::Definition { .. })
+                && matches!(
+                    base,
+                    Value::Bottom
+                        | Value::Recursive(_)
+                        | Value::Deferred(_, _)
+                        | Value::Disjunction(_, _)
+                        | Value::Bounds(_)
+                )
             {
-                // Structs still support selection: the selected field may
-                // already be concrete (for example an injected task response).
+                // Only genuinely unknown shapes may resolve to a struct once
+                // task outputs are injected. Concrete constraints such as
+                // `string` must fail selection eagerly, before any producer
+                // task is scheduled, exactly as CUE does. Structs still
+                // support selection: the selected field may already be
+                // concrete (for example an injected task response).
                 return Ok(Value::Bottom);
             }
             if frame.defer_incomplete.get() && matches!(base, Value::Bottom) {
@@ -4564,7 +4589,7 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             let pending = values.iter().any(value_is_pending);
             if pending && frame.allows_incomplete(expr) {
                 if let Value::Builtin(builtin) = &callee
-                    && let Some(value) = deferred_builtin_value(*builtin)
+                    && let Some(value) = deferred_builtin_value(*builtin, &values)
                 {
                     return Ok(value);
                 }
@@ -4618,7 +4643,8 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     Value::List(_)
                     | Value::OpenListPrefix(..)
                     | Value::Struct(_)
-                    | Value::Definition { .. } => {}
+                    | Value::Definition { .. }
+                    | Value::Type(_) => {}
                     _ => return Ok(Value::Bottom),
                 }
             }
@@ -4686,7 +4712,21 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 && let Some(CompClause::For { source, .. }) = clauses
                     .iter()
                     .find(|clause| matches!(clause, CompClause::For { .. }))
-                && eval_expr(source, frame).is_ok_and(|value| value_is_pending(&value))
+                && eval_expr(source, frame).is_ok_and(|value| {
+                    value_is_pending(&value)
+                        && matches!(
+                            value,
+                            Value::List(_)
+                                | Value::OpenList(_)
+                                | Value::OpenListPrefix(..)
+                                | Value::Struct(_)
+                                | Value::Definition { .. }
+                                | Value::Bottom
+                                | Value::Recursive(_)
+                                | Value::Deferred(_, _)
+                                | Value::Disjunction(_, _)
+                        )
+                })
             {
                 return Ok(Value::OpenList(Some(Box::new(Value::Bottom))));
             }
@@ -4840,21 +4880,54 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         }
         Expr::Default(inner, _) => eval_expr(inner, frame),
         Expr::Binary(op, left, right, span) => {
+            if matches!(op, BinOp::And | BinOp::Or) {
+                // CUE short-circuits boolean operators: `true || <invalid>`
+                // and `false && <invalid>` never evaluate the right operand.
+                let left_value = eval_expr(left, frame)?.concretize().clone();
+                if !value_is_pending(&left_value) {
+                    let left_bool = require_bool(frame, &left_value, *span)?;
+                    if matches!(op, BinOp::Or) && left_bool {
+                        return Ok(Value::Bool(true));
+                    }
+                    if matches!(op, BinOp::And) && !left_bool {
+                        return Ok(Value::Bool(false));
+                    }
+                    let right_value = eval_expr(right, frame)?.concretize().clone();
+                    if frame.allows_incomplete(expr)
+                        && value_is_pending(&right_value)
+                        && let Some(value) = deferred_binary_value(op, &left_value, &right_value)
+                    {
+                        return Ok(value);
+                    }
+                    let right_bool = require_bool(frame, &right_value, *span)?;
+                    return Ok(Value::Bool(if matches!(op, BinOp::And) {
+                        left_bool && right_bool
+                    } else {
+                        left_bool || right_bool
+                    }));
+                }
+                let right_value = eval_expr(right, frame)?.concretize().clone();
+                if frame.allows_incomplete(expr)
+                    && (value_is_pending(&left_value) || value_is_pending(&right_value))
+                    && let Some(value) = deferred_binary_value(op, &left_value, &right_value)
+                {
+                    return Ok(value);
+                }
+                let left_bool = require_bool(frame, &left_value, *span)?;
+                let right_bool = require_bool(frame, &right_value, *span)?;
+                return Ok(Value::Bool(if matches!(op, BinOp::And) {
+                    left_bool && right_bool
+                } else {
+                    left_bool || right_bool
+                }));
+            }
             let left_value = eval_expr(left, frame)?.concretize().clone();
             let right_value = eval_expr(right, frame)?.concretize().clone();
             if frame.allows_incomplete(expr)
                 && (value_is_pending(&left_value) || value_is_pending(&right_value))
+                && let Some(value) = deferred_binary_value(op, &left_value, &right_value)
             {
-                return Ok(deferred_binary_value(op, &left_value, &right_value));
-            }
-            if matches!(op, BinOp::And | BinOp::Or) {
-                let left = require_bool(frame, &left_value, *span)?;
-                let right = require_bool(frame, &right_value, *span)?;
-                return Ok(Value::Bool(if matches!(op, BinOp::And) {
-                    left && right
-                } else {
-                    left || right
-                }));
+                return Ok(value);
             }
             if !matches!(op, BinOp::Eq | BinOp::Ne)
                 || matches!(
@@ -6840,22 +6913,82 @@ fn value_is_pending(value: &Value) -> bool {
 
 /// A typed placeholder for a builtin over pending task outputs. The enclosing
 /// field is re-evaluated once the producer injects its outputs.
-fn deferred_builtin_value(builtin: Builtin) -> Option<Value> {
+///
+/// Only defer when the already-known argument shapes are admissible for the
+/// builtin. A pending argument whose shape already contradicts the builtin
+/// signature (for example `math.Abs` over `stdout: string`) must fail eagerly,
+/// exactly like CUE, instead of scheduling the producer first.
+fn deferred_builtin_value(builtin: Builtin, arguments: &[Value]) -> Option<Value> {
+    let argument = |index: usize| arguments.get(index);
+    let all_args = |predicate: fn(&Value) -> bool| arguments.iter().all(predicate);
     Some(match builtin {
-        Builtin::Len => Value::Type(TypeKind::Int),
-        Builtin::StringsSplit => Value::OpenList(Some(Box::new(Value::Type(TypeKind::String)))),
-        Builtin::StringsHasPrefix | Builtin::StringsHasSuffix => Value::Type(TypeKind::Bool),
-        Builtin::StringsToUpper
-        | Builtin::StringsToLower
-        | Builtin::StringsTrimSpace
-        | Builtin::StringsJoin => Value::Type(TypeKind::String),
-        Builtin::ListRange => Value::OpenList(Some(Box::new(Value::Type(TypeKind::Int)))),
-        Builtin::ListConcat => Value::OpenList(Some(Box::new(Value::Bottom))),
-        Builtin::RegexpMatch | Builtin::RegexpValid => Value::Type(TypeKind::Bool),
-        Builtin::RegexpFind | Builtin::RegexpReplaceAll | Builtin::RegexpQuoteMeta => {
+        Builtin::Len => {
+            if !all_args(|value| {
+                deferred_stringish(value)
+                    || deferred_bytesish(value)
+                    || deferred_listish(value)
+                    || deferred_structish(value)
+            }) {
+                return None;
+            }
+            Value::Type(TypeKind::Int)
+        }
+        Builtin::StringsSplit => {
+            if !all_args(deferred_stringish) {
+                return None;
+            }
+            Value::OpenList(Some(Box::new(Value::Type(TypeKind::String))))
+        }
+        Builtin::StringsHasPrefix | Builtin::StringsHasSuffix => {
+            if !all_args(deferred_stringish) {
+                return None;
+            }
+            Value::Type(TypeKind::Bool)
+        }
+        Builtin::StringsToUpper | Builtin::StringsToLower | Builtin::StringsTrimSpace => {
+            if !all_args(deferred_stringish) {
+                return None;
+            }
             Value::Type(TypeKind::String)
         }
-        Builtin::RegexpFindAll => Value::OpenList(Some(Box::new(Value::Type(TypeKind::String)))),
+        Builtin::StringsJoin => {
+            if !argument(0).is_some_and(deferred_listish)
+                || !argument(1).is_none_or(deferred_stringish)
+            {
+                return None;
+            }
+            Value::Type(TypeKind::String)
+        }
+        Builtin::ListRange => {
+            if !all_args(deferred_numberish) {
+                return None;
+            }
+            Value::OpenList(Some(Box::new(Value::Type(TypeKind::Int))))
+        }
+        Builtin::ListConcat => {
+            if !all_args(deferred_listish) {
+                return None;
+            }
+            Value::OpenList(Some(Box::new(Value::Bottom)))
+        }
+        Builtin::RegexpMatch | Builtin::RegexpValid => {
+            if !all_args(deferred_stringish) {
+                return None;
+            }
+            Value::Type(TypeKind::Bool)
+        }
+        Builtin::RegexpFind | Builtin::RegexpReplaceAll | Builtin::RegexpQuoteMeta => {
+            if !all_args(deferred_stringish) {
+                return None;
+            }
+            Value::Type(TypeKind::String)
+        }
+        Builtin::RegexpFindAll => {
+            if !all_args(deferred_stringish) {
+                return None;
+            }
+            Value::OpenList(Some(Box::new(Value::Type(TypeKind::String))))
+        }
         Builtin::MathAbs
         | Builtin::MathFloor
         | Builtin::MathCeil
@@ -6864,28 +6997,110 @@ fn deferred_builtin_value(builtin: Builtin) -> Option<Value> {
         | Builtin::MathSqrt
         | Builtin::MathPow
         | Builtin::MathExp
-        | Builtin::MathLog => Value::Type(TypeKind::Number),
+        | Builtin::MathLog => {
+            if !all_args(deferred_numberish) {
+                return None;
+            }
+            Value::Type(TypeKind::Number)
+        }
         _ => return None,
     })
 }
 
+fn deferred_unknown(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Bottom | Value::Recursive(_) | Value::Deferred(_, _)
+    )
+}
+
+fn deferred_stringish(value: &Value) -> bool {
+    matches!(value, Value::String(_) | Value::Type(TypeKind::String)) || deferred_unknown(value)
+}
+
+fn deferred_bytesish(value: &Value) -> bool {
+    matches!(value, Value::Bytes(_) | Value::Type(TypeKind::Bytes)) || deferred_unknown(value)
+}
+
+fn deferred_listish(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::List(_) | Value::OpenList(_) | Value::OpenListPrefix(..)
+    ) || deferred_unknown(value)
+}
+
+fn deferred_structish(value: &Value) -> bool {
+    matches!(value, Value::Struct(_) | Value::Definition { .. }) || deferred_unknown(value)
+}
+
+fn deferred_numberish(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Int(_)
+            | Value::BigInt(_)
+            | Value::Float(_)
+            | Value::Type(TypeKind::Int | TypeKind::Float | TypeKind::Number)
+    ) || deferred_unknown(value)
+}
+
+fn deferred_boolish(value: &Value) -> bool {
+    matches!(value, Value::Bool(_) | Value::Type(TypeKind::Bool)) || deferred_unknown(value)
+}
+
+fn deferred_intish(value: &Value) -> bool {
+    matches!(value, Value::Int(_) | Value::Type(TypeKind::Int)) || deferred_unknown(value)
+}
+
+fn deferred_repeatable(value: &Value) -> bool {
+    deferred_stringish(value) || deferred_bytesish(value)
+}
+
 /// A typed placeholder for a binary operator over pending task outputs.
-fn deferred_binary_value(op: &BinOp, left: &Value, right: &Value) -> Value {
-    let stringish =
+///
+/// Returns `None` when the known operand shapes cannot satisfy the operator,
+/// so the caller falls through to a concrete type error before any producer
+/// task runs.
+fn deferred_binary_value(op: &BinOp, left: &Value, right: &Value) -> Option<Value> {
+    // A disjunction (for example the `bytes | string` body of an HTTP
+    // response) only narrows after injection; keep the whole expression
+    // pending instead of committing to one alternative.
+    if matches!(left, Value::Disjunction(_, _)) || matches!(right, Value::Disjunction(_, _)) {
+        return Some(Value::Bottom);
+    }
+    let explicit_string =
         |value: &Value| matches!(value, Value::String(_) | Value::Type(TypeKind::String));
-    let bytesish = |value: &Value| matches!(value, Value::Bytes(_) | Value::Type(TypeKind::Bytes));
+    let explicit_bytes =
+        |value: &Value| matches!(value, Value::Bytes(_) | Value::Type(TypeKind::Bytes));
+    let stringish = |value: &Value| explicit_string(value) || deferred_unknown(value);
+    let bytesish = |value: &Value| explicit_bytes(value) || deferred_unknown(value);
     match op {
-        BinOp::Add if stringish(left) || stringish(right) => Value::Type(TypeKind::String),
-        BinOp::Add if bytesish(left) || bytesish(right) => Value::Type(TypeKind::Bytes),
-        BinOp::Eq
-        | BinOp::Ne
-        | BinOp::Lt
-        | BinOp::Le
-        | BinOp::Gt
-        | BinOp::Ge
-        | BinOp::And
-        | BinOp::Or => Value::Type(TypeKind::Bool),
-        _ => Value::Type(TypeKind::Number),
+        BinOp::Add
+            if (explicit_string(left) && explicit_bytes(right))
+                || (explicit_bytes(left) && explicit_string(right)) =>
+        {
+            Some(Value::Bottom)
+        }
+        BinOp::Add if stringish(left) && stringish(right) => Some(Value::Type(TypeKind::String)),
+        BinOp::Add if bytesish(left) && bytesish(right) => Some(Value::Type(TypeKind::Bytes)),
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+            if deferred_numberish(left) && deferred_numberish(right) =>
+        {
+            Some(Value::Type(TypeKind::Number))
+        }
+        // CUE supports string and bytes repetition (`"ab" * 2`, `'ab' * 3`).
+        // The concrete result type is known only after injection, so keep the
+        // expression pending as `Bottom`.
+        BinOp::Mul if deferred_repeatable(left) && deferred_intish(right) => Some(Value::Bottom),
+        BinOp::Mul if deferred_intish(left) && deferred_repeatable(right) => Some(Value::Bottom),
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            Some(Value::Type(TypeKind::Bool))
+        }
+        BinOp::And | BinOp::Or if deferred_boolish(left) => {
+            // A pending left operand may short-circuit after injection, so the
+            // right operand is not validated until then (`run.success || 1`).
+            Some(Value::Type(TypeKind::Bool))
+        }
+        _ => None,
     }
 }
 
