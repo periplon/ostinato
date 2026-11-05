@@ -7609,6 +7609,54 @@ fn optional_definition_aliases_are_not_materialized() {
 }
 
 #[test]
+fn optional_disjunction_alternatives_are_unavailable() {
+    let source = r#"
+package demo
+#E: {n: int, m: n + 1}
+#P: {cfg?: {n: int}, ls?: [int]}
+#A?: #E
+#B: #A
+x?: #E
+let L = #A
+def:     #A | {n: 1}
+field:   x | {n: 2}
+multi:   #A | #A | {n: 3}
+alias:   #B | {n: 4}
+structs: #P.cfg | {n: 5}
+lists:   #P.ls | [6]
+default: #A | *{n: 7}
+both:    #A | {n: "s"}
+via_let: L | {n: 8}
+params: {p: #A | {n: 9}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse optional disjunction");
+    let value = ostinato_lang::eval_file(&file).expect("eval optional disjunction");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["def"], serde_json::json!({"n": 1}));
+    assert_eq!(json["field"], serde_json::json!({"n": 2}));
+    assert_eq!(json["multi"], serde_json::json!({"n": 3}));
+    assert_eq!(json["alias"], serde_json::json!({"n": 4}));
+    assert_eq!(json["structs"], serde_json::json!({"n": 5}));
+    assert_eq!(json["lists"], serde_json::json!([6]));
+    assert_eq!(json["default"], serde_json::json!({"n": 7}));
+    assert_eq!(json["both"], serde_json::json!({"n": "s"}));
+    assert_eq!(json["via_let"], serde_json::json!({"n": 8}));
+    assert_eq!(json["params"]["p"], serde_json::json!({"n": 9}));
+
+    for source in [
+        "package demo\n#E: {n: int, m: n + 1}\n#A?: #E\nx: #A\n",
+        "package demo\n#E: {n: int, m: n + 1}\n#A?: #E\n#B?: #E\nx: #A | #B\n",
+        "package demo\n#E: {n: int, m: n + 1}\n#A?: #E\ny: (#A | {n: 6}) & {n: 7}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse invalid optional disjunction");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "disjunction without available alternatives must fail: {source:?}"
+        );
+    }
+}
+
+#[test]
 fn arbitrary_precision_integer_literals_keep_exact_values() {
     let source = r#"
 package demo

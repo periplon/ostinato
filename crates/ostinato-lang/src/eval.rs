@@ -4709,12 +4709,19 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             let mut alternatives = Vec::new();
             let mut direct = Vec::new();
             let mut inherited = Vec::new();
+            let mut optional_error = None;
             for alternative in ast_alternatives {
                 match alternative {
                     Expr::Default(inner, _) => {
                         let value = match eval_expr(inner, frame) {
                             Ok(value) => value,
                             Err(err) if err.is_conflict() => continue,
+                            Err(err) if is_optional_incomplete_error(&err) => {
+                                if optional_error.is_none() {
+                                    optional_error = Some(err);
+                                }
+                                continue;
+                            }
                             Err(err) => return Err(err),
                         };
                         collect_disjunction_value(
@@ -4729,6 +4736,12 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         let value = match eval_expr(other, frame) {
                             Ok(value) => value,
                             Err(err) if err.is_conflict() => continue,
+                            Err(err) if is_optional_incomplete_error(&err) => {
+                                if optional_error.is_none() {
+                                    optional_error = Some(err);
+                                }
+                                continue;
+                            }
                             Err(err) => return Err(err),
                         };
                         let mode = if matches!(value, Value::Disjunction(_, _)) {
@@ -4747,6 +4760,9 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 }
             }
             if alternatives.is_empty() {
+                if let Some(err) = optional_error {
+                    return Err(err);
+                }
                 return Err(LangError::eval(span.line, span.col, "empty disjunction"));
             }
             let defaults = if direct.is_empty() { inherited } else { direct };
