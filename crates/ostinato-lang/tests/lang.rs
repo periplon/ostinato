@@ -6766,19 +6766,295 @@ defaulted: #A & {n: *4 | int}
         "unmaterialized optional references must still fail"
     );
 
+    let compound = r#"
+package demo
+#E: {a?: int, v: a}
+#P: {ls?: [[{a?: int, v: a}]], e?: #E}
+list_case: #P & {ls: [[{a: 2}]]}
+def_case: #P & {e: {a: 2}}
+#N: {cfg: {a?: int, v: a}}
+nested_case: #N & {cfg: {a: 2}}
+#L: {xs?: [int, int], sum: xs[0] + xs[1]}
+list_sum: #L & {xs: [4, 5]}
+#T: {cfg?: {port: int, url: "http://localhost:\(port)"}}
+dependent_struct: #T & {cfg: {port: 8080}}
+"#;
+    let file = ostinato_lang::parse(compound).expect("parse compound optional-dependent fields");
+    let value = ostinato_lang::eval_file(&file).expect("eval compound optional-dependent fields");
+    let json = value.to_json().expect("json");
+    assert_eq!(
+        json["list_case"]["ls"],
+        serde_json::json!([[{"a": 2, "v": 2}]])
+    );
+    assert_eq!(json["def_case"]["e"], serde_json::json!({"a": 2, "v": 2}));
+    assert_eq!(
+        json["nested_case"]["cfg"],
+        serde_json::json!({"a": 2, "v": 2})
+    );
+    assert_eq!(json["list_sum"]["xs"], serde_json::json!([4, 5]));
+    assert_eq!(json["list_sum"]["sum"], 9);
+    assert_eq!(
+        json["dependent_struct"]["cfg"],
+        serde_json::json!({"port": 8080, "url": "http://localhost:8080"})
+    );
+
+    let params = r#"
+package demo
+#P: {name?: string, greeting: "Hello \(name)"}
+params: #P & {name: "Alice"}
+workflow: {name: "\(params.greeting)", steps: {s: {kind: "noop"}}}
+"#;
+    let file = ostinato_lang::parse(params).expect("parse definition-backed params");
+    let value = ostinato_lang::eval_file(&file).expect("eval definition-backed params");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["params"]["name"], "Alice");
+    assert_eq!(json["params"]["greeting"], "Hello Alice");
+    assert_eq!(json["workflow"]["name"], "Hello Alice");
+}
+
+#[test]
+fn reusable_non_definition_bases_resolve_dependent_optionals() {
+    let source = r#"
+package demo
+let base = {b?: int, c: b}
+_base: {b?: int, c: b}
+#A: base & {b: 3}
+#B: _base & {b: 4}
+let_case: #A
+hidden_case: #B
+concrete: #A & {c: 3}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse reusable bases");
+    let value = ostinato_lang::eval_file(&file).expect("eval reusable bases");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["let_case"], serde_json::json!({"b": 3, "c": 3}));
+    assert_eq!(json["hidden_case"], serde_json::json!({"b": 4, "c": 4}));
+    assert_eq!(json["concrete"], serde_json::json!({"b": 3, "c": 3}));
+}
+
+#[test]
+fn compound_optional_edges_match_cue() {
+    let source = r#"
+package demo
+#P: {a?: int, b: a + 1}
+let base = #P
+let struct_base = {cfg?: {a?: int, v: a}}
+#A: struct_base & {cfg: {a: 3}}
+let_definition: base & {a: 2}
+let_struct: #A
+#Absent: {cfg?: {a: int, b: a + 1}}
+absent: #Absent & {}
+#PC: {cfg?: {a: int, b: a + 1}, v: cfg.b}
+compound: #PC & {cfg: {a: 2}}
+#N: {cfg: {a?: int, v: a}}
+nested_required: #N & {cfg: {a: 2}}
+#E: {a?: int, v: a}
+#PD: {e?: #E, w: e.v}
+definition: #PD & {e: {a: 2}}
+#PL: {ls?: [[{a?: int, v: a}]]}
+list: #PL & {ls: [[{a: 2}]]}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse compound edges");
+    let value = ostinato_lang::eval_file(&file).expect("eval compound edges");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["let_definition"], serde_json::json!({"a": 2, "b": 3}));
+    assert_eq!(
+        json["let_struct"],
+        serde_json::json!({"cfg": {"a": 3, "v": 3}})
+    );
+    assert_eq!(json["absent"], serde_json::json!({}));
+    assert_eq!(
+        json["compound"],
+        serde_json::json!({"cfg": {"a": 2, "b": 3}, "v": 3})
+    );
+    assert_eq!(
+        json["nested_required"],
+        serde_json::json!({"cfg": {"a": 2, "v": 2}})
+    );
+    assert_eq!(
+        json["definition"],
+        serde_json::json!({"e": {"a": 2, "v": 2}, "w": 2})
+    );
+    assert_eq!(
+        json["list"],
+        serde_json::json!({"ls": [[{"a": 2, "v": 2}]]})
+    );
+
     for source in [
-        "package demo\n#P: {ls?: [[{a?: int, v: a}]]}\nx: #P & {ls: [[{a: 2}]]}\n",
-        "package demo\n#E: {a?: int, v: a}\n#P: {e?: #E}\nx: #P & {e: {a: 2}}\n",
-        "package demo\n#N: {cfg: {a?: int, v: a}}\nx: #N & {cfg: {a: 2}}\n",
-        "package demo\n#L: {xs?: [int, int], sum: xs[0] + xs[1]}\nx: #L & {xs: [4, 5]}\n",
-        "package demo\n#P: {name?: string, greeting: \"Hello \\(name)\"}\nparams: #P & {name: \"Alice\"}\n",
+        "package demo\n#P: {a: int, v: #P.a + 1}\nx: #P & {a: 2}\n",
+        "package demo\n#P: {cfg?: {a?: int, v: #P.cfg.a + 1}}\nx: #P & {cfg: {a: 2}}\n",
+        "package demo\n#P: {cfg?: {a: int, b: a + 1}, v: cfg.b}\nx: #P & {}\n",
+        "package demo\n#P: {cfg?: {a: int}}\nx: #P & {v: cfg}\n",
+        "package demo\n#P: {cfg?: {a: int}}\nx: #P & {v: #P.cfg.a}\n",
+        "package demo\n#P: {cfg?: {a: int}}\nx: #P & {cfg: {a: \"s\"}}\n",
+        "package demo\n#P: {xs?: [int, int]}\nx: #P & {xs: [1, 2, 3]}\n",
+        "package demo\n#P: {xs?: [int, int]}\nx: #P & {xs: [1, \"s\"]}\n",
     ] {
-        let file = ostinato_lang::parse(source).expect("parse");
+        let file = ostinato_lang::parse(source).expect("parse rejected compound edge");
         assert!(
             ostinato_lang::eval_file(&file).is_err(),
-            "compound optional-dependent forms remain documented limits: {source:?}"
+            "compound optional edge must reject: {source:?}"
         );
     }
+
+    let eval_params = |source: &str| {
+        let file = ostinato_lang::parse(source).expect("parse params edge");
+        let value = ostinato_lang::eval_file(&file).expect("eval params edge");
+        value.to_json().expect("json")["params"].clone()
+    };
+    assert_eq!(
+        eval_params("package demo\n#P: {n: *2 | int, m: n * 2}\nparams: #P & {n: 5}\n"),
+        serde_json::json!({"n": 5, "m": 10})
+    );
+    assert_eq!(
+        eval_params("package demo\n#P: {n: *2 | int, m: n * 2}\nparams: #P\n"),
+        serde_json::json!({"n": 2, "m": 4})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {cfg?: {a: int, b: a + 1}, v: cfg.b}\nparams: #P & {cfg: {a: 2}}\n"
+        ),
+        serde_json::json!({"cfg": {"a": 2, "b": 3}, "v": 3})
+    );
+    assert_eq!(
+        eval_params("package demo\n#N: {cfg: {a?: int, v: a}}\nparams: #N & {cfg: {a: 2}}\n"),
+        serde_json::json!({"cfg": {"a": 2, "v": 2}})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#E: {a?: int, v: a}\n#P: {e?: #E, w: e.v}\nparams: #P & {e: {a: 2}}\n"
+        ),
+        serde_json::json!({"e": {"a": 2, "v": 2}, "w": 2})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {ls?: [[{a?: int, v: a}]]}\nparams: #P & {ls: [[{a: 2}]]}\n"
+        ),
+        serde_json::json!({"ls": [[{"a": 2, "v": 2}]]})
+    );
+}
+
+#[test]
+fn nested_defaults_and_let_injection_match_cue() {
+    let eval_params = |source: &str| {
+        let file = ostinato_lang::parse(source).expect("parse nested default params");
+        let value = ostinato_lang::eval_file(&file).expect("eval nested default params");
+        value.to_json().expect("json")["params"].clone()
+    };
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {cfg?: {n: *2 | int, m: n * 3}, v: cfg.m}\nparams: #P & {cfg: {n: 5}}\n"
+        ),
+        serde_json::json!({"cfg": {"n": 5, "m": 15}, "v": 15})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {cfg: {n: *2 | int, m: n * 3}, v: cfg.m}\nparams: #P & {cfg: {n: 5}}\n"
+        ),
+        serde_json::json!({"cfg": {"n": 5, "m": 15}, "v": 15})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {e?: #E, v: e.m}\nparams: #P & {e: {n: 5}}\n"
+        ),
+        serde_json::json!({"e": {"n": 5, "m": 15}, "v": 15})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {ls?: [{n: *2 | int, m: n * 3}], v: ls[0].m}\nparams: #P & {ls: [{n: 5}]}\n"
+        ),
+        serde_json::json!({"ls": [{"n": 5, "m": 15}], "v": 15})
+    );
+
+    let source = r#"
+package demo
+#P: {a?: int, b: a + 1}
+let base = #P & {}
+let plain = (#P)
+x: base & {a: 2}
+y: plain & {a: 4}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse injected let bases");
+    let value = ostinato_lang::eval_file(&file).expect("eval injected let bases");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"], serde_json::json!({"a": 2, "b": 3}));
+    assert_eq!(json["y"], serde_json::json!({"a": 4, "b": 5}));
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {a?: int, b: a + 1}\nlet base = #P\nparams: base & {a: 2}\n"
+        ),
+        serde_json::json!({"a": 2, "b": 3})
+    );
+
+    let hidden = "package demo\n_h: 1 + int\nx: 1\n";
+    let file = ostinato_lang::parse(hidden).expect("parse hidden operation error");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "hidden operation errors must not be skipped"
+    );
+    for source in [
+        "package demo\n_h: int\nx: 1\n",
+        "package demo\n_h: {a?: int, c: a}\nx: 1\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse incomplete hidden");
+        assert!(
+            ostinato_lang::eval_file(&file).is_ok(),
+            "incomplete hidden fields are allowed: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn nested_definitions_inside_params_literals_match_cue() {
+    let eval_params = |source: &str| {
+        let file = ostinato_lang::parse(source).expect("parse nested definition params");
+        let value = ostinato_lang::eval_file(&file).expect("eval nested definition params");
+        value.to_json().expect("json")["params"].clone()
+    };
+    let cases = [
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {ls?: [#E], v: ls[0].m}\nparams: #P & {ls: [{n: 4}]}\n",
+            serde_json::json!({"ls": [{"n": 4, "m": 12}], "v": 12}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {c?: {e: #E}, v: c.e.m}\nparams: #P & {c: {e: {n: 4}}}\n",
+            serde_json::json!({"c": {"e": {"n": 4, "m": 12}}, "v": 12}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {ls?: [#E, #E], v: ls[0].m + ls[1].m}\nparams: #P & {ls: [{n: 4}, {n: 5}]}\n",
+            serde_json::json!({"ls": [{"n": 4, "m": 12}, {"n": 5, "m": 15}], "v": 27}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {ls?: [[#E]], v: ls[0][0].m}\nparams: #P & {ls: [[{n: 4}]]}\n",
+            serde_json::json!({"ls": [[{"n": 4, "m": 12}]], "v": 12}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {ls?: [int, #E], v: ls[1].m}\nparams: #P & {ls: [7, {n: 4}]}\n",
+            serde_json::json!({"ls": [7, {"n": 4, "m": 12}], "v": 12}),
+        ),
+        (
+            "package demo\nlet base = {n: *2 | int, m: n * 3}\n#P: {ls?: [base], v: ls[0].m}\nparams: #P & {ls: [{n: 4}]}\n",
+            serde_json::json!({"ls": [{"n": 4, "m": 12}], "v": 12}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {cfg?: {inner: {e: #E}}, v: cfg.inner.e.m}\nparams: #P & {cfg: {inner: {e: {n: 4}}}}\n",
+            serde_json::json!({"cfg": {"inner": {"e": {"n": 4, "m": 12}}}, "v": 12}),
+        ),
+        (
+            "package demo\n#E: {n: *2 | int, m: n * 3}\nlet cfg = {n: 4}\n#P: {ls?: [#E], v: ls[0].m}\nparams: #P & {ls: [cfg]}\n",
+            serde_json::json!({"ls": [{"n": 4, "m": 12}], "v": 12}),
+        ),
+    ];
+    for (source, expected) in cases {
+        assert_eq!(eval_params(source), expected, "source: {source}");
+    }
+
+    let closed = "package demo\n#E: {n: *2 | int, m: n * 3}\nlet cfg = {n: 4}\n#P: {ls?: [cfg], v: ls[0].m}\nparams: #P & {ls: [#E]}\n";
+    let file = ostinato_lang::parse(closed).expect("parse closed nested definition params");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "closed nested definition must reject extra defaulted fields"
+    );
 }
 
 #[test]

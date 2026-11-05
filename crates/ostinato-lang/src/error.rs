@@ -22,6 +22,14 @@ pub enum LangError {
         col: u32,
         message: String,
     },
+    /// A required expression referenced an optional field that has not been
+    /// materialized by unification yet.
+    #[error("evaluation error at {line}:{col}: {message}")]
+    IncompleteOptional {
+        line: u32,
+        col: u32,
+        message: String,
+    },
     #[error("workflow error: {0}")]
     Workflow(String),
     #[error("invalid condition `{expr}`: {message}")]
@@ -57,8 +65,21 @@ impl LangError {
         }
     }
 
+    pub(crate) fn incomplete_optional(line: u32, col: u32, message: impl Into<String>) -> Self {
+        Self::IncompleteOptional {
+            line,
+            col,
+            message: message.into(),
+        }
+    }
+
     #[must_use]
     pub fn is_conflict(&self) -> bool {
         matches!(self, Self::Conflict { .. })
+    }
+
+    #[must_use]
+    pub(crate) fn is_incomplete_optional(&self) -> bool {
+        matches!(self, Self::IncompleteOptional { .. })
     }
 }
