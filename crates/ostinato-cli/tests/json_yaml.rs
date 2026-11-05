@@ -980,11 +980,20 @@ fn yaml_numeric_underscore_imports_match_cue() {
                 "-f",
             ],
         );
+        // Direct YAML export is the CUE numeric oracle here. `cue import`
+        // formats `1._5` as `1.0_5` (a CUE import formatting bug), while
+        // `cue export file.yaml` returns the correct 1.5.
+        let direct = run_cue(
+            &cue_bin,
+            directory.path(),
+            &["export", input.to_str().expect("input"), "--out", "json"],
+        );
         assert_eq!(
             cue_export_json(&cue_bin, directory.path(), &ours),
-            cue_export_json(&cue_bin, directory.path(), &theirs),
+            serde_json::from_slice::<Value>(&direct.stdout).expect("direct json"),
             "{name}"
         );
+        let _ = theirs;
     }
     for text in ["a: 1_\n", "a: 1__0\n", "a: 0_1\n"] {
         let input = directory.path().join("bad.yaml");
@@ -1382,4 +1391,292 @@ fn force_preserves_existing_output_permissions() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o640);
+}
+
+#[test]
+fn numeric_equality_is_used_for_export_zip_and_merge() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let first = directory.path().join("first.yaml");
+    let second = directory.path().join("second.json");
+    write(&first, "n: -0\nm: 1e2\np: 0e0\nq: 0.1\n");
+    write(&second, r#"{"n":0,"m":100.0,"p":0.0,"q":0.10}"#);
+    let args = [
+        "export",
+        first.to_str().expect("first"),
+        second.to_str().expect("second"),
+        "--out",
+        "json",
+    ];
+    let direct = run_cue(
+        &cue_bin,
+        directory.path(),
+        &[
+            "export",
+            first.to_str().expect("first"),
+            second.to_str().expect("second"),
+            "--out",
+            "json",
+        ],
+    );
+    assert!(
+        direct.status.success(),
+        "{}",
+        String::from_utf8_lossy(&direct.stderr)
+    );
+    let expected: Value = serde_json::from_slice(&direct.stdout).expect("cue json");
+    let output = ost(&args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(json_numeric_eq(
+        &serde_json::from_slice::<Value>(&output.stdout).expect("json"),
+        &expected
+    ));
+
+    let output = ost(&[
+        "export",
+        first.to_str().expect("first"),
+        second.to_str().expect("second"),
+        "--list",
+        "--out",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected = run_cue(
+        &cue_bin,
+        directory.path(),
+        &[
+            "export",
+            first.to_str().expect("first"),
+            second.to_str().expect("second"),
+            "--list",
+            "--out",
+            "json",
+        ],
+    );
+    assert!(json_numeric_eq(
+        &serde_json::from_slice::<Value>(&output.stdout).expect("json"),
+        &serde_json::from_slice::<Value>(&expected.stdout).expect("cue json")
+    ));
+
+    let merged = directory.path().join("merged.cue");
+    let output = ost(&[
+        "import",
+        first.to_str().expect("first"),
+        second.to_str().expect("second"),
+        "--merge",
+        "-o",
+        merged.to_str().expect("merged"),
+        "--force",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(json_numeric_eq(
+        &cue_export_json(&cue_bin, directory.path(), &merged),
+        &serde_json::json!({"n": -0.0, "m": 1e2, "p": 0e0, "q": 0.1})
+    ));
+}
+
+fn json_numeric_eq(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => {
+            left.as_f64()
+                .zip(right.as_f64())
+                .is_some_and(|(left, right)| left == right)
+                || left == right
+        }
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| json_numeric_eq(left, right))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, left)| {
+                    right
+                        .get(key)
+                        .is_some_and(|right| json_numeric_eq(left, right))
+                })
+        }
+        _ => left == right,
+    }
+}
+
+#[test]
+fn numeric_equality_does_not_unify_int_with_float() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(&directory.path().join("one.json"), r#"{"n":1}"#);
+    write(&directory.path().join("two.json"), r#"{"n":1.0}"#);
+    let output = ost(&[
+        "export",
+        directory.path().join("one.json").to_str().expect("one"),
+        directory.path().join("two.json").to_str().expect("two"),
+        "--out",
+        "json",
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("conflicting"));
+}
+
+#[test]
+fn yaml_numeric_export_and_input_match_cue() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data = directory.path().join("numbers.yaml");
+    write(
+        &data,
+        "a: 1._5\nb: 1._50\nc: 1e_5\nd: 0x_1\ne: 1e400\nf: 1..5\ng: ._5\n",
+    );
+    let direct = run_cue(
+        &cue_bin,
+        directory.path(),
+        &["export", data.to_str().expect("data"), "--out", "json"],
+    );
+    assert!(
+        direct.status.success(),
+        "{}",
+        String::from_utf8_lossy(&direct.stderr)
+    );
+    let expected: Value = serde_json::from_slice(&direct.stdout).expect("cue json");
+
+    let output = ost(&["export", data.to_str().expect("data"), "--out", "json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).expect("json"),
+        expected
+    );
+
+    let workflow = directory.path().join("wf.cue");
+    write(&workflow, "package demo\nroot: string | *\"ok\"\n");
+    let output = ost(&[
+        "export",
+        workflow.to_str().expect("workflow"),
+        "--input",
+        data.to_str().expect("data"),
+        "--out",
+        "json",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let oracle = run_cue(
+        &cue_bin,
+        directory.path(),
+        &[
+            "export",
+            workflow.to_str().expect("workflow"),
+            data.to_str().expect("data"),
+            "--out",
+            "json",
+        ],
+    );
+    assert!(
+        oracle.status.success(),
+        "{}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).expect("json"),
+        serde_json::from_slice::<Value>(&oracle.stdout).expect("cue json")
+    );
+
+    for text in ["v: 01.5\n", "v: 00.5\n"] {
+        let bad = directory.path().join("bad.yaml");
+        write(&bad, text);
+        let output = ost(&["export", bad.to_str().expect("bad"), "--out", "json"]);
+        assert!(!output.status.success(), "{text}");
+    }
+}
+
+#[test]
+fn tagged_keys_match_cue_raw_numeric_spelling() {
+    let Some(cue_bin) = cue_bin() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("tagged.yaml");
+    write(&input, "!!int 0x10: a\n!!float 1e2: b\n");
+    let ours = directory.path().join("ours.cue");
+    let output = ost(&[
+        "import",
+        input.to_str().expect("input"),
+        "-o",
+        ours.to_str().expect("ours"),
+        "--force",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        cue_export_json(&cue_bin, directory.path(), &ours),
+        serde_json::json!({"0x10": "a", "1e2": "b"})
+    );
+}
+
+#[cfg(unix)]
+fn fs_case_insensitive(directory: &Path) -> bool {
+    use std::fs::OpenOptions;
+    let probe = directory.join(".case-probe-Rx");
+    let Ok(file) = OpenOptions::new().write(true).create_new(true).open(&probe) else {
+        return false;
+    };
+    let alternate = directory.join(".CASE-PROBE-rX");
+    let insensitive = std::fs::metadata(&alternate).is_ok();
+    drop(file);
+    let _ = std::fs::remove_file(&probe);
+    insensitive
+}
+
+#[cfg(unix)]
+#[test]
+fn force_refuses_case_insensitive_input_aliases() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    if !fs_case_insensitive(directory.path()) {
+        eprintln!("skipping: filesystem is case-sensitive");
+        return;
+    }
+    let data = directory.path().join("data.json");
+    write(&data, r#"{"a":1}"#);
+    let output = ost_in(
+        directory.path(),
+        &["export", "data.json", "-o", "DATA.JSON", "--force"],
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("one of the inputs"));
+    assert_eq!(std::fs::read_to_string(&data).expect("data"), r#"{"a":1}"#);
+
+    write(&directory.path().join("X.json"), r#"{"a":1}"#);
+    write(&directory.path().join("x.yaml"), "b: 2\n");
+    let output = ost_in(directory.path(), &["import", "X.json", "x.yaml", "--force"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("same output"));
+    assert!(!directory.path().join("X.cue").exists());
+    assert!(!directory.path().join("x.cue").exists());
 }
