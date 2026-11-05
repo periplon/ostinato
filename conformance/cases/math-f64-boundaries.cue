@@ -6,6 +6,8 @@ params: {
 	// inverse-hyperbolic repro/boundary values
 	asinh_repro: math.Asinh(-0.4235484776947125)
 	acosh_repro: math.Acosh(1.0872864601667336)
+	acosh_repro_2ulp_a: math.Acosh(1.3160734252891575)
+	acosh_repro_2ulp_b: math.Acosh(1.0991742782521827)
 	atanh_pos_half: math.Atanh(0.5)
 	atanh_neg_half: math.Atanh(-0.5)
 	atanh_repro: math.Atanh(-0.7590061750891017)

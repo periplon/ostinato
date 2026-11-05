@@ -739,10 +739,11 @@ pub(crate) fn acosh(x: f64) -> f64 {
         return log(x) + LN2;
     }
     if x > 2.0 {
-        return log(2.0 * x - 1.0 / (x + (x * x - 1.0).sqrt()));
+        let root = x.mul_add(x, -1.0).sqrt();
+        return log(2.0f64.mul_add(x, -(1.0 / (x + root))));
     }
     let t = x - 1.0;
-    log1p(t + (2.0 * t + t * t).sqrt())
+    log1p(t + t.mul_add(t, 2.0 * t).sqrt())
 }
 
 /// Go's `math.Atanh`.
