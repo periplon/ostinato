@@ -1684,6 +1684,7 @@ pub fn run_tool_command_paths(
         }
     }
 
+    apply_os_value_schema(&mut combined.items, command_name, &imports);
     let task_items = command_task_items(&combined.items, command_name)?;
     let probe =
         eval_file_with_imports_mode_allow_incomplete(&combined, &imports, &injected, false)?;
@@ -2346,6 +2347,180 @@ fn tool_module(path: &str) -> Option<Value> {
         _ => return None,
     }
     Some(Value::Struct(exports))
+}
+
+/// `tool/os`'s `Value` schema: `bool | number | *string | null`.
+fn os_value_schema(include_string_default: bool) -> Expr {
+    let span = Span::default();
+    let bool_ty = Expr::Ident("bool".to_owned(), span);
+    let number_ty = Expr::Ident("number".to_owned(), span);
+    let string = Expr::Ident("string".to_owned(), span);
+    let string_conjunct = if include_string_default {
+        Expr::Default(Box::new(string), span)
+    } else {
+        string
+    };
+    let null = Expr::Null(span);
+    let scalar = Expr::Disjunction(
+        Box::new(Expr::Disjunction(
+            Box::new(bool_ty),
+            Box::new(number_ty),
+            span,
+        )),
+        Box::new(string_conjunct),
+        span,
+    );
+    Expr::Disjunction(Box::new(scalar), Box::new(null), span)
+}
+
+/// CUE resolves a concrete string default (for example `*"d"`) against the
+/// schema's `*string` by keeping the concrete value. Model that by omitting
+/// the schema's type default for such fields.
+fn expr_has_concrete_string_default(expr: &Expr) -> bool {
+    match expr {
+        Expr::Default(inner, _) => matches!(inner.as_ref(), Expr::Str(..)),
+        Expr::Disjunction(left, right, _) | Expr::Unify(left, right, _) => {
+            expr_has_concrete_string_default(left) || expr_has_concrete_string_default(right)
+        }
+        Expr::Paren(inner, _) | Expr::Bound(_, inner, _) => expr_has_concrete_string_default(inner),
+        _ => false,
+    }
+}
+
+fn expr_is_os_env_task(expr: &Expr, imports: &BTreeMap<String, Value>) -> bool {
+    match expr {
+        Expr::Select(..) | Expr::Index(..) => selector_names(expr, None).is_some_and(|path| {
+            let Some((root, rest)) = path.split_first() else {
+                return false;
+            };
+            let Some(module) = imports.get(root) else {
+                return false;
+            };
+            let mut value = module;
+            for field in rest {
+                let Some(next) = value_field(value, field) else {
+                    return false;
+                };
+                value = next;
+            }
+            matches!(
+                value_fields(value).and_then(|fields| fields.get("$id")),
+                Some(Value::String(id))
+                    if matches!(id.as_str(), "tool/os.Getenv" | "tool/os.Environ")
+            )
+        }),
+        Expr::Unify(left, right, _) => {
+            expr_is_os_env_task(left, imports) || expr_is_os_env_task(right, imports)
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            expr_is_os_env_task(inner, imports)
+        }
+        _ => false,
+    }
+}
+
+fn wrap_os_task_fields(expr: &mut Expr) {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                let StructItem::Field(field) = item else {
+                    continue;
+                };
+                let Label::Name(name, _) = &field.label else {
+                    continue;
+                };
+                if name.starts_with('$') {
+                    continue;
+                }
+                let schema = os_value_schema(!expr_has_concrete_string_default(&field.value));
+                let span = field.value.span();
+                field.value = Expr::Unify(Box::new(field.value.clone()), Box::new(schema), span);
+            }
+        }
+        Expr::Unify(left, right, _) => {
+            wrap_os_task_fields(left);
+            wrap_os_task_fields(right);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            wrap_os_task_fields(inner);
+        }
+        _ => {}
+    }
+}
+
+fn apply_os_schema_to_task(expr: &mut Expr, imports: &BTreeMap<String, Value>) {
+    if expr_is_os_env_task(expr, imports) {
+        wrap_os_task_fields(expr);
+    }
+}
+
+fn apply_os_schema_to_command_value(expr: &mut Expr, imports: &BTreeMap<String, Value>) {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                let StructItem::Field(field) = item else {
+                    continue;
+                };
+                apply_os_schema_to_task(&mut field.value, imports);
+            }
+        }
+        Expr::Unify(left, right, _) => {
+            apply_os_schema_to_command_value(left, imports);
+            apply_os_schema_to_command_value(right, imports);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            apply_os_schema_to_command_value(inner, imports);
+        }
+        _ => {}
+    }
+}
+
+/// Apply the real `tool/os.Value` constraint to the selected command's
+/// `Getenv`/`Environ` task fields before evaluation. CUE's schema is a pattern
+/// constraint, but Ostinato evaluates the whole package eagerly; scoping the
+/// constraint to the selected command preserves CUE's per-command behaviour
+/// and its implicit `*string` default for unset environment variables.
+fn apply_os_value_schema(
+    items: &mut [StructItem],
+    command_name: &str,
+    imports: &BTreeMap<String, Value>,
+) {
+    for item in items {
+        let StructItem::Field(field) = item else {
+            continue;
+        };
+        if !matches!(&field.label, Label::Name(name, _) if name == "command") {
+            continue;
+        }
+        apply_os_schema_in_command(&mut field.value, command_name, imports);
+    }
+}
+
+fn apply_os_schema_in_command(
+    expr: &mut Expr,
+    command_name: &str,
+    imports: &BTreeMap<String, Value>,
+) {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                let StructItem::Field(field) = item else {
+                    continue;
+                };
+                if matches!(&field.label, Label::Name(name, _) if name == command_name) {
+                    apply_os_schema_to_command_value(&mut field.value, imports);
+                }
+            }
+        }
+        Expr::Unify(left, right, _) => {
+            apply_os_schema_in_command(left, command_name, imports);
+            apply_os_schema_in_command(right, command_name, imports);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            apply_os_schema_in_command(inner, command_name, imports);
+        }
+        _ => {}
+    }
 }
 
 fn command_task_items(
@@ -8383,22 +8558,28 @@ fn env_value_kinds(value: &Value) -> u8 {
         Value::Type(ostinato_lang::TypeKind::Float) | Value::Float(_) => ENV_FLOAT,
         Value::Type(ostinato_lang::TypeKind::Number) => ENV_NUMBER,
         Value::Bounds(bounds) => {
+            // Bounds are conjuncts: start from the declared type (or the
+            // unbounded `string | bool | number` domain) and intersect every
+            // operand's kind. `!=null` therefore does not add a boolean
+            // alternative; it only removes null from the domain.
             let mut kinds = match bounds.ty {
                 Some(ostinato_lang::TypeKind::String) => ENV_STRING,
                 Some(ostinato_lang::TypeKind::Bool) => ENV_BOOL,
                 Some(ostinato_lang::TypeKind::Int) => ENV_INT,
                 Some(ostinato_lang::TypeKind::Float) => ENV_FLOAT,
                 Some(ostinato_lang::TypeKind::Number) => ENV_NUMBER,
-                Some(ostinato_lang::TypeKind::Bytes) | None => 0,
+                Some(ostinato_lang::TypeKind::Bytes) => ENV_OTHER,
+                None => ENV_STRING | ENV_BOOL | ENV_NUMBER,
             };
             for bound in &bounds.items {
-                kinds |= match &bound.operand {
+                let operand = match &bound.operand {
                     Value::String(_) => ENV_STRING,
                     Value::Bool(_) => ENV_BOOL,
                     Value::Int(_) | Value::BigInt(_) | Value::Float(_) => ENV_NUMBER,
                     Value::Null => ENV_STRING | ENV_BOOL | ENV_NUMBER,
                     other => env_value_kinds(other),
                 };
+                kinds &= operand;
             }
             if kinds == 0 { ENV_OTHER } else { kinds }
         }

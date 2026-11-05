@@ -12885,3 +12885,114 @@ command: {
         assert!(actual_stdout.contains(usage), "{command}: {actual_stdout}");
     }
 }
+
+#[test]
+fn tool_command_os_bounds_intersection_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("os_bounds_intersection_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+command: notnullmatch: {
+	env: os.Getenv & {REV_V: !=null & =~"^a"}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: notnullnonempty: {
+	env: os.Getenv & {REV_V: !=null & != ""}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: notnullnumeric: {
+	env: os.Getenv & {REV_V: !=null & >=1}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+"#,
+    );
+    let run = |implementation: &Path, command: &str, value: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env("REV_V", value)
+            .output()
+            .expect("run command")
+    };
+    for (command, value) in [
+        ("notnullmatch", " a "),
+        ("notnullmatch", "abc"),
+        ("notnullnonempty", "  "),
+        ("notnullnonempty", " a "),
+        ("notnullnumeric", "1"),
+        ("notnullnumeric", " a "),
+    ] {
+        let expected = run(Path::new(&cue), command, value);
+        let actual = run(&bin(), command, value);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{command}={value:?}"
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{command}={value:?}");
+        if expected.status.success() {
+            assert_eq!(actual.stderr, expected.stderr, "{command}={value:?}");
+        }
+    }
+}
+
+#[test]
+fn tool_command_os_value_schema_applies_to_unset_fields() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("os_schema_unset_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+command: getenvalt: {
+	env: os.Getenv & {REV_V: "a" | int}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: getenvtwodef: {
+	env: os.Getenv & {REV_V: *5 | string}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: environalt: {
+	env: os.Environ & {REV_V: "a" | int}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: environtwodef: {
+	env: os.Environ & {REV_V: *5 | string}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+"#,
+    );
+    let run = |implementation: &Path, command: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env_remove("REV_V")
+            .output()
+            .expect("run command")
+    };
+    for command in ["getenvalt", "getenvtwodef", "environalt", "environtwodef"] {
+        let expected = run(Path::new(&cue), command);
+        let actual = run(&bin(), command);
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        if expected.status.success() {
+            assert_eq!(actual.stderr, expected.stderr, "{command}");
+        }
+    }
+}
