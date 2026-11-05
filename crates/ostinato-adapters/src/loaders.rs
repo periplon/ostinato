@@ -1017,28 +1017,66 @@ fn json_type_name(value: &Json) -> &'static str {
     }
 }
 
-/// Run a CUE tool command declared in `*_tool.cue` files.
-///
-/// Implements the `command: <name>: { <task>: tool/exec.Run & {...} }` surface,
-/// including `@tag` injection, `$after` ordering, `cmd` string/argv, `env`,
-/// `dir`, `stdin`, `stdout`/`stderr` capture fields and `mustSucceed`. Tasks
-/// that consume other task outputs and other `tool/...` packages are documented
-/// limits (see `docs/SCOPE.md`).
-///
-/// # Errors
-/// Returns a language or workflow error for unreadable packages, unknown
-/// commands, malformed tasks or unsupported task kinds.
-pub fn run_tool_command(
-    path: &Path,
-    command_name: &str,
-    overrides: &BTreeMap<String, String>,
-) -> Result<i32, ostinato_lang::LangError> {
-    let canonical_path = canonical(path);
-    let files = collect_package_files(&canonical_path, true)?;
-    let source_dir = if canonical_path.is_dir() {
-        canonical_path.clone()
+/// A loaded tool package: the merged syntax, its import values and the
+/// classification used by the task scheduler.
+struct ToolPackage {
+    combined: ostinato_lang::ast::File,
+    source_dir: PathBuf,
+    imports: BTreeMap<String, Value>,
+    non_task_imports: ImportKinds,
+    documented_commands: std::collections::BTreeSet<String>,
+}
+
+/// Command names declared with a preceding doc comment. CUE only applies
+/// `$usage` when the command has documentation.
+fn documented_command_names(text: &str) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let mut documented = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            documented = true;
+            continue;
+        }
+        if trimmed.is_empty() {
+            documented = false;
+            continue;
+        }
+        if documented && let Some(rest) = trimmed.strip_prefix("command:") {
+            let name = rest.trim_start().split(':').next().unwrap_or("").trim();
+            let name = name.trim_matches('"');
+            if !name.is_empty() {
+                names.insert(name.to_owned());
+            }
+        }
+        documented = false;
+    }
+    names
+}
+
+/// Load one or more package instances (directories or `_tool.cue` files) and
+/// merge them the way `cue cmd <name> [inputs...]` does.
+fn load_tool_package(paths: &[PathBuf]) -> Result<ToolPackage, ostinato_lang::LangError> {
+    if paths.is_empty() {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool command requires a package path".to_owned(),
+        ));
+    }
+    let mut canonical_paths: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        let canonical_path = canonical(path);
+        if !canonical_paths.contains(&canonical_path) {
+            canonical_paths.push(canonical_path);
+        }
+    }
+    let first = canonical_paths
+        .first()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("."));
+    let source_dir = if first.is_dir() {
+        first.clone()
     } else {
-        canonical_path
+        first
             .parent()
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
     };
@@ -1047,17 +1085,40 @@ pub fn run_tool_command(
         imports: Vec::new(),
         items: Vec::new(),
     };
-    for (index, file) in files.iter().enumerate() {
-        let text = std::fs::read_to_string(file).map_err(|err| {
-            ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
-        })?;
-        let mut parsed = parse(&text)?;
-        rename_file_locals(&mut parsed, index)?;
-        if combined.package.is_none() {
-            combined.package = parsed.package.clone();
+    let mut package_name: Option<String> = None;
+    let mut documented_commands = std::collections::BTreeSet::new();
+    let mut seen_files = std::collections::BTreeSet::new();
+    let mut index = 0;
+    for path in &canonical_paths {
+        for file in collect_package_files(path, true)? {
+            if !seen_files.insert(file.clone()) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).map_err(|err| {
+                ostinato_lang::LangError::Workflow(format!("cannot read {}: {err}", file.display()))
+            })?;
+            documented_commands.extend(documented_command_names(&text));
+            let mut parsed = parse(&text)?;
+            rename_file_locals(&mut parsed, index)?;
+            index += 1;
+            if let Some(package) = &parsed.package
+                && package != "_"
+            {
+                match &package_name {
+                    Some(existing) if existing != package => {
+                        return Err(ostinato_lang::LangError::Workflow(format!(
+                            "package name \"{package}\" conflicts with previous package name \"{existing}\""
+                        )));
+                    }
+                    _ => package_name = Some(package.clone()),
+                }
+            }
+            if combined.package.is_none() {
+                combined.package = parsed.package.clone();
+            }
+            combined.imports.extend(parsed.imports);
+            combined.items.extend(parsed.items);
         }
-        combined.imports.extend(parsed.imports);
-        combined.items.extend(parsed.items);
     }
 
     let mut imports = BTreeMap::new();
@@ -1097,6 +1158,112 @@ pub fn run_tool_command(
             non_task_imports.task_paths.insert(alias.clone(), paths);
         }
     }
+
+    Ok(ToolPackage {
+        combined,
+        source_dir,
+        imports,
+        non_task_imports,
+        documented_commands,
+    })
+}
+
+/// Metadata surfaced by `$usage`, `$short` and `$long` on a tool command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCommandInfo {
+    pub name: String,
+    pub usage: Option<String>,
+    pub short: Option<String>,
+    pub long: Option<String>,
+}
+
+/// Load the `$usage`/`$short`/`$long` metadata for every command in a tool
+/// package. Matches CUE's command help lookup: `$usage` (or `usage`),
+/// `$short`, and `$long`.
+///
+/// # Errors
+/// Returns a language or workflow error for unreadable packages.
+pub fn tool_command_metadata(
+    paths: &[PathBuf],
+) -> Result<Vec<ToolCommandInfo>, ostinato_lang::LangError> {
+    let package = load_tool_package(paths)?;
+    let injected = BTreeMap::new();
+    let value = eval_file_with_imports_mode_allow_incomplete(
+        &package.combined,
+        &package.imports,
+        &injected,
+        false,
+    )?;
+    let Some(root) = value_fields(&value) else {
+        return Ok(Vec::new());
+    };
+    let Some(command) = root.get("command").and_then(value_fields) else {
+        return Ok(Vec::new());
+    };
+    let mut infos = Vec::new();
+    for (name, value) in command {
+        if name.starts_with('$') {
+            continue;
+        }
+        let Some(fields) = value_fields(value) else {
+            continue;
+        };
+        let lookup = |key: &str| match fields.get(key).map(Value::concretize) {
+            Some(Value::String(text)) => Some(text.clone()),
+            _ => None,
+        };
+        let documented = package.documented_commands.contains(name);
+        infos.push(ToolCommandInfo {
+            name: name.clone(),
+            usage: if documented {
+                lookup("$usage").or_else(|| lookup("usage"))
+            } else {
+                None
+            },
+            short: lookup("$short").or_else(|| if documented { lookup("short") } else { None }),
+            long: lookup("$long").or_else(|| if documented { lookup("long") } else { None }),
+        });
+    }
+    Ok(infos)
+}
+
+/// Run a CUE tool command declared in `*_tool.cue` files.
+///
+/// Implements the `command: <name>: { <task>: tool/exec.Run & {...} }` surface,
+/// including `@tag` injection, `$after` ordering, `cmd` string/argv, `env`,
+/// `dir`, `stdin`, `stdout`/`stderr` capture fields and `mustSucceed`. Tasks
+/// that consume other task outputs and other `tool/...` packages are documented
+/// limits (see `docs/SCOPE.md`).
+///
+/// # Errors
+/// Returns a language or workflow error for unreadable packages, unknown
+/// commands, malformed tasks or unsupported task kinds.
+pub fn run_tool_command(
+    path: &Path,
+    command_name: &str,
+    overrides: &BTreeMap<String, String>,
+) -> Result<i32, ostinato_lang::LangError> {
+    run_tool_command_paths(&[path.to_path_buf()], command_name, overrides)
+}
+
+/// Run a CUE tool command from one or more package instances (the `inputs` of
+/// `cue cmd <name> [inputs...]`).
+///
+/// # Errors
+/// Returns a language or workflow error for unreadable packages, unknown
+/// commands, malformed tasks or unsupported task kinds.
+pub fn run_tool_command_paths(
+    paths: &[PathBuf],
+    command_name: &str,
+    overrides: &BTreeMap<String, String>,
+) -> Result<i32, ostinato_lang::LangError> {
+    let ToolPackage {
+        mut combined,
+        source_dir,
+        mut imports,
+        non_task_imports,
+        ..
+    } = load_tool_package(paths)?;
     ostinato_lang::assign_field_ids(&mut combined);
     sanitize_after_fields(&mut combined.items, &non_task_imports, &imports);
     let tags = ostinato_lang::parameter_tags(&combined)?;
@@ -1758,6 +1925,12 @@ fn tool_module(path: &str) -> Option<Value> {
         "tool/file" => {
             exports.insert("Append".to_owned(), marker("tool/file.Append"));
             exports.insert("Create".to_owned(), marker("tool/file.Create"));
+        }
+        "tool/os" => {
+            exports.insert("Getenv".to_owned(), marker("tool/os.Getenv"));
+            exports.insert("Environ".to_owned(), marker("tool/os.Environ"));
+            exports.insert("Setenv".to_owned(), marker("tool/os.Setenv"));
+            exports.insert("Clearenv".to_owned(), marker("tool/os.Clearenv"));
         }
         _ => return None,
     }
@@ -2497,7 +2670,7 @@ fn collect_output_task_paths<'a>(
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success") {
+            if matches!(field.as_str(), "stdout" | "stderr" | "success") {
                 let local_path = resolved_read_path(
                     base,
                     scopes,
@@ -4409,7 +4582,7 @@ fn scan_package_order_expr(
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success") {
+            if matches!(field.as_str(), "stdout" | "stderr" | "success") {
                 if allow_read
                     && let Some(path) = resolved_read_path(
                         base,
@@ -5253,6 +5426,11 @@ fn output_expr(value: &Value) -> Option<Expr> {
             Span::default(),
         )),
         Value::Bool(value) => Some(Expr::Bool(*value, Span::default())),
+        Value::Int(value) => Some(Expr::Int(*value, Span::default())),
+        Value::BigInt(value) => Some(Expr::BigInt(value.clone(), Span::default())),
+        Value::Float(value) => Some(Expr::Float(value.clone(), Span::default())),
+        Value::Bytes(value) => Some(Expr::Bytes(value.clone(), Span::default())),
+        Value::Null => Some(Expr::Null(Span::default())),
         _ => None,
     }
 }
@@ -5760,7 +5938,7 @@ fn collect_output_refs<'a>(
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success") {
+            if matches!(field.as_str(), "stdout" | "stderr" | "success") {
                 match unwrap_ref_base(base) {
                     Expr::Ident(name, _) => {
                         if names.contains(name)
@@ -6833,7 +7011,7 @@ fn is_direct_output_read(expr: &Expr) -> bool {
     while let Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) = value {
         value = inner;
     }
-    matches!(value, Expr::Select(_, field, _, _) if matches!(field.as_str(), "stdout" | "success"))
+    matches!(value, Expr::Select(_, field, _, _) if matches!(field.as_str(), "stdout" | "stderr" | "success"))
 }
 
 fn alias_operand<'a>(
@@ -6943,7 +7121,7 @@ fn scan_order_expr(
 ) {
     match expr {
         Expr::Select(base, field, _, _) => {
-            if matches!(field.as_str(), "stdout" | "success") {
+            if matches!(field.as_str(), "stdout" | "stderr" | "success") {
                 if allow_read
                     && let Some(path) = resolved_read_path(
                         base,
@@ -7704,9 +7882,83 @@ fn execute_tool_task(
         "tool/cli.Print" => execute_print(task),
         "tool/file.Append" => execute_file(task, package_dir, false),
         "tool/file.Create" => execute_file(task, package_dir, true),
+        "tool/os.Getenv" => execute_os_getenv(task),
+        "tool/os.Environ" => execute_os_environ(task),
         other => Err(ostinato_lang::LangError::Workflow(format!(
             "tool task `{other}` is not implemented"
         ))),
+    }
+}
+
+fn execute_os_getenv(
+    task: &BTreeMap<String, Value>,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let mut outputs = Vec::new();
+    for (name, constraint) in task {
+        if name.starts_with('$') {
+            continue;
+        }
+        match std::env::var_os(name) {
+            Some(raw) => {
+                let value = env_parse(name, &raw.to_string_lossy(), constraint)?;
+                outputs.push((name.clone(), value));
+            }
+            None => outputs.push((name.clone(), Value::Null)),
+        }
+    }
+    Ok(ToolTaskOutcome::Done { outputs })
+}
+
+fn execute_os_environ(
+    task: &BTreeMap<String, Value>,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let mut outputs = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for (name, raw) in std::env::vars_os() {
+        let name = name.to_string_lossy().into_owned();
+        if name.starts_with('$') {
+            continue;
+        }
+        let value = match task.get(&name) {
+            Some(constraint) => env_parse(&name, &raw.to_string_lossy(), constraint)?,
+            None => Value::String(raw.to_string_lossy().into_owned()),
+        };
+        seen.insert(name.clone());
+        outputs.push((name, value));
+    }
+    for name in task.keys() {
+        if name.starts_with('$') || seen.contains(name) {
+            continue;
+        }
+        outputs.push((name.clone(), Value::Null));
+    }
+    Ok(ToolTaskOutcome::Done { outputs })
+}
+
+/// Parse an environment value using the type of the task field that requests
+/// it, matching CUE's `tool/os.Getenv`/`Environ` behaviour for the common
+/// `string`, `bool` and `int` constraints.
+fn env_parse(
+    name: &str,
+    text: &str,
+    constraint: &Value,
+) -> Result<Value, ostinato_lang::LangError> {
+    match constraint {
+        Value::Type(ostinato_lang::TypeKind::Bool) => match text {
+            "true" | "1" => Ok(Value::Bool(true)),
+            "false" | "0" => Ok(Value::Bool(false)),
+            _ => Err(ostinato_lang::LangError::Workflow(format!(
+                "invalid boolean \"{text}\" for injection tag \"{name}\""
+            ))),
+        },
+        Value::Type(ostinato_lang::TypeKind::Int) => {
+            text.parse::<i64>().map(Value::Int).map_err(|_| {
+                ostinato_lang::LangError::Workflow(format!(
+                    "invalid number for injection tag \"{name}\": illegal number start \"{text}\""
+                ))
+            })
+        }
+        _ => Ok(Value::String(text.to_owned())),
     }
 }
 
@@ -8062,11 +8314,6 @@ fn execute_exec(
     let mut child = match process.spawn() {
         Ok(child) => child,
         Err(err) => {
-            if !must_succeed {
-                return Ok(ToolTaskOutcome::Done {
-                    outputs: Vec::new(),
-                });
-            }
             let printable = argv
                 .iter()
                 .map(|arg| format!("{arg:?}"))
@@ -8093,6 +8340,19 @@ fn execute_exec(
             } else {
                 spawn_detail(&err, &argv[0])
             };
+            if !must_succeed {
+                // CUE reports `success: false` and, when stderr is captured,
+                // the spawn error text; stdout, when captured, stays empty.
+                let mut outputs = Vec::new();
+                if capture_stdout {
+                    outputs.push(("stdout".to_owned(), Value::String(String::new())));
+                }
+                if capture_stderr {
+                    outputs.push(("stderr".to_owned(), Value::String(detail)));
+                }
+                outputs.push(("success".to_owned(), Value::Bool(false)));
+                return Ok(ToolTaskOutcome::Done { outputs });
+            }
             eprintln!("task failed: command [{printable}] failed: {detail}");
             return Ok(ToolTaskOutcome::Failed);
         }
@@ -8139,6 +8399,19 @@ fn execute_exec(
             "stdout".to_owned(),
             Value::String(String::from_utf8_lossy(&output.stdout).into_owned()),
         ));
+    }
+    if capture_stderr && !status.success() {
+        // CUE only injects stderr when the command fails. When stdout is not
+        // captured it runs `cmd.Run()`, whose `ExitError` does not carry
+        // stderr, so the injected value is empty.
+        let stderr = if capture_stdout {
+            output.as_ref().map_or_else(String::new, |output| {
+                String::from_utf8_lossy(&output.stderr).into_owned()
+            })
+        } else {
+            String::new()
+        };
+        outputs.push(("stderr".to_owned(), Value::String(stderr)));
     }
     outputs.push(("success".to_owned(), Value::Bool(status.success())));
     Ok(ToolTaskOutcome::Done { outputs })

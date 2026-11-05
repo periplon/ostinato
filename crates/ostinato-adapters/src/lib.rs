@@ -15,7 +15,10 @@ pub mod telemetry;
 pub mod workspace;
 
 pub use clock::{SystemClock, UuidGen};
-pub use loaders::{CueCliLoader, NativeLoader, official_loader, run_tool_command};
+pub use loaders::{
+    CueCliLoader, NativeLoader, ToolCommandInfo, official_loader, run_tool_command,
+    run_tool_command_paths, tool_command_metadata,
+};
 pub use process::{CommandAgent, ProcessExecutor};
 pub use store::SqliteStore;
 pub use telemetry::{TracingTelemetry, init_tracing};

@@ -1886,24 +1886,23 @@ impl<'a> Frame<'a> {
         seen: &mut HashSet<String>,
     ) -> bool {
         match expr {
-            Expr::Select(base, field, _, _) => {
-                if matches!(field.as_str(), "stdout" | "success") {
-                    match unwrap_interp_base(base) {
-                        Expr::Ident(name, _) if allowed.contains(name) => return true,
-                        nested => {
-                            // Nested task declarations (`a: producer: exec.Run`)
-                            // are scheduled under their leaf name.
-                            if selector_leaf_name(nested)
-                                .is_some_and(|leaf| allowed.contains(&leaf))
-                            {
-                                return true;
-                            }
-                            if self
-                                .ident_task_label(nested, &mut HashSet::new())
-                                .is_some_and(|label| allowed.contains(&label))
-                            {
-                                return true;
-                            }
+            Expr::Select(base, _, _, _) => {
+                // Any field of a scheduled task can be a task output: besides
+                // `stdout`/`stderr`/`success`, packages such as
+                // `tool/os.Getenv`/`Environ` export user-named fields.
+                match unwrap_interp_base(base) {
+                    Expr::Ident(name, _) if allowed.contains(name) => return true,
+                    nested => {
+                        // Nested task declarations (`a: producer: exec.Run`)
+                        // are scheduled under their leaf name.
+                        if selector_leaf_name(nested).is_some_and(|leaf| allowed.contains(&leaf)) {
+                            return true;
+                        }
+                        if self
+                            .ident_task_label(nested, &mut HashSet::new())
+                            .is_some_and(|label| allowed.contains(&label))
+                        {
+                            return true;
                         }
                     }
                 }
