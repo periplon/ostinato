@@ -7167,6 +7167,36 @@ fn split_unification_merges_overrides_before_evaluation() {
 }
 
 #[test]
+fn optional_definition_aliases_are_not_materialized() {
+    for source in [
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\nx: #A & {n: 6}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\nx?: #E\ny: x & {n: 6}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\n#B: #A\nx: #B & {n: 6}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\n#B: #A\n#C: #B\nx: #C & {n: 6}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\nx: (#A) & {n: 6}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\nx: #A & {n: 6} & {}\n",
+        "package demo\n#E: {n: *2 | int, m: n * 3}\n#A?: #E\nlet L = #A\ny: L & {n: 6}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse optional alias");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "optional definition aliases must not materialize: {source:?}"
+        );
+    }
+
+    let eval = |source: &str| {
+        let file = ostinato_lang::parse(source).expect("parse required alias");
+        let value = ostinato_lang::eval_file(&file).expect("eval required alias");
+        value.to_json().expect("json")
+    };
+    let chain =
+        eval("package demo\n#E: {n: *2 | int, m: n * 3}\n#A: #E\n#B: #A\n#C: #B\nx: #C & {n: 6}\n");
+    assert_eq!(chain["x"], serde_json::json!({"n": 6, "m": 18}));
+    let split = eval("package demo\n#E: {n: *2 | int, m: n * 3}\n#A: #E\nx: #A & {n: 6} & {}\n");
+    assert_eq!(split["x"], serde_json::json!({"n": 6, "m": 18}));
+}
+
+#[test]
 fn arbitrary_precision_integer_literals_keep_exact_values() {
     let source = r#"
 package demo

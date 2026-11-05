@@ -2807,7 +2807,12 @@ impl<'a> Frame<'a> {
                     return None;
                 }
                 let exprs = if let Some(definition) = self.fields.borrow().get(name) {
-                    definition.exprs.clone()
+                    let optional = definition.optional;
+                    let exprs = definition.exprs.clone();
+                    if optional && !self.optional_is_materialized(name) {
+                        return None;
+                    }
+                    exprs
                 } else if let Some(value) = self.lets.borrow().get(name).cloned() {
                     vec![value]
                 } else if let Some(target) = self.aliases.borrow().get(name).cloned() {
@@ -3450,12 +3455,6 @@ fn eval_definition_with_injections(
                 .get(&key)
                 .map(|definition| definition.exprs.clone())
                 .unwrap_or_default();
-            if exprs.len() == 1
-                && let Expr::Ident(target, _) = strip_expr_parens(&exprs[0])
-                && target != name
-            {
-                return eval_definition_with_injections(current, target, injections, span);
-            }
             let optional = current
                 .fields
                 .borrow()
@@ -3463,6 +3462,12 @@ fn eval_definition_with_injections(
                 .is_some_and(|definition| definition.optional);
             if optional && !current.optional_is_materialized(&key) {
                 return Ok(None);
+            }
+            if exprs.len() == 1
+                && let Expr::Ident(target, _) = strip_expr_parens(&exprs[0])
+                && target != name
+            {
+                return eval_definition_with_injections(current, target, injections, span);
             }
             current.values.borrow_mut().remove(&key);
             let previous = current.next_injections.replace(Some(injections));
