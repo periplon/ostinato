@@ -15,7 +15,11 @@ workflow outside the Rust surface has a supported escape hatch.
 - packages, same-package sibling files, `package _` / header-less files;
 - imports: `strings`, `list`; local modules via `cue.mod`; relative imports;
   module path comments and `@v` suffixes;
-- file-scoped `let`, lazy/forward bindings;
+- file-scoped `let`, lazy/forward bindings; direct/indirect `let` cycles are
+  rejected, while cycles routed through a plain field (`let X = f, f: X`)
+  remain incomplete values like CUE. Split/composed fields and transparent
+  let aliases (for example `let X = f; f: {a: X.b} & {b: 1}`) resolve like
+  CUE; composite/structural cycles remain errors as in CUE;
 - `for`/`if` struct comprehensions, clause sequences (`for ... if ...`,
   nested `for`), dynamic labels, list comprehensions;
 - nested field shorthand, string and bytes literal field labels, **closed
@@ -38,9 +42,17 @@ workflow outside the Rust surface has a supported escape hatch.
   stripping and interpolation continuations;
 - self-selection of a definition's or struct field's own fields
   (`#D: {a: #D.b, b: 1}`, `x: {a: x.b, b: 1}`), including nested and composed
-  definitions;
+  definitions, split composed non-definition literals
+  (`x: {a: x.b} & {b: 1}`, non-literal bases that do not themselves
+  self-select (`let base`/field bases), reversed operands, `x: {a: x.a} & {a: 1}`, quoted and computed labels,
+  top-level cross-dependent and 3-operand chains such as
+  `x: {a: x.b} & {b: 1, c: x.a}`) and fields materialized by the same or a
+  nested comprehension body
+  (`#M: {b?: int, if true {b: 5, y: #M.b}}`); comprehension-generated
+  labels remain reachable through selectors (`x.b`) but are not bare
+  identifiers, matching CUE (`x: {if true {b: 1}, a: b}` is rejected);
 - comprehension-generated definitions (`#D: {if true {#I: 3}, a: #D.#I}`);
-- default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`);
+- default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`), including through definition-valued definitions (`#B: #A & {n: 4}`), recursive definitions (dependents recomputed at every level, including optional/open-list recursive children and required defaulted open lists) and shadowing nested same-name definitions, plus generated declaration merges (`if true {#P: {env: "prod"}}` recomputes `#P.greeting`);
 - optional/open metadata on non-definition struct literals (`base: {b?: int}; #D: base`, `{c: 1, ...}`), including nested/pattern/list forms;
 - arbitrary-precision integer *literals* and arithmetic in CUE's
   34-significant-digit decimal context (add/subtract/multiply round results
@@ -124,13 +136,13 @@ workflow outside the Rust surface has a supported escape hatch.
 | `%` operator | CUE has no `%` operator (so there is no oracle for it); Ostinato keeps exact integer modulo as an extension. Use `math.Mod`/`math.Remainder` for CUE-compatible modulo/remainder |
 | Go float64 last-bit parity | The exposed float64-backed `math` functions match Go's routines for the conformance/tested surface. Rare `math.Asinh`, `math.Acosh` or `math.Atanh` inputs can still differ by 1 ulp from the oracle (for example `math.Atanh(-0.1731958024477226)`, `math.Acosh(204534.80525878677)`). `Asin`, `Acos` and `Atan2` are covered by the oracle fuzz and match |
 | Numeric unification lexical form | Numerically equal decimals keep the first operand's scale in some unifications (`(1.0 + 0) & 1.00` exports `1.0`; CUE exports `1.00`). Values compare equal; only the chosen representation differs |
-| Narrowing a defaulted constraint through a definition-valued definition | `#B: #A & {n: 4}` conflicts; narrowing inline/unified values and #A & {n: 4} directly recompute dependent fields |
-| Narrowing defaulted fields inside recursive definitions | `#Node: {n: *1|int, total: n+1, children?: [...#Node]}` does not recompute dependents when `n` is narrowed; recursive defaults themselves are preserved |
-| Default narrowing with a shadowing nested same-name definition | `#A: {n:*1|int, y:n+1, inner:{#A:5, v:#A}}` does not recompute `y` when `n` is narrowed; rename the nested definition or use the oracle |
-| Self-selection through split composed non-definition literals | `x: {a: x.b} & {b: 1}` is not resolved; definition self-selection, regular struct self-selection and composed definitions are implemented |
-| Dependent fields after a generated declaration merge | `#P: {env: string, greeting: "hello \(env)"}` plus `if true {#P: {env: "prod"}}` does not recompute `greeting`; declared declaration order or the oracle |
-| Self-selection into a field materialized by the same comprehension body | `#M: {b?: int, if true {b: 5, y: #M.b}}` cannot see the body-local `b`; use a bare name or self-select outside the body |
-| Bare references to comprehension-generated fields | `x: {if true {b: 1}, a: b}` is accepted although CUE requires `x.b`; use an explicit field or selector |
+| Bare identifiers across operands of a composed definition | `#D: {a: 1} & {b: a}` is accepted although CUE rejects the bare reference to a sibling operand's field; with an enclosing `a: 9`, `b` resolves to `1` instead of CUE's `9`. Non-definition composition, selectors and definition-valued narrowing match CUE |
+| Nested cross-dependent split operands | `x: {o: {a: x.o.b}} & {o: {b: 1, c: x.o.a}}` remains cyclic although CUE resolves it; top-level operands (including multi-dependent and three-operand chains) match CUE |
+| Nested selector self-selection | `x: {o: {a: x.o.b, b: 1}}` and `#D: {o: {a: #D.o.b, b: 1}}` remain cyclic although CUE resolves them; flat, composed and split self-selection match CUE |
+| Mutually recursive open-list re-materialization | The mutually recursive `#A`/`#B` open-list shape with `z: #A & {bs: x.bs}` (corpus `rec_mutual_lists2`) still exceeds 60 s; the one-way mutually recursive open-list shape matches CUE |
+| Mutual field-mediated let cycles | Two lets routed through separate fields (`let X = f`, `let Y = g`, `f`/`g` selecting each other) remain unsupported; single-let field cycles, transparent aliases and split forms match CUE |
+| Self-selecting non-literal split bases | `let base = {b: 1, c: x.a}; x: {a: x.b} & base` (and the field-base variant) remains cyclic although CUE resolves it; literal operands, transparent let aliases and top-level cross-dependent operands match CUE |
+| Disjunction-alternative dependent recomputation | `({a: *1|int, b: a} | {a: string}) & {a: 3}` leaves `b` at `1` although CUE recomputes `b: 3` |
 | Pending-output expressions in conditions and non-scalar interpolation | CUE rejects `if` conditions before running the producer; for list-valued interpolation CUE runs the producer and rejects during interpolation, while Ostinato rejects before execution. Both exit non-zero, with Ostinato's own diagnostic text. Scalar string/number operations (including string/bytes concatenation and repetition such as `run.stdout * 2` and `r.response.body * 2`), unary operators, comparisons, list indexing/comprehensions, `len`/`strings`/`list.Concat`/`math`/`regexp` helpers and pending values used as task inputs are deferred and match CUE |
 | Command-local alias read without a companion | `command: c: {a: base; t: cli.Print & {text: "\(a.stdout)"}}`: CUE rejects before execution; Ostinato executes `base` and then reports the non-concrete error. Exit codes match, but the producer side effect differs |
 | Cross-target module-hop reads | With `prep: lib.run; p2: prep; p3: p2`: `r: p2` plus `t: cli.Print & {text: "\(p3.stdout)"}` succeeds in CUE (order `PP`) while Ostinato rejects; `r: p3` plus `t: cli.Print & {text: "\(prep.stdout)"}` rejects in CUE after running `P` while Ostinato succeeds with order `PP`. The same shapes with a plain `q: "\(...)"` read agree (`0/PP` on both). Same-target hops and direct alias chains are covered |
@@ -140,7 +152,6 @@ workflow outside the Rust surface has a supported escape hatch.
 | Module-backed command-local alias read | `prep: lib.run; p2: prep; command: c: {a: prep; t: cli.Print & {text: "\(p2.stdout)"}}`: CUE runs the producer (order `P`) then rejects; Ostinato rejects before execution |
 | Non-chunked `Transfer-Encoding` | CUE/Go rejects `Transfer-Encoding: identity` and `Transfer-Encoding: gzip` as unsupported transport encodings; Ostinato accepts the response body |
 | Tool packages beyond `tool/exec.Run`/`tool/cli.Print`/`tool/file.Append`/`Create`/`tool/os.Getenv`/`Environ` | `ostinato cmd` runs `*_tool.cue` tasks with those packages, including `stdout`/`stderr`/`success` injection and consumption of non-stdout outputs; `tool/os.Getenv`/`Environ` apply the `Value: bool \| number \| *string \| null` schema (bounds are intersected) and CUE scalar parsing, resolving schema defaults through local, cross-file and imported references plus composed task/command aliases; imported struct-valued env bases are expanded, and imported command aliases are expanded when their `tool/os` defaults are unambiguous (ambiguous defaults fail closed); command evaluation prunes the package AST to the selected command (and its referenced commands), so unrelated command bodies cannot poison it; `$usage`/`$short`/`$long` help metadata (with doc-comment fallback), multi-instance `cue cmd <name> [inputs...]` and `@cmd` attribute handling match CUE; `tool/http.Do`/`Get`/`Post`/`Put`/`Delete` execute blocking HTTP with method/url, `followRedirects`, `tls.verify`/`caCert` (bundled rustls roots), request body/header and response status/statusCode/body/header injection over HTTP/1.1 and, with ALPN over TLS, HTTP/2; `response.status` uses the client canonical reason phrase rather than CUE's raw server reason phrase (for example a non-standard `200 Weird Phrase` becomes `200 OK`), `Content-Encoding: gzip` responses are decompressed automatically like CUE's Go client, and non-UTF-8 bodies follow Go `strings.ToValidUTF8` semantics (each maximal invalid run becomes one U+FFFD). HTTP request/response trailers remain unimplemented because the blocking `reqwest` 0.12 client exposes no trailer API; `tool/http.Serve` is a long-running service task that `cue cmd` does not terminate (the oracle hangs), so it is not runnable deterministically and remains unimplemented; other task packages remain unimplemented |
-| `let` cycles mediated by fields (`let X = f, f: X`) | Direct and indirect `let` cycles are rejected; a cycle routed through a field is reported as an error rather than solved as an incomplete value. Use the oracle for that shape |
 | Arbitrary CUE packages with package-level patterns | Oracle territory |
 
 ## Extensions beyond CUE
