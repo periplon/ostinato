@@ -4445,6 +4445,14 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 return frame.params_path_value(&path, *span);
             }
             let base = eval_expr(base, frame)?.concretize().clone();
+            if frame.allows_incomplete(expr)
+                && value_is_pending(&base)
+                && !matches!(base, Value::Struct(_) | Value::Definition { .. })
+            {
+                // Structs still support selection: the selected field may
+                // already be concrete (for example an injected task response).
+                return Ok(Value::Bottom);
+            }
             if frame.defer_incomplete.get() && matches!(base, Value::Bottom) {
                 return Ok(Value::Bottom);
             }
@@ -4543,6 +4551,17 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             for argument in arguments {
                 values.push(eval_expr(argument, frame)?.concretize().clone());
             }
+            let pending = values.iter().any(value_is_pending);
+            if pending && frame.allows_incomplete(expr) {
+                if let Value::Builtin(builtin) = &callee
+                    && let Some(value) = deferred_builtin_value(*builtin)
+                {
+                    return Ok(value);
+                }
+                if frame.defer_incomplete.get() {
+                    return Ok(Value::Bottom);
+                }
+            }
             if frame.defer_incomplete.get()
                 && values.iter().any(|value| matches!(value, Value::Bottom))
             {
@@ -4579,6 +4598,20 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             }
             let base = eval_expr(base, frame)?.concretize().clone();
             let index = eval_expr(index, frame)?.concretize().clone();
+            if frame.allows_incomplete(expr) && value_is_pending(&base) {
+                match &base {
+                    Value::OpenList(Some(element))
+                        if matches!(index, Value::Int(_) | Value::BigInt(_)) =>
+                    {
+                        return Ok((**element).clone());
+                    }
+                    Value::List(_)
+                    | Value::OpenListPrefix(..)
+                    | Value::Struct(_)
+                    | Value::Definition { .. } => {}
+                    _ => return Ok(Value::Bottom),
+                }
+            }
             if frame.defer_incomplete.get()
                 && (matches!(base, Value::Bottom) || matches!(index, Value::Bottom))
             {
@@ -4789,17 +4822,22 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         }
         Expr::Default(inner, _) => eval_expr(inner, frame),
         Expr::Binary(op, left, right, span) => {
+            let left_value = eval_expr(left, frame)?.concretize().clone();
+            let right_value = eval_expr(right, frame)?.concretize().clone();
+            if frame.allows_incomplete(expr)
+                && (value_is_pending(&left_value) || value_is_pending(&right_value))
+            {
+                return Ok(deferred_binary_value(op, &left_value, &right_value));
+            }
             if matches!(op, BinOp::And | BinOp::Or) {
-                let left = require_bool(frame, &eval_expr(left, frame)?, *span)?;
-                let right = require_bool(frame, &eval_expr(right, frame)?, *span)?;
+                let left = require_bool(frame, &left_value, *span)?;
+                let right = require_bool(frame, &right_value, *span)?;
                 return Ok(Value::Bool(if matches!(op, BinOp::And) {
                     left && right
                 } else {
                     left || right
                 }));
             }
-            let left_value = eval_expr(left, frame)?.concretize().clone();
-            let right_value = eval_expr(right, frame)?.concretize().clone();
             if !matches!(op, BinOp::Eq | BinOp::Ne)
                 || matches!(
                     (&left_value, &right_value),
@@ -6730,6 +6768,84 @@ fn apply_time_builtin(
             Ok(Value::String(crate::gotime::format_duration(nanos)))
         }
         _ => unreachable!("time builtin"),
+    }
+}
+
+/// A value that still awaits runtime injection (or another incomplete
+/// computation) rather than a concrete value.
+fn value_is_pending(value: &Value) -> bool {
+    match value {
+        Value::Type(_)
+        | Value::Bottom
+        | Value::Bounds(_)
+        | Value::Recursive(_)
+        | Value::Deferred(_, _) => true,
+        Value::Builtin(_)
+        | Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::BigInt(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::Bytes(_)
+        | Value::OpenList(None)
+        | Value::Conflict(_) => false,
+        Value::List(items) | Value::OpenListPrefix(items, _) => items.iter().any(value_is_pending),
+        Value::OpenList(Some(element)) => value_is_pending(element),
+        Value::Struct(fields) | Value::Definition { fields, .. } => {
+            fields.values().any(value_is_pending)
+        }
+        Value::Disjunction(alternatives, _) => alternatives.iter().any(value_is_pending),
+    }
+}
+
+/// A typed placeholder for a builtin over pending task outputs. The enclosing
+/// field is re-evaluated once the producer injects its outputs.
+fn deferred_builtin_value(builtin: Builtin) -> Option<Value> {
+    Some(match builtin {
+        Builtin::Len => Value::Type(TypeKind::Int),
+        Builtin::StringsSplit => Value::OpenList(Some(Box::new(Value::Type(TypeKind::String)))),
+        Builtin::StringsHasPrefix | Builtin::StringsHasSuffix => Value::Type(TypeKind::Bool),
+        Builtin::StringsToUpper
+        | Builtin::StringsToLower
+        | Builtin::StringsTrimSpace
+        | Builtin::StringsJoin => Value::Type(TypeKind::String),
+        Builtin::ListRange => Value::OpenList(Some(Box::new(Value::Type(TypeKind::Int)))),
+        Builtin::RegexpMatch | Builtin::RegexpValid => Value::Type(TypeKind::Bool),
+        Builtin::RegexpFind | Builtin::RegexpReplaceAll | Builtin::RegexpQuoteMeta => {
+            Value::Type(TypeKind::String)
+        }
+        Builtin::RegexpFindAll => Value::OpenList(Some(Box::new(Value::Type(TypeKind::String)))),
+        Builtin::MathAbs
+        | Builtin::MathFloor
+        | Builtin::MathCeil
+        | Builtin::MathRound
+        | Builtin::MathTrunc
+        | Builtin::MathSqrt
+        | Builtin::MathPow
+        | Builtin::MathExp
+        | Builtin::MathLog => Value::Type(TypeKind::Number),
+        _ => return None,
+    })
+}
+
+/// A typed placeholder for a binary operator over pending task outputs.
+fn deferred_binary_value(op: &BinOp, left: &Value, right: &Value) -> Value {
+    let stringish =
+        |value: &Value| matches!(value, Value::String(_) | Value::Type(TypeKind::String));
+    let bytesish = |value: &Value| matches!(value, Value::Bytes(_) | Value::Type(TypeKind::Bytes));
+    match op {
+        BinOp::Add if stringish(left) || stringish(right) => Value::Type(TypeKind::String),
+        BinOp::Add if bytesish(left) || bytesish(right) => Value::Type(TypeKind::Bytes),
+        BinOp::Eq
+        | BinOp::Ne
+        | BinOp::Lt
+        | BinOp::Le
+        | BinOp::Gt
+        | BinOp::Ge
+        | BinOp::And
+        | BinOp::Or => Value::Type(TypeKind::Bool),
+        _ => Value::Type(TypeKind::Number),
     }
 }
 

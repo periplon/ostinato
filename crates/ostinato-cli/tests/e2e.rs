@@ -92,6 +92,10 @@ impl LocalHttpServer {
                                     b"hello".to_vec(),
                                     vec![("X-Test", "one"), ("X-Multi", "a"), ("X-Multi", "b")],
                                 ),
+                                "/nonutf8" => (200, vec![0xff, 0xfe, b'A'], Vec::new()),
+                                "/nonutf8mixed" => {
+                                    (200, vec![b'A', 0xff, b'B', 0xfe, 0xfd], Vec::new())
+                                }
                                 "/redirect" => (302, Vec::new(), vec![("Location", "/ok")]),
                                 "/status404" => {
                                     (404, b"missing".to_vec(), vec![("X-Test", "nope")])
@@ -112,16 +116,19 @@ impl LocalHttpServer {
                             404 => "Not Found",
                             _ => "",
                         };
-                        let mut response = format!("HTTP/1.1 {status} {reason}\r\n");
+                        let mut response = format!("HTTP/1.1 {status} {reason}\r\n").into_bytes();
                         for (name, value) in headers {
-                            response.push_str(&format!("{name}: {value}\r\n"));
+                            response.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
                         }
-                        response.push_str(&format!(
-                            "Content-Length: {}\r\nConnection: close\r\n\r\n",
-                            response_body.len()
-                        ));
-                        response.push_str(&String::from_utf8_lossy(&response_body));
-                        let _ = stream.write_all(response.as_bytes());
+                        response.extend_from_slice(
+                            format!(
+                                "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                                response_body.len()
+                            )
+                            .as_bytes(),
+                        );
+                        response.extend_from_slice(&response_body);
+                        let _ = stream.write_all(&response);
                     }
                     Err(_) => {
                         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -10736,6 +10743,202 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
 }
 
 #[test]
+fn tool_command_alias_chain_instances_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"package lib
+
+import e "tool/exec"
+
+run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+"#;
+    let base = "base: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\n";
+    let local_cli = "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n";
+    let module_cli = "package foo\nimport (\n\t\"tool/cli\"\n\t\"example.com/k/lib\"\n)\n";
+    let cases: Vec<(&str, String, bool)> = vec![
+        (
+            "chainthree",
+            format!(
+                "{local_cli}{base}p2: base\np3: p2\ncommand: chainthree: {{\n\tr: p3\n\tq: \"\\\\(p3.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(p3.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "chainfour",
+            format!(
+                "{local_cli}{base}p2: base\np3: p2\np4: p3\ncommand: chainfour: {{\n\tr: p4\n\tq: \"\\\\(p4.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(p4.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "chainfive",
+            format!(
+                "{local_cli}{base}p2: base\np3: p2\np4: p3\np5: p4\ncommand: chainfive: {{\n\tr: p5\n\tt: cli.Print & {{text: \"R=\\\\(p5.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "chainmodule",
+            format!(
+                "{module_cli}prep: lib.run\np2: prep\np3: p2\np4: p3\ncommand: chainmodule: {{\n\tr: p4\n\tq: \"\\\\(p4.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(p4.stdout)\"}}\n}}\n"
+            ),
+            true,
+        ),
+        (
+            "chaindefinition",
+            "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n#base: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\nprep: #base\np2: prep\np3: p2\np4: p3\ncommand: chaindefinition: {\n\tr: p4\n\tq: \"\\(p4.stdout)\"\n\tt: cli.Print & {text: \"R=\\(p4.stdout)\"}\n}\n".to_owned(),
+            false,
+        ),
+        (
+            "chainmixedlet",
+            format!(
+                "{local_cli}{base}let first = base\np2: first\nlet second = p2\np3: second\np4: p3\ncommand: chainmixedlet: {{\n\tr: p4\n\tq: \"\\\\(p4.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(p4.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ),
+        (
+            "chainmulti",
+            format!(
+                "{local_cli}{base}p2: base\np3: p2\np4: p3\ncommand: chainmulti: {{ r1: p4, r2: p3 }}\n"
+            ),
+            false,
+        ),
+        (
+            "chainnested",
+            format!(
+                "{local_cli}{base}p2: base\np3: p2\np4: p3\ncommand: chainnested: {{ x: {{ r: p4 }} }}\n"
+            ),
+            false,
+        ),
+        (
+            "chaincontainer",
+            "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\ngroup: {\n\tbase: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\n\tp2: base\n\tp3: p2\n\tp4: p3\n}\ncommand: chaincontainer: {\n\tr: group.p4\n\tq: \"\\(group.p4.stdout)\"\n\tt: cli.Print & {text: \"R=\\(group.p4.stdout)\"}\n}\n".to_owned(),
+            false,
+        ),
+    ];
+    for (name, source, uses_module) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+            std::fs::create_dir_all(directory.join("lib")).expect("lib");
+            write(&directory.join("cue.mod/module.cue"), module);
+            if uses_module {
+                write(&directory.join("lib/lib.cue"), library);
+            }
+            write(&directory.join("x_tool.cue"), &source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+        assert_eq!(
+            std::fs::read(cue_dir.path().join("order.txt")).ok(),
+            std::fs::read(rust_dir.path().join("order.txt")).ok(),
+            "{name}: order.txt differs"
+        );
+    }
+}
+
+#[test]
+#[allow(clippy::type_complexity)]
+fn tool_command_pending_output_expressions_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let run = "run: exec.Run & {cmd: [\"sh\", \"-c\", \"printf out\"], stdout: string}\n";
+    let cases: Vec<(&str, String, Option<(&str, &str)>)> = vec![
+        (
+            "pendinglen",
+            format!(
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendinglen: {{\n\tt: cli.Print & {{text: \"len=\\\\(len(run.stdout)) twice=\\\\(len(run.stdout) * 2) cmp=\\\\(len(run.stdout) > 2)\"}}\n}}\n"
+            ),
+            None,
+        ),
+        (
+            "pendingconcat",
+            format!(
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendingconcat: {{\n\tt: cli.Print & {{text: \"x=\" + run.stdout}}\n\tq: \"\\\\(run.stdout == \"out\")\"\n}}\n"
+            ),
+            None,
+        ),
+        (
+            "pendingsplit",
+            format!(
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n\t\"strings\"\n)\n{run}command: pendingsplit: {{\n\tt: cli.Print & {{text: \"first=\\\\(strings.Split(run.stdout, \"u\")[0]) joined=\\\\(strings.Join(strings.Split(run.stdout, \"u\"), \"-\")) prefix=\\\\(strings.HasPrefix(run.stdout, \"ou\"))\"}}\n}}\n"
+            ),
+            None,
+        ),
+        (
+            "pendinginput",
+            format!(
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendinginput: {{\n\tt: exec.Run & {{cmd: [\"sh\", \"-c\", \"printf %s \" + run.stdout], stdout: string}}\n\tp: cli.Print & {{text: \"out=\\\\(t.stdout)\"}}\n}}\n"
+            ),
+            None,
+        ),
+        (
+            "pendingstdin",
+            format!(
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendingstdin: {{\n\tt: exec.Run & {{cmd: [\"cat\"], stdin: run.stdout, stdout: string}}\n\tp: cli.Print & {{text: \"out=\\\\(t.stdout)\"}}\n}}\n"
+            ),
+            None,
+        ),
+        (
+            "pendingfile",
+            format!(
+                "package foo\nimport (\n\t\"tool/exec\"\n\t\"tool/file\"\n)\n{run}command: pendingfile: {{\n\tt: file.Create & {{filename: \"out.txt\", contents: run.stdout}}\n}}\n"
+            ),
+            Some(("out.txt", "out")),
+        ),
+    ];
+    for (name, source, artifact) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            write(&directory.join("x_tool.cue"), &source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+        if let Some((file, contents)) = artifact {
+            assert_eq!(
+                std::fs::read_to_string(cue_dir.path().join(file)).expect("cue artifact"),
+                contents,
+                "{name}: cue artifact"
+            );
+            assert_eq!(
+                std::fs::read_to_string(rust_dir.path().join(file)).expect("rust artifact"),
+                contents,
+                "{name}: rust artifact"
+            );
+        }
+    }
+}
+
+#[test]
 fn tool_command_module_alias_plain_reads_match_cue() {
     let Some(cue) = cue_command() else {
         eprintln!("skipping: official cue not installed");
@@ -14051,6 +14254,14 @@ command: connfail: {
 	r: http.Get & {url: "http://127.0.0.1:__CLOSED__/nope", response: {body: string}}
 	p: cli.Print & {text: "body=\(r.response.body)"}
 }
+command: nonutf8: {
+	r: http.Get & {url: "__BASE__/nonutf8", response: {body: string}}
+	p: cli.Print & {text: "n=\(len(r.response.body)) body=\(r.response.body)"}
+}
+command: nonutf8mixed: {
+	r: http.Get & {url: "__BASE__/nonutf8mixed", response: {body: string}}
+	p: cli.Print & {text: "n=\(len(r.response.body)) body=\(r.response.body)"}
+}
 "#
     .replace("__BASE__", &server.base)
     .replace("__CLOSED__", &closed_port.to_string());
@@ -14074,6 +14285,8 @@ command: connfail: {
         "deleteecho",
         "doecho",
         "consumed",
+        "nonutf8",
+        "nonutf8mixed",
     ] {
         let expected = run(Path::new(&cue), command);
         let actual = run(&bin(), command);
@@ -14088,6 +14301,106 @@ command: connfail: {
     assert!(!expected.status.success(), "connfail");
     assert_eq!(actual.status.code(), expected.status.code(), "connfail");
     assert_eq!(actual.stdout, expected.stdout, "connfail");
+}
+
+#[test]
+fn tool_command_http2_matches_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let go_available = Command::new("go")
+        .arg("version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !go_available {
+        eprintln!("skipping: Go toolchain not installed for the HTTP/2 server");
+        return;
+    }
+    let directory = tempfile::tempdir().expect("tempdir");
+    let server_path = directory.path().join("h2server.go");
+    write(
+        &server_path,
+        r#"package main
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"time"
+)
+
+func main() {
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Proto", r.Proto)
+		fmt.Fprint(w, r.Proto)
+	}))
+	ts.EnableHTTP2 = true
+	ts.StartTLS()
+	defer ts.Close()
+	fmt.Println(ts.URL)
+	time.Sleep(30 * time.Second)
+}
+"#,
+    );
+    let mut server = Command::new("go")
+        .args(["run", server_path.to_str().expect("server path")])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start Go HTTP/2 server");
+    let stdout = server.stdout.take().expect("server stdout");
+    let mut reader = std::io::BufReader::new(stdout);
+    let mut url = String::new();
+    for _ in 0..200 {
+        let mut line = String::new();
+        if std::io::BufRead::read_line(&mut reader, &mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let text = line.trim();
+        if text.starts_with("https://") {
+            url = text.to_owned();
+            break;
+        }
+    }
+    if url.is_empty() {
+        let _ = server.kill();
+        let _ = server.wait();
+        eprintln!("skipping: Go HTTP/2 server did not start");
+        return;
+    }
+    let source = format!(
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/http"
+)
+command: h2body: {{
+	r: http.Get & {{url: "{url}", tls: {{verify: false}}, response: {{body: string}}}}
+	p: cli.Print & {{text: "body=\(r.response.body)"}}
+}}
+command: h2header: {{
+	r: http.Get & {{url: "{url}", tls: {{verify: false}}, response: {{body: string}}}}
+	p: cli.Print & {{text: "body=\(r.response.body) proto=\(r.response.header["X-Proto"][0])"}}
+}}
+"#
+    );
+    write(&directory.path().join("x_tool.cue"), &source);
+    for command in ["h2body", "h2header"] {
+        let expected = Command::new(&cue)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", command, directory.path().to_str().expect("path")]);
+        assert!(expected.status.success(), "{command}");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+    let _ = server.kill();
+    let _ = server.wait();
 }
 
 #[test]
