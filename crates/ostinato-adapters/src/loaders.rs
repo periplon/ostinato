@@ -2434,6 +2434,7 @@ fn expr_has_os_env_task(
     scopes: &[&[StructItem]],
     root: &[StructItem],
     imports: &BTreeMap<String, Value>,
+    descend_structs: bool,
     visited: &mut std::collections::BTreeSet<String>,
 ) -> bool {
     match expr {
@@ -2451,7 +2452,14 @@ fn expr_has_os_env_task(
             let found =
                 resolve_local_value(scopes, root, expr, &mut std::collections::BTreeSet::new())
                     .is_some_and(|resolved| {
-                        expr_has_os_env_task(resolved, scopes, root, imports, visited)
+                        expr_has_os_env_task(
+                            resolved,
+                            scopes,
+                            root,
+                            imports,
+                            descend_structs,
+                            visited,
+                        )
                     });
             visited.remove(&key);
             found
@@ -2465,11 +2473,16 @@ fn expr_has_os_env_task(
                 return false;
             }
             let found = match local_binding(scopes, root, name) {
-                Some(StructItem::Field(field)) => {
-                    expr_has_os_env_task(&field.value, scopes, root, imports, visited)
-                }
+                Some(StructItem::Field(field)) => expr_has_os_env_task(
+                    &field.value,
+                    scopes,
+                    root,
+                    imports,
+                    descend_structs,
+                    visited,
+                ),
                 Some(StructItem::Let { value, .. }) => {
-                    expr_has_os_env_task(value, scopes, root, imports, visited)
+                    expr_has_os_env_task(value, scopes, root, imports, descend_structs, visited)
                 }
                 _ => false,
             };
@@ -2477,17 +2490,22 @@ fn expr_has_os_env_task(
             found
         }
         Expr::Unify(left, right, _) => {
-            expr_has_os_env_task(left, scopes, root, imports, visited)
-                || expr_has_os_env_task(right, scopes, root, imports, visited)
+            expr_has_os_env_task(left, scopes, root, imports, descend_structs, visited)
+                || expr_has_os_env_task(right, scopes, root, imports, descend_structs, visited)
         }
-        Expr::Struct(items, _) => items.iter().any(|item| match item {
-            StructItem::Field(field) => {
-                expr_has_os_env_task(&field.value, scopes, root, imports, visited)
-            }
+        Expr::Struct(items, _) if descend_structs => items.iter().any(|item| match item {
+            StructItem::Field(field) => expr_has_os_env_task(
+                &field.value,
+                scopes,
+                root,
+                imports,
+                descend_structs,
+                visited,
+            ),
             _ => false,
         }),
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            expr_has_os_env_task(inner, scopes, root, imports, visited)
+            expr_has_os_env_task(inner, scopes, root, imports, descend_structs, visited)
         }
         _ => false,
     }
@@ -2595,21 +2613,47 @@ fn materialize_keep(
     .unwrap_or_else(|| expr.clone())
 }
 
+fn materialize_refs(
+    expr: &mut Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+) {
+    match expr {
+        Expr::Ident(..) | Expr::Select(..) | Expr::Index(..) => {
+            let original = expr.clone();
+            if let Some(resolved) = materialize_expr(
+                &original,
+                scopes,
+                root,
+                imports,
+                &mut std::collections::BTreeSet::new(),
+            ) && resolved != original
+            {
+                // Keep the original reference as a conjunct so a `let` used
+                // only here remains referenced; wrap the resolved clone.
+                let span = original.span();
+                *expr = Expr::Unify(Box::new(original), Box::new(resolved), span);
+            }
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            materialize_refs(left, scopes, root, imports);
+            materialize_refs(right, scopes, root, imports);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            materialize_refs(inner, scopes, root, imports);
+        }
+        _ => {}
+    }
+}
+
 fn materialize_into(
     expr: &mut Expr,
     scopes: &[&[StructItem]],
     root: &[StructItem],
     imports: &BTreeMap<String, Value>,
 ) {
-    if let Some(resolved) = materialize_expr(
-        expr,
-        scopes,
-        root,
-        imports,
-        &mut std::collections::BTreeSet::new(),
-    ) {
-        *expr = resolved;
-    }
+    materialize_refs(expr, scopes, root, imports);
 }
 
 fn wrap_os_task_fields(
@@ -2673,6 +2717,7 @@ fn apply_os_schema_to_task(
         scopes,
         root,
         imports,
+        false,
         &mut std::collections::BTreeSet::new(),
     ) {
         return;
@@ -2696,7 +2741,32 @@ fn apply_os_schema_to_command_value(
                 let StructItem::Field(field) = item else {
                     continue;
                 };
-                apply_os_schema_to_task(&mut field.value, &nested, root, imports);
+                let direct = expr_has_os_env_task(
+                    &field.value,
+                    &nested,
+                    root,
+                    imports,
+                    false,
+                    &mut std::collections::BTreeSet::new(),
+                );
+                if direct {
+                    apply_os_schema_to_task(&mut field.value, &nested, root, imports);
+                    continue;
+                }
+                let grouped = expr_has_os_env_task(
+                    &field.value,
+                    &nested,
+                    root,
+                    imports,
+                    true,
+                    &mut std::collections::BTreeSet::new(),
+                );
+                if grouped {
+                    // A nested task group: recurse instead of treating it as
+                    // the env map itself.
+                    materialize_into(&mut field.value, &nested, root, imports);
+                    apply_os_schema_to_command_value(&mut field.value, &nested, root, imports);
+                }
             }
         }
         Expr::Unify(left, right, _) => {
@@ -2733,6 +2803,7 @@ fn apply_os_value_schema(
             &[],
             &root,
             imports,
+            true,
             &mut std::collections::BTreeSet::new(),
         ) {
             continue;
