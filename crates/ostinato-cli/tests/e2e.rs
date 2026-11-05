@@ -13240,12 +13240,17 @@ base: {
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
 more: {extra: 1}
+let letparams = {REV_V: *"d" | string}
+let letbase = {
+	env: os.Getenv & {REV_V: p}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
 command: envparams: {
-	env: os.Getenv & params
+	env: os.Getenv & envparams
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
 command: envparamstwo: {
-	env: os.Getenv & paramstwo
+	env: os.Getenv & envparamstwo
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
 command: taskalias: {
@@ -13258,6 +13263,17 @@ command: splittask: {
 }
 command: commandalias: base
 command: splitcommand: base & more
+command: nestedgroup: {
+	grp: {
+		env: os.Getenv & {REV_V: p}
+		print: cli.Print & {text: "v=[\(env.REV_V)]"}
+	}
+}
+command: letparams: {
+	env: os.Getenv & letparams
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: letcmd: letbase
 "#,
     );
     let run = |implementation: &Path, command: &str| {
@@ -13275,6 +13291,9 @@ command: splitcommand: base & more
         "splittask",
         "commandalias",
         "splitcommand",
+        "nestedgroup",
+        "letparams",
+        "letcmd",
     ] {
         let expected = run(Path::new(&cue), command);
         let actual = run(&bin(), command);
@@ -13282,6 +13301,80 @@ command: splitcommand: base & more
         assert_eq!(actual.stdout, expected.stdout, "{command}");
         if expected.status.success() {
             assert_eq!(actual.stderr, expected.stderr, "{command}");
+        } else {
+            assert!(!actual.status.success(), "{command}");
+            assert!(!actual.stderr.is_empty(), "{command}");
+            assert!(!expected.stderr.is_empty(), "{command}");
         }
+    }
+}
+
+#[test]
+fn tool_command_os_schema_nested_groups_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("x_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+p: *"d" | string
+basegrp: {
+	env: os.Getenv & {REV_V: p}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+taskg: os.Getenv & {REV_V: p}
+command: nestedenvonly: {
+	grp: {env: os.Getenv & {REV_V: p}}
+}
+command: nestedenvsibling: {
+	grp: {
+		env: os.Getenv & {REV_V: p}
+		print: cli.Print & {text: "v=[\(env.REV_V)]"}
+	}
+}
+command: nestedenvironsibling: {
+	grp: {
+		env: os.Environ & {REV_V: p}
+		print: cli.Print & {text: "v=[\(env.REV_V)]"}
+	}
+}
+command: groupalias: {
+	grp: basegrp
+}
+command: grouptaskalias: {
+	grp: {
+		env: taskg
+		print: cli.Print & {text: "v=[\(env.REV_V)]"}
+	}
+}
+"#,
+    );
+    let run = |implementation: &Path, command: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env_remove("REV_V")
+            .output()
+            .expect("run command")
+    };
+    for command in [
+        "nestedenvonly",
+        "nestedenvsibling",
+        "nestedenvironsibling",
+        "groupalias",
+        "grouptaskalias",
+    ] {
+        let expected = run(Path::new(&cue), command);
+        let actual = run(&bin(), command);
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
     }
 }
