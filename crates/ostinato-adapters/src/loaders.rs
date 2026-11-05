@@ -2362,6 +2362,59 @@ fn os_task_marker(id: &str) -> Value {
     Value::Struct(fields)
 }
 
+fn http_task_marker(method: Option<&str>) -> Value {
+    let mut fields = BTreeMap::new();
+    fields.insert("$id".to_owned(), Value::String("tool/http.Do".to_owned()));
+    match method {
+        Some(method) => {
+            fields.insert("method".to_owned(), Value::String(method.to_owned()));
+        }
+        None => {
+            fields.insert(
+                "method".to_owned(),
+                Value::Type(ostinato_lang::TypeKind::String),
+            );
+        }
+    }
+    fields.insert(
+        "url".to_owned(),
+        Value::Type(ostinato_lang::TypeKind::String),
+    );
+    fields.insert(
+        "followRedirects".to_owned(),
+        Value::Disjunction(
+            vec![
+                Value::Bool(true),
+                Value::Type(ostinato_lang::TypeKind::Bool),
+            ],
+            vec![0],
+        ),
+    );
+    let mut response = BTreeMap::new();
+    response.insert(
+        "status".to_owned(),
+        Value::Type(ostinato_lang::TypeKind::String),
+    );
+    response.insert(
+        "statusCode".to_owned(),
+        Value::Type(ostinato_lang::TypeKind::Int),
+    );
+    response.insert(
+        "body".to_owned(),
+        Value::Disjunction(
+            vec![
+                Value::Type(ostinato_lang::TypeKind::Bytes),
+                Value::Type(ostinato_lang::TypeKind::String),
+            ],
+            vec![0],
+        ),
+    );
+    response.insert("header".to_owned(), Value::Struct(BTreeMap::new()));
+    response.insert("trailer".to_owned(), Value::Struct(BTreeMap::new()));
+    fields.insert("response".to_owned(), Value::Struct(response));
+    Value::Struct(fields)
+}
+
 fn tool_module(path: &str) -> Option<Value> {
     let mut exports = BTreeMap::new();
     let marker = |id: &str| {
@@ -2393,6 +2446,13 @@ fn tool_module(path: &str) -> Option<Value> {
             exports.insert("Environ".to_owned(), os_task_marker("tool/os.Environ"));
             exports.insert("Setenv".to_owned(), os_task_marker("tool/os.Setenv"));
             exports.insert("Clearenv".to_owned(), os_task_marker("tool/os.Clearenv"));
+        }
+        "tool/http" => {
+            exports.insert("Do".to_owned(), http_task_marker(None));
+            exports.insert("Get".to_owned(), http_task_marker(Some("GET")));
+            exports.insert("Post".to_owned(), http_task_marker(Some("POST")));
+            exports.insert("Put".to_owned(), http_task_marker(Some("PUT")));
+            exports.insert("Delete".to_owned(), http_task_marker(Some("DELETE")));
         }
         _ => return None,
     }
@@ -3486,6 +3546,44 @@ fn item_uses_imported_task_struct(
     }
 }
 
+fn value_has_ambiguous_os_default(value: &Value) -> bool {
+    match value {
+        Value::Struct(fields) | Value::Definition { fields, .. } => {
+            if matches!(
+                fields.get("$id"),
+                Some(Value::String(id))
+                    if matches!(id.as_str(), "tool/os.Getenv" | "tool/os.Environ")
+            ) {
+                return fields.iter().any(|(name, value)| {
+                    !name.starts_with('$') && value_default_is_non_string(value)
+                });
+            }
+            fields.values().any(value_has_ambiguous_os_default)
+        }
+        Value::Disjunction(alternatives, _) => {
+            alternatives.iter().any(value_has_ambiguous_os_default)
+        }
+        _ => false,
+    }
+}
+
+fn value_default_is_non_string(value: &Value) -> bool {
+    match value {
+        Value::Disjunction(alternatives, defaults) => {
+            if defaults.len() != 1 {
+                return !defaults.is_empty();
+            }
+            alternatives.get(defaults[0]).is_some_and(|value| {
+                !matches!(
+                    value,
+                    Value::String(_) | Value::Type(ostinato_lang::TypeKind::String)
+                )
+            })
+        }
+        _ => false,
+    }
+}
+
 fn expr_uses_imported_task_struct(
     expr: &Expr,
     scopes: &[&[StructItem]],
@@ -3540,7 +3638,7 @@ fn expr_uses_imported_task_struct(
                     };
                     value = next;
                 }
-                if found && value_has_os_env_task(value) {
+                if found && value_has_ambiguous_os_default(value) {
                     return true;
                 }
             }
@@ -7265,6 +7363,13 @@ fn output_expr(value: &Value) -> Option<Expr> {
         Value::Float(value) => Some(Expr::Float(value.clone(), Span::default())),
         Value::Bytes(value) => Some(Expr::Bytes(value.clone(), Span::default())),
         Value::Null => Some(Expr::Null(Span::default())),
+        Value::List(items) => {
+            let mut exprs = Vec::with_capacity(items.len());
+            for item in items {
+                exprs.push(output_expr(item)?);
+            }
+            Some(Expr::List(exprs, Span::default()))
+        }
         Value::Type(ostinato_lang::TypeKind::String) => {
             Some(Expr::Ident("string".to_owned(), Span::default()))
         }
@@ -9789,6 +9894,7 @@ fn execute_tool_task(
         "tool/file.Create" => execute_file(task, package_dir, true),
         "tool/os.Getenv" => execute_os_getenv(task),
         "tool/os.Environ" => execute_os_environ(task),
+        "tool/http.Do" => execute_http(task),
         other => Err(ostinato_lang::LangError::Workflow(format!(
             "tool task `{other}` is not implemented"
         ))),
@@ -10235,6 +10341,317 @@ fn env_parse(
     Err(ostinato_lang::LangError::Workflow(format!(
         "invalid type for injection tag \"{name}\""
     )))
+}
+
+#[derive(Debug)]
+enum HttpInputError {
+    NotReady(&'static str),
+    Invalid(String),
+}
+
+fn http_string_field(
+    task: &BTreeMap<String, Value>,
+    key: &str,
+) -> Result<Option<String>, HttpInputError> {
+    match task.get(key).map(Value::concretize) {
+        None => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(Value::Type(_)) | Some(Value::Bottom) => Err(HttpInputError::NotReady(
+            "invalid string argument: non-concrete value string",
+        )),
+        Some(other) => Err(HttpInputError::Invalid(format!(
+            "invalid string argument: found {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn http_headers(value: &Value, what: &str) -> Result<Vec<(String, String)>, HttpInputError> {
+    let fields = match value {
+        Value::Struct(fields) | Value::Definition { fields, .. } => fields,
+        Value::Type(_) | Value::Bottom => {
+            return Err(HttpInputError::NotReady(
+                "invalid input: non-concrete value",
+            ));
+        }
+        other => {
+            return Err(HttpInputError::Invalid(format!(
+                "tool/http `{what}` must be a struct, found {}",
+                other.type_name()
+            )));
+        }
+    };
+    let mut headers = Vec::new();
+    for (name, value) in fields {
+        match value.concretize() {
+            Value::String(text) => headers.push((name.clone(), text.clone())),
+            Value::List(items) => {
+                for item in items {
+                    match item.concretize() {
+                        Value::String(text) => headers.push((name.clone(), text.clone())),
+                        Value::Type(_) | Value::Bottom => {
+                            return Err(HttpInputError::NotReady(
+                                "invalid input: non-concrete value",
+                            ));
+                        }
+                        other => {
+                            return Err(HttpInputError::Invalid(format!(
+                                "tool/http `{what}` values must be strings, found {}",
+                                other.type_name()
+                            )));
+                        }
+                    }
+                }
+            }
+            Value::Type(_) | Value::Bottom => {
+                return Err(HttpInputError::NotReady(
+                    "invalid input: non-concrete value",
+                ));
+            }
+            other => {
+                return Err(HttpInputError::Invalid(format!(
+                    "tool/http `{what}` values must be strings or lists of strings, found {}",
+                    other.type_name()
+                )));
+            }
+        }
+    }
+    Ok(headers)
+}
+
+fn http_canonical_header(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut upper = true;
+    for ch in name.chars() {
+        if ch == '-' {
+            out.push(ch);
+            upper = true;
+        } else if upper {
+            out.extend(ch.to_uppercase());
+            upper = false;
+        } else {
+            out.extend(ch.to_lowercase());
+        }
+    }
+    out
+}
+
+fn execute_http(
+    task: &BTreeMap<String, Value>,
+) -> Result<ToolTaskOutcome, ostinato_lang::LangError> {
+    let result = (|| -> Result<ToolTaskOutcome, HttpInputError> {
+        let method = match http_string_field(task, "method")? {
+            Some(method) if !method.is_empty() => method,
+            // Go's http.NewRequest treats an empty method as GET.
+            Some(_) | None => "GET".to_owned(),
+        };
+        let Some(url) = http_string_field(task, "url")? else {
+            return Err(HttpInputError::NotReady(
+                "invalid string argument: could not find field \"url\"",
+            ));
+        };
+        let follow_redirects = match task.get("followRedirects").map(Value::concretize) {
+            None => true,
+            Some(Value::Bool(value)) => *value,
+            Some(Value::Type(_)) | Some(Value::Bottom) => {
+                return Err(HttpInputError::NotReady(
+                    "invalid bool value: non-concrete value bool",
+                ));
+            }
+            Some(other) => {
+                return Err(HttpInputError::Invalid(format!(
+                    "invalid bool value: found {}",
+                    other.type_name()
+                )));
+            }
+        };
+        let mut verify = true;
+        let mut ca_cert = None;
+        if let Some(tls) = task.get("tls") {
+            match tls.concretize() {
+                Value::Struct(fields) | Value::Definition { fields, .. } => {
+                    if let Some(value) = fields.get("verify") {
+                        match value.concretize() {
+                            Value::Bool(value) => verify = *value,
+                            Value::Type(_) | Value::Bottom => {
+                                return Err(HttpInputError::NotReady(
+                                    "invalid bool value: non-concrete value bool",
+                                ));
+                            }
+                            other => {
+                                return Err(HttpInputError::Invalid(format!(
+                                    "invalid bool value: found {}",
+                                    other.type_name()
+                                )));
+                            }
+                        }
+                    }
+                    if let Some(value) = fields.get("caCert") {
+                        match value.concretize() {
+                            Value::String(text) => ca_cert = Some(text.clone().into_bytes()),
+                            Value::Bytes(bytes) => ca_cert = Some(bytes.clone()),
+                            Value::Type(_) | Value::Bottom => {
+                                return Err(HttpInputError::NotReady(
+                                    "invalid bytes value: non-concrete value",
+                                ));
+                            }
+                            other => {
+                                return Err(HttpInputError::Invalid(format!(
+                                    "invalid bytes value: found {}",
+                                    other.type_name()
+                                )));
+                            }
+                        }
+                    }
+                }
+                Value::Type(_) | Value::Bottom => {
+                    return Err(HttpInputError::NotReady(
+                        "invalid input: non-concrete value",
+                    ));
+                }
+                other => {
+                    return Err(HttpInputError::Invalid(format!(
+                        "tool/http `tls` must be a struct, found {}",
+                        other.type_name()
+                    )));
+                }
+            }
+        }
+
+        let mut body = None;
+        let mut headers = Vec::new();
+        let mut trailers = Vec::new();
+        if let Some(request) = task.get("request") {
+            match request.concretize() {
+                Value::Struct(fields) | Value::Definition { fields, .. } => {
+                    if let Some(value) = fields.get("body") {
+                        match value.concretize() {
+                            Value::String(text) => body = Some(text.clone().into_bytes()),
+                            Value::Bytes(bytes) => body = Some(bytes.clone()),
+                            Value::Type(_) | Value::Bottom => {
+                                return Err(HttpInputError::NotReady(
+                                    "invalid input: non-concrete value",
+                                ));
+                            }
+                            other => {
+                                return Err(HttpInputError::Invalid(format!(
+                                    "invalid input: found {}",
+                                    other.type_name()
+                                )));
+                            }
+                        }
+                    }
+                    if let Some(value) = fields.get("header") {
+                        headers = http_headers(value, "request.header")?;
+                    }
+                    if let Some(value) = fields.get("trailer") {
+                        trailers = http_headers(value, "request.trailer")?;
+                    }
+                }
+                Value::Type(_) | Value::Bottom => {
+                    return Err(HttpInputError::NotReady(
+                        "invalid input: non-concrete value",
+                    ));
+                }
+                other => {
+                    return Err(HttpInputError::Invalid(format!(
+                        "tool/http `request` must be a struct, found {}",
+                        other.type_name()
+                    )));
+                }
+            }
+        }
+        if !trailers.is_empty() {
+            return Err(HttpInputError::Invalid(
+                "tool/http request trailers are not supported".to_owned(),
+            ));
+        }
+
+        let method = reqwest::Method::from_bytes(method.as_bytes())
+            .map_err(|err| HttpInputError::Invalid(format!("invalid method: {err}")))?;
+        let mut builder = reqwest::blocking::Client::builder().redirect(if follow_redirects {
+            reqwest::redirect::Policy::limited(10)
+        } else {
+            reqwest::redirect::Policy::none()
+        });
+        if !verify {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        if let Some(ca_cert) = ca_cert {
+            let certificate = reqwest::Certificate::from_pem(&ca_cert)
+                .map_err(|err| HttpInputError::Invalid(format!("failed to parse caCert: {err}")))?;
+            builder = builder.add_root_certificate(certificate);
+        }
+        let client = builder
+            .build()
+            .map_err(|err| HttpInputError::Invalid(format!("cannot build HTTP client: {err}")))?;
+        let mut request = client.request(method, &url);
+        if let Some(body) = body {
+            request = request.body(body);
+        }
+        let mut header_map = reqwest::header::HeaderMap::new();
+        for (name, value) in headers {
+            let canonical = http_canonical_header(&name);
+            let name = reqwest::header::HeaderName::from_bytes(canonical.as_bytes())
+                .map_err(|err| HttpInputError::Invalid(format!("invalid header name: {err}")))?;
+            let value = reqwest::header::HeaderValue::from_str(&value)
+                .map_err(|err| HttpInputError::Invalid(format!("invalid header value: {err}")))?;
+            header_map.append(name, value);
+        }
+        request = request.headers(header_map);
+
+        let response = match request.send() {
+            Ok(response) => response,
+            Err(err) => {
+                eprintln!("task failed: {err}");
+                return Ok(ToolTaskOutcome::Failed);
+            }
+        };
+        let status_code = i64::from(response.status().as_u16());
+        let status = match response.status().canonical_reason() {
+            Some(reason) => format!("{status_code} {reason}"),
+            None => status_code.to_string(),
+        };
+        let response_headers = response.headers().clone();
+        let bytes = match response.bytes() {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!("task failed: {err}");
+                return Ok(ToolTaskOutcome::Failed);
+            }
+        };
+        let mut header_fields: BTreeMap<String, Value> = BTreeMap::new();
+        for (name, value) in response_headers.iter() {
+            let text = value.to_str().map_or_else(
+                |_| String::from_utf8_lossy(value.as_bytes()).into_owned(),
+                str::to_owned,
+            );
+            let entry = header_fields
+                .entry(http_canonical_header(name.as_str()))
+                .or_insert_with(|| Value::List(Vec::new()));
+            if let Value::List(items) = entry {
+                items.push(Value::String(text));
+            }
+        }
+        let response_value = Value::Struct(BTreeMap::from([
+            ("status".to_owned(), Value::String(status)),
+            ("statusCode".to_owned(), Value::Int(status_code)),
+            (
+                "body".to_owned(),
+                Value::String(String::from_utf8_lossy(&bytes).into_owned()),
+            ),
+            ("header".to_owned(), Value::Struct(header_fields)),
+            ("trailer".to_owned(), Value::Struct(BTreeMap::new())),
+        ]));
+        Ok(ToolTaskOutcome::Done {
+            outputs: vec![("response".to_owned(), response_value)],
+        })
+    })();
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(HttpInputError::NotReady(reason)) => Ok(ToolTaskOutcome::NotReady(reason)),
+        Err(HttpInputError::Invalid(message)) => Err(ostinato_lang::LangError::Workflow(message)),
+    }
 }
 
 fn execute_print(
