@@ -74,10 +74,10 @@ workflow outside the Rust surface has a supported escape hatch.
   root/container/definition/module targets, including module definition tasks
   (`prep: lib.#def`)), arbitrary-hop package alias chains (`p2: prep;
   p3: p2; r: p3` materialise the same alternating instances as CUE for
-  command aliases and task-input reads, including module, definition,
-  nested-container, let-mixed, multi-alias and nested-command targets;
-  plain-field interpolation at depths >= 3 may over-count, see the
-  residuals table),
+  command field aliases (`r: p3`) and task-input reads, including module,
+  definition, nested-container, let-mixed, multi-alias and nested-command
+  targets; command target aliases (`command: c: pN`) and plain-field
+  interpolation at depths >= 3 diverge, see the residuals table),
   derived expressions over pending task outputs (`len(run.stdout)`,
   concatenation and string/bytes repetition (`run.stdout * 2`),
   interpolation, comparisons, numeric operations, list indexing and
@@ -121,8 +121,9 @@ workflow outside the Rust surface has a supported escape hatch.
 | Bare references to comprehension-generated fields | `x: {if true {b: 1}, a: b}` is accepted although CUE requires `x.b`; use an explicit field or selector |
 | Pending-output expressions in conditions and non-scalar interpolation | CUE rejects `if` conditions before running the producer; for list-valued interpolation CUE runs the producer and rejects during interpolation, while Ostinato rejects before execution. Both exit non-zero, with Ostinato's own diagnostic text. Scalar string/number operations (including string/bytes concatenation and repetition such as `run.stdout * 2` and `r.response.body * 2`), unary operators, comparisons, list indexing/comprehensions, `len`/`strings`/`list.Concat`/`math`/`regexp` helpers and pending values used as task inputs are deferred and match CUE |
 | Command-local alias read without a companion | `command: c: {a: base; t: cli.Print & {text: "\(a.stdout)"}}`: CUE rejects before execution; Ostinato executes `base` and then reports the non-concrete error. Exit codes match, but the producer side effect differs |
-| Cross-target module-hop reads | With `prep: lib.run; p2: prep; p3: p2`: `r: p2` plus `\(p3.stdout)` succeeds in CUE (order `PP`) while Ostinato rejects; `r: p3` plus `\(prep.stdout)` rejects in CUE after running `P` while Ostinato succeeds with order `PP`. Same-target hops and direct alias chains are covered |
+| Cross-target module-hop reads | With `prep: lib.run; p2: prep; p3: p2`: `r: p2` plus `t: cli.Print & {text: "\(p3.stdout)"}` succeeds in CUE (order `PP`) while Ostinato rejects; `r: p3` plus `t: cli.Print & {text: "\(prep.stdout)"}` rejects in CUE after running `P` while Ostinato succeeds with order `PP`. The same shapes with a plain `q: "\(...)"` read agree (`0/PP` on both). Same-target hops and direct alias chains are covered |
 | Alias depths >= 3 plain-field interpolation | `base: exec.Run; p2: base; p3: p2; command: c: {r: p3; q: "\(p3.stdout)"}`: CUE runs `PP`, Ostinato runs `PPP`. This over-count is limited to plain-field interpolation; command aliases and task-input reads follow CUE |
+| Command-target alias chains | `base: exec.Run; p2: base; command: c: p2` runs `PP` in CUE and `P` in Ostinato; longer targets keep the alternating CUE count (`command: c: p3` → `PP`, `c: p4` → `PPP`, ...) while Ostinato still runs `P`. This is distinct from a command field alias (`r: p3`), which follows CUE |
 | Invalid pending operand types | `\(run.stdout - 2)` and `\(run.success + 1)`: CUE runs the producer (order `P`) then reports the type error; Ostinato rejects before execution. Exit codes match, but the producer side effect differs |
 | Module-backed command-local alias read | `prep: lib.run; p2: prep; command: c: {a: prep; t: cli.Print & {text: "\(p2.stdout)"}}`: CUE runs the producer (order `P`) then rejects; Ostinato rejects before execution |
 | Non-chunked `Transfer-Encoding` | CUE/Go rejects `Transfer-Encoding: identity` and `Transfer-Encoding: gzip` as unsupported transport encodings; Ostinato accepts the response body |
