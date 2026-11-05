@@ -7304,15 +7304,30 @@ command: pkgunknownafter: {
         ),
     ];
     for (name, source, artifact) in cases {
-        let cue_dir = tempfile::tempdir().expect("tempdir");
+        // CUE has a known nondeterministic ordering race between the package
+        // task and its command-local alias in `pkgduplicate`: occasionally
+        // `$after: prep` lets the reader run before either writer created
+        // `order.txt`. Retry only that exact transient failure; every other
+        // fixture and every Rust run still gets exactly one attempt.
+        let mut cue_attempts = 0;
+        let (cue_dir, expected) = loop {
+            cue_attempts += 1;
+            let cue_dir = tempfile::tempdir().expect("tempdir");
+            write(&cue_dir.path().join("fixture_tool.cue"), source);
+            let expected = Command::new(&cue)
+                .args(["cmd", name])
+                .current_dir(cue_dir.path())
+                .output()
+                .expect("run cue cmd");
+            let transient = *name == "pkgduplicate"
+                && !expected.status.success()
+                && String::from_utf8_lossy(&expected.stderr).contains("order.txt");
+            if !transient || cue_attempts >= 5 {
+                break (cue_dir, expected);
+            }
+        };
         let rust_dir = tempfile::tempdir().expect("tempdir");
-        write(&cue_dir.path().join("fixture_tool.cue"), source);
         write(&rust_dir.path().join("fixture_tool.cue"), source);
-        let expected = Command::new(&cue)
-            .args(["cmd", name])
-            .current_dir(cue_dir.path())
-            .output()
-            .expect("run cue cmd");
         let actual = ost(&["cmd", name, rust_dir.path().to_str().expect("path")]);
         assert_eq!(
             actual.status.code(),
