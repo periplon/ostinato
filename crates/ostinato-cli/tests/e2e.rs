@@ -13233,24 +13233,26 @@ import (
 p: *"d" | string
 g: os.Getenv
 h: g & {REV_V: p}
-envparams: {REV_V: "a" | int}
-envparamstwo: {REV_V: *5 | string}
+envp: {REV_V: "a" | int}
+envp2: {REV_V: *5 | string}
 base: {
 	env: os.Getenv & {REV_V: p}
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
 more: {extra: 1}
-let letparams = {REV_V: *"d" | string}
+let lparams = {REV_V: *"d" | string}
+let la = {REV_V: *"d" | string}
+let lb = la
 let letbase = {
 	env: os.Getenv & {REV_V: p}
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
 command: envparams: {
-	env: os.Getenv & envparams
+	env: os.Getenv & envp
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
 command: envparamstwo: {
-	env: os.Getenv & envparamstwo
+	env: os.Getenv & envp2
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
 command: taskalias: {
@@ -13270,10 +13272,19 @@ command: nestedgroup: {
 	}
 }
 command: letparams: {
-	env: os.Getenv & letparams
+	env: os.Getenv & lparams
 	print: cli.Print & {text: "v=[\(env.REV_V)]"}
 }
 command: letcmd: letbase
+command: locallet: {
+	lp: {REV_V: *"d" | string}
+	env: os.Getenv & lp
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: letchain: {
+	env: os.Getenv & lb
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
 "#,
     );
     let run = |implementation: &Path, command: &str| {
@@ -13294,15 +13305,19 @@ command: letcmd: letbase
         "nestedgroup",
         "letparams",
         "letcmd",
+        "locallet",
+        "letchain",
     ] {
         let expected = run(Path::new(&cue), command);
         let actual = run(&bin(), command);
+        let expected_success = command != "envparamstwo";
+        assert_eq!(expected.status.success(), expected_success, "{command}");
+        assert_eq!(actual.status.success(), expected_success, "{command}");
         assert_eq!(actual.status.code(), expected.status.code(), "{command}");
         assert_eq!(actual.stdout, expected.stdout, "{command}");
-        if expected.status.success() {
+        if expected_success {
             assert_eq!(actual.stderr, expected.stderr, "{command}");
         } else {
-            assert!(!actual.status.success(), "{command}");
             assert!(!actual.stderr.is_empty(), "{command}");
             assert!(!expected.stderr.is_empty(), "{command}");
         }
@@ -13376,5 +13391,115 @@ command: grouptaskalias: {
         assert_eq!(actual.status.code(), expected.status.code(), "{command}");
         assert_eq!(actual.stdout, expected.stdout, "{command}");
         assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+}
+
+#[test]
+fn tool_command_unselected_commands_do_not_poison_selected_commands() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("x_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: a: {run: exec.Run & {cmd: ["sh", "-c", "echo A"], stdout: string}}
+command: b: {brun: exec.Run & {cmd: ["sh", "-c", "echo B"], stdout: string}}
+command: good: {print: cli.Print & {text: "good"}}
+command: bad1: {v: "a" | "b"}
+command: bad2: {x: 1 & 2}
+command: bad3: {q: cli.Print & {text: "\(1/0)"}}
+"#,
+    );
+    let run = |implementation: &Path, command: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .output()
+            .expect("run command")
+    };
+    for command in ["a", "b", "good"] {
+        let expected = run(Path::new(&cue), command);
+        let actual = run(&bin(), command);
+        assert!(expected.status.success(), "{command}");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+
+    let listing = ost(&["cmd", "-h", directory.path().to_str().expect("path")]);
+    assert!(listing.status.success());
+    let listing_stdout = String::from_utf8_lossy(&listing.stdout);
+    for name in ["a", "b", "good", "bad1", "bad2", "bad3"] {
+        assert!(listing_stdout.contains(name), "{name}: {listing_stdout}");
+    }
+}
+
+#[test]
+fn tool_command_imported_os_command_aliases_fail_closed() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cue_dir = tempfile::tempdir().expect("tempdir");
+    let rust_dir = tempfile::tempdir().expect("tempdir");
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"
+package lib
+import (
+	"tool/cli"
+	"tool/os"
+)
+two: {REV_V: *5 | string}
+basecmd2: {
+	env: os.Getenv & {REV_V: *5 | string}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+"#;
+    let source = r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+	"example.com/k/lib"
+)
+command: importedstruct: {
+	env: os.Getenv & lib.two
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: importedcmd: lib.basecmd2
+"#;
+    for directory in [cue_dir.path(), rust_dir.path()] {
+        std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+        std::fs::create_dir_all(directory.join("lib")).expect("lib");
+        write(&directory.join("cue.mod/module.cue"), module);
+        write(&directory.join("lib/lib.cue"), library);
+        write(&directory.join("x_tool.cue"), source);
+    }
+    for command in ["importedstruct", "importedcmd"] {
+        let expected = Command::new(&cue)
+            .args(["cmd", command])
+            .current_dir(cue_dir.path())
+            .env_remove("REV_V")
+            .output()
+            .expect("run cue cmd");
+        let actual = Command::new(bin())
+            .args(["cmd", command, rust_dir.path().to_str().expect("path")])
+            .env_remove("REV_V")
+            .output()
+            .expect("run ostinato cmd");
+        assert!(
+            !expected.status.success(),
+            "{command}: cue unexpectedly passed"
+        );
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert!(!actual.stderr.is_empty(), "{command}");
     }
 }

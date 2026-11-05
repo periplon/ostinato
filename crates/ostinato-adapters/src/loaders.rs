@@ -1605,8 +1605,21 @@ pub fn tool_command_metadata(
 ) -> Result<Vec<ToolCommandInfo>, ostinato_lang::LangError> {
     let package = load_tool_package(paths)?;
     let injected = BTreeMap::new();
+    let metadata_names = command_names_in_items(&package.combined.items);
+    let mut metadata_file = package.combined.clone();
+    metadata_file.items = prune_root_commands(&package.combined.items, &metadata_names, true);
+    metadata_file.items = prune_unreferenced_lets(&metadata_file.items);
+    let aliases: std::collections::BTreeSet<String> = metadata_file
+        .imports
+        .iter()
+        .map(|import| import.alias.clone())
+        .collect();
+    let used = used_import_aliases(&metadata_file.items, &aliases);
+    metadata_file
+        .imports
+        .retain(|import| used.contains(&import.alias));
     let value = eval_file_with_imports_mode_allow_incomplete(
-        &package.combined,
+        &metadata_file,
         &package.imports,
         &injected,
         false,
@@ -1684,7 +1697,38 @@ pub fn run_tool_command_paths(
         }
     }
 
+    let keep_commands = selected_command_scope(&combined.items, command_name);
+    combined.items = prune_root_commands(&combined.items, &keep_commands, false);
+    combined.items = prune_unreferenced_lets(&combined.items);
+    let mut selected_values = Vec::new();
+    for item in &combined.items {
+        if let StructItem::Field(field) = item
+            && matches!(&field.label, Label::Name(name, _) if name == "command")
+        {
+            command_values_for_name(&field.value, command_name, &mut selected_values);
+        }
+    }
+    if selected_values
+        .iter()
+        .any(|value| expr_uses_imported_task_struct(value, &imports, &non_task_imports))
+    {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool command alias from an imported module contains tool/os tasks; this shape is not supported"
+                .to_owned(),
+        ));
+    }
     apply_os_value_schema(&mut combined.items, command_name, &imports);
+    // Schema expansion can replace the last reference to an imported value;
+    // drop declarations that are no longer referenced by the pruned package.
+    let aliases: std::collections::BTreeSet<String> = combined
+        .imports
+        .iter()
+        .map(|import| import.alias.clone())
+        .collect();
+    let used = used_import_aliases(&combined.items, &aliases);
+    combined
+        .imports
+        .retain(|import| used.contains(&import.alias));
     let task_items = command_task_items(&combined.items, command_name)?;
     let probe =
         eval_file_with_imports_mode_allow_incomplete(&combined, &imports, &injected, false)?;
@@ -2429,6 +2473,42 @@ fn import_os_env_task(expr: &Expr, imports: &BTreeMap<String, Value>) -> bool {
     })
 }
 
+fn value_has_os_env_task(value: &Value) -> bool {
+    match value {
+        Value::Struct(fields) | Value::Definition { fields, .. } => {
+            matches!(
+                fields.get("$id"),
+                Some(Value::String(id))
+                    if matches!(id.as_str(), "tool/os.Getenv" | "tool/os.Environ")
+            ) || fields.values().any(value_has_os_env_task)
+        }
+        Value::Disjunction(alternatives, _) => alternatives.iter().any(value_has_os_env_task),
+        _ => false,
+    }
+}
+
+fn struct_has_os_env_id(items: &[StructItem]) -> bool {
+    items.iter().any(|item| {
+        let StructItem::Field(field) = item else {
+            return false;
+        };
+        if !matches!(&field.label, Label::Name(name, _) if name == "$id") {
+            return false;
+        }
+        let Expr::Str(parts, _) = &field.value else {
+            return false;
+        };
+        let mut text = String::new();
+        for part in parts {
+            match part {
+                ostinato_lang::ast::StrPart::Text(value) => text.push_str(value),
+                ostinato_lang::ast::StrPart::Interp(_) => return false,
+            }
+        }
+        matches!(text.as_str(), "tool/os.Getenv" | "tool/os.Environ")
+    })
+}
+
 fn expr_has_os_env_task(
     expr: &Expr,
     scopes: &[&[StructItem]],
@@ -2449,7 +2529,7 @@ fn expr_has_os_env_task(
             if !visited.insert(key.clone()) {
                 return false;
             }
-            let found =
+            let mut found =
                 resolve_local_value(scopes, root, expr, &mut std::collections::BTreeSet::new())
                     .is_some_and(|resolved| {
                         expr_has_os_env_task(
@@ -2461,6 +2541,21 @@ fn expr_has_os_env_task(
                             visited,
                         )
                     });
+            if !found
+                && let Some(import_path) = selector_names(expr, None)
+                && let Some((root_name, rest)) = import_path.split_first()
+                && let Some(module) = imports.get(root_name)
+            {
+                let mut value = module;
+                for field in rest {
+                    let Some(next) = value_field(value, field) else {
+                        value = module;
+                        break;
+                    };
+                    value = next;
+                }
+                found = value_has_os_env_task(value);
+            }
             visited.remove(&key);
             found
         }
@@ -2493,6 +2588,7 @@ fn expr_has_os_env_task(
             expr_has_os_env_task(left, scopes, root, imports, descend_structs, visited)
                 || expr_has_os_env_task(right, scopes, root, imports, descend_structs, visited)
         }
+        Expr::Struct(items, _) if struct_has_os_env_id(items) => true,
         Expr::Struct(items, _) if descend_structs => items.iter().any(|item| match item {
             StructItem::Field(field) => expr_has_os_env_task(
                 &field.value,
@@ -2630,10 +2726,27 @@ fn materialize_refs(
                 &mut std::collections::BTreeSet::new(),
             ) && resolved != original
             {
-                // Keep the original reference as a conjunct so a `let` used
-                // only here remains referenced; wrap the resolved clone.
-                let span = original.span();
-                *expr = Expr::Unify(Box::new(original), Box::new(resolved), span);
+                let keep_original = matches!(original, Expr::Ident(..))
+                    || matches!(original, Expr::Select(..) | Expr::Index(..))
+                        && resolve_local_value(
+                            scopes,
+                            root,
+                            &original,
+                            &mut std::collections::BTreeSet::new(),
+                        )
+                        .is_some();
+                if keep_original {
+                    // Keep the original reference as a conjunct so a `let`
+                    // used only here remains referenced; wrap the resolved
+                    // clone.
+                    let span = original.span();
+                    *expr = Expr::Unify(Box::new(original), Box::new(resolved), span);
+                } else {
+                    // Imported values have no local binding to preserve, and
+                    // retaining their unwrapped copy would let an invalid
+                    // default win over the schema-constrained clone.
+                    *expr = resolved;
+                }
             }
         }
         Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
@@ -2843,6 +2956,511 @@ fn apply_os_schema_in_command(
             apply_os_schema_in_command(inner, command_name, scopes, root, imports);
         }
         _ => {}
+    }
+}
+
+fn is_visible_command_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('$')
+        && !name.starts_with('#')
+        && !name.starts_with('\u{3}')
+}
+
+fn command_names_in_expr(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                if let StructItem::Field(field) = item
+                    && let Label::Name(name, _) = &field.label
+                    && is_visible_command_name(name)
+                {
+                    out.insert(name.clone());
+                }
+            }
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            command_names_in_expr(left, out);
+            command_names_in_expr(right, out);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            command_names_in_expr(inner, out);
+        }
+        _ => {}
+    }
+}
+
+fn command_names_in_items(items: &[StructItem]) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for item in items {
+        if let StructItem::Field(field) = item
+            && matches!(&field.label, Label::Name(name, _) if name == "command")
+        {
+            command_names_in_expr(&field.value, &mut names);
+        }
+    }
+    names
+}
+
+fn command_values_for_name<'a>(expr: &'a Expr, name: &str, out: &mut Vec<&'a Expr>) {
+    match expr {
+        Expr::Struct(items, _) => {
+            for item in items {
+                if let StructItem::Field(field) = item
+                    && matches!(&field.label, Label::Name(label, _) if label == name)
+                {
+                    out.push(&field.value);
+                }
+            }
+        }
+        Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
+            command_values_for_name(left, name, out);
+            command_values_for_name(right, name, out);
+        }
+        Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
+            command_values_for_name(inner, name, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_command_references(
+    expr: &Expr,
+    known: &std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match expr {
+        Expr::Ident(name, _) => {
+            if known.contains(name) {
+                out.insert(name.clone());
+            }
+        }
+        Expr::Select(base, field, _, _) => {
+            if let Some(path) = selector_names(expr, None)
+                && path.len() == 2
+                && path.first().is_some_and(|root| root == "command")
+                && known.contains(field)
+            {
+                out.insert(field.clone());
+            } else if let Some(path) = selector_names(expr, None)
+                && path.len() > 1
+                && path.first().is_some_and(|root| known.contains(root))
+            {
+                out.insert(path[0].clone());
+            }
+            collect_command_references(base, known, out);
+        }
+        Expr::Index(base, index, _) => {
+            collect_command_references(base, known, out);
+            collect_command_references(index, known, out);
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            collect_command_references(left, known, out);
+            collect_command_references(right, known, out);
+        }
+        Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Bound(_, inner, _)
+        | Expr::Unary(_, inner, _)
+        | Expr::OpenList(Some(inner), _) => {
+            collect_command_references(inner, known, out);
+        }
+        Expr::Struct(items, _) => {
+            for item in items {
+                match item {
+                    StructItem::Field(field) => {
+                        collect_command_references(&field.value, known, out);
+                    }
+                    StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                        collect_command_references(value, known, out);
+                    }
+                    StructItem::For { source, body, .. } => {
+                        collect_command_references(source, known, out);
+                        for item in body {
+                            collect_command_references_in_item(item, known, out);
+                        }
+                    }
+                    StructItem::If { cond, body, .. } => {
+                        collect_command_references(cond, known, out);
+                        for item in body {
+                            collect_command_references_in_item(item, known, out);
+                        }
+                    }
+                    StructItem::Ellipsis(_) => {}
+                }
+            }
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                collect_command_references(item, known, out);
+            }
+        }
+        Expr::Call(callee, arguments, _) => {
+            collect_command_references(callee, known, out);
+            for argument in arguments {
+                collect_command_references(argument, known, out);
+            }
+        }
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let ostinato_lang::ast::StrPart::Interp(inner) = part {
+                    collect_command_references(inner, known, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_command_references_in_item(
+    item: &StructItem,
+    known: &std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match item {
+        StructItem::Field(field) => collect_command_references(&field.value, known, out),
+        StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+            collect_command_references(value, known, out);
+        }
+        StructItem::For { source, body, .. } => {
+            collect_command_references(source, known, out);
+            for item in body {
+                collect_command_references_in_item(item, known, out);
+            }
+        }
+        StructItem::If { cond, body, .. } => {
+            collect_command_references(cond, known, out);
+            for item in body {
+                collect_command_references_in_item(item, known, out);
+            }
+        }
+        StructItem::Ellipsis(_) => {}
+    }
+}
+
+fn metadata_only_expr(expr: &Expr) -> Expr {
+    const KEYS: [&str; 6] = ["$usage", "$short", "$long", "usage", "short", "long"];
+    match expr {
+        Expr::Struct(items, span) => Expr::Struct(
+            items
+                .iter()
+                .filter_map(|item| {
+                    let StructItem::Field(field) = item else {
+                        return None;
+                    };
+                    let Label::Name(name, _) = &field.label else {
+                        return None;
+                    };
+                    KEYS.contains(&name.as_str()).then(|| item.clone())
+                })
+                .collect(),
+            *span,
+        ),
+        Expr::Unify(left, right, span) => Expr::Unify(
+            Box::new(metadata_only_expr(left)),
+            Box::new(metadata_only_expr(right)),
+            *span,
+        ),
+        Expr::Paren(inner, span) => Expr::Paren(Box::new(metadata_only_expr(inner)), *span),
+        Expr::Default(inner, span) => Expr::Default(Box::new(metadata_only_expr(inner)), *span),
+        Expr::Bound(op, inner, span) => {
+            Expr::Bound(*op, Box::new(metadata_only_expr(inner)), *span)
+        }
+        _ => Expr::Struct(Vec::new(), Span::default()),
+    }
+}
+
+fn prune_command_expr(
+    expr: &Expr,
+    keep: &std::collections::BTreeSet<String>,
+    metadata_only: bool,
+) -> Expr {
+    match expr {
+        Expr::Struct(items, span) => Expr::Struct(
+            items
+                .iter()
+                .filter_map(|item| {
+                    let StructItem::Field(field) = item else {
+                        return Some(item.clone());
+                    };
+                    let Label::Name(name, _) = &field.label else {
+                        return Some(item.clone());
+                    };
+                    if name.starts_with('$') {
+                        return Some(item.clone());
+                    }
+                    if !keep.contains(name) {
+                        return None;
+                    }
+                    let mut field = field.clone();
+                    if metadata_only {
+                        field.value = metadata_only_expr(&field.value);
+                    }
+                    Some(StructItem::Field(field))
+                })
+                .collect(),
+            *span,
+        ),
+        Expr::Unify(left, right, span) => Expr::Unify(
+            Box::new(prune_command_expr(left, keep, metadata_only)),
+            Box::new(prune_command_expr(right, keep, metadata_only)),
+            *span,
+        ),
+        Expr::Paren(inner, span) => Expr::Paren(
+            Box::new(prune_command_expr(inner, keep, metadata_only)),
+            *span,
+        ),
+        Expr::Default(inner, span) => Expr::Default(
+            Box::new(prune_command_expr(inner, keep, metadata_only)),
+            *span,
+        ),
+        Expr::Bound(op, inner, span) => Expr::Bound(
+            *op,
+            Box::new(prune_command_expr(inner, keep, metadata_only)),
+            *span,
+        ),
+        _ => expr.clone(),
+    }
+}
+
+fn prune_root_commands(
+    items: &[StructItem],
+    keep: &std::collections::BTreeSet<String>,
+    metadata_only: bool,
+) -> Vec<StructItem> {
+    items
+        .iter()
+        .map(|item| {
+            let StructItem::Field(field) = item else {
+                return item.clone();
+            };
+            if !matches!(&field.label, Label::Name(name, _) if name == "command") {
+                return item.clone();
+            }
+            let mut field = field.clone();
+            field.value = prune_command_expr(&field.value, keep, metadata_only);
+            StructItem::Field(field)
+        })
+        .collect()
+}
+
+fn expr_uses_imports(
+    expr: &Expr,
+    aliases: &std::collections::BTreeSet<String>,
+    used: &mut std::collections::BTreeSet<String>,
+) {
+    match expr {
+        Expr::Ident(name, _) => {
+            if aliases.contains(name) {
+                used.insert(name.clone());
+            }
+        }
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+            expr_uses_imports(base, aliases, used);
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            expr_uses_imports(left, aliases, used);
+            expr_uses_imports(right, aliases, used);
+        }
+        Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Bound(_, inner, _)
+        | Expr::Unary(_, inner, _)
+        | Expr::OpenList(Some(inner), _) => expr_uses_imports(inner, aliases, used),
+        Expr::Struct(items, _) => {
+            for item in items {
+                item_uses_imports(item, aliases, used);
+            }
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                expr_uses_imports(item, aliases, used);
+            }
+        }
+        Expr::Call(callee, arguments, _) => {
+            expr_uses_imports(callee, aliases, used);
+            for argument in arguments {
+                expr_uses_imports(argument, aliases, used);
+            }
+        }
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let ostinato_lang::ast::StrPart::Interp(inner) = part {
+                    expr_uses_imports(inner, aliases, used);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn item_uses_imports(
+    item: &StructItem,
+    aliases: &std::collections::BTreeSet<String>,
+    used: &mut std::collections::BTreeSet<String>,
+) {
+    match item {
+        StructItem::Field(field) => expr_uses_imports(&field.value, aliases, used),
+        StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+            expr_uses_imports(value, aliases, used);
+        }
+        StructItem::For { source, body, .. } => {
+            expr_uses_imports(source, aliases, used);
+            for item in body {
+                item_uses_imports(item, aliases, used);
+            }
+        }
+        StructItem::If { cond, body, .. } => {
+            expr_uses_imports(cond, aliases, used);
+            for item in body {
+                item_uses_imports(item, aliases, used);
+            }
+        }
+        StructItem::Ellipsis(_) => {}
+    }
+}
+
+fn used_import_aliases(
+    items: &[StructItem],
+    aliases: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<String> {
+    let mut used = std::collections::BTreeSet::new();
+    for item in items {
+        item_uses_imports(item, aliases, &mut used);
+    }
+    used
+}
+
+fn expr_uses_imported_task_struct(
+    expr: &Expr,
+    imports: &BTreeMap<String, Value>,
+    non_task_imports: &ImportKinds,
+) -> bool {
+    match expr {
+        Expr::Select(..) | Expr::Index(..) => {
+            if let Some(path) = selector_names(expr, None)
+                && let Some((root, rest)) = path.split_first()
+                && non_task_imports.non_task.contains(root)
+                && let Some(module) = imports.get(root)
+            {
+                let mut value = module;
+                let mut found = true;
+                for field in rest {
+                    let Some(next) = value_field(value, field) else {
+                        found = false;
+                        break;
+                    };
+                    value = next;
+                }
+                if found && value_has_os_env_task(value) {
+                    return true;
+                }
+            }
+            match expr {
+                Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => {
+                    expr_uses_imported_task_struct(base, imports, non_task_imports)
+                }
+                _ => false,
+            }
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            expr_uses_imported_task_struct(left, imports, non_task_imports)
+                || expr_uses_imported_task_struct(right, imports, non_task_imports)
+        }
+        Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Bound(_, inner, _)
+        | Expr::Unary(_, inner, _)
+        | Expr::OpenList(Some(inner), _) => {
+            expr_uses_imported_task_struct(inner, imports, non_task_imports)
+        }
+        Expr::Struct(items, _) => items.iter().any(|item| match item {
+            StructItem::Field(field) => {
+                expr_uses_imported_task_struct(&field.value, imports, non_task_imports)
+            }
+            StructItem::Let { value, .. } | StructItem::Pattern { value, .. } => {
+                expr_uses_imported_task_struct(value, imports, non_task_imports)
+            }
+            _ => false,
+        }),
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => items
+            .iter()
+            .any(|item| expr_uses_imported_task_struct(item, imports, non_task_imports)),
+        Expr::Call(callee, arguments, _) => {
+            expr_uses_imported_task_struct(callee, imports, non_task_imports)
+                || arguments.iter().any(|argument| {
+                    expr_uses_imported_task_struct(argument, imports, non_task_imports)
+                })
+        }
+        Expr::Str(parts, _) => parts.iter().any(|part| match part {
+            ostinato_lang::ast::StrPart::Interp(inner) => {
+                expr_uses_imported_task_struct(inner, imports, non_task_imports)
+            }
+            ostinato_lang::ast::StrPart::Text(_) => false,
+        }),
+        _ => false,
+    }
+}
+
+fn prune_unreferenced_lets(items: &[StructItem]) -> Vec<StructItem> {
+    let mut current = items.to_vec();
+    loop {
+        let names: std::collections::BTreeSet<String> = current
+            .iter()
+            .filter_map(|item| match item {
+                StructItem::Let { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        if names.is_empty() {
+            return current;
+        }
+        let used = used_import_aliases(&current, &names);
+        let next: Vec<StructItem> = current
+            .iter()
+            .filter(|item| match item {
+                StructItem::Let { name, .. } => used.contains(name),
+                _ => true,
+            })
+            .cloned()
+            .collect();
+        if next.len() == current.len() {
+            return next;
+        }
+        current = next;
+    }
+}
+
+fn selected_command_scope(
+    items: &[StructItem],
+    command_name: &str,
+) -> std::collections::BTreeSet<String> {
+    let known = command_names_in_items(items);
+    let mut keep = std::collections::BTreeSet::from([command_name.to_owned()]);
+    loop {
+        let mut next = keep.clone();
+        for name in &keep {
+            let mut values = Vec::new();
+            for item in items {
+                if let StructItem::Field(field) = item
+                    && matches!(&field.label, Label::Name(label, _) if label == "command")
+                {
+                    command_values_for_name(&field.value, name, &mut values);
+                }
+            }
+            for value in values {
+                collect_command_references(value, &known, &mut next);
+            }
+        }
+        if next.len() == keep.len() {
+            return keep;
+        }
+        keep = next;
     }
 }
 
@@ -6376,8 +6994,31 @@ fn output_expr(value: &Value) -> Option<Expr> {
             }
             Some(expr)
         }
+        Value::Struct(fields) => value_struct_expr(fields),
+        Value::Definition { fields, .. } => value_struct_expr(fields),
         _ => None,
     }
+}
+
+fn value_struct_expr(fields: &BTreeMap<String, Value>) -> Option<Expr> {
+    let span = Span::default();
+    let mut items = Vec::with_capacity(fields.len());
+    for (name, value) in fields {
+        items.push(StructItem::Field(Field {
+            id: 0,
+            label: Label::Name(name.clone(), span),
+            value: output_expr(value)?,
+            optional: false,
+            definition: false,
+            alias: None,
+            quoted: false,
+            bytes_label_runes: None,
+            bytes_label_multiline: false,
+            attributes: Vec::new(),
+            span,
+        }));
+    }
+    Some(Expr::Struct(items, span))
 }
 
 fn inject_into_struct(expr: &mut Expr, field: &str, value: &Expr) -> bool {
