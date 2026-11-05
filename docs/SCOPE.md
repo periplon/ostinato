@@ -63,7 +63,8 @@ workflow outside the Rust surface has a supported escape hatch.
   (`x.l[0].b`, `x.l[0][0].b`,
   `x.l[0].o.b`, quoted indices and open-list prefixes), concrete optional
   operands and comprehension-generated fields (`if`/`for`/list
-  comprehensions) are narrowed before dependent fields are recomputed.
+  comprehensions, including selector paths through list-comprehension
+  elements) are narrowed before dependent fields are recomputed.
   Self-selection combined with disjunction/default narrowing recomputes
   dependents from statically injectable narrowed operands; a soundness guard
   re-evaluates local shortcuts against the full declaration projection and
@@ -156,7 +157,7 @@ workflow outside the Rust surface has a supported escape hatch.
 | Go float64 last-bit parity | The exposed float64-backed `math` functions match Go's routines for the conformance/tested surface. Rare `math.Asinh`, `math.Acosh` or `math.Atanh` inputs can still differ by 1 ulp from the oracle (for example `math.Atanh(-0.1731958024477226)`, `math.Acosh(204534.80525878677)`). `Asin`, `Acos` and `Atan2` are covered by the oracle fuzz and match |
 | Numeric unification lexical form | Numerically equal decimals keep the first operand's scale in some unifications (`(1.0 + 0) & 1.00` exports `1.0`; CUE exports `1.00`). Values compare equal; only the chosen representation differs |
 | Bare identifiers across operands of a composed definition | `#D: {a: 1} & {b: a}` is accepted although CUE rejects the bare reference to a sibling operand's field; with an enclosing `a: 9`, `b` resolves to `1` instead of CUE's `9`. Non-definition composition and definition-valued narrowing match CUE; self-selection/narrowing is covered by the in-scope bullets for statically injectable operands, with the fail-closed cases in the two rows below |
-| Self-selection narrowing with non-static operands | When a narrowed value cannot be captured before selector-path projection (for example a let/alias chain that is not statically evaluable), Ostinato rejects the evaluation instead of emitting the operands' un-narrowed default. CUE may resolve the same program; no silent value is produced |
+| Self-selection narrowing with non-static operands | When a narrowed value cannot be captured before selector-path projection (for example a let/alias chain that is not statically evaluable), Ostinato rejects the evaluation instead of emitting the operands' un-narrowed default. CUE may resolve the same program; no silent value is produced. Open-list-form list-comprehension self-selection also fails closed |
 | Let-mediated self-default cycles | A `let` whose scalar body reads the field/path being defined (`let X = x.a + 0; x: {a: X + 1} & {a: *2 \| int}`) fails closed, including nested/list/`#D` forms. CUE may resolve the default variant; no un-narrowed or cached let value is emitted |
 | Cross-field mutual selection cycles | `x: {a: y.b, b: 1}; y: {b: x.a}` and the equivalent two-let form are rejected by Ostinato, while CUE reports an incomplete value. The same cycles that reach a concrete field (`g: {b: X.b}`) resolve like CUE; three-field cycles also fail closed |
 | Optional narrowing in multi-element disjunction lists and selector forms | Single-element nested/list/list-of-list/list-comprehension/open-list/let/definition alternatives recompute dependents from concrete optional values. Multi-element disjunction lists fail closed (`cannot unify lists of different lengths`) where CUE resolves each element, and selector forms over such alternatives fail closed rather than emitting a stale default |

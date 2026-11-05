@@ -59,7 +59,7 @@ list_deep_narrow: {l: [{o: {a: *1 | int, b: a}}]} & {l: [{o: {a: 32}}], c: list_
 optional_narrow: {a: *1 | int, b: a} & {a?: 33}
 optional_nested_narrow: {o: {a: *1 | int, b: a}} & {o: {a?: 34}}
 comp_narrow: {if true {a: *1 | int, b: a}} & {a: 35}
-comp_list_narrow: {l: [for i in [1] {a: *1 | int, b: a}]} & {l: [{a: 36}]}
+comp_list_narrow: {l: [for i in [1] {a: *1 | int, b: a}]} & {l: [{a: 36}], c: comp_list_narrow.l[0].b}
 
 optional_only: {a?: *1 | int} & {a?: 37}
 optional_list_narrow: {l: [{a: *1 | int, b: a}]} & {l: [{a?: 38}], c: optional_list_narrow.l[0].b}
