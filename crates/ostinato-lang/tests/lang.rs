@@ -7643,10 +7643,20 @@ params: {p: #A | {n: 9}}
     assert_eq!(json["via_let"], serde_json::json!({"n": 8}));
     assert_eq!(json["params"]["p"], serde_json::json!({"n": 9}));
 
+    let soft = "package demo\n_h: int\nx: {b: _h + 1} | {c: 1}\n";
+    let file = ostinato_lang::parse(soft).expect("parse soft incomplete disjunction");
+    let value = ostinato_lang::eval_file(&file).expect("eval soft incomplete disjunction");
+    assert_eq!(
+        value.to_json().expect("json")["x"],
+        serde_json::json!({"c": 1})
+    );
+
     for source in [
         "package demo\n#E: {n: int, m: n + 1}\n#A?: #E\nx: #A\n",
         "package demo\n#E: {n: int, m: n + 1}\n#A?: #E\n#B?: #E\nx: #A | #B\n",
         "package demo\n#E: {n: int, m: n + 1}\n#A?: #E\ny: (#A | {n: 6}) & {n: 7}\n",
+        "package demo\n#A?: {n: int}\nx: {a: #A, b: nope} | {c: 1}\n",
+        "package demo\n#A?: int\nx: (#A + int) | 1\n",
     ] {
         let file = ostinato_lang::parse(source).expect("parse invalid optional disjunction");
         assert!(

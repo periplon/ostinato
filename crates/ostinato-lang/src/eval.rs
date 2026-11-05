@@ -3378,6 +3378,23 @@ fn is_optional_incomplete_error(err: &LangError) -> bool {
     err.is_incomplete_optional() || err.to_string().contains("cannot reference optional field")
 }
 
+fn is_soft_alternative_error(err: &LangError) -> bool {
+    is_deferrable_incomplete_error(err)
+}
+
+fn hard_error_beneath_soft(expr: &Expr, frame: &Frame<'_>) -> Result<(), LangError> {
+    let previous_defer = frame.defer_incomplete.replace(true);
+    let previous_cache = frame.skip_cache.replace(true);
+    let result = eval_expr(expr, frame);
+    frame.skip_cache.set(previous_cache);
+    frame.defer_incomplete.set(previous_defer);
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) if err.is_conflict() || is_deferrable_incomplete_error(&err) => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
 fn is_deferrable_incomplete_error(err: &LangError) -> bool {
     is_optional_incomplete_error(err)
         || err.is_incomplete_value()
@@ -4716,8 +4733,9 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         let value = match eval_expr(inner, frame) {
                             Ok(value) => value,
                             Err(err) if err.is_conflict() => continue,
-                            Err(err) if is_optional_incomplete_error(&err) => {
-                                if optional_error.is_none() {
+                            Err(err) if is_soft_alternative_error(&err) => {
+                                hard_error_beneath_soft(inner, frame)?;
+                                if is_optional_incomplete_error(&err) && optional_error.is_none() {
                                     optional_error = Some(err);
                                 }
                                 continue;
@@ -4736,8 +4754,9 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                         let value = match eval_expr(other, frame) {
                             Ok(value) => value,
                             Err(err) if err.is_conflict() => continue,
-                            Err(err) if is_optional_incomplete_error(&err) => {
-                                if optional_error.is_none() {
+                            Err(err) if is_soft_alternative_error(&err) => {
+                                hard_error_beneath_soft(other, frame)?;
+                                if is_optional_incomplete_error(&err) && optional_error.is_none() {
                                     optional_error = Some(err);
                                 }
                                 continue;
