@@ -8765,6 +8765,47 @@ def_form: #D & {a?: 7}
 }
 
 #[test]
+fn optional_narrowing_keeps_optional_only_fields_omitted() {
+    let source = r#"
+package demo
+only: {a?: *1 | int} & {a?: 5}
+list_opt: {l: [{a: *1 | int, b: a}]} & {l: [{a?: 5}], c: list_opt.l[0].b}
+deep_opt: {l: [{o: {a: *1 | int, b: a}}]} & {l: [{o: {a?: 5}}], c: deep_opt.l[0].o.b}
+open_opt: {l: [{a: *1 | int, b: a}, ...]} & {l: [{a?: 5}], c: open_opt.l[0].b}
+listcomp_opt: {l: [for i in [1] {a: *1 | int, b: a}]} & {l: [{a?: 5}]}
+#D: {y: *2 | int, z: y}
+def_list_opt: {l: [{x: #D}]} & {l: [{x: {y?: 6}}], c: def_list_opt.l[0].x.z}
+self_opt: {a: self_opt.b} & {b: *1 | int} & {b?: 5}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse optional-only narrowing");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval optional-only narrowing")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["only"], serde_json::json!({}));
+    assert_eq!(json["list_opt"]["c"], 5);
+    assert_eq!(json["list_opt"]["l"][0]["b"], 5);
+    assert_eq!(json["deep_opt"]["c"], 5);
+    assert_eq!(json["open_opt"]["c"], 5);
+    assert_eq!(json["listcomp_opt"]["l"][0]["b"], 5);
+    assert_eq!(json["def_list_opt"]["c"], 6);
+    assert_eq!(json["def_list_opt"]["l"][0]["x"]["z"], 6);
+    assert_eq!(json["self_opt"], serde_json::json!({"a": 5, "b": 5}));
+
+    // Optional-only narrowing must not materialize or legalize references.
+    for source in [
+        "package demo\nx: {a?: *1 | int, b: a} & {a?: 5}\n",
+        "package demo\nx: {o: {a?: *1 | int, b: a}} & {o: {a?: 5}}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse optional-only reference");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "optional-only reference must fail: {source:?}"
+        );
+    }
+}
+
+#[test]
 fn comprehension_generated_fields_see_external_narrowing() {
     let source = r#"
 package demo
