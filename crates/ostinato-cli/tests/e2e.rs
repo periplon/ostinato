@@ -11638,6 +11638,18 @@ command: resaliasindex: {
             .to_owned(),
         ),
         (
+            "resmoduledirecttarget",
+            r#"package res
+import (
+	"tool/cli"
+	"example.com/k/lib"
+)
+prep: lib.run
+command: resmoduledirecttarget: prep & {t: cli.Print & {text: "R=\(prep.stdout)"}}
+"#
+            .to_owned(),
+        ),
+        (
             "resifpending",
             r#"package res
 import (
@@ -11797,6 +11809,19 @@ command: resstructwhole: {
 "#,
         ),
         (
+            "resstructinterp",
+            r#"package docs
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: resstructinterp: {
+	t: cli.Print & {text: "v=\({x: run.stdout})"}
+}
+"#,
+        ),
+        (
             "reslistinterp",
             r#"package docs
 import (
@@ -11831,7 +11856,7 @@ command: reslistinterp: {
         assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
         let cue_order = std::fs::read(cue_dir.path().join("order.txt")).ok();
         let rust_order = std::fs::read(rust_dir.path().join("order.txt")).ok();
-        if *name == "reslistinterp" {
+        if *name == "reslistinterp" || *name == "resstructinterp" {
             // Documented residual: CUE rejects literal list interpolation
             // before the producer; Ostinato schedules it and then rejects.
             assert!(cue_order.is_none(), "{name}: cue executed the producer");

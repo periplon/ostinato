@@ -2075,14 +2075,14 @@ pub fn run_tool_command_paths(
     let mut covered_module_roots = std::collections::BTreeSet::new();
     for path in &module_backed_task_reads {
         let root = task_read_root(&combined.items, path);
-        if &root == path {
-            continue;
-        }
         let read_nodes = alias_chain_nodes(&combined.items, path);
-        if alias_instance_paths
-            .iter()
-            .any(|instance| read_nodes.contains(instance))
-        {
+        // A materialised hop can cover a direct module-root read either by
+        // sitting on the read chain or by injecting the root as its alias
+        // target (`group.p2` injects `group.prep`).
+        if alias_instance_paths.iter().any(|instance| {
+            read_nodes.contains(instance)
+                || alias_instance_root(&combined.items, instance).as_ref() == Some(&root)
+        }) {
             covered_module_roots.insert(root);
         }
     }
@@ -2166,6 +2166,24 @@ pub fn run_tool_command_paths(
     {
         return Err(ostinato_lang::LangError::Workflow(
             "tool task inputs cannot read module task outputs".to_owned(),
+        ));
+    }
+    // A command target that is itself the module task (`command: c: prep & {t:
+    // cli.Print ...prep.stdout}`) deadlocks in CUE instead of executing the
+    // module producer. Reject before scheduling.
+    let direct_module_target_deadlock = command_target_candidates.iter().any(|target| {
+        path_is_module_terminal(&combined.items, &imports, target)
+            && alias_chain_instances(&combined.items, target).is_empty()
+            && module_backed_task_reads.iter().any(|read| {
+                let read_root = task_read_root(&combined.items, read);
+                read_root == *target
+                    || read == target
+                    || alias_chain_nodes(&combined.items, read).contains(target)
+            })
+    });
+    if direct_module_target_deadlock {
+        return Err(ostinato_lang::LangError::Workflow(
+            "tool command target reads its own module task output".to_owned(),
         ));
     }
 
