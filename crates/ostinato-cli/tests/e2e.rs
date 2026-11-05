@@ -2,7 +2,7 @@
 #![allow(clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
@@ -11626,4 +11626,254 @@ fn unused_imports_match_cue() {
         );
         assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
     }
+}
+
+fn spawn_ost(args: &[&str]) -> std::process::Child {
+    let mut command = Command::new(bin());
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.spawn().expect("spawn ostinato")
+}
+
+fn wait_for_run(db: &Path, workflow: &str) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let output = ost(&["--db", db.to_str().expect("db"), "--json", "runs"]);
+        if output.status.success()
+            && let Ok(runs) = serde_json::from_slice::<Value>(&output.stdout)
+            && let Some(run) = runs.as_array().and_then(|runs| runs.first())
+            && run["workflow_name"].as_str() == Some(workflow)
+        {
+            return run["id"].as_str().expect("run id").to_owned();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "run did not appear: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+#[allow(clippy::panic)]
+fn wait_child(mut child: std::process::Child) -> Output {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if child.try_wait().expect("try wait").is_some() {
+            return child.wait_with_output().expect("wait child");
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("child did not exit before deadline");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+const EXTERNAL_EVENT_WORKFLOW: &str = r#"
+package demo
+workflow: {
+    name: "external-events"
+    steps: {
+        wait: {
+            kind: "await"
+            await: {event: "deploy", source: "external", timeoutMs: 10000}
+        }
+        use: {
+            kind: "exec"
+            needs: ["wait"]
+            exec: {cmd: ["sh", "-c", "printf '%s' '{{ events.deploy.payload.release }}'"]}
+        }
+    }
+}
+"#;
+
+#[test]
+fn external_event_injection_completes_a_waiting_run() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("events.cue");
+    write(&workflow, EXTERNAL_EVENT_WORKFLOW);
+    let db_arg = db.to_str().expect("db");
+    let child = spawn_ost(&[
+        "--db",
+        db_arg,
+        "--evaluator",
+        "native",
+        "--json",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    let run = wait_for_run(&db, "external-events");
+    let injected = ost(&[
+        "--db",
+        db_arg,
+        "--json",
+        "event",
+        &run,
+        "deploy",
+        "--payload",
+        r#"{"release":"v1"}"#,
+    ]);
+    assert!(
+        injected.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&injected.stderr)
+    );
+    let event = json(&injected);
+    assert_eq!(event["name"], "deploy");
+    assert_eq!(event["source"], "external");
+    assert_eq!(event["external"], true);
+
+    let output = wait_child(child);
+    assert!(
+        output.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json(&output);
+    assert_eq!(report["status"], "succeeded");
+    let use_step = report["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .find(|step| step["name"] == "use")
+        .expect("use step");
+    assert_eq!(use_step["output"]["stdout"], "v1");
+
+    let listed = ost(&["--db", db_arg, "--json", "events", &run]);
+    assert!(listed.status.success());
+    let events = json(&listed);
+    assert_eq!(events.as_array().expect("events").len(), 1);
+    assert_eq!(events[0]["seq"], 0);
+
+    let verified = ost(&["--db", db_arg, "audit", "verify", &run]);
+    assert!(verified.status.success());
+    assert!(String::from_utf8_lossy(&verified.stdout).contains("OK"));
+
+    let rejected = ost(&["--db", db_arg, "event", &run, "late", "--payload", "{}"]);
+    assert!(
+        !rejected.status.success(),
+        "succeeded runs refuse injection"
+    );
+}
+
+#[test]
+fn events_follow_streams_new_events_and_exits_after_terminal() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("events.cue");
+    write(&workflow, EXTERNAL_EVENT_WORKFLOW);
+    let db_arg = db.to_str().expect("db");
+    let run_child = spawn_ost(&[
+        "--db",
+        db_arg,
+        "--evaluator",
+        "native",
+        "--json",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    let run = wait_for_run(&db, "external-events");
+
+    let follow = spawn_ost(&["--db", db_arg, "--json", "events", &run, "--follow"]);
+    let injected = ost(&[
+        "--db",
+        db_arg,
+        "event",
+        &run,
+        "deploy",
+        "--payload",
+        r#"{"release":"v2"}"#,
+    ]);
+    assert!(
+        injected.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&injected.stderr)
+    );
+    let run_output = wait_child(run_child);
+    assert!(
+        run_output.status.success(),
+        "run stderr: {}",
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+    let follow_output = wait_child(follow);
+    assert!(
+        follow_output.status.success(),
+        "follow stderr: {}",
+        String::from_utf8_lossy(&follow_output.stderr)
+    );
+    let lines: Vec<Value> = String::from_utf8_lossy(&follow_output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("json line"))
+        .collect();
+    assert_eq!(lines.len(), 1, "follow output: {lines:?}");
+    assert_eq!(lines[0]["name"], "deploy");
+    assert_eq!(lines[0]["seq"], 0);
+
+    let filtered = ost(&[
+        "--db", db_arg, "--json", "events", &run, "--after", "0", "--source", "external",
+    ]);
+    assert!(filtered.status.success());
+    assert_eq!(json(&filtered).as_array().expect("events").len(), 0);
+}
+
+#[test]
+fn event_injection_requires_an_existing_run_and_valid_payload() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let db_arg = db.to_str().expect("db");
+    let unknown = ost(&[
+        "--db",
+        db_arg,
+        "event",
+        "missing",
+        "deploy",
+        "--payload",
+        "{}",
+    ]);
+    assert!(!unknown.status.success());
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("database not found"),
+        "injection must not create a database"
+    );
+    assert!(!db.exists());
+
+    // Create the schema without a run, then check the explicit unknown-run error.
+    let _ = ost(&["--db", db_arg, "--json", "runs"]);
+    let unknown = ost(&[
+        "--db",
+        db_arg,
+        "event",
+        "missing",
+        "deploy",
+        "--payload",
+        "{}",
+    ]);
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("run not found"));
+
+    let bad_payload = ost(&[
+        "--db",
+        db_arg,
+        "event",
+        "missing",
+        "deploy",
+        "--payload",
+        "{",
+    ]);
+    assert!(!bad_payload.status.success());
+    let bad_name = ost(&[
+        "--db",
+        db_arg,
+        "event",
+        "missing",
+        "bad name",
+        "--payload",
+        "{}",
+    ]);
+    assert!(!bad_name.status.success());
 }

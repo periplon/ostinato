@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use ostinato_adapters::SqliteStore;
-use ostinato_application::{Completion, Store};
+use ostinato_application::{Completion, EventCursor, Store, WorkflowEventQuery};
 use ostinato_domain::{
-    NewEvent, NewImprovement, NewTrial, RetryPolicy, RunRecord, RunStatus, StepKind, StepRecord,
-    StepSpec, StepStatus, TrialStatus, WorkflowSpec, audit,
+    EventSource, NewEvent, NewImprovement, NewTrial, NewWorkflowEvent, RetryPolicy, RunRecord,
+    RunStatus, StepKind, StepRecord, StepSpec, StepStatus, TrialStatus, WorkflowSpec, audit,
 };
 use serde_json::json;
 
@@ -25,6 +25,8 @@ fn run_record(id: &str) -> RunRecord {
             agent: None,
             improve: None,
             gateway: None,
+            await_spec: None,
+            emit: Vec::new(),
             continue_on_error: false,
             timeout_ms: None,
         },
@@ -91,11 +93,13 @@ fn sqlite_store_roundtrip_is_atomic_and_hash_chained() {
             error: None,
             updated_at: "2026-01-01T00:00:01Z".to_owned(),
             steps: vec![step],
-            events: vec![NewEvent::new(
+            audit_events: vec![NewEvent::new(
                 "run.succeeded",
                 None,
                 json!({"resumeIndex": 1}),
             )],
+            events: Vec::new(),
+            cursor_advances: Vec::new(),
         })
         .expect("complete");
     assert_eq!(events.len(), 2);
@@ -247,11 +251,13 @@ fn sqlite_store_roundtrips_step_rounds() {
             error: None,
             updated_at: "2026-01-01T00:00:02Z".to_owned(),
             steps: vec![step],
-            events: vec![NewEvent::new(
+            audit_events: vec![NewEvent::new(
                 "step.succeeded",
                 Some("a".to_owned()),
                 json!({"round": 1}),
             )],
+            events: Vec::new(),
+            cursor_advances: Vec::new(),
         })
         .expect("complete");
     let steps = store.steps("run-round").expect("steps");
@@ -353,11 +359,13 @@ fn resume_run_is_atomic_and_refuses_terminal_runs() {
             error: None,
             updated_at: "2026-01-01T00:00:01Z".to_owned(),
             steps: Vec::new(),
-            events: vec![NewEvent::new(
+            audit_events: vec![NewEvent::new(
                 "run.succeeded",
                 None,
                 json!({"resumeIndex": 1}),
             )],
+            events: Vec::new(),
+            cursor_advances: Vec::new(),
         })
         .expect("complete");
     let refused = store.resume_run(
@@ -583,5 +591,298 @@ fn deleting_an_agent_event_breaks_trace_anchoring() {
             .iter()
             .any(|problem| problem.contains("not anchored")),
         "{verified:?}"
+    );
+}
+
+fn event(run: &str, name: &str, seq_payload: i64) -> NewWorkflowEvent {
+    NewWorkflowEvent::new(
+        run,
+        name,
+        EventSource::External,
+        json!({"n": seq_payload}),
+        None,
+        "2026-01-01T00:00:02Z",
+    )
+}
+
+#[test]
+fn workflow_events_assign_monotonic_sequences_and_honor_idempotency() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store = SqliteStore::open(&directory.path().join("db.sqlite")).expect("open");
+    store.create_run(&run_record("run-events")).expect("create");
+
+    let first = store
+        .append_workflow_event(event("run-events", "deploy", 1))
+        .expect("append");
+    let second = store
+        .append_workflow_event(event("run-events", "deploy", 2))
+        .expect("append");
+    assert_eq!(first.seq, 0);
+    assert_eq!(second.seq, 1);
+
+    let keyed = event("run-events", "keyed", 3).with_idempotency_key("k1");
+    let keyed_first = store.append_workflow_event(keyed.clone()).expect("keyed");
+    let keyed_again = store.append_workflow_event(keyed).expect("idempotent");
+    assert_eq!(keyed_first.seq, keyed_again.seq);
+
+    let all = store
+        .workflow_events("run-events", &WorkflowEventQuery::default())
+        .expect("list");
+    assert_eq!(all.len(), 3);
+    assert_eq!(
+        all.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    let named = store
+        .workflow_events(
+            "run-events",
+            &WorkflowEventQuery {
+                name: Some("deploy".to_owned()),
+                ..WorkflowEventQuery::default()
+            },
+        )
+        .expect("named");
+    assert_eq!(named.len(), 2);
+    let after = store
+        .workflow_events(
+            "run-events",
+            &WorkflowEventQuery {
+                after_seq: Some(0),
+                ..WorkflowEventQuery::default()
+            },
+        )
+        .expect("after");
+    assert_eq!(after.len(), 2);
+    let external = store
+        .workflow_events(
+            "run-events",
+            &WorkflowEventQuery {
+                source: Some(EventSource::External),
+                ..WorkflowEventQuery::default()
+            },
+        )
+        .expect("source");
+    assert_eq!(external.len(), 3);
+
+    let audit = store.events("run-events").expect("audit");
+    audit::verify_chain(&audit).expect("chain verifies");
+    assert_eq!(
+        audit
+            .iter()
+            .filter(|event| event.kind == "event.ingested")
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn completion_writes_steps_events_cursors_and_audit_atomically() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store = SqliteStore::open(&directory.path().join("db.sqlite")).expect("open");
+    store.create_run(&run_record("run-atomic")).expect("create");
+    let step = StepRecord {
+        run_id: "run-atomic".to_owned(),
+        name: "emit".to_owned(),
+        status: StepStatus::Succeeded,
+        visits: 1,
+        attempts: 1,
+        output: Some(json!({"ok": true})),
+        error: None,
+        updated_at: "2026-01-01T00:00:01Z".to_owned(),
+        round: 0,
+    };
+    let emitted = NewWorkflowEvent::new(
+        "run-atomic",
+        "ready",
+        EventSource::Internal,
+        json!({"ok": true}),
+        Some("emit".to_owned()),
+        "2026-01-01T00:00:01Z",
+    )
+    .with_idempotency_key("emit:run-atomic:emit:0:0");
+    store
+        .complete(Completion {
+            run_id: "run-atomic".to_owned(),
+            resume_index: 1,
+            status: RunStatus::Running,
+            error: None,
+            updated_at: "2026-01-01T00:00:01Z".to_owned(),
+            steps: vec![step],
+            audit_events: vec![NewEvent::new(
+                "step.succeeded",
+                Some("emit".to_owned()),
+                json!({}),
+            )],
+            events: vec![emitted],
+            cursor_advances: vec![EventCursor {
+                run_id: "run-atomic".to_owned(),
+                consumer: "wait".to_owned(),
+                event: "ready".to_owned(),
+                next_seq: 1,
+            }],
+        })
+        .expect("complete");
+
+    let events = store
+        .workflow_events("run-atomic", &WorkflowEventQuery::default())
+        .expect("events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].seq, 0);
+    let cursor = store
+        .event_cursor("run-atomic", "wait", "ready")
+        .expect("cursor")
+        .expect("present");
+    assert_eq!(cursor.next_seq, 1);
+    let audit = store.events("run-atomic").expect("audit");
+    audit::verify_chain(&audit).expect("chain");
+    assert!(audit.iter().any(|event| event.kind == "event.emitted"));
+    assert!(audit.iter().any(|event| event.kind == "state.committed"));
+}
+
+#[test]
+fn cancelled_completion_rolls_back_steps_events_and_cursors() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store = SqliteStore::open(&directory.path().join("db.sqlite")).expect("open");
+    store
+        .create_run(&run_record("run-rollback"))
+        .expect("create");
+    store
+        .cancel("run-rollback", "2026-01-01T00:00:01Z")
+        .expect("cancel");
+    let error = store
+        .complete(Completion {
+            run_id: "run-rollback".to_owned(),
+            resume_index: 1,
+            status: RunStatus::Succeeded,
+            error: None,
+            updated_at: "2026-01-01T00:00:02Z".to_owned(),
+            steps: vec![StepRecord {
+                run_id: "run-rollback".to_owned(),
+                name: "emit".to_owned(),
+                status: StepStatus::Succeeded,
+                visits: 1,
+                attempts: 1,
+                output: None,
+                error: None,
+                updated_at: "2026-01-01T00:00:02Z".to_owned(),
+                round: 0,
+            }],
+            audit_events: vec![NewEvent::new("step.succeeded", None, json!({}))],
+            events: vec![event("run-rollback", "ready", 1)],
+            cursor_advances: vec![EventCursor {
+                run_id: "run-rollback".to_owned(),
+                consumer: "wait".to_owned(),
+                event: "ready".to_owned(),
+                next_seq: 1,
+            }],
+        })
+        .expect_err("cancelled run must roll back");
+    assert!(matches!(
+        error,
+        ostinato_application::PortError::Cancelled(_)
+    ));
+    assert!(store.steps("run-rollback").expect("steps").is_empty());
+    assert!(
+        store
+            .workflow_events("run-rollback", &WorkflowEventQuery::default())
+            .expect("events")
+            .is_empty()
+    );
+    assert!(
+        store
+            .event_cursor("run-rollback", "wait", "ready")
+            .expect("cursor")
+            .is_none()
+    );
+    audit::verify_chain(&store.events("run-rollback").expect("audit")).expect("chain");
+}
+
+#[test]
+fn concurrent_injections_have_contiguous_unique_sequences() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("db.sqlite");
+    let store = SqliteStore::open(&path).expect("open");
+    store
+        .create_run(&run_record("run-concurrent"))
+        .expect("create");
+
+    std::thread::scope(|scope| {
+        for thread in 0..8 {
+            let path = path.clone();
+            scope.spawn(move || {
+                let store = SqliteStore::open(&path).expect("open thread store");
+                for item in 0..10 {
+                    store
+                        .append_workflow_event(event("run-concurrent", "race", thread * 10 + item))
+                        .expect("inject");
+                }
+            });
+        }
+    });
+
+    let events = store
+        .workflow_events("run-concurrent", &WorkflowEventQuery::default())
+        .expect("events");
+    assert_eq!(events.len(), 80);
+    for (index, event) in events.iter().enumerate() {
+        assert_eq!(event.seq, index as u64);
+    }
+    audit::verify_chain(&store.events("run-concurrent").expect("audit")).expect("chain");
+}
+
+#[test]
+fn injection_rejects_unknown_terminal_and_any_source() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("db.sqlite");
+    let store = SqliteStore::open(&path).expect("open");
+    assert!(
+        store
+            .append_workflow_event(event("missing", "x", 1))
+            .is_err()
+    );
+
+    store
+        .create_run(&run_record("run-terminal"))
+        .expect("create");
+    store
+        .complete(Completion {
+            run_id: "run-terminal".to_owned(),
+            resume_index: 1,
+            status: RunStatus::Succeeded,
+            error: None,
+            updated_at: "2026-01-01T00:00:01Z".to_owned(),
+            steps: Vec::new(),
+            audit_events: vec![NewEvent::new("run.succeeded", None, json!({}))],
+            events: Vec::new(),
+            cursor_advances: Vec::new(),
+        })
+        .expect("complete");
+    assert!(
+        store
+            .append_workflow_event(event("run-terminal", "x", 1))
+            .is_err()
+    );
+
+    store.create_run(&run_record("run-any")).expect("create");
+    let mut any = event("run-any", "x", 1);
+    any.source = EventSource::Any;
+    assert!(store.append_workflow_event(any).is_err());
+}
+
+#[test]
+fn opening_a_current_schema_is_idempotent_and_creates_event_tables() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("db.sqlite");
+    {
+        let _store = SqliteStore::open(&path).expect("open");
+    }
+    let store = SqliteStore::open(&path).expect("reopen");
+    store.create_run(&run_record("run-schema")).expect("create");
+    let read_only = SqliteStore::open_read_only(&path).expect("read-only open");
+    assert!(
+        read_only
+            .workflow_events("run-schema", &WorkflowEventQuery::default())
+            .expect("events")
+            .is_empty()
     );
 }

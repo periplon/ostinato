@@ -2,13 +2,17 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
-use ostinato_application::{Completion, MetricsSummary, PortError, PortResult, RunSnapshot, Store};
-use ostinato_domain::{
-    AgentTrace, AgentTraceRecord, AuditEvent, CapturedArtifact, Improvement, NewEvent,
-    NewImprovement, NewTrial, RunRecord, RunStatus, StepRecord, StepStatus, StoredArtifact,
-    TraceVerification, Trial, WorkflowSpec, audit, sha256_hex,
+use ostinato_application::{
+    Completion, EventCursor, MetricsSummary, PortError, PortResult, RunSnapshot, Store,
+    WorkflowEventQuery,
 };
-use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
+use ostinato_domain::{
+    AgentTrace, AgentTraceRecord, AuditEvent, CapturedArtifact, EventSource, Improvement, NewEvent,
+    NewImprovement, NewTrial, NewWorkflowEvent, RunRecord, RunStatus, StepRecord, StepStatus,
+    StoredArtifact, TraceVerification, Trial, WorkflowEvent, WorkflowSpec, audit, sha256_hex,
+    validate_workflow_event,
+};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior, params};
 use serde_json::{Value as Json, json};
 
 /// SQLite-backed durable store. WAL + synchronous=FULL gives crash-safe
@@ -101,6 +105,29 @@ impl SqliteStore {
                     FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS workflow_events (
+                    run_id          TEXT NOT NULL,
+                    seq             INTEGER NOT NULL,
+                    name            TEXT NOT NULL,
+                    source          TEXT NOT NULL,
+                    payload_json    TEXT NOT NULL,
+                    emitted_by      TEXT,
+                    ts              TEXT NOT NULL,
+                    external        INTEGER NOT NULL DEFAULT 0,
+                    idempotency_key TEXT,
+                    PRIMARY KEY (run_id, seq),
+                    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS event_cursors (
+                    run_id    TEXT NOT NULL,
+                    consumer  TEXT NOT NULL,
+                    event     TEXT NOT NULL,
+                    next_seq  INTEGER NOT NULL,
+                    PRIMARY KEY (run_id, consumer, event),
+                    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS trials (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id       TEXT NOT NULL,
@@ -164,6 +191,11 @@ impl SqliteStore {
 
                 CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);
+                CREATE INDEX IF NOT EXISTS idx_workflow_events_name
+                    ON workflow_events(run_id, name, seq);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_idempotency
+                    ON workflow_events(run_id, idempotency_key)
+                    WHERE idempotency_key IS NOT NULL;
                 CREATE INDEX IF NOT EXISTS idx_trials_run ON trials(run_id, id);
                 CREATE INDEX IF NOT EXISTS idx_agent_traces_run ON agent_traces(run_id, id);
                 CREATE INDEX IF NOT EXISTS idx_agent_artifacts_trace ON agent_artifacts(trace_id);
@@ -174,64 +206,70 @@ impl SqliteStore {
         // blank hash after migration is evidence of tampering, not a hint to
         // recompute it. The whole migration and version stamp are one
         // transaction so an interrupted upgrade cannot leave a half-schema.
-        connection
-            .execute_batch("BEGIN IMMEDIATE")
-            .map_err(|err| PortError::Store(format!("begin migration: {err}")))?;
-        let migration = (|| -> PortResult<()> {
-            if version > 2 {
-                return Err(PortError::Store(format!(
-                    "database schema version {version} is newer than this binary supports (2)"
-                )));
-            }
-            if had_runs {
-                // Add `steps.round` before any v0 backfill runs; the backfill
-                // selects step rows through `step_from_row`, which reads it.
-                if version < 2 {
+        //
+        // Opening an already-current database must not take a write lock:
+        // every `ostinato event` injection and `events` listing opens the
+        // store, and a needless BEGIN IMMEDIATE would serialize them behind
+        // the engine. Current-schema opens therefore skip the transaction.
+        if version > 2 {
+            return Err(PortError::Store(format!(
+                "database schema version {version} is newer than this binary supports (2)"
+            )));
+        }
+        if version < 2 {
+            connection
+                .execute_batch("BEGIN IMMEDIATE")
+                .map_err(|err| PortError::Store(format!("begin migration: {err}")))?;
+            let migration = (|| -> PortResult<()> {
+                if had_runs {
+                    // Add `steps.round` before any v0 backfill runs; the
+                    // backfill selects step rows through `step_from_row`,
+                    // which reads it.
                     ensure_column(&connection, "steps", "round", "INTEGER NOT NULL DEFAULT 0")?;
-                }
-                if version < 1 {
-                    ensure_column(
-                        &connection,
-                        "runs",
-                        "audit_head",
-                        "TEXT NOT NULL DEFAULT ''",
-                    )?;
-                    ensure_column(
-                        &connection,
-                        "runs",
-                        "state_hash",
-                        "TEXT NOT NULL DEFAULT ''",
-                    )?;
-                    backfill_audit_head(&connection)?;
-                    backfill_state_hash(&connection)?;
-                } else {
-                    for column in ["audit_head", "state_hash"] {
-                        if !column_exists(&connection, "runs", column)? {
-                            return Err(PortError::Store(format!(
-                                "database schema is missing runs.{column}; refusing to repair an integrity column"
-                            )));
+                    if version < 1 {
+                        ensure_column(
+                            &connection,
+                            "runs",
+                            "audit_head",
+                            "TEXT NOT NULL DEFAULT ''",
+                        )?;
+                        ensure_column(
+                            &connection,
+                            "runs",
+                            "state_hash",
+                            "TEXT NOT NULL DEFAULT ''",
+                        )?;
+                        backfill_audit_head(&connection)?;
+                        backfill_state_hash(&connection)?;
+                    } else {
+                        for column in ["audit_head", "state_hash"] {
+                            if !column_exists(&connection, "runs", column)? {
+                                return Err(PortError::Store(format!(
+                                    "database schema is missing runs.{column}; refusing to repair an integrity column"
+                                )));
+                            }
                         }
                     }
+                    if !column_exists(&connection, "steps", "round")? {
+                        return Err(PortError::Store(
+                            "database schema is missing steps.round; refusing to repair an integrity column"
+                                .to_owned(),
+                        ));
+                    }
                 }
-                if !column_exists(&connection, "steps", "round")? {
-                    return Err(PortError::Store(
-                        "database schema is missing steps.round; refusing to repair an integrity column"
-                            .to_owned(),
-                    ));
+                connection
+                    .execute_batch("PRAGMA user_version = 2")
+                    .map_err(|err| PortError::Store(format!("set schema version: {err}")))?;
+                Ok(())
+            })();
+            match migration {
+                Ok(()) => connection
+                    .execute_batch("COMMIT")
+                    .map_err(|err| PortError::Store(format!("commit migration: {err}")))?,
+                Err(err) => {
+                    let _ = connection.execute_batch("ROLLBACK");
+                    return Err(err);
                 }
-            }
-            connection
-                .execute_batch("PRAGMA user_version = 2")
-                .map_err(|err| PortError::Store(format!("set schema version: {err}")))?;
-            Ok(())
-        })();
-        match migration {
-            Ok(()) => connection
-                .execute_batch("COMMIT")
-                .map_err(|err| PortError::Store(format!("commit migration: {err}")))?,
-            Err(err) => {
-                let _ = connection.execute_batch("ROLLBACK");
-                return Err(err);
             }
         }
 
@@ -244,6 +282,137 @@ impl SqliteStore {
             }
         }
 
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
+
+    fn append_workflow_event_once(
+        &self,
+        event: &NewWorkflowEvent,
+        source: &'static str,
+        external: bool,
+    ) -> PortResult<WorkflowEvent> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|err| PortError::Store(format!("begin workflow event: {err}")))?;
+        let status: Option<String> = transaction
+            .query_row(
+                "SELECT status FROM runs WHERE id = ?1",
+                params![event.run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| PortError::Store(format!("read run status: {err}")))?;
+        let Some(status) = status else {
+            return Err(PortError::Config(format!(
+                "run not found: {}",
+                event.run_id
+            )));
+        };
+        if matches!(status.as_str(), "succeeded" | "cancelled") {
+            return Err(PortError::Config(format!(
+                "run {} is {status}; refusing to inject an event",
+                event.run_id
+            )));
+        }
+        if let Some(key) = &event.idempotency_key
+            && let Some(existing) = transaction
+                .query_row(
+                    "SELECT run_id, seq, name, source, payload_json, emitted_by, ts, external
+                     FROM workflow_events
+                     WHERE run_id = ?1 AND idempotency_key = ?2",
+                    params![event.run_id, key],
+                    workflow_event_from_row,
+                )
+                .optional()
+                .map_err(|err| PortError::Store(format!("read idempotent event: {err}")))?
+        {
+            return Ok(existing);
+        }
+        let payload_json = serde_json::to_string(&event.payload)
+            .map_err(|err| PortError::Store(format!("serialize event payload: {err}")))?;
+        let seq = next_workflow_seq_tx(&transaction, &event.run_id)?;
+        transaction
+            .execute(
+                "INSERT INTO workflow_events
+                 (run_id, seq, name, source, payload_json, emitted_by, ts, external,
+                  idempotency_key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    event.run_id,
+                    seq,
+                    event.name,
+                    source,
+                    payload_json,
+                    event.emitted_by,
+                    event.ts,
+                    i64::from(external),
+                    event.idempotency_key,
+                ],
+            )
+            .map_err(|err| PortError::Store(format!("insert workflow event: {err}")))?;
+        append_event_tx(
+            &transaction,
+            &event.run_id,
+            &NewEvent::new(
+                "event.ingested",
+                event.emitted_by.clone(),
+                json!({
+                    "event": event.name,
+                    "source": source,
+                    "external": external,
+                    "seq": seq,
+                    "payload": event.payload,
+                }),
+            ),
+            &event.ts,
+        )?;
+        transaction
+            .commit()
+            .map_err(|err| PortError::Store(format!("commit workflow event: {err}")))?;
+        Ok(WorkflowEvent {
+            run_id: event.run_id.clone(),
+            seq: u64::try_from(seq).unwrap_or(u64::MAX),
+            name: event.name.clone(),
+            source: match source {
+                "internal" => EventSource::Internal,
+                _ => EventSource::External,
+            },
+            payload: event.payload.clone(),
+            emitted_by: event.emitted_by.clone(),
+            ts: event.ts.clone(),
+            external,
+        })
+    }
+
+    /// Open an existing store without writing to it.
+    ///
+    /// Used by read-only CLI commands (`events`, `runs`, `status`, `logs`) so
+    /// they never take the migration/injection write lock or create a
+    /// database implicitly.
+    ///
+    /// # Errors
+    /// Fails when the file does not exist, cannot be opened read-only, or is
+    /// not an Ostinato database.
+    pub fn open_read_only(path: &Path) -> PortResult<Self> {
+        if !path.exists() {
+            return Err(PortError::Config(format!(
+                "database not found: {}",
+                path.display()
+            )));
+        }
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|err| PortError::Store(format!("cannot open database read-only: {err}")))?;
+        connection
+            .execute_batch("PRAGMA busy_timeout = 10000; PRAGMA query_only = ON;")
+            .map_err(|err| PortError::Store(format!("configure read-only database: {err}")))?;
+        if !table_exists(&connection, "runs")? {
+            return Err(PortError::Store(
+                "database does not contain an Ostinato schema".to_owned(),
+            ));
+        }
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -883,8 +1052,87 @@ impl Store for SqliteStore {
                 )
                 .map_err(|err| PortError::Store(format!("upsert step: {err}")))?;
         }
-        let mut events = Vec::with_capacity(completion.events.len());
-        for event in completion.events {
+
+        // Events, cursor advances, audit events, checkpoint and state digest
+        // are written in this same transaction. A crash can therefore never
+        // expose an emitted event without its step row (or vice versa).
+        let mut events = Vec::with_capacity(completion.audit_events.len() + 2);
+        for event in &completion.events {
+            validate_workflow_event(&event.name, &event.payload)
+                .map_err(|err| PortError::Config(err.to_string()))?;
+            let (source, external) = stored_source(event.source)?;
+            if let Some(key) = &event.idempotency_key {
+                let exists: bool = transaction
+                    .query_row(
+                        "SELECT 1 FROM workflow_events
+                         WHERE run_id = ?1 AND idempotency_key = ?2",
+                        params![event.run_id, key],
+                        |_| Ok(true),
+                    )
+                    .optional()
+                    .map_err(|err| PortError::Store(format!("read event key: {err}")))?
+                    .unwrap_or(false);
+                if exists {
+                    continue;
+                }
+            }
+            let payload_json = serde_json::to_string(&event.payload)
+                .map_err(|err| PortError::Store(format!("serialize event payload: {err}")))?;
+            let seq = next_workflow_seq_tx(&transaction, &event.run_id)?;
+            transaction
+                .execute(
+                    "INSERT INTO workflow_events
+                     (run_id, seq, name, source, payload_json, emitted_by, ts, external,
+                      idempotency_key)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        event.run_id,
+                        seq,
+                        event.name,
+                        source,
+                        payload_json,
+                        event.emitted_by,
+                        event.ts,
+                        i64::from(external),
+                        event.idempotency_key,
+                    ],
+                )
+                .map_err(|err| PortError::Store(format!("insert workflow event: {err}")))?;
+            events.push(append_event_tx(
+                &transaction,
+                &event.run_id,
+                &NewEvent::new(
+                    "event.emitted",
+                    event.emitted_by.clone(),
+                    json!({
+                        "event": event.name,
+                        "source": source,
+                        "external": external,
+                        "seq": seq,
+                        "payload": event.payload,
+                    }),
+                ),
+                &event.ts,
+            )?);
+        }
+        for cursor in &completion.cursor_advances {
+            transaction
+                .execute(
+                    "INSERT INTO event_cursors (run_id, consumer, event, next_seq)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(run_id, consumer, event) DO UPDATE SET
+                        next_seq = MAX(event_cursors.next_seq, excluded.next_seq)",
+                    params![
+                        cursor.run_id,
+                        cursor.consumer,
+                        cursor.event,
+                        i64::try_from(cursor.next_seq).unwrap_or(i64::MAX),
+                    ],
+                )
+                .map_err(|err| PortError::Store(format!("advance event cursor: {err}")))?;
+        }
+
+        for event in completion.audit_events {
             events.push(append_event_tx(
                 &transaction,
                 &completion.run_id,
@@ -1045,6 +1293,88 @@ impl Store for SqliteStore {
             events.push(row.map_err(|err| PortError::Store(format!("map event: {err}")))?);
         }
         Ok(events)
+    }
+
+    fn append_workflow_event(&self, event: NewWorkflowEvent) -> PortResult<WorkflowEvent> {
+        validate_workflow_event(&event.name, &event.payload)
+            .map_err(|err| PortError::Config(err.to_string()))?;
+        let (source, external) = stored_source(event.source)?;
+        let mut last = None;
+        for attempt in 0..10u64 {
+            match self.append_workflow_event_once(&event, source, external) {
+                Ok(stored) => return Ok(stored),
+                Err(err) if is_busy_error(&err) && attempt < 9 => {
+                    last = Some(err);
+                    std::thread::sleep(std::time::Duration::from_millis(50 * (attempt + 1)));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last.unwrap_or_else(|| PortError::Store("database is busy".to_owned())))
+    }
+
+    fn workflow_events(
+        &self,
+        run_id: &str,
+        query: &WorkflowEventQuery,
+    ) -> PortResult<Vec<WorkflowEvent>> {
+        let connection = self.lock()?;
+        let source = query.source.and_then(|source| match source {
+            EventSource::Internal => Some("internal"),
+            EventSource::External => Some("external"),
+            EventSource::Any => None,
+        });
+        let after = query
+            .after_seq
+            .map(|seq| i64::try_from(seq).unwrap_or(i64::MAX));
+        let mut statement = connection
+            .prepare(
+                "SELECT run_id, seq, name, source, payload_json, emitted_by, ts, external
+                 FROM workflow_events
+                 WHERE run_id = ?1
+                   AND (?2 IS NULL OR name = ?2)
+                   AND (?3 IS NULL OR source = ?3)
+                   AND (?4 IS NULL OR seq > ?4)
+                 ORDER BY seq",
+            )
+            .map_err(|err| PortError::Store(format!("prepare workflow events: {err}")))?;
+        let rows = statement
+            .query_map(
+                params![run_id, query.name, source, after],
+                workflow_event_from_row,
+            )
+            .map_err(|err| PortError::Store(format!("list workflow events: {err}")))?;
+        let mut events = Vec::new();
+        for row in rows {
+            events.push(row.map_err(|err| PortError::Corrupt(format!("workflow event: {err}")))?);
+        }
+        Ok(events)
+    }
+
+    fn event_cursor(
+        &self,
+        run_id: &str,
+        consumer: &str,
+        event: &str,
+    ) -> PortResult<Option<EventCursor>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT run_id, consumer, event, next_seq
+                 FROM event_cursors
+                 WHERE run_id = ?1 AND consumer = ?2 AND event = ?3",
+                params![run_id, consumer, event],
+                |row| {
+                    Ok(EventCursor {
+                        run_id: row.get(0)?,
+                        consumer: row.get(1)?,
+                        event: row.get(2)?,
+                        next_seq: row.get::<_, i64>(3)?.max(0) as u64,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|err| PortError::Store(format!("read event cursor: {err}")))
     }
 
     fn record_trial(&self, trial: &NewTrial) -> PortResult<i64> {
@@ -1410,6 +1740,61 @@ impl Store for SqliteStore {
             avg_attempt_ms: attempts.2,
         })
     }
+}
+
+fn next_workflow_seq_tx(transaction: &rusqlite::Transaction<'_>, run_id: &str) -> PortResult<i64> {
+    let max: Option<i64> = transaction
+        .query_row(
+            "SELECT MAX(seq) FROM workflow_events WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| PortError::Store(format!("read event sequence: {err}")))?;
+    Ok(max.map_or(0, |seq| seq.saturating_add(1)))
+}
+
+fn stored_source(source: EventSource) -> PortResult<(&'static str, bool)> {
+    match source {
+        EventSource::Internal => Ok(("internal", false)),
+        EventSource::External => Ok(("external", true)),
+        EventSource::Any => Err(PortError::Config(
+            "event source `any` is a query filter and cannot be stored".to_owned(),
+        )),
+    }
+}
+
+fn is_busy_error(error: &PortError) -> bool {
+    matches!(error, PortError::Store(message)
+        if message.contains("locked") || message.contains("busy"))
+}
+
+fn workflow_event_from_row(row: &Row<'_>) -> rusqlite::Result<WorkflowEvent> {
+    let source: String = row.get(3)?;
+    let source = match source.as_str() {
+        "internal" => EventSource::Internal,
+        "external" => EventSource::External,
+        other => {
+            return Err(rusqlite::Error::InvalidColumnType(
+                3,
+                format!("unknown event source `{other}`"),
+                rusqlite::types::Type::Text,
+            ));
+        }
+    };
+    let payload_json: String = row.get(4)?;
+    let payload = serde_json::from_str(&payload_json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+    Ok(WorkflowEvent {
+        run_id: row.get(0)?,
+        seq: row.get::<_, i64>(1)?.max(0) as u64,
+        name: row.get(2)?,
+        source,
+        payload,
+        emitted_by: row.get(5)?,
+        ts: row.get(6)?,
+        external: row.get::<_, i64>(7)? != 0,
+    })
 }
 
 fn execute_batch_with_retry(connection: &Connection, sql: &str) -> PortResult<()> {

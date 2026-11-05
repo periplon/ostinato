@@ -10,6 +10,12 @@ ostinato run examples/hello.cue -p name=Ostinato
 ostinato run examples/retry.cue
 ostinato run examples/cycle.cue
 ostinato run examples/agentic.cue --agent-cmd ./agent.sh
+
+# Workflow events (run the external approval injection from another shell)
+ostinato --db /tmp/events.db run examples/events.cue
+ostinato --db /tmp/events.db event <run-id> approval \
+  --payload '{"approvedBy":"release-bot"}'
+ostinato --db /tmp/events.db events <run-id> --follow --json
 ostinato improve <run-id> --rounds 2 --agent-cmd ./agent.sh
 ```
 

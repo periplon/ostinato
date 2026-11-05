@@ -43,7 +43,8 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 - **Retries**: bounded exponential backoff, deterministic jitter, per-attempt timeouts.
 - **Cycles**: strongly-connected components execute as bounded rounds; `until` conditions stop early.
 - **Gateways**: XOR/OR/AND splits and joins, `n_of` quorum joins, complex `expression` joins, conditions, default branches, explicit convergence, dead-path elimination, gateway-bearing cycles, `stepStatus` failure routing and durable audit of every routing decision.
-- **Agentic + deterministic**: `exec`, `agent`, `improve`, `noop` and `gateway` step kinds share one scheduler.
+- **Workflow events**: durable internal emits/awaits, external event injection (`ostinato event`), a live outbox (`ostinato events --follow`), source filtering, total await deadlines, at-least-once per-consumer cursors, atomic group commits and `event.*` audit/metrics. See [docs/EVENTS.md](docs/EVENTS.md).
+- **Agentic + deterministic**: `exec`, `agent`, `improve`, `noop`, `gateway` and `await` step kinds share one scheduler.
 - **Named agents and real CLIs**: top-level `agents` definitions referenced with `agent.use`, built-in `claude`/`codex`/`opencode` providers, per-attempt traces (prompt, argv, output, artifacts, timings, hashes) and optional git-worktree isolation. See [docs/AGENTS.md](docs/AGENTS.md).
 - **Audit**: SHA-256 hash chain per run with a persisted head, a state digest and a chained `state.committed` anchor; `ostinato audit verify` detects payload tampering, tail truncation, status flips and edits to the spec/checkpoint/step outputs.
 - **Trials**: append-only log of every attempt with input/output hashes, score, duration and error.

@@ -15,7 +15,8 @@ pub use error::{EngineError, Result};
 pub use improve::{ImproveRequest, ImprovementRun, params_patch, propose_improvement};
 pub use ports::{
     AgentOutcome, AgentRequest, AgentRunner, CaptureOutcome, CaptureRequest, Clock,
-    CommandExecutor, Completion, ExecOutcome, ExecRequest, IdGenerator, IsolationRequest,
-    LoadRequest, LoadedWorkflow, MetricsSummary, NoTelemetry, PortError, PortResult, RunSnapshot,
-    SpecLoader, Store, Telemetry, WorkspaceHandle, WorkspaceProvider,
+    CommandExecutor, Completion, EventCursor, ExecOutcome, ExecRequest, IdGenerator,
+    IsolationRequest, LoadRequest, LoadedWorkflow, MetricsSummary, NoTelemetry, PortError,
+    PortResult, RunSnapshot, SpecLoader, Store, Telemetry, WorkflowEventQuery, WorkspaceHandle,
+    WorkspaceProvider,
 };

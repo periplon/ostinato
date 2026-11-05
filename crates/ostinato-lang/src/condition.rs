@@ -437,6 +437,12 @@ fn valid_reference(context: &Json, path: &str) -> bool {
                 .and_then(|rounds| rounds.get(step))
                 .is_some()
         }),
+        "events" => segments.next().is_some_and(|event| {
+            context
+                .get("events")
+                .and_then(|events| events.get(event))
+                .is_some()
+        }),
         "edges" => segments.next().is_some_and(|label| {
             context
                 .get("edges")

@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 use ostinato_domain::{
-    AgentDefinition, AgentProvider, AgentSpec, BranchSpec, CycleSpec, ExecSpec, GatewaySpec,
-    ImproveSpec, IsolationMode, IsolationSpec, JoinMode, PromptDelivery, RetryPolicy, SplitMode,
-    StepKind, StepSpec, WorkflowSpec, build_plan,
+    AgentDefinition, AgentProvider, AgentSpec, AwaitSpec, BranchSpec, CycleSpec, EmitSpec,
+    EventSource, ExecSpec, GatewaySpec, ImproveSpec, IsolationMode, IsolationSpec, JoinMode,
+    PromptDelivery, RetryPolicy, SplitMode, StepKind, StepSpec, WorkflowSpec, build_plan,
+    validate_workflow_event,
 };
 use serde_json::{Map, Value as Json};
 
@@ -274,6 +275,8 @@ fn extract_step(
             "agent",
             "improve",
             "gateway",
+            "await",
+            "emit",
             "continueOnError",
             "timeoutMs",
         ],
@@ -286,9 +289,10 @@ fn extract_step(
         "improve" => StepKind::Improve,
         "noop" => StepKind::Noop,
         "gateway" => StepKind::Gateway,
+        "await" => StepKind::Await,
         other => {
             return Err(LangError::Workflow(format!(
-                "{path}.kind: unknown kind `{other}` (expected exec, agent, improve, noop or gateway)"
+                "{path}.kind: unknown kind `{other}` (expected exec, agent, improve, noop, gateway or await)"
             )));
         }
     };
@@ -325,6 +329,8 @@ fn extract_step(
             "exec",
             "agent",
             "improve",
+            "await",
+            "emit",
             "timeoutMs",
             "continueOnError",
         ] {
@@ -385,6 +391,14 @@ fn extract_step(
         Some(value) => Some(extract_improve(value, &format!("{path}.improve"))?),
         None => None,
     };
+    let await_spec = match map.get("await").map(Value::concretize) {
+        Some(value) => Some(extract_await(value, &format!("{path}.await"))?),
+        None => None,
+    };
+    let emit = match map.get("emit").map(Value::concretize) {
+        Some(value) => extract_emit(value, &format!("{path}.emit"))?,
+        None => Vec::new(),
+    };
 
     match kind {
         StepKind::Exec => {
@@ -434,6 +448,23 @@ fn extract_step(
                 )));
             }
         }
+        StepKind::Await => {
+            let spec = await_spec.as_ref().ok_or_else(|| {
+                LangError::Workflow(format!("{path}.await is required when kind = \"await\""))
+            })?;
+            if spec.event.trim().is_empty() {
+                return Err(LangError::Workflow(format!(
+                    "{path}.await.event must not be empty"
+                )));
+            }
+            for field in ["exec", "agent", "improve", "gateway", "retry", "cycle"] {
+                if map.contains_key(field) {
+                    return Err(LangError::Workflow(format!(
+                        "{path}.{field} is not allowed when kind = \"await\""
+                    )));
+                }
+            }
+        }
         StepKind::Noop | StepKind::Gateway => {
             if agent.is_some() {
                 return Err(LangError::Workflow(format!(
@@ -441,6 +472,15 @@ fn extract_step(
                 )));
             }
         }
+    }
+    if kind != StepKind::Await && await_spec.is_some() {
+        return Err(LangError::Workflow(format!(
+            "{path}.await is only allowed when kind = \"await\""
+        )));
+    }
+    for entry in &emit {
+        validate_workflow_event(&entry.name, entry.payload.as_ref().unwrap_or(&Json::Null))
+            .map_err(|err| LangError::Workflow(format!("{path}.emit: {err}")))?;
     }
 
     Ok(StepSpec {
@@ -453,6 +493,8 @@ fn extract_step(
         agent,
         improve,
         gateway,
+        await_spec,
+        emit,
         continue_on_error,
         timeout_ms,
     })
@@ -1420,6 +1462,97 @@ fn extract_improve(value: &Value, path: &str) -> Result<ImproveSpec, LangError> 
     })
 }
 
+fn extract_await(value: &Value, path: &str) -> Result<AwaitSpec, LangError> {
+    let map = expect_struct(value, path)?;
+    reject_unknown(map, path, &["event", "source", "timeoutMs"])?;
+    let event = as_string(
+        map.get("event")
+            .ok_or_else(|| LangError::Workflow(format!("{path}.event is required")))?,
+        &format!("{path}.event"),
+    )?;
+    let source = match opt_string(map, "source", &format!("{path}.source"))? {
+        None => None,
+        Some(raw) => Some(match raw.as_str() {
+            "internal" => EventSource::Internal,
+            "external" => EventSource::External,
+            "any" => EventSource::Any,
+            other => {
+                return Err(LangError::Workflow(format!(
+                    "{path}.source: unknown source `{other}` (expected internal, external or any)"
+                )));
+            }
+        }),
+    };
+    let timeout_ms = opt_int(map, "timeoutMs", &format!("{path}.timeoutMs"))?
+        .map(|value| {
+            let value = u64::try_from(value).map_err(|_| {
+                LangError::Workflow(format!("{path}.timeoutMs must be non-negative"))
+            })?;
+            if value == 0 {
+                return Err(LangError::Workflow(format!(
+                    "{path}.timeoutMs must be >= 1"
+                )));
+            }
+            Ok(value)
+        })
+        .transpose()?;
+    Ok(AwaitSpec {
+        event,
+        source,
+        timeout_ms,
+    })
+}
+
+fn extract_emit(value: &Value, path: &str) -> Result<Vec<EmitSpec>, LangError> {
+    match value.concretize() {
+        Value::Struct(map) | Value::Definition { fields: map, .. } => {
+            Ok(vec![extract_emit_one(map, path)?])
+        }
+        Value::List(list) | Value::OpenListPrefix(list, _) => list
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let item_path = format!("{path}.{index}");
+                match item.concretize() {
+                    Value::Struct(map) | Value::Definition { fields: map, .. } => {
+                        extract_emit_one(map, &item_path)
+                    }
+                    other => Err(LangError::Workflow(format!(
+                        "{item_path} must be a struct, found {}",
+                        other.type_name()
+                    ))),
+                }
+            })
+            .collect(),
+        Value::OpenList(_) => Ok(Vec::new()),
+        other => Err(LangError::Workflow(format!(
+            "{path} must be a struct or list of structs, found {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn extract_emit_one(map: &Struct, path: &str) -> Result<EmitSpec, LangError> {
+    reject_unknown(map, path, &["name", "external", "payload"])?;
+    let name = as_string(
+        map.get("name")
+            .ok_or_else(|| LangError::Workflow(format!("{path}.name is required")))?,
+        &format!("{path}.name"),
+    )?;
+    let external = opt_bool(map, "external", &format!("{path}.external"))?.unwrap_or(false);
+    let payload = match map.get("payload") {
+        None => None,
+        Some(value) => Some(value.concretize().to_json().ok_or_else(|| {
+            LangError::Workflow(format!("{path}.payload must be a concrete JSON value"))
+        })?),
+    };
+    Ok(EmitSpec {
+        name,
+        external,
+        payload,
+    })
+}
+
 fn reject_unknown(map: &Struct, path: &str, allowed: &[&str]) -> Result<(), LangError> {
     for key in map.keys() {
         if is_hidden_key(key) {
@@ -1613,10 +1746,19 @@ fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangErr
     let mut steps = Map::new();
     let mut step_status = Map::new();
     let mut step_round = Map::new();
+    let mut events = Map::new();
     for name in spec.steps.keys() {
         steps.insert(name.clone(), serde_json::json!({}));
         step_status.insert(name.clone(), Json::String("succeeded".to_owned()));
         step_round.insert(name.clone(), Json::from(0));
+    }
+    for step in spec.steps.values() {
+        for emit in &step.emit {
+            events.insert(emit.name.clone(), serde_json::json!({}));
+        }
+        if let Some(await_spec) = &step.await_spec {
+            events.insert(await_spec.event.clone(), serde_json::json!({}));
+        }
     }
     let context = serde_json::json!({
         "run_id": "validate",
@@ -1626,6 +1768,7 @@ fn validate_conditions(spec: &WorkflowSpec, params: &Json) -> Result<(), LangErr
         "steps": steps,
         "stepStatus": step_status,
         "stepRound": step_round,
+        "events": events,
     });
     for (name, step) in &spec.steps {
         if let Some(until) = step.cycle.as_ref().and_then(|cycle| cycle.until.as_ref()) {
