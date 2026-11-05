@@ -1,6 +1,6 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-release/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.DixxUqSL5L/gateway.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/gateway.cue
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-rel461/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.x5Xfvak8VA/gateway.sqlite --cue /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/tools/cue run examples/gateway.cue
 
-run=1c4f214c-0337-4e95-9884-0ac78e75befe workflow=release-decision status=succeeded durationMs=20
+run=fdb327f2-e1ca-4597-8e6a-dae3e8edcaeb workflow=release-decision status=succeeded durationMs=19
 STEP                     STATUS     VISITS ATTEMPTS
 deployFast               succeeded  1      1       
 deploySlow               skipped    0      0       

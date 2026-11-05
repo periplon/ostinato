@@ -1,9 +1,9 @@
-### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-release/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.DixxUqSL5L/agents.sqlite artifacts 25372c4d-037c-4566-af32-6b8fa1ab77dc --extract /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.DixxUqSL5L/agent-extract
+### /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/ost-target-rel461/debug/ostinato --db /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.x5Xfvak8VA/agents.sqlite artifacts 111b4de1-8146-4f0c-b51f-49e6aaab9a76 --extract /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.x5Xfvak8VA/agent-extract
 
 TRACE    STEP                 ROUND   ATTEMPT   KIND      SIZE      NAME
 1        review               0       0         patch     334       _isolation/changes.patch
 1        review               0       0         declared  173       reports/review.md
-extracted /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.DixxUqSL5L/agent-extract/_isolation/changes.patch
-extracted /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.DixxUqSL5L/agent-extract/reports/review.md
+extracted /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.x5Xfvak8VA/agent-extract/_isolation/changes.patch
+extracted /var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/tmp.x5Xfvak8VA/agent-extract/reports/review.md
 
 exit=0
