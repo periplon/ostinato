@@ -30,6 +30,21 @@ pub enum LangError {
         col: u32,
         message: String,
     },
+    /// A value was too incomplete to evaluate an operand, but the expression
+    /// itself is otherwise well-formed (`a + 1` with an unresolved `a`).
+    #[error("evaluation error at {line}:{col}: {message}")]
+    IncompleteValue {
+        line: u32,
+        col: u32,
+        message: String,
+    },
+    /// An operand is structurally invalid, e.g. a bare type used in `1 + int`.
+    #[error("evaluation error at {line}:{col}: {message}")]
+    InvalidOperand {
+        line: u32,
+        col: u32,
+        message: String,
+    },
     #[error("workflow error: {0}")]
     Workflow(String),
     #[error("invalid condition `{expr}`: {message}")]
@@ -73,6 +88,22 @@ impl LangError {
         }
     }
 
+    pub(crate) fn incomplete_value(line: u32, col: u32, message: impl Into<String>) -> Self {
+        Self::IncompleteValue {
+            line,
+            col,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn invalid_operand(line: u32, col: u32, message: impl Into<String>) -> Self {
+        Self::InvalidOperand {
+            line,
+            col,
+            message: message.into(),
+        }
+    }
+
     #[must_use]
     pub fn is_conflict(&self) -> bool {
         matches!(self, Self::Conflict { .. })
@@ -81,5 +112,10 @@ impl LangError {
     #[must_use]
     pub(crate) fn is_incomplete_optional(&self) -> bool {
         matches!(self, Self::IncompleteOptional { .. })
+    }
+
+    #[must_use]
+    pub(crate) fn is_incomplete_value(&self) -> bool {
+        matches!(self, Self::IncompleteValue { .. })
     }
 }

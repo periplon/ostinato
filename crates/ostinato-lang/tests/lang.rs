@@ -7058,6 +7058,72 @@ fn nested_definitions_inside_params_literals_match_cue() {
 }
 
 #[test]
+fn optional_injection_soundness_and_incomplete_export_match_cue() {
+    for source in [
+        "package demo\n#P: {a?: {x: int}, b: a}\nx: #P & {a: {x: 1}, b: {x: 2}}\n",
+        "package demo\n#P: {a?: [int], b: [a]}\nx: #P & {a: [1], b: [[2]]}\n",
+        "package demo\n#P: {a?: {x: int}, b: {inner: a}}\nx: #P & {a: {x: 1}, b: {inner: {x: 2}}}\n",
+        "package demo\n#E: {m: {x: int}, n: m}\n#P: {e?: #E}\nx: #P & {e: {m: {x: 1}, n: {x: 2}}}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse sibling injection conflict");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "sibling injection must conflict: {source:?}"
+        );
+    }
+
+    let non_params = r#"
+package demo
+#E: {n: *2 | int, m: n * 3}
+#P: {ls?: [#E]}
+x: #P & {ls: [{n: 4}]}
+"#;
+    let file = ostinato_lang::parse(non_params).expect("parse non-params narrowing");
+    let value = ostinato_lang::eval_file(&file).expect("eval non-params narrowing");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["ls"], serde_json::json!([{"n": 4, "m": 12}]));
+
+    let conflicting = "package demo\n#E: {m: {x: int}, n: m}\n#P: {e?: #E}\nx: #P & {e: {m: {x: 1}, n: {x: 2}}}\n";
+    let file = ostinato_lang::parse(conflicting).expect("parse non-params definition conflict");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "definition sibling injection must conflict"
+    );
+
+    let export_mode = |source: &str| {
+        let file = ostinato_lang::parse(source).expect("parse export source");
+        ostinato_lang::eval_file_with_imports_mode(&file, &BTreeMap::new(), &BTreeMap::new(), true)
+    };
+    for source in [
+        "package demo\n#D: {a: int, b: a + 1}\nx: 1\n",
+        "package demo\n_h: {a: int, b: a + 1}\nx: 1\n",
+    ] {
+        let value = export_mode(source).expect("soft incomplete fields must export");
+        assert_eq!(value.to_json().expect("json")["x"], 1);
+    }
+    for source in [
+        "package demo\n_h: 1 + int\nx: 1\n",
+        "package demo\n#D: {a: int, b: 1 + int}\nx: 1\n",
+        "package demo\n#P: {a?: int, b: a, c: 1, c: 2}\nx: 1\n",
+        "package demo\n_h: {a?: int, b: a, z: [1][2]}\nx: 1\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse hard export error");
+        let direct = ostinato_lang::eval_file(&file);
+        let exported = export_mode(source);
+        assert!(
+            direct.is_err() || exported.is_err(),
+            "hard errors under incomplete fields must not be skipped: {source:?}"
+        );
+        if source.contains("#D: {a: int, b: 1 + int}") || source.contains("#P: {a?: int") {
+            assert!(
+                exported.is_err(),
+                "definition export must surface hard errors: {source:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn arbitrary_precision_integer_literals_keep_exact_values() {
     let source = r#"
 package demo

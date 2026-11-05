@@ -824,6 +824,7 @@ fn json_frame(context: &Json) -> Frame<'static> {
         next_injections: RefCell::new(None),
         generated_definitions: RefCell::new(BTreeMap::new()),
         skip_cache: Cell::new(false),
+        defer_incomplete: Cell::new(false),
         incomplete_mode: RefCell::new(IncompleteMode::Forbid),
     };
     if let Json::Object(map) = context {
@@ -961,6 +962,10 @@ struct Frame<'a> {
     next_injections: RefCell<Option<BTreeMap<String, Value>>>,
     generated_definitions: RefCell<BTreeMap<String, Value>>,
     skip_cache: Cell<bool>,
+    /// When set, soft incompleteness errors (`IncompleteValue`,
+    /// `IncompleteOptional`) are suppressed so a validation pass can surface
+    /// harder errors underneath them.
+    defer_incomplete: Cell<bool>,
     incomplete_mode: RefCell<IncompleteMode>,
 }
 
@@ -1007,6 +1012,7 @@ impl<'a> Frame<'a> {
             next_injections: RefCell::new(None),
             generated_definitions: RefCell::new(BTreeMap::new()),
             skip_cache: Cell::new(false),
+            defer_incomplete: Cell::new(parent.is_some_and(|parent| parent.defer_incomplete.get())),
             incomplete_mode: RefCell::new(parent.map_or_else(IncompleteMode::default, |parent| {
                 parent.incomplete_mode.borrow().clone()
             })),
@@ -1165,7 +1171,7 @@ impl<'a> Frame<'a> {
                 }
             }
             StructItem::If { cond, body, span } => {
-                let condition = require_bool(&eval_expr(cond, self)?, *span)?;
+                let condition = require_bool(self, &eval_expr(cond, self)?, *span)?;
                 if condition {
                     self.expand_body(body, HashMap::new())?;
                 }
@@ -1532,6 +1538,9 @@ impl<'a> Frame<'a> {
                 .get(&key)
                 .is_some_and(|definition| definition.optional);
             if optional && !self.optional_is_materialized(&key) {
+                if self.defer_incomplete.get() {
+                    return Ok(Value::Bottom);
+                }
                 return Err(LangError::incomplete_optional(
                     span.line,
                     span.col,
@@ -1547,6 +1556,9 @@ impl<'a> Frame<'a> {
                 .get(&key)
                 .is_some_and(|definition| definition.optional);
             if optional && !self.optional_is_materialized(&key) {
+                if self.defer_incomplete.get() {
+                    return Ok(Value::Bottom);
+                }
                 return Err(LangError::incomplete_optional(
                     span.line,
                     span.col,
@@ -1670,6 +1682,17 @@ impl<'a> Frame<'a> {
         injected.contains(key) || injected.contains(display_field_name(key))
     }
 
+    fn injected_field_reference(&self, name: &str) -> bool {
+        let mut cursor = Some(self);
+        while let Some(current) = cursor {
+            if let Some(key) = current.any_field_key(name) {
+                return current.is_injected_key(&key);
+            }
+            cursor = current.parent;
+        }
+        false
+    }
+
     /// Evaluate a field's own declaration without honoring a cached value that
     /// came from external injection. Used by self-selection, which CUE always
     /// resolves against the definition in isolation.
@@ -1682,6 +1705,19 @@ impl<'a> Frame<'a> {
             self.values.borrow_mut().insert(key.to_owned(), cached);
         }
         result
+    }
+
+    /// Re-evaluate an incomplete field with soft incompleteness errors deferred.
+    /// Used before skipping definitions/hidden fields during export so hard
+    /// errors hidden underneath the first incomplete error still surface.
+    fn incomplete_field_validates(&self, key: &str, span: Span) -> Result<(), LangError> {
+        self.values.borrow_mut().remove(key);
+        let previous_defer = self.defer_incomplete.replace(true);
+        let previous_cache = self.skip_cache.replace(true);
+        let result = self.eval_field_key(key, span);
+        self.skip_cache.set(previous_cache);
+        self.defer_incomplete.set(previous_defer);
+        result.map(|_| ())
     }
 
     fn generated_value_key(&self, name: &str, quoted: bool) -> Option<String> {
@@ -1920,6 +1956,9 @@ impl<'a> Frame<'a> {
                         && !child.materialized.borrow().contains(key)
                         && !child.values.borrow().contains_key(key)
                     {
+                        if child.defer_incomplete.get() {
+                            return Ok(Value::Bottom);
+                        }
                         return Err(LangError::incomplete_optional(
                             span.line,
                             span.col,
@@ -3073,18 +3112,15 @@ impl<'a> Frame<'a> {
                 .is_some_and(|def| def.definition);
             let value = match self.eval_field_key(&name, Span::default()) {
                 Ok(value) => value,
-                // Hidden fields are not exported; like CUE, allow them to stay
-                // incomplete until a unification supplies the missing values.
-                Err(err) if is_hidden_key(&name) && is_optional_incomplete_error(&err) => {
-                    continue;
-                }
-                // Definitions are never emitted by CUE, so incomplete
-                // definitions do not block an export.
                 Err(err)
-                    if include_definitions
-                        && is_definition
+                    if (is_hidden_key(&name) || (include_definitions && is_definition))
                         && is_deferrable_incomplete_error(&err) =>
                 {
+                    // Re-evaluate with soft incompleteness deferred; only skip
+                    // if no hard error lies underneath the first incomplete
+                    // error. Definitions are never emitted by CUE, and hidden
+                    // fields may stay incomplete.
+                    self.incomplete_field_validates(&name, Span::default())?;
                     continue;
                 }
                 Err(err) => return Err(err),
@@ -3177,6 +3213,9 @@ fn self_definition_select(
                     .is_some_and(|definition| definition.optional);
                 let injected = current.is_injected_key(&key);
                 if optional && (injected || !current.optional_is_materialized(&key)) {
+                    if current.defer_incomplete.get() {
+                        return Ok(Some(Value::Bottom));
+                    }
                     return Err(LangError::incomplete_optional(
                         span.line,
                         span.col,
@@ -3193,6 +3232,9 @@ fn self_definition_select(
             if let Some(key) = current.generated_optional_key(field, quoted)
                 && (current.is_injected_key(&key) || !current.optional_is_materialized(&key))
             {
+                if current.defer_incomplete.get() {
+                    return Ok(Some(Value::Bottom));
+                }
                 return Err(LangError::incomplete_optional(
                     span.line,
                     span.col,
@@ -3258,7 +3300,9 @@ fn is_optional_incomplete_error(err: &LangError) -> bool {
 }
 
 fn is_deferrable_incomplete_error(err: &LangError) -> bool {
-    is_optional_incomplete_error(err) || err.to_string().contains("non-concrete value")
+    is_optional_incomplete_error(err)
+        || err.is_incomplete_value()
+        || err.to_string().contains("non-concrete value")
 }
 
 fn lookup_with_injections(
@@ -3347,30 +3391,71 @@ fn eval_definition_with_injections(
     Ok(None)
 }
 
-fn struct_narrows_key(items: &[StructItem], injections: &BTreeMap<String, Value>) -> bool {
+fn struct_narrows_key(
+    frame: &Frame<'_>,
+    items: &[StructItem],
+    injections: &BTreeMap<String, Value>,
+) -> bool {
     items.iter().any(|item| match item {
         StructItem::Field(field) => {
             let crate::ast::Label::Name(name, _) = &field.label else {
                 return false;
             };
-            injections.contains_key(name) && contains_default(&field.value)
+            injections.contains_key(name) && field_value_needs_injection(frame, &field.value)
         }
         StructItem::If { body, .. } | StructItem::For { body, .. } => {
-            struct_narrows_key(body, injections)
+            struct_narrows_key(frame, body, injections)
         }
         _ => false,
     })
 }
 
-fn expr_narrows_key(expr: &Expr, injections: &BTreeMap<String, Value>) -> bool {
+fn expr_narrows_key(frame: &Frame<'_>, expr: &Expr, injections: &BTreeMap<String, Value>) -> bool {
     match expr {
-        Expr::Struct(items, _) => struct_narrows_key(items, injections),
+        Expr::Struct(items, _) => struct_narrows_key(frame, items, injections),
         Expr::Unify(left, right, _) | Expr::Disjunction(left, right, _) => {
-            expr_narrows_key(left, injections) || expr_narrows_key(right, injections)
+            expr_narrows_key(frame, left, injections) || expr_narrows_key(frame, right, injections)
         }
-        Expr::Paren(inner, _) | Expr::Default(inner, _) => expr_narrows_key(inner, injections),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => {
+            expr_narrows_key(frame, inner, injections)
+        }
         _ => false,
     }
+}
+
+fn field_value_needs_injection(frame: &Frame<'_>, expr: &Expr) -> bool {
+    if contains_default(expr) {
+        return true;
+    }
+    let mut identifiers = Vec::new();
+    collect_identifiers(expr, &mut identifiers);
+    if identifiers
+        .iter()
+        .any(|name| !name.starts_with('#') && !is_type_keyword(name))
+    {
+        return true;
+    }
+    identifiers
+        .iter()
+        .filter(|name| name.starts_with('#'))
+        .any(|name| {
+            definition_exprs(frame, name).iter().any(|expr| {
+                contains_default(expr) || {
+                    let mut identifiers = Vec::new();
+                    collect_identifiers(expr, &mut identifiers);
+                    identifiers
+                        .iter()
+                        .any(|name| !name.starts_with('#') && !is_type_keyword(name))
+                }
+            })
+        })
+}
+
+fn is_type_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "int" | "string" | "number" | "float" | "bytes" | "bool"
+    )
 }
 
 fn definition_needs_narrowing(
@@ -3387,14 +3472,16 @@ fn definition_needs_narrowing(
                 .get(&key)
                 .map(|definition| definition.exprs.clone())
                 .unwrap_or_default();
-            let marker = format!("Ident(\"{name}\"");
+            let self_keys: BTreeSet<String> = std::iter::once(name.to_owned()).collect();
             if exprs
                 .iter()
-                .any(|expr| format!("{expr:?}").contains(&marker))
+                .any(|expr| expr_references_keys(expr, &self_keys))
             {
                 return false;
             }
-            return exprs.iter().any(|expr| expr_narrows_key(expr, injections));
+            return exprs
+                .iter()
+                .any(|expr| expr_narrows_key(current, expr, injections));
         }
         cursor = current.parent;
     }
@@ -3416,7 +3503,7 @@ fn try_definition_unify(
         let Some(injections) = concrete_fields(&value) else {
             return Ok(None);
         };
-        if !struct_narrows_key(items, &injections) {
+        if !struct_narrows_key(frame, items, &injections) {
             return Ok(None);
         }
         let previous = frame.next_injections.replace(Some(injections));
@@ -3622,6 +3709,9 @@ fn eval_declaration_part(
             unify_values(&left, &right, span)
         }
         (Expr::Ident(name, _), value) => {
+            if frame.injected_field_reference(name) {
+                return eval_expr(expr, frame);
+            }
             if let Some(injections) = concrete_fields(value)
                 && let Some(narrowed) =
                     eval_definition_with_injections(frame, name, injections, span)?
@@ -3686,65 +3776,96 @@ fn expr_is_narrowing_source(expr: &Expr) -> bool {
 }
 
 fn expr_contains_ident(expr: &Expr) -> bool {
+    let mut identifiers = Vec::new();
+    collect_identifiers(expr, &mut identifiers);
+    !identifiers.is_empty()
+}
+
+fn collect_identifiers(expr: &Expr, out: &mut Vec<String>) {
     match expr {
-        Expr::Ident(_, _) => true,
-        Expr::Select(base, _, _, _) => expr_contains_ident(base),
-        Expr::Index(base, index, _) => expr_contains_ident(base) || expr_contains_ident(index),
+        Expr::Ident(name, _) => out.push(name.clone()),
+        Expr::Select(base, _, _, _) => collect_identifiers(base, out),
+        Expr::Index(base, index, _) => {
+            collect_identifiers(base, out);
+            collect_identifiers(index, out);
+        }
         Expr::Call(callee, arguments, _) => {
-            expr_contains_ident(callee) || arguments.iter().any(expr_contains_ident)
+            collect_identifiers(callee, out);
+            for argument in arguments {
+                collect_identifiers(argument, out);
+            }
         }
         Expr::Bound(_, operand, _)
         | Expr::Paren(operand, _)
         | Expr::Default(operand, _)
-        | Expr::Unary(_, operand, _) => expr_contains_ident(operand),
+        | Expr::Unary(_, operand, _) => collect_identifiers(operand, out),
         Expr::Binary(_, left, right, _)
         | Expr::Unify(left, right, _)
         | Expr::Disjunction(left, right, _) => {
-            expr_contains_ident(left) || expr_contains_ident(right)
+            collect_identifiers(left, out);
+            collect_identifiers(right, out);
         }
-        Expr::Struct(items, _) => struct_items_contain_ident(items),
+        Expr::Struct(items, _) => collect_struct_identifiers(items, out),
         Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
-            items.iter().any(expr_contains_ident)
+            for item in items {
+                collect_identifiers(item, out);
+            }
         }
-        Expr::OpenList(Some(item), _) => expr_contains_ident(item),
-        Expr::OpenList(None, _) => false,
-        Expr::Str(parts, _) => parts.iter().any(|part| match part {
-            crate::ast::StrPart::Text(_) => false,
-            crate::ast::StrPart::Interp(expr) => expr_contains_ident(expr),
-        }),
-        Expr::BytesInterp(parts, _) => parts.iter().any(|part| match part {
-            crate::ast::BytePart::Text(_) => false,
-            crate::ast::BytePart::Interp(expr) => expr_contains_ident(expr),
-        }),
+        Expr::OpenList(Some(item), _) => collect_identifiers(item, out),
+        Expr::OpenList(None, _) => {}
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let crate::ast::StrPart::Interp(expr) = part {
+                    collect_identifiers(expr, out);
+                }
+            }
+        }
+        Expr::BytesInterp(parts, _) => {
+            for part in parts {
+                if let crate::ast::BytePart::Interp(expr) = part {
+                    collect_identifiers(expr, out);
+                }
+            }
+        }
         Expr::ListComp { clauses, body, .. } => {
-            expr_contains_ident(body)
-                || clauses.iter().any(|clause| match clause {
-                    crate::ast::CompClause::For { source, .. } => expr_contains_ident(source),
-                    crate::ast::CompClause::If { cond, .. } => expr_contains_ident(cond),
-                })
+            collect_identifiers(body, out);
+            for clause in clauses {
+                match clause {
+                    crate::ast::CompClause::For { source, .. } => {
+                        collect_identifiers(source, out);
+                    }
+                    crate::ast::CompClause::If { cond, .. } => {
+                        collect_identifiers(cond, out);
+                    }
+                }
+            }
         }
         Expr::Bytes(_, _)
         | Expr::Null(_)
         | Expr::Bool(_, _)
         | Expr::Int(_, _)
         | Expr::BigInt(_, _)
-        | Expr::Float(_, _) => false,
+        | Expr::Float(_, _) => {}
     }
 }
 
-fn struct_items_contain_ident(items: &[StructItem]) -> bool {
-    items.iter().any(|item| match item {
-        StructItem::Field(field) => expr_contains_ident(&field.value),
-        StructItem::Pattern { value, .. } => expr_contains_ident(value),
-        StructItem::Let { value, .. } => expr_contains_ident(value),
-        StructItem::For { source, body, .. } => {
-            expr_contains_ident(source) || struct_items_contain_ident(body)
+fn collect_struct_identifiers(items: &[StructItem], out: &mut Vec<String>) {
+    for item in items {
+        match item {
+            StructItem::Field(field) => collect_identifiers(&field.value, out),
+            StructItem::Pattern { value, .. } => collect_identifiers(value, out),
+            StructItem::Let { value, .. } => collect_identifiers(value, out),
+            StructItem::For { source, body, .. } => {
+                collect_identifiers(source, out);
+                collect_struct_identifiers(body, out);
+            }
+            StructItem::If { cond, body, .. } => {
+                collect_identifiers(cond, out);
+                collect_struct_identifiers(body, out);
+            }
+            StructItem::Ellipsis(_) => {}
         }
-        StructItem::If { cond, body, .. } => {
-            expr_contains_ident(cond) || struct_items_contain_ident(body)
-        }
-        StructItem::Ellipsis(_) => false,
-    })
+    }
 }
 
 fn contains_default(expr: &Expr) -> bool {
@@ -4105,7 +4226,10 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                             if frame.allows_incomplete(expr) {
                                 return Ok(Value::Type(TypeKind::Bytes));
                             }
-                            return Err(LangError::eval(
+                            if frame.defer_incomplete.get() {
+                                return Ok(Value::Type(TypeKind::Bytes));
+                            }
+                            return Err(LangError::incomplete_value(
                                 span.line,
                                 span.col,
                                 "non-concrete value in bytes interpolation",
@@ -4142,7 +4266,10 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                             if frame.allows_incomplete(expr) {
                                 return Ok(Value::Type(TypeKind::String));
                             }
-                            return Err(LangError::eval(
+                            if frame.defer_incomplete.get() {
+                                return Ok(Value::Type(TypeKind::String));
+                            }
+                            return Err(LangError::incomplete_value(
                                 1,
                                 1,
                                 "non-concrete value in string interpolation",
@@ -4185,6 +4312,9 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 return frame.params_path_value(&path, *span);
             }
             let base = eval_expr(base, frame)?.concretize().clone();
+            if frame.defer_incomplete.get() && matches!(base, Value::Bottom) {
+                return Ok(Value::Bottom);
+            }
             match base {
                 Value::Struct(map) => {
                     if !*quoted && field.starts_with('#') {
@@ -4225,11 +4355,15 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                     if let Some(value) = selected {
                         Ok(value)
                     } else if optional.contains_key(field) {
-                        Err(LangError::incomplete_optional(
-                            span.line,
-                            span.col,
-                            format!("cannot reference optional field `{field}`"),
-                        ))
+                        if frame.defer_incomplete.get() {
+                            Ok(Value::Bottom)
+                        } else {
+                            Err(LangError::incomplete_optional(
+                                span.line,
+                                span.col,
+                                format!("cannot reference optional field `{field}`"),
+                            ))
+                        }
                     } else {
                         Err(LangError::eval(
                             span.line,
@@ -4276,6 +4410,11 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             for argument in arguments {
                 values.push(eval_expr(argument, frame)?.concretize().clone());
             }
+            if frame.defer_incomplete.get()
+                && values.iter().any(|value| matches!(value, Value::Bottom))
+            {
+                return Ok(Value::Bottom);
+            }
             apply_builtin(&callee, &values, *span)
         }
         Expr::Index(base, index, span) => {
@@ -4307,6 +4446,11 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             }
             let base = eval_expr(base, frame)?.concretize().clone();
             let index = eval_expr(index, frame)?.concretize().clone();
+            if frame.defer_incomplete.get()
+                && (matches!(base, Value::Bottom) || matches!(index, Value::Bottom))
+            {
+                return Ok(Value::Bottom);
+            }
             match (base, index) {
                 (Value::List(list) | Value::OpenListPrefix(list, _), Value::Int(index)) => {
                     let index = usize::try_from(index).map_err(|_| {
@@ -4440,33 +4584,41 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         Expr::Default(inner, _) => eval_expr(inner, frame),
         Expr::Binary(op, left, right, span) => {
             if matches!(op, BinOp::And | BinOp::Or) {
-                let left = require_bool(&eval_expr(left, frame)?, *span)?;
-                let right = require_bool(&eval_expr(right, frame)?, *span)?;
+                let left = require_bool(frame, &eval_expr(left, frame)?, *span)?;
+                let right = require_bool(frame, &eval_expr(right, frame)?, *span)?;
                 return Ok(Value::Bool(if matches!(op, BinOp::And) {
                     left && right
                 } else {
                     left || right
                 }));
             }
-            let left = eval_expr(left, frame)?.concretize().clone();
-            let right = eval_expr(right, frame)?.concretize().clone();
+            let left_value = eval_expr(left, frame)?.concretize().clone();
+            let right_value = eval_expr(right, frame)?.concretize().clone();
             if !matches!(op, BinOp::Eq | BinOp::Ne)
                 || matches!(
-                    (&left, &right),
+                    (&left_value, &right_value),
                     (Value::Disjunction(_, _), _)
                         | (_, Value::Disjunction(_, _))
                         | (Value::Bounds(_), _)
                         | (_, Value::Bounds(_))
                 )
             {
-                require_concrete(&left, *span)?;
-                require_concrete(&right, *span)?;
+                let left_concrete = require_operand(frame, &left_value, left, *span)?;
+                let right_concrete = require_operand(frame, &right_value, right, *span)?;
+                if left_concrete.is_none() || right_concrete.is_none() {
+                    return Ok(Value::Type(TypeKind::Number));
+                }
             }
-            binary(op, &left, &right, *span)
+            binary(op, &left_value, &right_value, *span)
         }
         Expr::Unary(op, inner, span) => {
             let value = eval_expr(inner, frame)?.concretize().clone();
-            require_concrete(&value, *span)?;
+            if require_operand(frame, &value, inner, *span)?.is_none() {
+                return Ok(Value::Type(match op {
+                    UnOp::Not => TypeKind::Bool,
+                    UnOp::Neg => TypeKind::Number,
+                }));
+            }
             match (op, value) {
                 (UnOp::Not, Value::Bool(value)) => Ok(Value::Bool(!value)),
                 (UnOp::Not, other) => Err(LangError::conflict(
@@ -4555,7 +4707,7 @@ fn eval_list_comp(
             }
         }
         CompClause::If { cond, span } => {
-            if require_bool(&eval_expr(cond, frame)?, *span)? {
+            if require_bool(frame, &eval_expr(cond, frame)?, *span)? {
                 eval_list_comp(clauses, index + 1, body, frame, out)?;
             }
         }
@@ -7560,20 +7712,57 @@ fn collect_disjunction<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
-fn require_concrete(value: &Value, span: Span) -> Result<&Value, LangError> {
-    let concrete = value.concretize();
-    if concrete.to_json().is_none() {
-        return Err(LangError::eval(
-            span.line,
-            span.col,
-            "unresolved disjunction or non-concrete value",
-        ));
+fn is_bare_type_operand(expr: &Expr) -> bool {
+    match strip_expr_parens(expr) {
+        Expr::Ident(name, _) => matches!(
+            name.as_str(),
+            "int" | "string" | "number" | "float" | "bytes" | "bool"
+        ),
+        Expr::Bound(_, _, _) => true,
+        _ => false,
     }
-    Ok(concrete)
 }
 
-fn require_bool(value: &Value, span: Span) -> Result<bool, LangError> {
-    let concrete = require_concrete(value, span)?;
+fn require_operand<'v>(
+    frame: &Frame<'_>,
+    value: &'v Value,
+    expr: &Expr,
+    span: Span,
+) -> Result<Option<&'v Value>, LangError> {
+    let concrete = value.concretize();
+    if concrete.to_json().is_some() {
+        return Ok(Some(concrete));
+    }
+    let hard = is_bare_type_operand(expr);
+    if frame.defer_incomplete.get() && !hard {
+        return Ok(None);
+    }
+    if hard {
+        return Err(LangError::invalid_operand(
+            span.line,
+            span.col,
+            format!("invalid operand `{}`", concrete.type_name()),
+        ));
+    }
+    Err(LangError::incomplete_value(
+        span.line,
+        span.col,
+        "non-concrete value in operand",
+    ))
+}
+
+fn require_bool(frame: &Frame<'_>, value: &Value, span: Span) -> Result<bool, LangError> {
+    let concrete = value.concretize();
+    if concrete.to_json().is_none() {
+        if frame.defer_incomplete.get() {
+            return Ok(true);
+        }
+        return Err(LangError::incomplete_value(
+            span.line,
+            span.col,
+            "non-concrete value in boolean context",
+        ));
+    }
     match concrete {
         Value::Bool(value) => Ok(*value),
         other => Err(LangError::conflict(

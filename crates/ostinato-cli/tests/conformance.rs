@@ -327,6 +327,28 @@ fn rust_export_omits_incomplete_definitions_and_matches_cue() {
     let minimal = scope.path().join("minimal.cue");
     std::fs::write(&minimal, "package demo\n#P: {a?: int, v: a}\nx: 1\n").expect("write minimal");
     export(&minimal);
+
+    let extras = [
+        (
+            "soft-definition",
+            "package demo\n#D: {a: int, b: a + 1}\nx: 1\n",
+        ),
+        (
+            "soft-hidden",
+            "package demo\n_h: {a: int, b: a + 1}\nx: 1\n",
+        ),
+        (
+            "non-params-narrowing",
+            "package demo\n#E: {n: *2 | int, m: n * 3}\n#P: {ls?: [#E]}\nx: #P & {ls: [{n: 4}]}\n",
+        ),
+    ];
+    for (name, source) in extras {
+        let directory = scope.path().join(name);
+        std::fs::create_dir_all(&directory).expect("create dir");
+        let path = directory.join(format!("{name}.cue"));
+        std::fs::write(&path, format!("{source}\n")).expect("write extra");
+        export(&path);
+    }
 }
 
 #[test]
