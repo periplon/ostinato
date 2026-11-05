@@ -6833,6 +6833,108 @@ concrete: #A & {c: 3}
 }
 
 #[test]
+fn compound_optional_edges_match_cue() {
+    let source = r#"
+package demo
+#P: {a?: int, b: a + 1}
+let base = #P
+let struct_base = {cfg?: {a?: int, v: a}}
+#A: struct_base & {cfg: {a: 3}}
+let_definition: base & {a: 2}
+let_struct: #A
+#Absent: {cfg?: {a: int, b: a + 1}}
+absent: #Absent & {}
+#PC: {cfg?: {a: int, b: a + 1}, v: cfg.b}
+compound: #PC & {cfg: {a: 2}}
+#N: {cfg: {a?: int, v: a}}
+nested_required: #N & {cfg: {a: 2}}
+#E: {a?: int, v: a}
+#PD: {e?: #E, w: e.v}
+definition: #PD & {e: {a: 2}}
+#PL: {ls?: [[{a?: int, v: a}]]}
+list: #PL & {ls: [[{a: 2}]]}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse compound edges");
+    let value = ostinato_lang::eval_file(&file).expect("eval compound edges");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["let_definition"], serde_json::json!({"a": 2, "b": 3}));
+    assert_eq!(
+        json["let_struct"],
+        serde_json::json!({"cfg": {"a": 3, "v": 3}})
+    );
+    assert_eq!(json["absent"], serde_json::json!({}));
+    assert_eq!(
+        json["compound"],
+        serde_json::json!({"cfg": {"a": 2, "b": 3}, "v": 3})
+    );
+    assert_eq!(
+        json["nested_required"],
+        serde_json::json!({"cfg": {"a": 2, "v": 2}})
+    );
+    assert_eq!(
+        json["definition"],
+        serde_json::json!({"e": {"a": 2, "v": 2}, "w": 2})
+    );
+    assert_eq!(
+        json["list"],
+        serde_json::json!({"ls": [[{"a": 2, "v": 2}]]})
+    );
+
+    for source in [
+        "package demo\n#P: {a: int, v: #P.a + 1}\nx: #P & {a: 2}\n",
+        "package demo\n#P: {cfg?: {a?: int, v: #P.cfg.a + 1}}\nx: #P & {cfg: {a: 2}}\n",
+        "package demo\n#P: {cfg?: {a: int, b: a + 1}, v: cfg.b}\nx: #P & {}\n",
+        "package demo\n#P: {cfg?: {a: int}}\nx: #P & {v: cfg}\n",
+        "package demo\n#P: {cfg?: {a: int}}\nx: #P & {v: #P.cfg.a}\n",
+        "package demo\n#P: {cfg?: {a: int}}\nx: #P & {cfg: {a: \"s\"}}\n",
+        "package demo\n#P: {xs?: [int, int]}\nx: #P & {xs: [1, 2, 3]}\n",
+        "package demo\n#P: {xs?: [int, int]}\nx: #P & {xs: [1, \"s\"]}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse rejected compound edge");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "compound optional edge must reject: {source:?}"
+        );
+    }
+
+    let eval_params = |source: &str| {
+        let file = ostinato_lang::parse(source).expect("parse params edge");
+        let value = ostinato_lang::eval_file(&file).expect("eval params edge");
+        value.to_json().expect("json")["params"].clone()
+    };
+    assert_eq!(
+        eval_params("package demo\n#P: {n: *2 | int, m: n * 2}\nparams: #P & {n: 5}\n"),
+        serde_json::json!({"n": 5, "m": 10})
+    );
+    assert_eq!(
+        eval_params("package demo\n#P: {n: *2 | int, m: n * 2}\nparams: #P\n"),
+        serde_json::json!({"n": 2, "m": 4})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {cfg?: {a: int, b: a + 1}, v: cfg.b}\nparams: #P & {cfg: {a: 2}}\n"
+        ),
+        serde_json::json!({"cfg": {"a": 2, "b": 3}, "v": 3})
+    );
+    assert_eq!(
+        eval_params("package demo\n#N: {cfg: {a?: int, v: a}}\nparams: #N & {cfg: {a: 2}}\n"),
+        serde_json::json!({"cfg": {"a": 2, "v": 2}})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#E: {a?: int, v: a}\n#P: {e?: #E, w: e.v}\nparams: #P & {e: {a: 2}}\n"
+        ),
+        serde_json::json!({"e": {"a": 2, "v": 2}, "w": 2})
+    );
+    assert_eq!(
+        eval_params(
+            "package demo\n#P: {ls?: [[{a?: int, v: a}]]}\nparams: #P & {ls: [[{a: 2}]]}\n"
+        ),
+        serde_json::json!({"ls": [[{"a": 2, "v": 2}]]})
+    );
+}
+
+#[test]
 fn arbitrary_precision_integer_literals_keep_exact_values() {
     let source = r#"
 package demo
