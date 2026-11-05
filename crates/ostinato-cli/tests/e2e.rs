@@ -14,7 +14,7 @@ struct LocalHttpServer {
 
 impl LocalHttpServer {
     fn start() -> Self {
-        use std::io::{Read, Write};
+        use std::io::{ErrorKind, Read, Write};
         use std::net::TcpListener;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,26 +27,31 @@ impl LocalHttpServer {
             while !stop_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // Accepted sockets inherit O_NONBLOCK from the
+                        // listener on macOS. Clear it before using timeouts.
+                        let _ = stream.set_nonblocking(false);
                         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
                         let mut data = Vec::new();
                         let mut chunk = [0u8; 4096];
-                        while let Ok(read) = stream.read(&mut chunk) {
-                            if read == 0 {
-                                break;
-                            }
-                            data.extend_from_slice(&chunk[..read]);
-                            if data.windows(4).any(|window| window == b"\r\n\r\n") {
-                                break;
+                        loop {
+                            match stream.read(&mut chunk) {
+                                Ok(0) => break,
+                                Ok(read) => {
+                                    data.extend_from_slice(&chunk[..read]);
+                                    if data.windows(4).any(|window| window == b"\r\n\r\n") {
+                                        break;
+                                    }
+                                }
+                                Err(err)
+                                    if matches!(
+                                        err.kind(),
+                                        ErrorKind::WouldBlock | ErrorKind::Interrupted
+                                    ) => {}
+                                Err(_) => break,
                             }
                         }
                         let text = String::from_utf8_lossy(&data).into_owned();
-                        let (head, rest) = text
-                            .split_once(
-                                "
-
-",
-                            )
-                            .unwrap_or((&text, ""));
+                        let (head, rest) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
                         let mut lines = head.lines();
                         let request_line = lines.next().unwrap_or_default();
                         let mut parts = request_line.split_whitespace();
@@ -68,14 +73,16 @@ impl LocalHttpServer {
                         }
                         let mut body = rest.as_bytes().to_vec();
                         while body.len() < content_length {
-                            let read = match stream.read(&mut chunk) {
-                                Ok(read) => read,
+                            match stream.read(&mut chunk) {
+                                Ok(0) => break,
+                                Ok(read) => body.extend_from_slice(&chunk[..read]),
+                                Err(err)
+                                    if matches!(
+                                        err.kind(),
+                                        ErrorKind::WouldBlock | ErrorKind::Interrupted
+                                    ) => {}
                                 Err(_) => break,
-                            };
-                            if read == 0 {
-                                break;
                             }
-                            body.extend_from_slice(&chunk[..read]);
                         }
                         let body_text = String::from_utf8_lossy(&body).into_owned();
                         let (status, response_body, headers): (u16, Vec<u8>, Vec<(&str, &str)>) =
@@ -97,7 +104,6 @@ impl LocalHttpServer {
                                     });
                                     (200, payload.to_string().into_bytes(), Vec::new())
                                 }
-                                "/trailer" => (200, b"hello".to_vec(), Vec::new()),
                                 _ => (404, b"unknown".to_vec(), Vec::new()),
                             };
                         let reason = match status {
@@ -106,41 +112,15 @@ impl LocalHttpServer {
                             404 => "Not Found",
                             _ => "",
                         };
-                        let mut response = format!(
-                            "HTTP/1.1 {status} {reason}
-"
-                        );
+                        let mut response = format!("HTTP/1.1 {status} {reason}\r\n");
                         for (name, value) in headers {
-                            response.push_str(&format!(
-                                "{name}: {value}
-"
-                            ));
+                            response.push_str(&format!("{name}: {value}\r\n"));
                         }
-                        if path == "/trailer" {
-                            response.push_str(
-                                "Transfer-Encoding: chunked
-Trailer: X-Trailer
-
-",
-                            );
-                            response.push_str(
-                                "5
-hello
-0
-X-Trailer: done
-
-",
-                            );
-                        } else {
-                            response.push_str(&format!(
-                                "Content-Length: {}
-Connection: close
-
-",
-                                response_body.len()
-                            ));
-                            response.push_str(&String::from_utf8_lossy(&response_body));
-                        }
+                        response.push_str(&format!(
+                            "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            response_body.len()
+                        ));
+                        response.push_str(&String::from_utf8_lossy(&response_body));
                         let _ = stream.write_all(response.as_bytes());
                     }
                     Err(_) => {
@@ -14108,4 +14088,156 @@ command: connfail: {
     assert!(!expected.status.success(), "connfail");
     assert_eq!(actual.status.code(), expected.status.code(), "connfail");
     assert_eq!(actual.stdout, expected.stdout, "connfail");
+}
+
+#[test]
+fn tool_command_http_tls_verify_and_ca_cert() {
+    let available = Command::new("openssl")
+        .arg("version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !available {
+        eprintln!("skipping: openssl not installed");
+        return;
+    }
+    let directory = tempfile::tempdir().expect("tempdir");
+    let ca_cert_path = directory.path().join("ca.pem");
+    let ca_key_path = directory.path().join("ca.key");
+    let cert_path = directory.path().join("server.pem");
+    let key_path = directory.path().join("server.key");
+    let csr_path = directory.path().join("server.csr");
+    let ext_path = directory.path().join("server.ext");
+    write(
+        &ext_path,
+        "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n",
+    );
+    let generated = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            ca_key_path.to_str().expect("ca key path"),
+            "-out",
+            ca_cert_path.to_str().expect("ca cert path"),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=TestCA",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+        ])
+        .output()
+        .expect("generate CA certificate");
+    let csr = Command::new("openssl")
+        .args([
+            "req",
+            "-new",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            key_path.to_str().expect("key path"),
+            "-out",
+            csr_path.to_str().expect("csr path"),
+            "-subj",
+            "/CN=127.0.0.1",
+        ])
+        .output()
+        .expect("generate server CSR");
+    let signed = Command::new("openssl")
+        .args([
+            "x509",
+            "-req",
+            "-in",
+            csr_path.to_str().expect("csr path"),
+            "-CA",
+            ca_cert_path.to_str().expect("ca cert path"),
+            "-CAkey",
+            ca_key_path.to_str().expect("ca key path"),
+            "-CAcreateserial",
+            "-out",
+            cert_path.to_str().expect("cert path"),
+            "-days",
+            "1",
+            "-extfile",
+            ext_path.to_str().expect("ext path"),
+        ])
+        .output()
+        .expect("sign server certificate");
+    if !(generated.status.success() && csr.status.success() && signed.status.success()) {
+        eprintln!("skipping: openssl cannot generate a CA/server certificate");
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("tls port");
+    let port = listener.local_addr().expect("tls address").port();
+    drop(listener);
+    let mut server = Command::new("openssl")
+        .args([
+            "s_server",
+            "-accept",
+            &format!("127.0.0.1:{port}"),
+            "-cert",
+            cert_path.to_str().expect("cert path"),
+            "-key",
+            key_path.to_str().expect("key path"),
+            "-www",
+            "-quiet",
+            "-naccept",
+            "10",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start tls server");
+    let mut ready = false;
+    for _ in 0..100 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(ready, "tls server did not start");
+
+    let cert_pem = std::fs::read_to_string(&ca_cert_path).expect("read CA certificate");
+    let cert_literal = serde_json::to_string(&cert_pem).expect("certificate literal");
+    let source = format!(
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/http"
+)
+command: verifyfalse: {{
+	r: http.Get & {{url: "https://127.0.0.1:{port}/", tls: {{verify: false}}, response: {{body: string}}}}
+	p: cli.Print & {{text: "body=\(r.response.body)"}}
+}}
+command: cacer: {{
+	r: http.Get & {{url: "https://127.0.0.1:{port}/", tls: {{caCert: {cert_literal}}}, response: {{body: string}}}}
+	p: cli.Print & {{text: "body=\(r.response.body)"}}
+}}
+"#
+    );
+    write(&directory.path().join("tls_tool.cue"), &source);
+    for command in ["verifyfalse", "cacer"] {
+        let actual = ost(&["cmd", command, directory.path().to_str().expect("path")]);
+        assert!(
+            actual.status.success(),
+            "{command}: {}",
+            String::from_utf8_lossy(&actual.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&actual.stdout).contains("body=<HTML>"),
+            "{command}: {}",
+            String::from_utf8_lossy(&actual.stdout)
+        );
+    }
+    let _ = server.kill();
+    let _ = server.wait();
 }
