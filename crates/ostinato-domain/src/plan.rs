@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DomainError;
-use crate::workflow::{GatewaySpec, StepKind, WorkflowSpec};
+use crate::workflow::{
+    EventSource, GatewaySpec, RetryPolicy, StepKind, WorkflowSpec, validate_workflow_event,
+};
 
 /// Hard cap on materialised plan nodes. Cycles expand eagerly; this prevents
 /// a workflow file from exhausting memory during planning.
@@ -536,6 +538,8 @@ pub fn build_plan(spec: &WorkflowSpec) -> Result<Plan, DomainError> {
     }
     cycle_info.sort_by(|a, b| a.members.cmp(&b.members));
 
+    validate_awaits(spec, &nodes)?;
+
     Ok(Plan {
         groups: group,
         has_cycles,
@@ -593,6 +597,8 @@ fn validate_gateways(
             (step.exec.is_some(), "exec"),
             (step.agent.is_some(), "agent"),
             (step.improve.is_some(), "improve"),
+            (step.await_spec.is_some(), "await"),
+            (!step.emit.is_empty(), "emit"),
             (step.timeout_ms.is_some(), "timeoutMs"),
             (step.continue_on_error, "continueOnError"),
         ] {
@@ -1019,4 +1025,83 @@ fn strongly_connected(adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
         }
     }
     state.components
+}
+
+/// Validate await/emit declarations and enforce the same-group visibility rule.
+///
+/// A group commits atomically, so events emitted by a node in group `N` only
+/// become visible to awaits in group `N+1` or later. Within a materialised
+/// cycle round the same rule applies: an await may only consume internal
+/// events emitted by a strictly earlier group of that round.
+fn validate_awaits(spec: &WorkflowSpec, nodes: &[PlanNode]) -> Result<(), DomainError> {
+    for (name, step) in &spec.steps {
+        match (step.kind, &step.await_spec) {
+            (StepKind::Await, None) => {
+                return Err(DomainError::AwaitRequiresSpec(name.clone()));
+            }
+            (StepKind::Await, Some(await_spec)) => {
+                if step.retry != RetryPolicy::default() {
+                    return Err(DomainError::AwaitRetryNotAllowed(name.clone()));
+                }
+                for (present, field) in [
+                    (step.exec.is_some(), "exec"),
+                    (step.agent.is_some(), "agent"),
+                    (step.improve.is_some(), "improve"),
+                    (step.gateway.is_some(), "gateway"),
+                ] {
+                    if present {
+                        return Err(DomainError::AwaitPayloadNotAllowed {
+                            step: name.clone(),
+                            field: field.to_owned(),
+                        });
+                    }
+                }
+                validate_workflow_event(&await_spec.event, &serde_json::Value::Null)?;
+            }
+            (_, Some(_)) => return Err(DomainError::AwaitOnNonAwait(name.clone())),
+            (_, None) => {}
+        }
+        for emit in &step.emit {
+            validate_workflow_event(
+                &emit.name,
+                emit.payload.as_ref().unwrap_or(&serde_json::Value::Null),
+            )?;
+        }
+    }
+
+    let mut emitters: BTreeMap<&str, Vec<&PlanNode>> = BTreeMap::new();
+    for node in nodes {
+        let step = &spec.steps[&node.step];
+        for emit in &step.emit {
+            if !emit.external {
+                emitters.entry(emit.name.as_str()).or_default().push(node);
+            }
+        }
+    }
+
+    for node in nodes {
+        let step = &spec.steps[&node.step];
+        let Some(await_spec) = &step.await_spec else {
+            continue;
+        };
+        if await_spec.source() == EventSource::External {
+            continue;
+        }
+        let Some(candidates) = emitters.get(await_spec.event.as_str()) else {
+            continue;
+        };
+        for emitter in candidates {
+            if emitter.round != node.round {
+                continue;
+            }
+            if emitter.group >= node.group {
+                return Err(DomainError::AwaitEmitterNotEarlier {
+                    await_step: node.step.clone(),
+                    event: await_spec.event.clone(),
+                    emitter: emitter.step.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
 }

@@ -107,6 +107,22 @@ pub enum DomainError {
     GatewayAmbiguous(String),
     #[error("gateway `{gateway}` condition failed: {message}")]
     GatewayCondition { gateway: String, message: String },
+    #[error("step `{0}` is kind `await` but has no `await` payload")]
+    AwaitRequiresSpec(String),
+    #[error("step `{0}` declares an `await` payload but is not kind `await`")]
+    AwaitOnNonAwait(String),
+    #[error("await step `{step}` must not declare `{field}`")]
+    AwaitPayloadNotAllowed { step: String, field: String },
+    #[error("await step `{0}` must not use a retry policy; `timeoutMs` is a total deadline")]
+    AwaitRetryNotAllowed(String),
+    #[error(
+        "await step `{await_step}` waits for `{event}` but internal emitter `{emitter}` is not in a strictly earlier group; move the emitter before the await or wait for an external event"
+    )]
+    AwaitEmitterNotEarlier {
+        await_step: String,
+        event: String,
+        emitter: String,
+    },
     #[error("invalid audit chain at sequence {seq}: {reason}")]
     InvalidAuditChain { seq: u64, reason: String },
     #[error("audit chain has no state anchor for run `{0}`")]
@@ -117,4 +133,10 @@ pub enum DomainError {
     AuditSequence(u64),
     #[error("serialization failure: {0}")]
     Serialization(String),
+    #[error("event name must not be empty")]
+    InvalidEventName,
+    #[error("event payload exceeds the {limit} byte limit")]
+    EventPayloadTooLarge { limit: usize },
+    #[error("event payload exceeds the {limit} level depth limit")]
+    EventPayloadTooDeep { limit: usize },
 }

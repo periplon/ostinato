@@ -67,7 +67,7 @@ The Rust evaluator handles package selection, same-package sibling files, import
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `kind` | `"exec"`, `"agent"`, `"improve"`, `"noop"`, `"gateway"` | `"exec"` | Step implementation |
+| `kind` | `"exec"`, `"agent"`, `"improve"`, `"noop"`, `"gateway"`, `"await"` | `"exec"` | Step implementation |
 | `needs` | `[...string]` or `string` | `[]` | Dependencies |
 | `gateway` | object | none | Split/join routing; required for `kind: "gateway"`, forbidden otherwise |
 | `retry` | object or int | `{}` | Retry policy; an int is shorthand for `max` |
@@ -80,6 +80,8 @@ The Rust evaluator handles package selection, same-package sibling files, import
 | `exec` | object | none | Required for `kind: "exec"` |
 | `agent` | object or string | none | Required for `kind: "agent"`; inline fields, `{use: "<name>"}`, or `"<name>"` shorthand |
 | `improve` | object | none | Required for `kind: "improve"` |
+| `await` | `{event: string, source?: "internal"\|"external"\|"any", timeoutMs?: int}` | none | Required for `kind: "await"`, forbidden otherwise |
+| `emit` | list of `{name: string, external?: bool, payload?: any}` | `[]` | Durable events emitted after this step succeeds |
 | `continueOnError` | `bool` | `false` | Keep the run going after this step fails |
 | `timeoutMs` | `int >= 0` | `600000` for exec, 300000 for agent | Per-attempt timeout |
 
@@ -323,6 +325,7 @@ Strings in `exec.cmd`, `exec.cwd`, `exec.env`, `agent.prompt`, `agent.system` an
 {{ steps.build.json.result }}
 {{ steps.build.score }}
 {{ steps.build.exitCode }}
+{{ events.deploy.payload.version }}
 ```
 
 Bare paths (without a leading dot) are resolved from the context root, preserving the original syntax. The full path syntax is:
@@ -335,7 +338,10 @@ Bare paths (without a leading dot) are resolved from the context root, preservin
 | `{{ . }}`, `{{ $ }}` | The current value and the whole root context. |
 | `{{ steps.build.json.items.0 }}` | Numeric segments index arrays. |
 
-Unknown paths fail the step. Template substitution happens at execution time, so values from earlier steps and previous cycle rounds are available.
+`events.<name>` exposes the latest durable event with fields `event`, `source`,
+`seq`, `payload`, `emittedBy`, `ts` and `external`. Unknown paths fail the step.
+Template substitution happens at execution time, so values from earlier steps
+and previous cycle rounds are available.
 
 ### Control actions
 
@@ -402,6 +408,7 @@ Malformed actions, unknown functions, unknown paths and runtime evaluation failu
 | `agent` | `text`, `stdout`, `score`, `exitCode=0`, `provider`, `json?` |
 | `improve` | `text`, `json`, `score`, `improvementId` |
 | `noop` | `text=""`, `score=1.0`, `exitCode=0` |
+| `await` | `text`, `stdout`, `event`, `source`, `payload`, `json`, `seq`, `exitCode=0`, `score=1.0` |
 
 If stdout is valid JSON it is exposed under `json` (and also parsed for `score`). On failure the output is not stored for downstream steps; the step's `error` is stored instead. Optional fields are omitted from the concrete export, matching `cue export`.
 
@@ -413,6 +420,39 @@ If stdout is valid JSON it is exposed under `json` (and also parsed for `score`)
 - With `continueOnError: true` the run continues. The failed step has no output; dependants still execute and may fail.
 - A crash between a side effect and the group commit causes that group to run again on resume. Use idempotent commands or a guard file.
 - `ostinato cancel <run>` is observed at group boundaries; a terminal run cannot be cancelled.
+
+## Events
+
+Steps may emit durable events and await them. Events are committed atomically
+with the step/group rows, survive resume, and are also available to external
+processes through `ostinato event` / `ostinato events`. See
+[`docs/EVENTS.md`](EVENTS.md) for the full contract.
+
+```cue
+prepare: {
+	kind: "noop"
+	emit: [{name: "prepared", payload: {stage: "prepare"}}]
+}
+wait: {
+	kind:  "await"
+	needs: ["prepare"]
+	await: {event: "prepared", source: "internal", timeoutMs: 30000}
+}
+```
+
+- An await may only consume an internal event whose emitter is in a strictly
+  earlier group of the same materialised cycle round. Same-group visibility is
+  rejected at plan time; use an external event for co-group producers.
+- Consumption is a forward-only per-consumer queue (oldest unconsumed first).
+  Different await steps each receive the same event (broadcast); each consumer
+  consumes an event at most once. A crash before the group commit replays the
+  event on resume (at-least-once).
+- `timeoutMs` is a single total deadline (default 300000 ms). `retry`, `exec`,
+  `agent`, `improve`, `gateway` and `cycle` are rejected on await steps.
+- Event names must match `[A-Za-z0-9._:-]{1,128}`; payloads are capped at
+  256 KiB and 64 nesting levels.
+- `external: true` marks an emit for external outbox consumers. The CLI always
+  injects `source = external`.
 
 ## Validation rules
 
@@ -427,6 +467,10 @@ If stdout is valid JSON it is exposed under `json` (and also parsed for `score`)
 - `agent` requires a non-empty `prompt`.
 - `improve` requires an `improve` object.
 - Unknown `kind` values are rejected.
+- `await` requires an `await` object and rejects `exec`, `agent`, `improve`,
+  `gateway`, `cycle` and `retry`.
+- `emit` names and payloads are validated (`[A-Za-z0-9._:-]{1,128}`, 256 KiB,
+  depth 64) at load time.
 
 ## Complete example
 
@@ -435,5 +479,6 @@ See [`examples/`](../examples):
 - `hello.cue` — deterministic DAG and params;
 - `retry.cue` — flaky command with backoff;
 - `cycle.cue` — self-improving review loop with early stop;
+- `events.cue` — internal emit/await plus an external approval gate;
 - `agentic.cue` — agent + improve + child runs;
 - `module/` — a real CUE module with imports and builtins.

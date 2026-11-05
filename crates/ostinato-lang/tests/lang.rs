@@ -7381,3 +7381,146 @@ fn unused_imports_are_rejected_like_cue() {
         "eval_file must validate imports"
     );
 }
+
+#[test]
+fn compiles_await_and_emit_steps() {
+    let source = r#"
+package demo
+
+workflow: {
+    name: "events"
+    steps: {
+        emit: {
+            kind: "noop"
+            emit: [{
+                name: "ready"
+                payload: {value: 1}
+            }, {
+                name: "public"
+                external: true
+                payload: {value: 2}
+            }]
+        }
+        wait: {
+            kind: "await"
+            needs: ["emit"]
+            await: {event: "ready", source: "internal", timeoutMs: 100}
+        }
+    }
+}
+"#;
+    let compiled = compile(source).expect("compile await/emit");
+    let emit = &compiled.spec.steps["emit"];
+    assert_eq!(emit.emit.len(), 2);
+    assert!(!emit.emit[0].external);
+    assert!(emit.emit[1].external);
+    let wait = &compiled.spec.steps["wait"];
+    assert_eq!(wait.kind, StepKind::Await);
+    let await_spec = wait.await_spec.as_ref().expect("await spec");
+    assert_eq!(await_spec.event, "ready");
+    assert_eq!(await_spec.timeout_ms, Some(100));
+}
+
+#[test]
+fn await_rejects_same_group_internal_emitters() {
+    let source = r#"
+package demo
+
+workflow: {
+    name: "same-group"
+    steps: {
+        emit: {
+            kind: "noop"
+            emit: [{name: "ready"}]
+        }
+        wait: {
+            kind: "await"
+            await: {event: "ready"}
+        }
+    }
+}
+"#;
+    let error = compile_error(source);
+    assert!(
+        error.contains("strictly earlier group"),
+        "unexpected: {error}"
+    );
+}
+
+#[test]
+fn await_rejects_retry_exec_and_unknown_fields() {
+    let retry = r#"
+package demo
+workflow: {
+    name: "bad"
+    steps: {
+        wait: {
+            kind: "await"
+            await: {event: "ready"}
+            retry: {max: 1}
+        }
+    }
+}
+"#;
+    assert!(compile_error(retry).contains("retry"));
+    let exec = r#"
+package demo
+workflow: {
+    name: "bad"
+    steps: {
+        wait: {
+            kind: "await"
+            await: {event: "ready"}
+            exec: {cmd: ["true"]}
+        }
+    }
+}
+"#;
+    assert!(compile_error(exec).contains("exec"));
+    let unknown = r#"
+package demo
+workflow: {
+    name: "bad"
+    steps: {
+        wait: {
+            kind: "await"
+            await: {event: "ready", typo: true}
+        }
+    }
+}
+"#;
+    assert!(compile_error(unknown).contains("unknown field"));
+}
+
+#[test]
+fn conditions_can_reference_durable_events() {
+    let source = r#"
+package demo
+
+workflow: {
+    name: "event-condition"
+    steps: {
+        emit: {
+            kind: "exec"
+            exec: {cmd: ["true"]}
+            emit: [{name: "ready", external: true, payload: {ok: true}}]
+        }
+        gate: {
+            kind: "gateway"
+            needs: ["emit"]
+            gateway: {
+                split: "xor"
+                branches: {
+                    yes: "events.ready.payload.ok == true"
+                    no:  true
+                }
+                default: "no"
+            }
+        }
+        yes: {kind: "noop"}
+        no:  {kind: "noop"}
+    }
+}
+"#;
+    compile(source).expect("events are valid condition roots");
+}

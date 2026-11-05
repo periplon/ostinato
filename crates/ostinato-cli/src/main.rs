@@ -10,9 +10,12 @@ use ostinato_adapters::{
     SystemClock, TracingTelemetry, UuidGen, init_tracing,
 };
 use ostinato_application::{
-    Engine, EngineDeps, EngineOptions, ImproveRequest, LoadRequest, SpecLoader, Store, params_patch,
+    Clock, Engine, EngineDeps, EngineOptions, ImproveRequest, LoadRequest, SpecLoader, Store,
+    WorkflowEventQuery, params_patch,
 };
-use ostinato_domain::{JoinMode, RunStatus, analyze, audit, build_plan};
+use ostinato_domain::{
+    EventSource, JoinMode, NewWorkflowEvent, RunStatus, analyze, audit, build_plan,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -129,6 +132,33 @@ enum Command {
         #[arg(long)]
         follow: bool,
     },
+    /// Inject an external workflow event into a run.
+    Event {
+        run: String,
+        name: String,
+        /// JSON payload (default: null).
+        #[arg(long)]
+        payload: Option<String>,
+        /// Optional idempotency key; retries with the same key are no-ops.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// List or stream durable workflow events.
+    Events {
+        run: String,
+        /// Keep polling until the run is terminal and no events remain.
+        #[arg(long)]
+        follow: bool,
+        /// Only show events with seq greater than this value.
+        #[arg(long)]
+        after: Option<u64>,
+        /// Only show events with this name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Only show events from this source.
+        #[arg(long, value_enum)]
+        source: Option<EventSourceArg>,
+    },
     /// Verify the tamper-evident audit chain.
     Audit {
         #[command(subcommand)]
@@ -198,6 +228,23 @@ enum Command {
 enum AuditCommand {
     /// Verify a run's hash chain.
     Verify { run: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum EventSourceArg {
+    Internal,
+    External,
+    Any,
+}
+
+impl EventSourceArg {
+    fn as_source(self) -> ostinato_domain::EventSource {
+        match self {
+            Self::Internal => ostinato_domain::EventSource::Internal,
+            Self::External => ostinato_domain::EventSource::External,
+            Self::Any => ostinato_domain::EventSource::Any,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -426,6 +473,122 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                 if let Some(current) = engine.store().load_run(&run)? {
                     record = current;
                 }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Event {
+            run,
+            name,
+            payload,
+            idempotency_key,
+        } => {
+            let payload = match payload {
+                Some(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                    .with_context(|| format!("invalid --payload JSON: {raw}"))?,
+                None => serde_json::Value::Null,
+            };
+            // Never create a database for an unknown run.
+            if !cli.db.exists() {
+                bail!("database not found: {}", cli.db.display());
+            }
+            let store = SqliteStore::open(&cli.db)?;
+            let event = store.append_workflow_event(NewWorkflowEvent {
+                run_id: run,
+                name,
+                // The CLI is an external writer; source is never user-chosen.
+                source: EventSource::External,
+                payload,
+                emitted_by: None,
+                ts: SystemClock.now(),
+                idempotency_key,
+            })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&event)?);
+            } else {
+                println!(
+                    "event run={} seq={} name={} source={} external={}",
+                    event.run_id,
+                    event.seq,
+                    event.name,
+                    event.source.as_str(),
+                    event.external
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Events {
+            run,
+            follow,
+            after,
+            name,
+            source,
+        } => {
+            // Read-only: `events` must never take a write lock or create a
+            // database implicitly.
+            let store = SqliteStore::open_read_only(&cli.db)?;
+            let mut record = store
+                .load_run(&run)?
+                .with_context(|| format!("run not found: {run}"))?;
+            let mut last_seq = after;
+            if !follow {
+                let events = store.workflow_events(
+                    &run,
+                    &WorkflowEventQuery {
+                        name: name.clone(),
+                        source: source.map(EventSourceArg::as_source),
+                        after_seq: last_seq,
+                    },
+                )?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&events)?);
+                } else {
+                    for event in events {
+                        println!(
+                            "{} {} {} {} emittedBy={} {}",
+                            event.seq,
+                            event.ts,
+                            event.source.as_str(),
+                            event.name,
+                            event.emitted_by.as_deref().unwrap_or("-"),
+                            event.payload
+                        );
+                    }
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+            loop {
+                let events = store.workflow_events(
+                    &run,
+                    &WorkflowEventQuery {
+                        name: name.clone(),
+                        source: source.map(EventSourceArg::as_source),
+                        after_seq: last_seq,
+                    },
+                )?;
+                let count = events.len();
+                for event in events {
+                    last_seq = Some(event.seq);
+                    if json {
+                        println!("{}", serde_json::to_string(&event)?);
+                    } else {
+                        println!(
+                            "{} {} {} {} emittedBy={} {}",
+                            event.seq,
+                            event.ts,
+                            event.source.as_str(),
+                            event.name,
+                            event.emitted_by.as_deref().unwrap_or("-"),
+                            event.payload
+                        );
+                    }
+                }
+                if let Some(current) = store.load_run(&run)? {
+                    record = current;
+                }
+                if record.status.is_terminal() && count == 0 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
             }
             Ok(ExitCode::SUCCESS)
         }

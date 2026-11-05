@@ -2,8 +2,19 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::agent::{AgentProvider, IsolationSpec, PromptDelivery};
+use crate::error::DomainError;
+
+/// Maximum serialized size of an emitted or externally injected event payload.
+pub const MAX_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
+/// Maximum structural depth accepted for an event payload.
+pub const MAX_EVENT_PAYLOAD_DEPTH: usize = 64;
+/// Maximum length of an event name.
+pub const MAX_EVENT_NAME_LEN: usize = 128;
+/// Default await timeout when neither `await.timeoutMs` nor `timeoutMs` is set.
+pub const DEFAULT_AWAIT_TIMEOUT_MS: u64 = 300_000;
 
 /// The kind of work a step performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +30,8 @@ pub enum StepKind {
     Noop,
     /// Route tokens through a split or join gateway. Performs no I/O.
     Gateway,
+    /// Wait for a durable workflow event.
+    Await,
 }
 
 impl StepKind {
@@ -30,8 +43,214 @@ impl StepKind {
             Self::Improve => "improve",
             Self::Noop => "noop",
             Self::Gateway => "gateway",
+            Self::Await => "await",
         }
     }
+}
+
+/// Origin of a workflow event.
+///
+/// `Any` is only valid as an await/query filter; stored events are always
+/// `Internal` or `External`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EventSource {
+    /// Emitted by a workflow step.
+    Internal,
+    /// Injected by an external process.
+    External,
+    /// Match either source (query filter only).
+    #[default]
+    Any,
+}
+
+impl EventSource {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Internal => "internal",
+            Self::External => "external",
+            Self::Any => "any",
+        }
+    }
+
+    /// Whether a stored event with `other` matches this filter.
+    #[must_use]
+    pub fn matches(self, other: Self) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Internal => other == Self::Internal,
+            Self::External => other == Self::External,
+        }
+    }
+}
+
+/// Wait specification for a `kind: "await"` step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AwaitSpec {
+    /// Event name to wait for.
+    pub event: String,
+    /// Optional source filter. `None` means [`EventSource::Any`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<EventSource>,
+    /// Maximum time to wait. Falls back to the step `timeoutMs`, then
+    /// [`DEFAULT_AWAIT_TIMEOUT_MS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+impl AwaitSpec {
+    #[must_use]
+    pub fn source(&self) -> EventSource {
+        self.source.unwrap_or_default()
+    }
+}
+
+/// Event emitted when a step completes successfully.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct EmitSpec {
+    /// Event name.
+    pub name: String,
+    /// When true the event is tagged `external` and is visible to external
+    /// outbox consumers. Internal events are also durable and visible; the
+    /// flag records intent/visibility class.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub external: bool,
+    /// Optional JSON payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// A durable workflow event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowEvent {
+    pub run_id: String,
+    /// Per-run monotonically increasing sequence number.
+    pub seq: u64,
+    pub name: String,
+    /// Stored source (`internal` or `external`).
+    pub source: EventSource,
+    pub payload: Value,
+    /// Step that emitted the event, when it was produced by the engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emitted_by: Option<String>,
+    pub ts: String,
+    /// Convenience mirror of `source == external`.
+    pub external: bool,
+}
+
+impl WorkflowEvent {
+    #[must_use]
+    pub fn is_external(&self) -> bool {
+        self.source == EventSource::External
+    }
+}
+
+/// Event to append to the durable journal before the store assigns a sequence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewWorkflowEvent {
+    pub run_id: String,
+    pub name: String,
+    pub source: EventSource,
+    pub payload: Value,
+    pub emitted_by: Option<String>,
+    pub ts: String,
+    /// Optional idempotency key. Engine emissions use a deterministic key;
+    /// external injections may supply one for retry safety.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+impl NewWorkflowEvent {
+    #[must_use]
+    pub fn new(
+        run_id: impl Into<String>,
+        name: impl Into<String>,
+        source: EventSource,
+        payload: Value,
+        emitted_by: Option<String>,
+        ts: impl Into<String>,
+    ) -> Self {
+        Self {
+            run_id: run_id.into(),
+            name: name.into(),
+            source,
+            payload,
+            emitted_by,
+            ts: ts.into(),
+            idempotency_key: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
+        self.idempotency_key = Some(key.into());
+        self
+    }
+}
+
+/// Validate an event name and payload against the public safety limits.
+///
+/// # Errors
+/// Returns [`DomainError::InvalidEventName`],
+/// [`DomainError::EventPayloadTooLarge`] or
+/// [`DomainError::EventPayloadTooDeep`].
+pub fn validate_workflow_event(name: &str, payload: &Value) -> Result<(), DomainError> {
+    if !valid_event_name(name) {
+        return Err(DomainError::InvalidEventName);
+    }
+    let bytes =
+        serde_json::to_vec(payload).map_err(|err| DomainError::Serialization(err.to_string()))?;
+    if bytes.len() > MAX_EVENT_PAYLOAD_BYTES {
+        return Err(DomainError::EventPayloadTooLarge {
+            limit: MAX_EVENT_PAYLOAD_BYTES,
+        });
+    }
+    if json_depth(payload) > MAX_EVENT_PAYLOAD_DEPTH {
+        return Err(DomainError::EventPayloadTooDeep {
+            limit: MAX_EVENT_PAYLOAD_DEPTH,
+        });
+    }
+    Ok(())
+}
+
+/// Event names are `[A-Za-z0-9._:-]{1,128}`.
+#[must_use]
+pub fn valid_event_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_EVENT_NAME_LEN
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn json_depth(value: &Value) -> usize {
+    let mut deepest = 0usize;
+    let mut stack = vec![(value, 1usize)];
+    while let Some((current, depth)) = stack.pop() {
+        deepest = deepest.max(depth);
+        if deepest > MAX_EVENT_PAYLOAD_DEPTH {
+            return deepest;
+        }
+        match current {
+            Value::Object(map) => {
+                for child in map.values() {
+                    stack.push((child, depth + 1));
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    stack.push((child, depth + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    deepest
 }
 
 /// How a split gateway fans one token out to its branches.
@@ -266,6 +485,13 @@ pub struct StepSpec {
     /// the persisted `spec` bytes and therefore every historical state digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<GatewaySpec>,
+    /// Await specification. Serialized as `await`; only valid for
+    /// `kind: "await"`.
+    #[serde(rename = "await", default, skip_serializing_if = "Option::is_none")]
+    pub await_spec: Option<AwaitSpec>,
+    /// Events emitted when this step completes successfully.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub emit: Vec<EmitSpec>,
     pub continue_on_error: bool,
     pub timeout_ms: Option<u64>,
 }
@@ -283,6 +509,8 @@ impl StepSpec {
             agent: None,
             improve: None,
             gateway: None,
+            await_spec: None,
+            emit: Vec::new(),
             continue_on_error: false,
             timeout_ms: None,
         }

@@ -20,6 +20,8 @@ fn step(name: &str) -> StepSpec {
         agent: None,
         improve: None,
         gateway: None,
+        await_spec: None,
+        emit: Vec::new(),
         continue_on_error: false,
         timeout_ms: None,
     }
@@ -560,6 +562,8 @@ fn legacy_agent_specs_keep_their_state_digest_bytes() {
             }),
             improve: None,
             gateway: None,
+            await_spec: None,
+            emit: Vec::new(),
             continue_on_error: false,
             timeout_ms: None,
         },
@@ -627,4 +631,179 @@ fn agent_trace_hash_is_deterministic_and_content_sensitive() {
     assert_eq!(first, trace.clone().trace_hash());
     trace.stdout = "different".to_owned();
     assert_ne!(first, trace.trace_hash());
+}
+
+#[test]
+fn legacy_step_specs_do_not_gain_await_or_emit_bytes() {
+    let spec = step("legacy");
+    let value = serde_json::to_value(&spec).expect("serialize step");
+    assert!(value.get("await").is_none());
+    assert!(value.get("emit").is_none());
+    let expected = json!({
+        "name": "legacy",
+        "kind": "noop",
+        "needs": [],
+        "retry": {
+            "max_retries": 0,
+            "base_delay_ms": 100,
+            "factor": 2.0,
+            "max_delay_ms": 30000,
+            "jitter": true
+        },
+        "cycle": null,
+        "exec": null,
+        "agent": null,
+        "improve": null,
+        "continue_on_error": false,
+        "timeout_ms": null
+    });
+    assert_eq!(value, expected);
+}
+
+#[test]
+fn await_and_emit_serialize_with_the_documented_names() {
+    use ostinato_domain::{AwaitSpec, EmitSpec, EventSource};
+    let mut spec = step("waiter");
+    spec.kind = StepKind::Await;
+    spec.await_spec = Some(AwaitSpec {
+        event: "deploy".to_owned(),
+        source: Some(EventSource::External),
+        timeout_ms: Some(1000),
+    });
+    spec.emit = vec![EmitSpec {
+        name: "done".to_owned(),
+        external: true,
+        payload: Some(json!({"ok": true})),
+    }];
+    let value = serde_json::to_value(&spec).expect("serialize step");
+    assert_eq!(value["kind"], "await");
+    assert_eq!(value["await"]["event"], "deploy");
+    assert_eq!(value["await"]["source"], "external");
+    assert_eq!(value["emit"][0]["name"], "done");
+    assert_eq!(value["emit"][0]["external"], true);
+    assert_eq!(value["emit"][0]["payload"]["ok"], true);
+}
+
+#[test]
+fn await_rejects_internal_emitters_in_the_same_group() {
+    use ostinato_domain::AwaitSpec;
+    let mut steps = BTreeMap::new();
+    let mut emitter = step("emit");
+    emitter.emit = vec![ostinato_domain::EmitSpec {
+        name: "ready".to_owned(),
+        external: false,
+        payload: None,
+    }];
+    let mut waiter = step("wait");
+    waiter.kind = StepKind::Await;
+    waiter.await_spec = Some(AwaitSpec {
+        event: "ready".to_owned(),
+        source: None,
+        timeout_ms: Some(100),
+    });
+    steps.insert("emit".to_owned(), emitter);
+    steps.insert("wait".to_owned(), waiter);
+    let spec = WorkflowSpec {
+        name: "same-group".to_owned(),
+        max_parallel: 2,
+        steps,
+    };
+    let error = build_plan(&spec).expect_err("same-group await must fail");
+    assert!(matches!(error, DomainError::AwaitEmitterNotEarlier { .. }));
+}
+
+#[test]
+fn await_accepts_an_emitter_in_a_strictly_earlier_group() {
+    use ostinato_domain::AwaitSpec;
+    let mut steps = BTreeMap::new();
+    let mut emitter = step("emit");
+    emitter.emit = vec![ostinato_domain::EmitSpec {
+        name: "ready".to_owned(),
+        external: false,
+        payload: Some(json!({"value": 1})),
+    }];
+    let mut waiter = step("wait");
+    waiter.kind = StepKind::Await;
+    waiter.needs = vec!["emit".to_owned()];
+    waiter.await_spec = Some(AwaitSpec {
+        event: "ready".to_owned(),
+        source: None,
+        timeout_ms: Some(100),
+    });
+    steps.insert("emit".to_owned(), emitter);
+    steps.insert("wait".to_owned(), waiter);
+    let spec = WorkflowSpec {
+        name: "earlier-group".to_owned(),
+        max_parallel: 2,
+        steps,
+    };
+    let plan = build_plan(&spec).expect("earlier emitter is valid");
+    assert!(plan.nodes[0].group < plan.nodes[1].group);
+}
+
+#[test]
+fn await_rejects_retry_and_missing_spec() {
+    use ostinato_domain::AwaitSpec;
+    let mut specs = BTreeMap::new();
+    let mut waiter = step("wait");
+    waiter.kind = StepKind::Await;
+    waiter.await_spec = Some(AwaitSpec {
+        event: "ready".to_owned(),
+        source: None,
+        timeout_ms: Some(100),
+    });
+    waiter.retry = RetryPolicy {
+        max_retries: 1,
+        ..RetryPolicy::default()
+    };
+    specs.insert("wait".to_owned(), waiter);
+    let spec = WorkflowSpec {
+        name: "retry".to_owned(),
+        max_parallel: 1,
+        steps: specs,
+    };
+    let error = build_plan(&spec).expect_err("await retry must fail");
+    assert!(matches!(error, DomainError::AwaitRetryNotAllowed(_)));
+
+    let mut specs = BTreeMap::new();
+    let mut missing = step("wait");
+    missing.kind = StepKind::Await;
+    specs.insert("wait".to_owned(), missing);
+    let spec = WorkflowSpec {
+        name: "missing".to_owned(),
+        max_parallel: 1,
+        steps: specs,
+    };
+    let error = build_plan(&spec).expect_err("await spec must be required");
+    assert!(matches!(error, DomainError::AwaitRequiresSpec(_)));
+}
+
+#[test]
+fn event_names_and_payloads_enforce_public_limits() {
+    use ostinato_domain::{
+        MAX_EVENT_NAME_LEN, MAX_EVENT_PAYLOAD_BYTES, MAX_EVENT_PAYLOAD_DEPTH,
+        validate_workflow_event,
+    };
+    assert!(validate_workflow_event("deploy.prod:web-1_ok", &json!({"a": 1})).is_ok());
+    assert!(matches!(
+        validate_workflow_event("bad name", &json!(null)),
+        Err(DomainError::InvalidEventName)
+    ));
+    assert!(matches!(
+        validate_workflow_event(&"a".repeat(MAX_EVENT_NAME_LEN + 1), &json!(null)),
+        Err(DomainError::InvalidEventName)
+    ));
+    let mut deep = json!(null);
+    for _ in 0..MAX_EVENT_PAYLOAD_DEPTH {
+        deep = json!([deep]);
+    }
+    assert!(matches!(
+        validate_workflow_event("deep", &deep),
+        Err(DomainError::EventPayloadTooDeep { .. })
+    ));
+    let large = "x".repeat(MAX_EVENT_PAYLOAD_BYTES + 1);
+    assert!(matches!(
+        validate_workflow_event("large", &json!(large)),
+        Err(DomainError::EventPayloadTooLarge { .. })
+    ));
 }

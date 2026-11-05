@@ -28,6 +28,8 @@ pub use plan::{
 pub use run::{RunRecord, RunReport, RunStatus, StepRecord, StepStatus};
 pub use trial::{Improvement, NewImprovement, NewTrial, Trial, TrialStatus};
 pub use workflow::{
-    AgentSpec, BranchSpec, CycleSpec, ExecSpec, GatewaySpec, ImproveSpec, JoinMode, RetryPolicy,
-    SplitMode, StepKind, StepSpec, WorkflowSpec,
+    AgentSpec, AwaitSpec, BranchSpec, CycleSpec, DEFAULT_AWAIT_TIMEOUT_MS, EmitSpec, EventSource,
+    ExecSpec, GatewaySpec, ImproveSpec, JoinMode, MAX_EVENT_NAME_LEN, MAX_EVENT_PAYLOAD_BYTES,
+    MAX_EVENT_PAYLOAD_DEPTH, NewWorkflowEvent, RetryPolicy, SplitMode, StepKind, StepSpec,
+    WorkflowEvent, WorkflowSpec, valid_event_name, validate_workflow_event,
 };

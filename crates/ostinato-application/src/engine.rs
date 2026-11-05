@@ -4,10 +4,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ostinato_domain::{
-    ActivationScope, AgentSpec, AgentTrace, AuditEvent, CapturedArtifact, DomainError, EdgeOrigin,
-    EdgeScope, Improvement, IsolationMode, NewEvent, NewTrial, Plan, PlanNode, RunRecord,
-    RunReport, RunStatus, StepKind, StepRecord, StepSpec, StepStatus, TrialStatus, audit,
-    build_plan, sha256_hex,
+    ActivationScope, AgentSpec, AgentTrace, AuditEvent, CapturedArtifact, DEFAULT_AWAIT_TIMEOUT_MS,
+    DomainError, EdgeOrigin, EdgeScope, EventSource, Improvement, IsolationMode, NewEvent,
+    NewTrial, NewWorkflowEvent, Plan, PlanNode, RunRecord, RunReport, RunStatus, StepKind,
+    StepRecord, StepSpec, StepStatus, TrialStatus, audit, build_plan, sha256_hex,
+    validate_workflow_event,
 };
 use ostinato_lang::{eval_condition, render};
 use serde_json::{Map, Value as Json, json};
@@ -18,8 +19,8 @@ use crate::error::{EngineError, Result};
 use crate::improve::{ImproveRequest, propose_improvement};
 use crate::ports::{
     AgentOutcome, AgentRequest, AgentRunner, CaptureRequest, Clock, CommandExecutor, Completion,
-    ExecRequest, IdGenerator, IsolationRequest, LoadedWorkflow, MetricsSummary, PortError,
-    SpecLoader, Store, Telemetry, WorkspaceProvider,
+    EventCursor, ExecRequest, IdGenerator, IsolationRequest, LoadedWorkflow, MetricsSummary,
+    PortError, SpecLoader, Store, Telemetry, WorkflowEventQuery, WorkspaceProvider,
 };
 
 /// Dependencies injected into the engine (hexagonal ports).
@@ -81,6 +82,9 @@ struct NodeResult {
     index: usize,
     step: StepRecord,
     event: NewEvent,
+    extra_events: Vec<NewEvent>,
+    workflow_events: Vec<NewWorkflowEvent>,
+    cursor_advances: Vec<EventCursor>,
     hard_failure: bool,
     continue_on_error: bool,
     skipped: bool,
@@ -100,6 +104,13 @@ struct AttemptOutcome {
     error: Option<String>,
     trial_status: TrialStatus,
     score: f64,
+    event_effect: Option<Box<EventEffect>>,
+}
+
+#[derive(Default)]
+struct EventEffect {
+    extra_events: Vec<NewEvent>,
+    cursor_advance: Option<EventCursor>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -438,8 +449,11 @@ impl Engine {
                 let now = self.clock.now();
                 let resume_index = i64::try_from(group[0].index).unwrap_or(i64::MAX);
                 let error = failure.error.clone();
-                let mut group_events: Vec<NewEvent> =
-                    results.iter().map(|result| result.event.clone()).collect();
+                let mut group_events: Vec<NewEvent> = Vec::new();
+                for result in &results {
+                    group_events.push(result.event.clone());
+                    group_events.extend(result.extra_events.iter().cloned());
+                }
                 group_events.push(NewEvent::new(
                     "run.failed",
                     Some(failure.step.clone()),
@@ -452,7 +466,15 @@ impl Engine {
                     error: Some(error.clone()),
                     updated_at: now.clone(),
                     steps: results.iter().map(|result| result.step.clone()).collect(),
-                    events: group_events,
+                    audit_events: group_events,
+                    events: results
+                        .iter()
+                        .flat_map(|result| result.workflow_events.iter().cloned())
+                        .collect(),
+                    cursor_advances: results
+                        .iter()
+                        .flat_map(|result| result.cursor_advances.iter().cloned())
+                        .collect(),
                 };
                 let events = match self.store.complete(completion) {
                     Ok(events) => events,
@@ -513,8 +535,11 @@ impl Engine {
                 i64::try_from(end).unwrap_or(i64::MAX)
             };
             let now = self.clock.now();
-            let mut group_events: Vec<NewEvent> =
-                results.iter().map(|result| result.event.clone()).collect();
+            let mut group_events: Vec<NewEvent> = Vec::new();
+            for result in &results {
+                group_events.push(result.event.clone());
+                group_events.extend(result.extra_events.iter().cloned());
+            }
 
             if aborting {
                 group_events.push(NewEvent::new(
@@ -643,7 +668,15 @@ impl Engine {
                 error: error.clone(),
                 updated_at: now.clone(),
                 steps: results.iter().map(|result| result.step.clone()).collect(),
-                events: group_events,
+                audit_events: group_events,
+                events: results
+                    .iter()
+                    .flat_map(|result| result.workflow_events.iter().cloned())
+                    .collect(),
+                cursor_advances: results
+                    .iter()
+                    .flat_map(|result| result.cursor_advances.iter().cloned())
+                    .collect(),
             };
             let events = match self.store.complete(completion) {
                 Ok(events) => events,
@@ -688,11 +721,13 @@ impl Engine {
             error: None,
             updated_at: now.clone(),
             steps: Vec::new(),
-            events: vec![NewEvent::new(
+            audit_events: vec![NewEvent::new(
                 "run.succeeded",
                 None,
                 json!({"resumeIndex": total_nodes}),
             )],
+            events: Vec::new(),
+            cursor_advances: Vec::new(),
         };
         let events = match self.store.complete(completion) {
             Ok(events) => events,
@@ -744,6 +779,7 @@ impl Engine {
             );
             step_round.insert(name.clone(), Json::from(record.round));
         }
+        let events = self.event_context(run);
         json!({
             "run_id": run.id,
             "workflow": run.workflow_name.clone(),
@@ -752,7 +788,34 @@ impl Engine {
             "steps": steps,
             "stepStatus": step_status,
             "stepRound": step_round,
+            "events": events,
         })
+    }
+
+    /// Latest durable event per name for template/condition context.
+    fn event_context(&self, run: &RunRecord) -> Json {
+        let mut events = Map::new();
+        let Ok(stored) = self
+            .store
+            .workflow_events(&run.id, &WorkflowEventQuery::default())
+        else {
+            return Json::Object(events);
+        };
+        for event in stored {
+            events.insert(
+                event.name.clone(),
+                json!({
+                    "event": event.name,
+                    "source": event.source.as_str(),
+                    "seq": event.seq,
+                    "payload": event.payload,
+                    "emittedBy": event.emitted_by,
+                    "ts": event.ts,
+                    "external": event.external,
+                }),
+            );
+        }
+        Json::Object(events)
     }
 
     /// Pure activation pass over a group. Produces gateway/skip rows and
@@ -851,6 +914,9 @@ impl Engine {
                         index: node.index,
                         step: record,
                         event,
+                        extra_events: Vec::new(),
+                        workflow_events: Vec::new(),
+                        cursor_advances: Vec::new(),
                         hard_failure: false,
                         continue_on_error: false,
                         skipped: true,
@@ -898,6 +964,9 @@ impl Engine {
                         index: node.index,
                         step: record,
                         event,
+                        extra_events: Vec::new(),
+                        workflow_events: Vec::new(),
+                        cursor_advances: Vec::new(),
                         hard_failure: true,
                         continue_on_error: false,
                         skipped: false,
@@ -951,6 +1020,9 @@ impl Engine {
                                     index: node.index,
                                     step: record,
                                     event,
+                                    extra_events: Vec::new(),
+                                    workflow_events: Vec::new(),
+                                    cursor_advances: Vec::new(),
                                     hard_failure: true,
                                     continue_on_error: false,
                                     skipped: false,
@@ -994,6 +1066,9 @@ impl Engine {
                             index: node.index,
                             step: record,
                             event,
+                            extra_events: Vec::new(),
+                            workflow_events: Vec::new(),
+                            cursor_advances: Vec::new(),
                             hard_failure: false,
                             continue_on_error: false,
                             skipped: false,
@@ -1074,6 +1149,9 @@ impl Engine {
                             index: node.index,
                             step: record,
                             event,
+                            extra_events: Vec::new(),
+                            workflow_events: Vec::new(),
+                            cursor_advances: Vec::new(),
                             hard_failure: false,
                             continue_on_error: false,
                             skipped: false,
@@ -1139,6 +1217,28 @@ impl Engine {
                     }
                 }
             } else if result.step.status == StepStatus::Succeeded {
+                let step_spec = spec.steps.get(name);
+                for emit in step_spec.map_or(&[][..], |step| step.emit.as_slice()) {
+                    self.telemetry.metric(
+                        "ostinato_workflow_events_emitted_total",
+                        1.0,
+                        &[("step", name), ("event", &emit.name)],
+                    );
+                    if emit.external {
+                        self.telemetry.metric(
+                            "ostinato_workflow_events_external_total",
+                            1.0,
+                            &[("step", name), ("event", &emit.name)],
+                        );
+                    }
+                }
+                if step_spec.is_some_and(|step| step.kind == StepKind::Await) {
+                    self.telemetry.metric(
+                        "ostinato_workflow_events_received_total",
+                        1.0,
+                        &[("step", name)],
+                    );
+                }
                 if let Some(gateway) = gateway {
                     if let Some(mode) = gateway.split {
                         let chosen = result
@@ -1185,6 +1285,17 @@ impl Engine {
                         .metric("ostinato_step_success_total", 1.0, &[("step", name)]);
                 }
             } else {
+                if spec
+                    .steps
+                    .get(name)
+                    .is_some_and(|step| step.kind == StepKind::Await)
+                {
+                    self.telemetry.metric(
+                        "ostinato_workflow_events_timeout_total",
+                        1.0,
+                        &[("step", name)],
+                    );
+                }
                 if let Some(gateway) = gateway {
                     if let Some(mode) = gateway.join {
                         self.telemetry.metric(
@@ -1229,7 +1340,36 @@ impl Engine {
             .unwrap_or(run.spec.max_parallel)
             .max(1);
         let mut results = Vec::with_capacity(group.len());
-        for chunk in group.chunks(max_parallel) {
+        // Run ordinary work first so a sleeping await never takes the only
+        // runnable slot away from a step that could finish immediately.
+        let (await_nodes, work_nodes): (Vec<PlanNode>, Vec<PlanNode>) = group
+            .iter()
+            .cloned()
+            .partition(|node| run.spec.steps[&node.step].kind == StepKind::Await);
+        for chunk in work_nodes.chunks(max_parallel) {
+            let chunk_results: Vec<Result<NodeResult>> = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(chunk.len());
+                for node in chunk {
+                    let node = node.clone();
+                    handles.push(scope.spawn(move || self.execute_node(run, &node, context)));
+                }
+                handles
+                    .into_iter()
+                    .map(|handle| match handle.join() {
+                        Ok(result) => result,
+                        Err(_) => Err(EngineError::Internal(
+                            "step worker thread panicked".to_owned(),
+                        )),
+                    })
+                    .collect()
+            });
+            for result in chunk_results {
+                results.push(result?);
+            }
+        }
+        // Awaits are bounded separately by the same maxParallel limit. They
+        // can run concurrently with each other but not with ordinary work.
+        for chunk in await_nodes.chunks(max_parallel) {
             let chunk_results: Vec<Result<NodeResult>> = std::thread::scope(|scope| {
                 let mut handles = Vec::with_capacity(chunk.len());
                 for node in chunk {
@@ -1259,7 +1399,7 @@ impl Engine {
             .steps
             .get(&node.step)
             .ok_or_else(|| EngineError::Internal(format!("unknown step `{}`", node.step)))?;
-        let (outcome, attempts) = self.run_with_retries(run, node, step_spec, context)?;
+        let (mut outcome, attempts) = self.run_with_retries(run, node, step_spec, context)?;
         let success = outcome.success;
         let status = if success {
             StepStatus::Succeeded
@@ -1268,6 +1408,7 @@ impl Engine {
         };
         let output_hash = hash_json(&outcome.output);
         let score = outcome.score;
+        let updated_at = self.clock.now();
         let step = StepRecord {
             run_id: run.id.clone(),
             name: node.step.clone(),
@@ -1276,9 +1417,44 @@ impl Engine {
             attempts,
             output: success.then_some(outcome.output.clone()),
             error: outcome.error.clone(),
-            updated_at: self.clock.now(),
+            updated_at: updated_at.clone(),
             round: node.round,
         };
+        let mut workflow_events = Vec::new();
+        if success {
+            for (index, emit) in step_spec.emit.iter().enumerate() {
+                let payload = emit.payload.clone().unwrap_or(Json::Null);
+                validate_workflow_event(&emit.name, &payload)?;
+                let source = if emit.external {
+                    EventSource::External
+                } else {
+                    EventSource::Internal
+                };
+                workflow_events.push(
+                    NewWorkflowEvent::new(
+                        run.id.clone(),
+                        emit.name.clone(),
+                        source,
+                        payload,
+                        Some(node.step.clone()),
+                        updated_at.clone(),
+                    )
+                    .with_idempotency_key(format!(
+                        "emit:{}:{}:{}:{}",
+                        run.id, node.step, node.round, index
+                    )),
+                );
+            }
+        }
+        let (extra_events, cursor_advances) = outcome.event_effect.take().map_or_else(
+            || (Vec::new(), Vec::new()),
+            |effect| {
+                (
+                    effect.extra_events,
+                    effect.cursor_advance.into_iter().collect(),
+                )
+            },
+        );
         let event = NewEvent::new(
             if success {
                 "step.succeeded"
@@ -1298,6 +1474,9 @@ impl Engine {
             index: node.index,
             step,
             event,
+            extra_events,
+            workflow_events,
+            cursor_advances,
             hard_failure: !success,
             continue_on_error: step_spec.continue_on_error,
             skipped: false,
@@ -1377,14 +1556,166 @@ impl Engine {
                 error: None,
                 trial_status: TrialStatus::Succeeded,
                 score: 1.0,
+                event_effect: None,
             }),
             StepKind::Exec => self.execute_exec(run, node, spec, context),
             StepKind::Agent => self.execute_agent(run, node, spec, context, attempt),
             StepKind::Improve => self.execute_improve(run, node, spec, attempt),
+            StepKind::Await => self.execute_await(run, node, spec),
             StepKind::Gateway => Err(EngineError::Internal(format!(
                 "gateway `{}` reached the execution pass; gateways must be evaluated during activation",
                 node.step
             ))),
+        }
+    }
+
+    fn execute_await(
+        &self,
+        run: &RunRecord,
+        node: &PlanNode,
+        spec: &StepSpec,
+    ) -> Result<AttemptOutcome> {
+        let Some(await_spec) = &spec.await_spec else {
+            return Err(EngineError::InvalidState(format!(
+                "step `{}` is await but has no await spec",
+                node.step
+            )));
+        };
+        let name = await_spec.event.clone();
+        let source = await_spec.source();
+        let timeout_ms = await_spec
+            .timeout_ms
+            .or(spec.timeout_ms)
+            .unwrap_or(DEFAULT_AWAIT_TIMEOUT_MS);
+        let timeout = Duration::from_millis(timeout_ms);
+        let deadline = Instant::now() + timeout;
+        let input = json!({
+            "kind": "await",
+            "event": name,
+            "source": source.as_str(),
+            "timeoutMs": timeout_ms,
+        });
+        let cursor = self
+            .store
+            .event_cursor(&run.id, &node.step, &name)?
+            .map_or(0, |cursor| cursor.next_seq);
+        let mut interval = Duration::from_millis(10);
+        loop {
+            if let Some(current) = self.store.load_run(&run.id)?
+                && current.status == RunStatus::Cancelled
+            {
+                return Err(EngineError::Cancelled(run.id.clone()));
+            }
+            let query = WorkflowEventQuery {
+                name: Some(name.clone()),
+                source: Some(source),
+                // `next_seq` is inclusive; the store filter is exclusive.
+                after_seq: cursor.checked_sub(1),
+            };
+            match self.store.workflow_events(&run.id, &query) {
+                Ok(events) => {
+                    if let Some(event) = events.first() {
+                        let payload = event.payload.clone();
+                        let text = payload
+                            .as_str()
+                            .map_or_else(|| payload.to_string(), ToOwned::to_owned);
+                        let event_name = event.name.clone();
+                        let emitted_by = event.emitted_by.clone();
+                        let source_name = event.source.as_str();
+                        let output = json!({
+                            "text": text.clone(),
+                            "stdout": text,
+                            "event": event_name.clone(),
+                            "source": source_name,
+                            "payload": payload.clone(),
+                            "json": payload.clone(),
+                            "seq": event.seq,
+                            "emittedBy": emitted_by.clone(),
+                            "ts": event.ts.clone(),
+                            "exitCode": 0,
+                            "score": 1.0,
+                        });
+                        let audit = NewEvent::new(
+                            "event.received",
+                            Some(node.step.clone()),
+                            json!({
+                                "event": event_name,
+                                "source": source_name,
+                                "seq": event.seq,
+                                "emittedBy": emitted_by,
+                                "payload": payload,
+                            }),
+                        );
+                        return Ok(AttemptOutcome {
+                            success: true,
+                            output,
+                            input,
+                            error: None,
+                            trial_status: TrialStatus::Succeeded,
+                            score: 1.0,
+                            event_effect: Some(Box::new(EventEffect {
+                                extra_events: vec![audit],
+                                cursor_advance: Some(EventCursor {
+                                    run_id: run.id.clone(),
+                                    consumer: node.step.clone(),
+                                    event: name,
+                                    next_seq: event.seq.saturating_add(1),
+                                }),
+                            })),
+                        });
+                    }
+                }
+                Err(PortError::Corrupt(message)) => {
+                    let error = format!("event payload for `{name}` is malformed: {message}");
+                    let audit = NewEvent::new(
+                        "event.malformed",
+                        Some(node.step.clone()),
+                        json!({"event": name, "error": message}),
+                    );
+                    return Ok(AttemptOutcome {
+                        success: false,
+                        output: json!({"error": error, "score": 0.0}),
+                        input,
+                        error: Some(error),
+                        trial_status: TrialStatus::Failed,
+                        score: 0.0,
+                        event_effect: Some(Box::new(EventEffect {
+                            extra_events: vec![audit],
+                            cursor_advance: None,
+                        })),
+                    });
+                }
+                Err(err) => return Err(err.into()),
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                let error = format!("timed out waiting for event `{name}` after {timeout_ms} ms");
+                let audit = NewEvent::new(
+                    "event.timeout",
+                    Some(node.step.clone()),
+                    json!({
+                        "event": name,
+                        "source": source.as_str(),
+                        "timeoutMs": timeout_ms,
+                    }),
+                );
+                return Ok(AttemptOutcome {
+                    success: false,
+                    output: json!({"error": error, "score": 0.0}),
+                    input,
+                    error: Some(error),
+                    trial_status: TrialStatus::TimedOut,
+                    score: 0.0,
+                    event_effect: Some(Box::new(EventEffect {
+                        extra_events: vec![audit],
+                        cursor_advance: None,
+                    })),
+                });
+            }
+            let remaining = deadline.duration_since(now);
+            self.clock.sleep(interval.min(remaining));
+            interval = (interval * 2).min(Duration::from_millis(250));
         }
     }
 
@@ -1511,6 +1842,7 @@ impl Engine {
                         TrialStatus::Failed
                     },
                     score,
+                    event_effect: None,
                 })
             }
             Err(err) => Ok(failure(input, err.to_string(), 0.0)),
@@ -1759,6 +2091,7 @@ impl Engine {
                 error: None,
                 trial_status: TrialStatus::Succeeded,
                 score,
+                event_effect: None,
             })
         } else {
             Ok(failure_output(
@@ -1821,6 +2154,7 @@ impl Engine {
                     error: None,
                     trial_status: TrialStatus::Succeeded,
                     score,
+                    event_effect: None,
                 })
             }
             Err(err) => Ok(failure(input, err.to_string(), 0.0)),
@@ -1910,6 +2244,7 @@ fn failure_output(
         error: Some(error),
         trial_status: status,
         score,
+        event_effect: None,
     }
 }
 

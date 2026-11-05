@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ostinato_domain::{
-    AgentProvider, AgentTrace, AgentTraceRecord, AuditEvent, CapturedArtifact, Improvement,
-    IsolationMode, NewEvent, NewImprovement, NewTrial, PromptDelivery, RunRecord, RunStatus,
-    StepRecord, Trial, WorkflowSpec,
+    AgentProvider, AgentTrace, AgentTraceRecord, AuditEvent, CapturedArtifact, EventSource,
+    Improvement, IsolationMode, NewEvent, NewImprovement, NewTrial, NewWorkflowEvent,
+    PromptDelivery, RunRecord, RunStatus, StepRecord, Trial, WorkflowEvent, WorkflowSpec,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -25,6 +25,8 @@ pub enum PortError {
     Io(String),
     #[error("configuration error: {0}")]
     Config(String),
+    #[error("corrupt durable data: {0}")]
+    Corrupt(String),
     #[error("run was cancelled: {0}")]
     Cancelled(String),
 }
@@ -198,6 +200,15 @@ pub trait IdGenerator: Send + Sync {
     fn new_run_id(&self) -> String;
 }
 
+/// Forward-only per-consumer event cursor keyed by (run, step, event name).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventCursor {
+    pub run_id: String,
+    pub consumer: String,
+    pub event: String,
+    pub next_seq: u64,
+}
+
 /// Data committed atomically after a parallel group completes.
 #[derive(Debug, Clone)]
 pub struct Completion {
@@ -207,7 +218,12 @@ pub struct Completion {
     pub error: Option<String>,
     pub updated_at: String,
     pub steps: Vec<StepRecord>,
-    pub events: Vec<NewEvent>,
+    /// Audit events to append in the same transaction.
+    pub audit_events: Vec<NewEvent>,
+    /// Workflow events emitted by successful steps in this group.
+    pub events: Vec<NewWorkflowEvent>,
+    /// Forward-only cursor advances for awaits satisfied in this group.
+    pub cursor_advances: Vec<EventCursor>,
 }
 
 /// Consistent read of a run, its steps and its events in one transaction.
@@ -216,6 +232,17 @@ pub struct RunSnapshot {
     pub run: RunRecord,
     pub steps: Vec<StepRecord>,
     pub events: Vec<AuditEvent>,
+}
+
+/// Filter for durable workflow event queries.
+#[derive(Debug, Clone, Default)]
+pub struct WorkflowEventQuery {
+    /// Only events with this exact name.
+    pub name: Option<String>,
+    /// Source filter. `Any`/`None` match internal and external events.
+    pub source: Option<EventSource>,
+    /// Return only events with `seq > after_seq`.
+    pub after_seq: Option<u64>,
 }
 
 /// Aggregate metrics used by the observability CLI.
@@ -277,6 +304,26 @@ pub trait Store: Send + Sync {
     ) -> PortResult<AuditEvent>;
     fn append_event(&self, run_id: &str, event: NewEvent, ts: &str) -> PortResult<AuditEvent>;
     fn events(&self, run_id: &str) -> PortResult<Vec<AuditEvent>>;
+    /// Append one workflow event durably and return the stored record.
+    ///
+    /// Implementations must assign a monotonically increasing per-run `seq`,
+    /// enforce the event safety limits, and make idempotent engine emissions
+    /// keyed by `emission_key` return the previously stored event without
+    /// appending again.
+    fn append_workflow_event(&self, event: NewWorkflowEvent) -> PortResult<WorkflowEvent>;
+    /// Query durable workflow events in `seq` order.
+    fn workflow_events(
+        &self,
+        run_id: &str,
+        query: &WorkflowEventQuery,
+    ) -> PortResult<Vec<WorkflowEvent>>;
+    /// Current forward-only cursor for a consumer/event pair.
+    fn event_cursor(
+        &self,
+        run_id: &str,
+        consumer: &str,
+        event: &str,
+    ) -> PortResult<Option<EventCursor>>;
     fn record_trial(&self, trial: &NewTrial) -> PortResult<i64>;
     fn trials(&self, run_id: &str) -> PortResult<Vec<Trial>>;
     /// Persist one agent trace and its artifacts, and append the anchoring
