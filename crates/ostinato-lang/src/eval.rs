@@ -7041,19 +7041,39 @@ fn deferred_boolish(value: &Value) -> bool {
     matches!(value, Value::Bool(_) | Value::Type(TypeKind::Bool)) || deferred_unknown(value)
 }
 
+fn deferred_intish(value: &Value) -> bool {
+    matches!(value, Value::Int(_) | Value::Type(TypeKind::Int)) || deferred_unknown(value)
+}
+
+fn deferred_repeatable(value: &Value) -> bool {
+    deferred_stringish(value) || deferred_bytesish(value)
+}
+
 /// A typed placeholder for a binary operator over pending task outputs.
 ///
 /// Returns `None` when the known operand shapes cannot satisfy the operator,
 /// so the caller falls through to a concrete type error before any producer
 /// task runs.
 fn deferred_binary_value(op: &BinOp, left: &Value, right: &Value) -> Option<Value> {
-    let stringish = |value: &Value| {
-        matches!(value, Value::String(_) | Value::Type(TypeKind::String)) || deferred_unknown(value)
-    };
-    let bytesish = |value: &Value| {
-        matches!(value, Value::Bytes(_) | Value::Type(TypeKind::Bytes)) || deferred_unknown(value)
-    };
+    // A disjunction (for example the `bytes | string` body of an HTTP
+    // response) only narrows after injection; keep the whole expression
+    // pending instead of committing to one alternative.
+    if matches!(left, Value::Disjunction(_, _)) || matches!(right, Value::Disjunction(_, _)) {
+        return Some(Value::Bottom);
+    }
+    let explicit_string =
+        |value: &Value| matches!(value, Value::String(_) | Value::Type(TypeKind::String));
+    let explicit_bytes =
+        |value: &Value| matches!(value, Value::Bytes(_) | Value::Type(TypeKind::Bytes));
+    let stringish = |value: &Value| explicit_string(value) || deferred_unknown(value);
+    let bytesish = |value: &Value| explicit_bytes(value) || deferred_unknown(value);
     match op {
+        BinOp::Add
+            if (explicit_string(left) && explicit_bytes(right))
+                || (explicit_bytes(left) && explicit_string(right)) =>
+        {
+            Some(Value::Bottom)
+        }
         BinOp::Add if stringish(left) && stringish(right) => Some(Value::Type(TypeKind::String)),
         BinOp::Add if bytesish(left) && bytesish(right) => Some(Value::Type(TypeKind::Bytes)),
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
@@ -7061,10 +7081,17 @@ fn deferred_binary_value(op: &BinOp, left: &Value, right: &Value) -> Option<Valu
         {
             Some(Value::Type(TypeKind::Number))
         }
+        // CUE supports string and bytes repetition (`"ab" * 2`, `'ab' * 3`).
+        // The concrete result type is known only after injection, so keep the
+        // expression pending as `Bottom`.
+        BinOp::Mul if deferred_repeatable(left) && deferred_intish(right) => Some(Value::Bottom),
+        BinOp::Mul if deferred_intish(left) && deferred_repeatable(right) => Some(Value::Bottom),
         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
             Some(Value::Type(TypeKind::Bool))
         }
-        BinOp::And | BinOp::Or if deferred_boolish(left) && deferred_boolish(right) => {
+        BinOp::And | BinOp::Or if deferred_boolish(left) => {
+            // A pending left operand may short-circuit after injection, so the
+            // right operand is not validated until then (`run.success || 1`).
             Some(Value::Type(TypeKind::Bool))
         }
         _ => None,

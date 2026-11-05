@@ -11337,6 +11337,77 @@ command: c: {
             .to_owned(),
         ),
         (
+            "stdoutmul",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\(run.stdout * 2)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "intmul",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\(2 * run.stdout)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "concatmul",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\((run.stdout + "x") * 2)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "splitmul",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+	"strings"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+command: c: {
+	t: cli.Print & {text: "v=\(strings.Split(run.stdout, "u")[0] * 2)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "boolleftpending",
+            r#"package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+run: exec.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string, success: bool}
+command: c: {
+	t: cli.Print & {text: "v=\(run.success || 1)"}
+}
+"#
+            .to_owned(),
+        ),
+        (
             "boolshortcircuit",
             r#"package foo
 import "tool/cli"
@@ -14654,6 +14725,14 @@ command: headerkeyfirst: {
 	r: http.Get & {url: "__BASE__/ok", response: {body: string}}
 	p: cli.Print & {text: "test=\(r.response.header["X-Test"][0]) n=\(len(r.response.header))"}
 }
+command: bodymul: {
+	r: http.Get & {url: "__BASE__/ok", response: {body: string}}
+	p: cli.Print & {text: "v=\(r.response.body * 2)"}
+}
+command: bodyadd: {
+	r: http.Get & {url: "__BASE__/ok", response: {body: string}}
+	p: cli.Print & {text: "v=\(r.response.body + "x")"}
+}
 command: get404: {
 	r: http.Get & {url: "__BASE__/status404", response: {body: string}}
 	p: cli.Print & {text: "status=\(r.response.status) code=\(r.response.statusCode) body=[\(r.response.body)]"}
@@ -14731,6 +14810,8 @@ command: gzip: {
         "getok",
         "headerfirst",
         "headerkeyfirst",
+        "bodymul",
+        "bodyadd",
         "get404",
         "redirect",
         "redirectfalse",
