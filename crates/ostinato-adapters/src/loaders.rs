@@ -1285,7 +1285,21 @@ struct ToolPackage {
 
 /// Parse a contiguous doc comment into CUE's short/usage/long shape.
 fn parse_command_doc(lines: &[String]) -> CommandDoc {
-    let text = lines.join("\n");
+    let mut collapsed = Vec::new();
+    let mut previous_blank = false;
+    for line in lines {
+        let line = line.trim_end();
+        if line.is_empty() {
+            if previous_blank {
+                continue;
+            }
+            previous_blank = true;
+        } else {
+            previous_blank = false;
+        }
+        collapsed.push(line);
+    }
+    let text = collapsed.join("\n");
     let text = text.trim();
     if text.is_empty() {
         return CommandDoc::default();
@@ -1313,9 +1327,104 @@ fn parse_command_doc(lines: &[String]) -> CommandDoc {
 
 /// Command names declared with a preceding doc comment. CUE only applies
 /// `$usage`/doc metadata when the command has documentation.
+fn command_field_name(text: &str) -> Option<String> {
+    let text = text.trim_start();
+    if text.starts_with('{')
+        || text.starts_with('[')
+        || text.starts_with('@')
+        || text.starts_with("//")
+    {
+        return None;
+    }
+    let (head, _) = text.split_once(':')?;
+    let head = head.trim();
+    if head.is_empty() {
+        return None;
+    }
+    let head = head.trim_matches('"');
+    if head.is_empty()
+        || head.contains(char::is_whitespace)
+        || head.starts_with('$')
+        || head.starts_with('#')
+    {
+        return None;
+    }
+    Some(head.to_owned())
+}
+
+/// Approximate brace delta for a line, ignoring strings and line comments.
+fn brace_delta(line: &str) -> i32 {
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    let mut delta = 0;
+    let mut quote: Option<u8> = None;
+    let mut triple = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let ch = bytes[index];
+        if let Some(current) = quote {
+            if escaped {
+                escaped = false;
+                index += 1;
+                continue;
+            }
+            if ch == b'\\' {
+                escaped = true;
+                index += 1;
+                continue;
+            }
+            if triple {
+                if ch == current
+                    && index + 2 < bytes.len()
+                    && bytes[index + 1] == current
+                    && bytes[index + 2] == current
+                {
+                    quote = None;
+                    triple = false;
+                    index += 3;
+                    continue;
+                }
+            } else if ch == current {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        match ch {
+            b'"' | b'\'' => {
+                if index + 2 < bytes.len() && bytes[index + 1] == ch && bytes[index + 2] == ch {
+                    quote = Some(ch);
+                    triple = true;
+                    index += 3;
+                } else {
+                    quote = Some(ch);
+                    index += 1;
+                }
+            }
+            b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'/' => break,
+            b'{' => {
+                delta += 1;
+                index += 1;
+            }
+            b'}' => {
+                delta -= 1;
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    delta
+}
+
+/// Command names declared with a preceding doc comment. CUE only applies
+/// `$usage`/doc metadata when the command has documentation. Commands may be
+/// declared either directly (`command: name: { ... }`) or inside a
+/// `command: { ... }` block.
 fn documented_command_docs(text: &str) -> BTreeMap<String, CommandDoc> {
     let mut docs = BTreeMap::new();
     let mut comments: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    let mut command_child_depth: Option<i32> = None;
     for line in text.lines() {
         let trimmed = line.trim_start();
         if let Some(comment) = trimmed.strip_prefix("//") {
@@ -1326,14 +1435,32 @@ fn documented_command_docs(text: &str) -> BTreeMap<String, CommandDoc> {
             comments.clear();
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("command:") {
-            let name = rest.trim_start().split(':').next().unwrap_or("").trim();
-            let name = name.trim_matches('"');
-            if !name.is_empty() && !comments.is_empty() {
-                docs.insert(name.to_owned(), parse_command_doc(&comments));
+        let line_depth = depth;
+        if line_depth == 0
+            && let Some(rest) = trimmed.strip_prefix("command:")
+        {
+            let rest = rest.trim_start();
+            if rest.starts_with('{') {
+                command_child_depth = Some(line_depth + 1);
+            } else if let Some(name) = command_field_name(rest)
+                && !comments.is_empty()
+            {
+                docs.insert(name, parse_command_doc(&comments));
             }
+        } else if let Some(child_depth) = command_child_depth
+            && line_depth == child_depth
+            && let Some(name) = command_field_name(trimmed)
+            && !comments.is_empty()
+        {
+            docs.insert(name, parse_command_doc(&comments));
         }
         comments.clear();
+        depth += brace_delta(trimmed);
+        if let Some(child_depth) = command_child_depth
+            && depth < child_depth
+        {
+            command_child_depth = None;
+        }
     }
     docs
 }
@@ -1499,7 +1626,7 @@ pub fn tool_command_metadata(
             continue;
         };
         let lookup = |key: &str| match fields.get(key).map(Value::concretize) {
-            Some(Value::String(text)) => Some(text.clone()),
+            Some(Value::String(text)) => Some(text.trim().to_owned()),
             _ => None,
         };
         let doc = package.command_docs.get(name);
@@ -1510,8 +1637,10 @@ pub fn tool_command_metadata(
                     .or_else(|| lookup("usage"))
                     .or_else(|| doc.usage.clone())
             }),
-            short: lookup("$short").or_else(|| doc.and_then(|doc| doc.short.clone())),
-            long: lookup("$long").or_else(|| doc.and_then(|doc| doc.long.clone())),
+            short: lookup("$short")
+                .or_else(|| doc.and_then(|doc| lookup("short").or_else(|| doc.short.clone()))),
+            long: lookup("$long")
+                .or_else(|| doc.and_then(|doc| lookup("long").or_else(|| doc.long.clone()))),
         });
     }
     Ok(infos)
@@ -8252,7 +8381,27 @@ fn env_value_kinds(value: &Value) -> u8 {
         Value::Type(ostinato_lang::TypeKind::Bool) | Value::Bool(_) => ENV_BOOL,
         Value::Type(ostinato_lang::TypeKind::Int) | Value::Int(_) | Value::BigInt(_) => ENV_INT,
         Value::Type(ostinato_lang::TypeKind::Float) | Value::Float(_) => ENV_FLOAT,
-        Value::Type(ostinato_lang::TypeKind::Number) | Value::Bounds(_) => ENV_NUMBER,
+        Value::Type(ostinato_lang::TypeKind::Number) => ENV_NUMBER,
+        Value::Bounds(bounds) => {
+            let mut kinds = match bounds.ty {
+                Some(ostinato_lang::TypeKind::String) => ENV_STRING,
+                Some(ostinato_lang::TypeKind::Bool) => ENV_BOOL,
+                Some(ostinato_lang::TypeKind::Int) => ENV_INT,
+                Some(ostinato_lang::TypeKind::Float) => ENV_FLOAT,
+                Some(ostinato_lang::TypeKind::Number) => ENV_NUMBER,
+                Some(ostinato_lang::TypeKind::Bytes) | None => 0,
+            };
+            for bound in &bounds.items {
+                kinds |= match &bound.operand {
+                    Value::String(_) => ENV_STRING,
+                    Value::Bool(_) => ENV_BOOL,
+                    Value::Int(_) | Value::BigInt(_) | Value::Float(_) => ENV_NUMBER,
+                    Value::Null => ENV_STRING | ENV_BOOL | ENV_NUMBER,
+                    other => env_value_kinds(other),
+                };
+            }
+            if kinds == 0 { ENV_OTHER } else { kinds }
+        }
         Value::Null => ENV_NULL,
         Value::Disjunction(alternatives, _) => alternatives
             .iter()
@@ -8293,7 +8442,7 @@ fn parse_env_number(text: &str) -> Result<EnvNumber, String> {
         index += 1;
     }
     if index >= bytes.len() {
-        return Err(format!("invalid number {text:?}"));
+        return Err(format!("illegal number start {text:?}"));
     }
 
     if bytes[index] == b'0'
@@ -8308,11 +8457,13 @@ fn parse_env_number(text: &str) -> Result<EnvNumber, String> {
         if radix != 0 {
             index += skip;
             let (digits, next) = scan_env_digits(bytes, index, radix)?;
-            if next != bytes.len() {
-                return Err(format!("invalid number {text:?}"));
+            if digits.is_empty() {
+                return Err(format!("illegal number start {text:?}"));
             }
-            let cleaned: String = digits.chars().filter(|c| *c != '_').collect();
-            let mut value = BigInt::parse_bytes(cleaned.as_bytes(), radix)
+            if next != bytes.len() {
+                return Err(format!("illegal number {text:?}"));
+            }
+            let mut value = BigInt::parse_bytes(digits.as_bytes(), radix)
                 .ok_or_else(|| format!("invalid number {text:?}"))?;
             if negative {
                 value = -value;
@@ -8326,27 +8477,31 @@ fn parse_env_number(text: &str) -> Result<EnvNumber, String> {
     }
 
     let mut is_float = false;
-    let mut int_digits = String::from("0");
+    let mut int_digits = String::new();
     let mut frac_digits = String::new();
-    if bytes[index] == b'0' {
+    let mut started_with_zero = false;
+
+    if bytes[index] == b'.' {
+        is_float = true;
         index += 1;
-        if index < bytes.len()
-            && matches!(
-                bytes[index],
-                b'.' | b'e' | b'E' | b'K' | b'M' | b'G' | b'T' | b'P'
-            )
-        {
-            // keep going below
-        } else if index < bytes.len() {
-            return Err(format!("invalid number {text:?}"));
+        let (digits, next) = scan_env_digits(bytes, index, 10)?;
+        if digits.is_empty() {
+            return Err(format!("illegal fraction {text:?}"));
         }
+        frac_digits = digits;
+        index = next;
+    } else if bytes[index] == b'0' {
+        started_with_zero = true;
+        index += 1;
+        let (digits, next) = scan_env_digits(bytes, index, 10)?;
+        int_digits = digits;
+        index = next;
     } else {
         let (digits, next) = scan_env_digits(bytes, index, 10)?;
-        int_digits = if digits.is_empty() {
-            String::from("0")
-        } else {
-            digits
-        };
+        if digits.is_empty() {
+            return Err(format!("illegal number start {text:?}"));
+        }
+        int_digits = digits;
         index = next;
     }
 
@@ -8371,10 +8526,9 @@ fn parse_env_number(text: &str) -> Result<EnvNumber, String> {
         }
         let (digits, next) = scan_env_digits(bytes, index, 10)?;
         if digits.is_empty() {
-            return Err(format!("invalid number {text:?}"));
+            return Err(format!("illegal exponent {text:?}"));
         }
         exponent = digits
-            .replace('_', "")
             .parse::<i64>()
             .map_err(|_| format!("invalid number {text:?}"))?;
         if exp_negative {
@@ -8395,6 +8549,9 @@ fn parse_env_number(text: &str) -> Result<EnvNumber, String> {
             _ => None,
         }
     {
+        if started_with_zero && !int_digits.is_empty() && !is_float {
+            return Err(format!("illegal integer number {text:?}"));
+        }
         index += 1;
         let binary = index < bytes.len() && bytes[index] == b'i';
         if binary {
@@ -8407,14 +8564,21 @@ fn parse_env_number(text: &str) -> Result<EnvNumber, String> {
         });
     }
     if index != bytes.len() {
-        return Err(format!("invalid number {text:?}"));
+        return Err(format!("illegal number {text:?}"));
     }
-
+    if started_with_zero && !is_float && multiplier.is_none() && !int_digits.is_empty() {
+        return Err(format!("illegal integer number {text:?}"));
+    }
+    let int_part = if int_digits.is_empty() {
+        "0"
+    } else {
+        int_digits.as_str()
+    };
     if is_float {
         let mut literal = if frac_digits.is_empty() {
-            int_digits.clone()
+            int_part.to_owned()
         } else {
-            format!("{int_digits}.{frac_digits}")
+            format!("{int_part}.{frac_digits}")
         };
         if exponent != 0 {
             literal.push('e');
@@ -8446,8 +8610,7 @@ fn parse_env_number(text: &str) -> Result<EnvNumber, String> {
         });
     }
 
-    let cleaned: String = int_digits.chars().filter(|c| *c != '_').collect();
-    let mut value = BigInt::parse_bytes(cleaned.as_bytes(), 10)
+    let mut value = BigInt::parse_bytes(int_part.as_bytes(), 10)
         .ok_or_else(|| format!("invalid number {text:?}"))?;
     if let Some(multiplier) = multiplier {
         value *= multiplier;
@@ -8496,33 +8659,23 @@ fn scan_env_digits(bytes: &[u8], start: usize, radix: u32) -> Result<(String, us
     Ok((digits, index))
 }
 
-fn env_number_value(
-    name: &str,
-    text: &str,
-    number: EnvNumber,
-    kinds: u8,
-) -> Result<Value, ostinato_lang::LangError> {
+fn env_number_value(name: &str, text: &str, number: EnvNumber, kinds: u8) -> Result<Value, String> {
     if number.is_int {
-        let value = number.int.ok_or_else(|| {
-            ostinato_lang::LangError::Workflow(format!(
-                "invalid number for injection tag \"{name}\": {text:?}"
-            ))
-        })?;
+        let value = number
+            .int
+            .ok_or_else(|| format!("invalid number for injection tag \"{name}\": {text:?}"))?;
         return match i64::try_from(&value) {
             Ok(value) => Ok(Value::Int(value)),
             Err(_) => Ok(Value::BigInt(value)),
         };
     }
     if kinds & ENV_FLOAT == 0 {
-        return Err(ostinato_lang::LangError::Workflow(format!(
-            "invalid int {text:?} for injection tag \"{name}\""
-        )));
+        return Err(format!("invalid int {text:?} for injection tag \"{name}\""));
     }
-    number.float.map(Value::Float).ok_or_else(|| {
-        ostinato_lang::LangError::Workflow(format!(
-            "invalid number for injection tag \"{name}\": {text:?}"
-        ))
-    })
+    number
+        .float
+        .map(Value::Float)
+        .ok_or_else(|| format!("invalid number for injection tag \"{name}\": {text:?}"))
 }
 
 /// Parse an environment value using the type constraints of the task field
@@ -8539,6 +8692,7 @@ fn env_parse(
         )));
     }
     let mut parts = Vec::new();
+    let mut defaults = Vec::new();
     let mut single = None;
     let mut first_error: Option<String> = None;
 
@@ -8552,7 +8706,7 @@ fn env_parse(
                         single = Some(value);
                     }
                 }
-                Err(err) => first_error = Some(err.to_string()),
+                Err(err) => first_error = Some(err),
             },
             Err(err) => {
                 first_error = Some(format!(
@@ -8579,10 +8733,19 @@ fn env_parse(
     }
 
     if kinds & ENV_STRING != 0 {
-        if parts.is_empty() {
-            single = Some(Value::String(text.to_owned()));
+        // CUE trims the value when a boolean alternative is present, and the
+        // package schema's `*string` makes the string alternative the default
+        // of a mixed disjunction.
+        let string_value = if kinds & ENV_BOOL != 0 {
+            text.trim().to_owned()
         } else {
-            parts.push(Value::String(text.to_owned()));
+            text.to_owned()
+        };
+        if parts.is_empty() {
+            single = Some(Value::String(string_value));
+        } else {
+            parts.push(Value::String(string_value));
+            defaults.push(parts.len() - 1);
         }
     }
 
@@ -8590,7 +8753,7 @@ fn env_parse(
         if parts.len() == 1 {
             return Ok(parts.remove(0));
         }
-        return Ok(Value::Disjunction(parts, Vec::new()));
+        return Ok(Value::Disjunction(parts, defaults));
     }
     if let Some(value) = single {
         return Ok(value);

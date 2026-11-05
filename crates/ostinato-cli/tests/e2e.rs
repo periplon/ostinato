@@ -12566,3 +12566,307 @@ command: _hidden: {p: cli.Print & {text: "hidden"}}
     let named_stdout = String::from_utf8_lossy(&named_like_dir.stdout);
     assert!(named_stdout.contains("ostinato cmd doccmd [-q] file [flags]"));
 }
+
+#[test]
+fn tool_command_os_bounds_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("os_bounds_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+command: ne: {
+	env: os.Getenv & {REV_V: !="skip"}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: re: {
+	env: os.Getenv & {REV_V: =~"^a"}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: gt: {
+	env: os.Getenv & {REV_V: >"a"}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: lt: {
+	env: os.Getenv & {REV_V: <"m"}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: nenull: {
+	env: os.Getenv & {REV_V: !=null}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+"#,
+    );
+    let run = |implementation: &Path, command: &str, value: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env("REV_V", value)
+            .output()
+            .expect("run command")
+    };
+    for command in ["ne", "re", "gt", "lt", "nenull"] {
+        let expected = run(Path::new(&cue), command, "abc");
+        let actual = run(&bin(), command, "abc");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+    // Rejected values keep exit/status and stdout parity; error prose differs.
+    for (command, value) in [
+        ("ne", "skip"),
+        ("re", "skip"),
+        ("re", "b"),
+        ("gt", "1"),
+        ("lt", "skip"),
+        ("lt", "true"),
+    ] {
+        let expected = run(Path::new(&cue), command, value);
+        let actual = run(&bin(), command, value);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{command}={value}"
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{command}={value}");
+        assert!(!actual.status.success(), "{command}={value}");
+    }
+}
+
+#[test]
+fn tool_command_os_number_parsing_matches_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("os_numbers_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+command: intv: {
+	env: os.Getenv & {REV_V: int}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: numv: {
+	env: os.Getenv & {REV_V: number}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+"#,
+    );
+    let run = |implementation: &Path, command: &str, value: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env("REV_V", value)
+            .output()
+            .expect("run command")
+    };
+    for value in [
+        "01.5", "000.5", "00e5", "01e2", "0_1.5", ".5", "+.5", ".5K", "1.", "0.", "0e5", "0K",
+        "1e3", "1_000",
+    ] {
+        let expected = run(Path::new(&cue), "numv", value);
+        let actual = run(&bin(), "numv", value);
+        assert_eq!(actual.status.code(), expected.status.code(), "numv={value}");
+        assert_eq!(actual.stdout, expected.stdout, "numv={value}");
+        assert_eq!(actual.stderr, expected.stderr, "numv={value}");
+    }
+    for value in [
+        "K", "M", "G", "T", "P", "Ki", "Mi", "Ti", "00", "01", ".", ".e3", "+.", "-.", "00K", "01K",
+    ] {
+        let expected = run(Path::new(&cue), "intv", value);
+        let actual = run(&bin(), "intv", value);
+        assert_eq!(actual.status.code(), expected.status.code(), "intv={value}");
+        assert_eq!(actual.stdout, expected.stdout, "intv={value}");
+        assert!(!actual.status.success(), "intv={value}");
+    }
+}
+
+#[test]
+fn tool_command_os_mixed_constraints_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("os_mixed_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+command: boolstring: {
+	env: os.Getenv & {REV_V: bool | string}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: intstring: {
+	env: os.Getenv & {REV_V: int | string}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: numbers: {
+	env: os.Getenv & {REV_V: number | bool | string}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+"#,
+    );
+    let run = |implementation: &Path, command: &str, value: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env("REV_V", value)
+            .output()
+            .expect("run command")
+    };
+    for command in ["boolstring", "intstring", "numbers"] {
+        for value in [
+            "1", "0", "true", "T", "F", "false", "5", "0x10", "1K", "1.5", " 5 ",
+        ] {
+            let expected = run(Path::new(&cue), command, value);
+            let actual = run(&bin(), command, value);
+            assert_eq!(
+                actual.status.code(),
+                expected.status.code(),
+                "{command}={value}"
+            );
+            assert_eq!(actual.stdout, expected.stdout, "{command}={value}");
+            assert_eq!(actual.stderr, expected.stderr, "{command}={value}");
+        }
+    }
+}
+
+#[test]
+fn tool_command_help_doc_metadata_and_nested_commands_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("doc_tool.cue"),
+        r#"
+package foo
+import "tool/cli"
+
+//   Doc first line.
+//
+//
+// Usage:   plaincmd [-p] file
+//
+//
+//   Doc long line one.
+//   Doc long line two.
+command: plaincmd: {
+	short: "  plain short  "
+	usage: "  plaincmd [-u] arg  "
+	long: "  plain long  "
+	p: cli.Print & {text: "x"}
+}
+
+// Dollar doc.
+//
+// Usage: dollarcmd [-d]
+//
+// Dollar long.
+command: dollarcmd: {
+	$short: "  dollar short  "
+	$usage: "  dollarcmd [-e] file  "
+	$long: "  dollar long  "
+	p: cli.Print & {text: "x"}
+}
+
+command: {
+	// Nested first.
+	//
+	// Usage: nestedcmd [-n] thing
+	//
+	// Nested long.
+	nestedcmd: {
+		p: cli.Print & {text: "x"}
+	}
+	// Nested plain.
+	//
+	// Nested plain long.
+	nestedplain: {
+		short: "nested plain short"
+		long: "nested plain long override"
+		p: cli.Print & {text: "x"}
+	}
+}
+"#,
+    );
+    let listing = ost(&["cmd", "-h", directory.path().to_str().expect("path")]);
+    assert!(listing.status.success());
+    let listing_stdout = String::from_utf8_lossy(&listing.stdout);
+    assert!(listing_stdout.contains("plain short"), "{listing_stdout}");
+    assert!(listing_stdout.contains("dollar short"), "{listing_stdout}");
+    assert!(listing_stdout.contains("Nested first."), "{listing_stdout}");
+    assert!(
+        listing_stdout.contains("nested plain short"),
+        "{listing_stdout}"
+    );
+
+    for command in ["plaincmd", "dollarcmd", "nestedcmd", "nestedplain"] {
+        let expected = Command::new(&cue)
+            .args(["help", "cmd", command])
+            .current_dir(directory.path())
+            .output()
+            .expect("cue help");
+        let actual = ost(&[
+            "cmd",
+            command,
+            "-h",
+            directory.path().to_str().expect("path"),
+        ]);
+        assert!(actual.status.success(), "{command}");
+        let expected_stdout = String::from_utf8_lossy(&expected.stdout);
+        let actual_stdout = String::from_utf8_lossy(&actual.stdout);
+        let expected_long = match command {
+            "plaincmd" => "plain long",
+            "dollarcmd" => "dollar long",
+            "nestedcmd" => "Nested long.",
+            _ => "nested plain long override",
+        };
+        assert!(expected_stdout.contains(expected_long), "{command}");
+        assert!(
+            actual_stdout.contains(expected_long),
+            "{command}: {actual_stdout}"
+        );
+        assert!(
+            actual_stdout.contains("Usage:"),
+            "{command}: {actual_stdout}"
+        );
+        assert!(
+            actual_stdout.contains("ostinato cmd"),
+            "{command}: {actual_stdout}"
+        );
+    }
+    for (command, usage) in [
+        ("plaincmd", "ostinato cmd plaincmd [-u] arg [flags]"),
+        ("dollarcmd", "ostinato cmd dollarcmd [-e] file [flags]"),
+        ("nestedcmd", "ostinato cmd nestedcmd [-n] thing [flags]"),
+        ("nestedplain", "ostinato cmd nestedplain [flags]"),
+    ] {
+        let actual = ost(&[
+            "cmd",
+            command,
+            "-h",
+            directory.path().to_str().expect("path"),
+        ]);
+        let actual_stdout = String::from_utf8_lossy(&actual.stdout);
+        assert!(actual_stdout.contains(usage), "{command}: {actual_stdout}");
+    }
+}
