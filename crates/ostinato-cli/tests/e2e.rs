@@ -13065,3 +13065,223 @@ command: environtwodef: {
         }
     }
 }
+
+#[test]
+fn tool_command_os_schema_reference_defaults_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("x_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+p: *"d" | string
+config: {p: *"d" | string}
+let q = *"d" | string
+command: topfield: {
+	env: os.Getenv & {REV_V: p}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: localfield: {
+	lp: *"d" | string
+	env: os.Getenv & {REV_V: lp}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: letfield: {
+	env: os.Getenv & {REV_V: q}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: selector: {
+	env: os.Getenv & {REV_V: config.p}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: crossfile: {
+	env: os.Getenv & {REV_V: cross}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: environ: {
+	env: os.Environ & {REV_V: p}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: ne: {
+	env: os.Getenv & {REV_V: p & != ""}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: re: {
+	env: os.Getenv & {REV_V: p & =~"^d"}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: nn: {
+	env: os.Getenv & {REV_V: p & !=null}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: st: {
+	env: os.Getenv & {REV_V: p & string}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: disj: {
+	env: os.Getenv & {REV_V: p | int}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+"#,
+    );
+    write(
+        &directory.path().join("other_tool.cue"),
+        "package foo\ncross: *\"d\" | string\n",
+    );
+    let run = |implementation: &Path, command: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env_remove("REV_V")
+            .output()
+            .expect("run command")
+    };
+    for command in [
+        "topfield",
+        "localfield",
+        "letfield",
+        "selector",
+        "crossfile",
+        "environ",
+        "ne",
+        "re",
+        "nn",
+        "st",
+        "disj",
+    ] {
+        let expected = run(Path::new(&cue), command);
+        let actual = run(&bin(), command);
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+}
+
+#[test]
+fn tool_command_os_schema_imported_defaults_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let cue_dir = tempfile::tempdir().expect("tempdir");
+    let rust_dir = tempfile::tempdir().expect("tempdir");
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = "package lib\np: *\"d\" | string\n";
+    let source = r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+	"example.com/k/lib"
+)
+command: imported: {
+	env: os.Getenv & {REV_V: lib.p}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: importedenviron: {
+	env: os.Environ & {REV_V: lib.p}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+"#;
+    for directory in [cue_dir.path(), rust_dir.path()] {
+        std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+        std::fs::create_dir_all(directory.join("lib")).expect("lib");
+        write(&directory.join("cue.mod/module.cue"), module);
+        write(&directory.join("lib/lib.cue"), library);
+        write(&directory.join("x_tool.cue"), source);
+    }
+    for command in ["imported", "importedenviron"] {
+        let expected = Command::new(&cue)
+            .args(["cmd", command])
+            .current_dir(cue_dir.path())
+            .env_remove("REV_V")
+            .output()
+            .expect("run cue cmd");
+        let actual = Command::new(bin())
+            .args(["cmd", command, rust_dir.path().to_str().expect("path")])
+            .env_remove("REV_V")
+            .output()
+            .expect("run ostinato cmd");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
+}
+
+#[test]
+fn tool_command_os_schema_composed_tasks_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("x_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/os"
+)
+p: *"d" | string
+g: os.Getenv
+h: g & {REV_V: p}
+envparams: {REV_V: "a" | int}
+envparamstwo: {REV_V: *5 | string}
+base: {
+	env: os.Getenv & {REV_V: p}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+more: {extra: 1}
+command: envparams: {
+	env: os.Getenv & params
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: envparamstwo: {
+	env: os.Getenv & paramstwo
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: taskalias: {
+	env: g & {REV_V: "a" | int}
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: splittask: {
+	env: h
+	print: cli.Print & {text: "v=[\(env.REV_V)]"}
+}
+command: commandalias: base
+command: splitcommand: base & more
+"#,
+    );
+    let run = |implementation: &Path, command: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .env_remove("REV_V")
+            .output()
+            .expect("run command")
+    };
+    for command in [
+        "envparams",
+        "envparamstwo",
+        "taskalias",
+        "splittask",
+        "commandalias",
+        "splitcommand",
+    ] {
+        let expected = run(Path::new(&cue), command);
+        let actual = run(&bin(), command);
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        if expected.status.success() {
+            assert_eq!(actual.stderr, expected.stderr, "{command}");
+        }
+    }
+}

@@ -2387,41 +2387,242 @@ fn expr_has_concrete_string_default(expr: &Expr) -> bool {
     }
 }
 
-fn expr_is_os_env_task(expr: &Expr, imports: &BTreeMap<String, Value>) -> bool {
-    match expr {
-        Expr::Select(..) | Expr::Index(..) => selector_names(expr, None).is_some_and(|path| {
-            let Some((root, rest)) = path.split_first() else {
+fn expr_has_concrete_string_default_resolved(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+) -> bool {
+    if expr_has_concrete_string_default(expr) {
+        return true;
+    }
+    materialize_expr(
+        expr,
+        scopes,
+        root,
+        imports,
+        &mut std::collections::BTreeSet::new(),
+    )
+    .is_some_and(|resolved| expr_has_concrete_string_default(&resolved))
+}
+
+fn import_os_env_task(expr: &Expr, imports: &BTreeMap<String, Value>) -> bool {
+    selector_names(expr, None).is_some_and(|path| {
+        let Some((root, rest)) = path.split_first() else {
+            return false;
+        };
+        let Some(module) = imports.get(root) else {
+            return false;
+        };
+        let mut value = module;
+        for field in rest {
+            let Some(next) = value_field(value, field) else {
                 return false;
             };
-            let Some(module) = imports.get(root) else {
-                return false;
-            };
-            let mut value = module;
-            for field in rest {
-                let Some(next) = value_field(value, field) else {
-                    return false;
-                };
-                value = next;
-            }
-            matches!(
-                value_fields(value).and_then(|fields| fields.get("$id")),
-                Some(Value::String(id))
-                    if matches!(id.as_str(), "tool/os.Getenv" | "tool/os.Environ")
-            )
-        }),
-        Expr::Unify(left, right, _) => {
-            expr_is_os_env_task(left, imports) || expr_is_os_env_task(right, imports)
+            value = next;
         }
+        matches!(
+            value_fields(value).and_then(|fields| fields.get("$id")),
+            Some(Value::String(id))
+                if matches!(id.as_str(), "tool/os.Getenv" | "tool/os.Environ")
+        )
+    })
+}
+
+fn expr_has_os_env_task(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> bool {
+    match expr {
+        Expr::Select(..) | Expr::Index(..) => {
+            if import_os_env_task(expr, imports) {
+                return true;
+            }
+            let Some(path) = selector_names(expr, None) else {
+                return false;
+            };
+            let key = format!("sel:{}", path.join("."));
+            if !visited.insert(key.clone()) {
+                return false;
+            }
+            let found =
+                resolve_local_value(scopes, root, expr, &mut std::collections::BTreeSet::new())
+                    .is_some_and(|resolved| {
+                        expr_has_os_env_task(resolved, scopes, root, imports, visited)
+                    });
+            visited.remove(&key);
+            found
+        }
+        Expr::Ident(name, _) => {
+            if imports.contains_key(name) {
+                return false;
+            }
+            let key = format!("id:{name}");
+            if !visited.insert(key.clone()) {
+                return false;
+            }
+            let found = match local_binding(scopes, root, name) {
+                Some(StructItem::Field(field)) => {
+                    expr_has_os_env_task(&field.value, scopes, root, imports, visited)
+                }
+                Some(StructItem::Let { value, .. }) => {
+                    expr_has_os_env_task(value, scopes, root, imports, visited)
+                }
+                _ => false,
+            };
+            visited.remove(&key);
+            found
+        }
+        Expr::Unify(left, right, _) => {
+            expr_has_os_env_task(left, scopes, root, imports, visited)
+                || expr_has_os_env_task(right, scopes, root, imports, visited)
+        }
+        Expr::Struct(items, _) => items.iter().any(|item| match item {
+            StructItem::Field(field) => {
+                expr_has_os_env_task(&field.value, scopes, root, imports, visited)
+            }
+            _ => false,
+        }),
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            expr_is_os_env_task(inner, imports)
+            expr_has_os_env_task(inner, scopes, root, imports, visited)
         }
         _ => false,
     }
 }
 
-fn wrap_os_task_fields(expr: &mut Expr) {
+fn materialize_expr(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Option<Expr> {
+    match expr {
+        Expr::Ident(name, _) => {
+            if imports.contains_key(name) {
+                return None;
+            }
+            let key = format!("id:{name}");
+            if !visited.insert(key.clone()) {
+                return None;
+            }
+            let resolved = match local_binding(scopes, root, name) {
+                Some(StructItem::Field(field)) => {
+                    materialize_expr(&field.value, scopes, root, imports, visited)
+                }
+                Some(StructItem::Let { value, .. }) => {
+                    materialize_expr(value, scopes, root, imports, visited)
+                }
+                _ => None,
+            };
+            visited.remove(&key);
+            resolved
+        }
+        Expr::Select(..) | Expr::Index(..) => {
+            let path_key = selector_names(expr, None).map(|path| format!("sel:{}", path.join(".")));
+            if let Some(key) = &path_key
+                && !visited.insert(key.clone())
+            {
+                return None;
+            }
+            let resolved = if let Some(value) =
+                resolve_local_value(scopes, root, expr, &mut std::collections::BTreeSet::new())
+            {
+                materialize_expr(value, scopes, root, imports, visited)
+            } else {
+                let path = selector_names(expr, None)?;
+                let (root_name, rest) = path.split_first()?;
+                let module = imports.get(root_name)?;
+                let mut value = module;
+                for field in rest {
+                    value = value_field(value, field)?;
+                }
+                if value_fields(value).is_some_and(|fields| fields.contains_key("$id")) {
+                    Some(expr.clone())
+                } else {
+                    output_expr(value)
+                }
+            };
+            if let Some(key) = path_key {
+                visited.remove(&key);
+            }
+            resolved
+        }
+        Expr::Unify(left, right, span) => Some(Expr::Unify(
+            Box::new(materialize_keep(left, scopes, root, imports)),
+            Box::new(materialize_keep(right, scopes, root, imports)),
+            *span,
+        )),
+        Expr::Disjunction(left, right, span) => Some(Expr::Disjunction(
+            Box::new(materialize_keep(left, scopes, root, imports)),
+            Box::new(materialize_keep(right, scopes, root, imports)),
+            *span,
+        )),
+        Expr::Paren(inner, span) => Some(Expr::Paren(
+            Box::new(materialize_keep(inner, scopes, root, imports)),
+            *span,
+        )),
+        Expr::Default(inner, span) => Some(Expr::Default(
+            Box::new(materialize_keep(inner, scopes, root, imports)),
+            *span,
+        )),
+        Expr::Bound(op, inner, span) => Some(Expr::Bound(
+            *op,
+            Box::new(materialize_keep(inner, scopes, root, imports)),
+            *span,
+        )),
+        Expr::Struct(..) | Expr::List(..) => Some(expr.clone()),
+        _ => None,
+    }
+}
+
+fn materialize_keep(
+    expr: &Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+) -> Expr {
+    materialize_expr(
+        expr,
+        scopes,
+        root,
+        imports,
+        &mut std::collections::BTreeSet::new(),
+    )
+    .unwrap_or_else(|| expr.clone())
+}
+
+fn materialize_into(
+    expr: &mut Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+) {
+    if let Some(resolved) = materialize_expr(
+        expr,
+        scopes,
+        root,
+        imports,
+        &mut std::collections::BTreeSet::new(),
+    ) {
+        *expr = resolved;
+    }
+}
+
+fn wrap_os_task_fields(
+    expr: &mut Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+) {
     match expr {
         Expr::Struct(items, _) => {
+            let scope_items = items.clone();
+            let mut nested = scopes.to_vec();
+            nested.push(&scope_items);
             for item in items {
                 let StructItem::Field(field) = item else {
                     continue;
@@ -2432,44 +2633,78 @@ fn wrap_os_task_fields(expr: &mut Expr) {
                 if name.starts_with('$') {
                     continue;
                 }
-                let schema = os_value_schema(!expr_has_concrete_string_default(&field.value));
+                // Resolve references only to decide whether a concrete string
+                // default is reachable; keep the original expression so `let`
+                // bindings remain referenced and shared definitions are not
+                // mutated.
+                let include_default = !expr_has_concrete_string_default_resolved(
+                    &field.value,
+                    &nested,
+                    root,
+                    imports,
+                );
                 let span = field.value.span();
-                field.value = Expr::Unify(Box::new(field.value.clone()), Box::new(schema), span);
+                field.value = Expr::Unify(
+                    Box::new(field.value.clone()),
+                    Box::new(os_value_schema(include_default)),
+                    span,
+                );
             }
         }
         Expr::Unify(left, right, _) => {
-            wrap_os_task_fields(left);
-            wrap_os_task_fields(right);
+            wrap_os_task_fields(left, scopes, root, imports);
+            wrap_os_task_fields(right, scopes, root, imports);
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            wrap_os_task_fields(inner);
+            wrap_os_task_fields(inner, scopes, root, imports);
         }
         _ => {}
     }
 }
 
-fn apply_os_schema_to_task(expr: &mut Expr, imports: &BTreeMap<String, Value>) {
-    if expr_is_os_env_task(expr, imports) {
-        wrap_os_task_fields(expr);
+fn apply_os_schema_to_task(
+    expr: &mut Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+) {
+    if !expr_has_os_env_task(
+        expr,
+        scopes,
+        root,
+        imports,
+        &mut std::collections::BTreeSet::new(),
+    ) {
+        return;
     }
+    materialize_into(expr, scopes, root, imports);
+    wrap_os_task_fields(expr, scopes, root, imports);
 }
 
-fn apply_os_schema_to_command_value(expr: &mut Expr, imports: &BTreeMap<String, Value>) {
+fn apply_os_schema_to_command_value(
+    expr: &mut Expr,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+) {
     match expr {
         Expr::Struct(items, _) => {
+            let scope_items = items.clone();
+            let mut nested = scopes.to_vec();
+            nested.push(&scope_items);
             for item in items {
                 let StructItem::Field(field) = item else {
                     continue;
                 };
-                apply_os_schema_to_task(&mut field.value, imports);
+                apply_os_schema_to_task(&mut field.value, &nested, root, imports);
             }
         }
         Expr::Unify(left, right, _) => {
-            apply_os_schema_to_command_value(left, imports);
-            apply_os_schema_to_command_value(right, imports);
+            apply_os_schema_to_command_value(left, scopes, root, imports);
+            apply_os_schema_to_command_value(right, scopes, root, imports);
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            apply_os_schema_to_command_value(inner, imports);
+            apply_os_schema_to_command_value(inner, scopes, root, imports);
         }
         _ => {}
     }
@@ -2485,6 +2720,7 @@ fn apply_os_value_schema(
     command_name: &str,
     imports: &BTreeMap<String, Value>,
 ) {
+    let root: Vec<StructItem> = items.to_vec();
     for item in items {
         let StructItem::Field(field) = item else {
             continue;
@@ -2492,32 +2728,48 @@ fn apply_os_value_schema(
         if !matches!(&field.label, Label::Name(name, _) if name == "command") {
             continue;
         }
-        apply_os_schema_in_command(&mut field.value, command_name, imports);
+        if !expr_has_os_env_task(
+            &field.value,
+            &[],
+            &root,
+            imports,
+            &mut std::collections::BTreeSet::new(),
+        ) {
+            continue;
+        }
+        materialize_into(&mut field.value, &[], &root, imports);
+        apply_os_schema_in_command(&mut field.value, command_name, &[], &root, imports);
     }
 }
 
 fn apply_os_schema_in_command(
     expr: &mut Expr,
     command_name: &str,
+    scopes: &[&[StructItem]],
+    root: &[StructItem],
     imports: &BTreeMap<String, Value>,
 ) {
     match expr {
         Expr::Struct(items, _) => {
+            let scope_items = items.clone();
+            let mut nested = scopes.to_vec();
+            nested.push(&scope_items);
             for item in items {
                 let StructItem::Field(field) = item else {
                     continue;
                 };
                 if matches!(&field.label, Label::Name(name, _) if name == command_name) {
-                    apply_os_schema_to_command_value(&mut field.value, imports);
+                    materialize_into(&mut field.value, &nested, root, imports);
+                    apply_os_schema_to_command_value(&mut field.value, &nested, root, imports);
                 }
             }
         }
         Expr::Unify(left, right, _) => {
-            apply_os_schema_in_command(left, command_name, imports);
-            apply_os_schema_in_command(right, command_name, imports);
+            apply_os_schema_in_command(left, command_name, scopes, root, imports);
+            apply_os_schema_in_command(right, command_name, scopes, root, imports);
         }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
-            apply_os_schema_in_command(inner, command_name, imports);
+            apply_os_schema_in_command(inner, command_name, scopes, root, imports);
         }
         _ => {}
     }
@@ -5243,8 +5495,9 @@ fn scan_package_order_expr(
             );
         }
         Expr::Struct(items, _) => {
+            let scope_items = items.clone();
             let mut nested = scopes.to_vec();
-            nested.push(items);
+            nested.push(&scope_items);
             for item in items {
                 let StructItem::Field(field) = item else {
                     continue;
@@ -6017,6 +6270,24 @@ fn output_expr(value: &Value) -> Option<Expr> {
         Value::Float(value) => Some(Expr::Float(value.clone(), Span::default())),
         Value::Bytes(value) => Some(Expr::Bytes(value.clone(), Span::default())),
         Value::Null => Some(Expr::Null(Span::default())),
+        Value::Type(ostinato_lang::TypeKind::String) => {
+            Some(Expr::Ident("string".to_owned(), Span::default()))
+        }
+        Value::Type(ostinato_lang::TypeKind::Bool) => {
+            Some(Expr::Ident("bool".to_owned(), Span::default()))
+        }
+        Value::Type(ostinato_lang::TypeKind::Int) => {
+            Some(Expr::Ident("int".to_owned(), Span::default()))
+        }
+        Value::Type(ostinato_lang::TypeKind::Float) => {
+            Some(Expr::Ident("float".to_owned(), Span::default()))
+        }
+        Value::Type(ostinato_lang::TypeKind::Number) => {
+            Some(Expr::Ident("number".to_owned(), Span::default()))
+        }
+        Value::Type(ostinato_lang::TypeKind::Bytes) => {
+            Some(Expr::Ident("bytes".to_owned(), Span::default()))
+        }
         Value::Disjunction(alternatives, defaults) => {
             let mut exprs = Vec::with_capacity(alternatives.len());
             for (index, alternative) in alternatives.iter().enumerate() {
@@ -7802,8 +8073,9 @@ fn scan_order_expr(
             );
         }
         Expr::Struct(items, _) => {
+            let scope_items = items.clone();
             let mut nested = scopes.to_vec();
-            nested.push(items);
+            nested.push(&scope_items);
             for item in items {
                 let StructItem::Field(field) = item else {
                     continue;
