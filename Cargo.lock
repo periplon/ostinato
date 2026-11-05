@@ -610,6 +610,7 @@ dependencies = [
  "ostinato-domain",
  "ostinato-lang",
  "rusqlite",
+ "rustix",
  "saphyr",
  "saphyr-parser",
  "serde",

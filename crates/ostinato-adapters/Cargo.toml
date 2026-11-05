@@ -27,6 +27,7 @@ walkdir = { workspace = true }
 bigdecimal = "0.4.11"
 num-bigint = { workspace = true }
 tempfile = { workspace = true }
+rustix = { version = "1", features = ["fs"] }
 
 [lints]
 workspace = true

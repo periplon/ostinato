@@ -209,21 +209,28 @@ The e2e suite compares Ostinato with CUE v0.17.1 for:
 * Non-finite floats (`.inf`, `.nan`) are rejected because JSON cannot represent
   them.
 * Anchors and aliases are resolved with a bounded node budget and an expanded
-  byte budget, aliases are counted, and cyclic aliases are rejected; this
-  blocks billion-laughs and multi-gigabyte scalar expansion. YAML merge keys
-  (`<<`) are expanded explicitly with explicit fields taking precedence. A
-  quoted `"<<"` is a literal key; only a plain untagged (or `!!merge`) key
-  triggers merging.
+  byte budget (16 bytes per node plus scalar bytes); nested alias expansion is
+  accumulated into the enclosing anchor before it is referenced, so nested
+  alias fan-out cannot bypass the budget. Aliases are counted, cyclic aliases
+  are rejected, and YAML merge keys (`<<`) are expanded explicitly with
+  explicit fields taking precedence. A quoted `"<<"` is a literal key; only a
+  plain untagged (or `!!merge`) key triggers merging. `!!merge` is accepted;
+  invalid `!!bool` values produce a clear tag error rather than a numeric one.
 * YAML timestamps stay strings (YAML 1.2 core schema has no timestamp type).
 * `!!binary` is rejected: JSON has no byte type and silently decoding it would
   lose the bytes/text distinction. Core `!!str`, `!!int`, `!!bool`, `!!null`
   and `!!float` tags are accepted.
 * Empty JSON and YAML files decode to `null`; `{}` and `[]` are preserved.
 * UTF-8 BOMs are stripped before parsing in JSON and YAML.
-* YAML integer/float digit separators follow CUE: underscores must sit between
-  digits (`1_000.5`), a leading-zero form such as `0_1` is rejected, and
-  `_`, `__`, `+_`, `_1`, `-_` remain strings. JSON has an explicit node limit,
-  so wide adversarial arrays are rejected during deserialization.
+* YAML integer/float digit separators follow CUE: underscores between digits
+  are separators (`1_000.5`), underscores after `.`/`e`/exponent sign are
+  no-ops (`1._5` → 1.5, `1e_5` → 1e5), `0x_1`/`0b_1`/`0o_1` → 1, and
+  leading-zero forms such as `0_1`, `01.5`, `00.5` are rejected. `_`, `__`,
+  `+_`, `_1`, `-_`, `1..5`, `1.5.6`, `._5`, `-._5` remain strings.
+  `1e400`/`1e309` remain strings, matching CUE's lexical float parse;
+  `1.` is integer 1 and 30-digit integers are preserved exactly. JSON has an
+  explicit node limit, so wide adversarial arrays are rejected during
+  deserialization.
 * Mapping keys may be strings or scalar numbers/booleans/null; scalars are
   stringified like CUE. Complex keys (maps/lists) are rejected.
 * YAML parsing uses [`saphyr`](https://crates.io/crates/saphyr) 0.3, a
@@ -234,6 +241,11 @@ The e2e suite compares Ostinato with CUE v0.17.1 for:
   never rounded. Every key and string value is double-quoted and escaped,
   including C1 controls, U+2028/U+2029, BOM/noncharacters and unquoted-looking
   keys such as `0B101`, `0O17`, `<<` and `_id`.
+* Input files are opened with `O_NOFOLLOW | O_NONBLOCK`, fstat-checked, and
+  `O_NONBLOCK` is cleared after confirming a regular file. FIFOs, devices and
+  symlink inputs are rejected before reading. New output files use mode `0600`;
+  `--force` preserves the existing destination mode and refuses case-insensitive
+  aliases of an input.
 
 ## Deviations
 
