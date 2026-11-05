@@ -8349,11 +8349,66 @@ struct_comp: {for i in [1] {'k': i}}
     assert_eq!(json["list_comp_multiline"][0]["k"], 1);
     assert_eq!(json["struct_comp"]["k"], 1);
 
-    // Documented limit: non-UTF-8 label bytes decode lossily to U+FFFD.
-    let lossy = "package demo\nx: {'\\xff': 1}\ny: x[\"�\"]\n";
-    let file = ostinato_lang::parse(lossy).expect("parse lossy label identity");
-    let value = ostinato_lang::eval_file(&file).expect("eval lossy label identity");
-    assert_eq!(value.to_json().expect("json")["y"], 1);
+    // Raw bytes labels keep their own identity. JSON export renders them as
+    // U+FFFD, but a valid U+FFFD string label is a different field.
+    let raw = "package demo\nx: {'\\xff': 1}\n";
+    let file = ostinato_lang::parse(raw).expect("parse raw label");
+    let value = ostinato_lang::eval_file(&file).expect("eval raw label");
+    assert_eq!(value.to_json().expect("json")["x"]["�"], 1);
+
+    let control = "package demo\nx: {'\\a': 1}\n";
+    let file = ostinato_lang::parse(control).expect("parse control label");
+    let value = ostinato_lang::eval_file(&file).expect("eval control label");
+    assert_eq!(value.to_json().expect("json")["x"]["\u{7}"], 1);
+
+    let mixed = "package demo\nx: {'\\xff': 1, '\\x07ff': 2}\n";
+    let file = ostinato_lang::parse(mixed).expect("parse mixed labels");
+    let value = ostinato_lang::eval_file(&file).expect("eval mixed labels");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["x"]["�"], 1);
+    assert_eq!(json["x"]["\u{7}ff"], 2);
+
+    let escaped_prefix = "package demo\nx: {\"\\u0007ff\": 1}\n";
+    let file = ostinato_lang::parse(escaped_prefix).expect("parse escaped-prefix label");
+    let value = ostinato_lang::eval_file(&file).expect("eval escaped-prefix label");
+    assert_eq!(value.to_json().expect("json")["x"]["\u{7}ff"], 1);
+
+    let unselectable = "package demo\nx: {'\\xff': 1}\ny: x[\"�\"]\n";
+    let file = ostinato_lang::parse(unselectable).expect("parse raw selection");
+    assert!(
+        ostinato_lang::eval_file(&file).is_err(),
+        "raw bytes labels are not selectable by their rendered character"
+    );
+
+    let distinct = "package demo\nx: {'\\xff': 1, \"�\": 2}\n";
+    let file = ostinato_lang::parse(distinct).expect("parse distinct labels");
+    let value = ostinato_lang::eval_file(&file).expect("eval distinct labels");
+    assert!(
+        value.to_json().is_none(),
+        "two distinct labels that render as U+FFFD cannot be exported losslessly"
+    );
+
+    let control_selection =
+        "package demo\nx: {\"\\u0007ff\": 1}\nsel: x.\"\\u0007ff\"\nkeys: [for k, v in x {k}]\n";
+    let file = ostinato_lang::parse(control_selection).expect("parse control selection");
+    let control_value = ostinato_lang::eval_file(&file).expect("eval control selection");
+    let json = control_value.to_json().expect("json");
+    assert_eq!(json["sel"], 1);
+    assert_eq!(json["keys"][0], "\u{7}ff");
+
+    let bell_selection =
+        "package demo\nx: {'\\a': 1}\nsel: x[\"\\a\"]\nkeys: [for k, v in x {k}]\n";
+    let file = ostinato_lang::parse(bell_selection).expect("parse bell selection");
+    let value = ostinato_lang::eval_file(&file).expect("eval bell selection");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["sel"], 1);
+    assert_eq!(json["keys"][0], "\u{7}");
+    assert_eq!(
+        ostinato_lang::select_path(&control_value, "x.\"\\u0007ff\"")
+            .expect("select_path control")
+            .to_json(),
+        Some(serde_json::json!(1))
+    );
 
     let selection = r#"
 package demo
@@ -8791,4 +8846,36 @@ fn numeric_unification_uses_value_equality_but_keeps_int_float_types() {
     }
     assert!(unify("1", "1.0").is_err());
     assert!(unify("1", "2").is_err());
+}
+
+#[test]
+fn hyperbolic_boundary_values_remain_finite_without_the_oracle() {
+    let source = r#"
+package demo
+import "math"
+a: math.Sinh(709.7)
+b: math.Cosh(709.437)
+c: math.Sinh(-709.78)
+d: math.Cosh(709.78)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "math".to_owned(),
+        ostinato_lang::builtin_module("math").expect("math builtin"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    for field in ["a", "b", "c", "d"] {
+        assert!(
+            json[field].as_f64().is_some_and(f64::is_finite),
+            "{field} should be finite: {}",
+            json[field]
+        );
+    }
+    assert_eq!(json["a"].as_f64(), Some(8.274920138401322e307));
+    assert_eq!(json["b"].as_f64(), Some(6.361277807292747e307));
+    assert_eq!(json["c"].as_f64(), Some(-8.964113971972578e307));
+    assert_eq!(json["d"].as_f64(), Some(8.964113971972578e307));
 }

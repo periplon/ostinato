@@ -15,6 +15,7 @@ glob = { workspace = true }
 thiserror = { workspace = true }
 bigdecimal = "0.4.11"
 num-bigint = { workspace = true }
+ryu = { workspace = true }
 stacker = { workspace = true }
 unicode-general-category = { workspace = true }
 

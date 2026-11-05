@@ -1093,6 +1093,7 @@ dependencies = [
  "num-bigint",
  "ostinato-domain",
  "regex",
+ "ryu",
  "serde_json",
  "stacker",
  "thiserror",

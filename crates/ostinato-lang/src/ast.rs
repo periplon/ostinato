@@ -42,6 +42,71 @@ pub enum UnOp {
     Not,
 }
 
+/// Prefix used internally to preserve non-UTF-8 bytes field labels. CUE keeps
+/// the raw label bytes, so `{'\xff': 1}` and `{"\uFFFD": 1}` are distinct
+/// fields even though both render as U+FFFD in JSON.
+pub const RAW_LABEL_PREFIX: char = '\u{7}';
+
+fn encode_raw_label(bytes: &[u8]) -> String {
+    let mut out = String::from(RAW_LABEL_PREFIX);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Encode a string label. Labels that already start with the internal prefix
+/// are escaped in the same `prefix + hex(bytes)` form so the encoding stays
+/// injective (a valid `"\u0007ff"` label must not be mistaken for a raw-byte
+/// sentinel).
+#[must_use]
+pub fn encode_string_label(text: &str) -> String {
+    if text.starts_with(RAW_LABEL_PREFIX) {
+        encode_raw_label(text.as_bytes())
+    } else {
+        text.to_owned()
+    }
+}
+
+/// Encode a bytes field label, preserving raw bytes when they are not valid
+/// UTF-8.
+#[must_use]
+pub fn encode_bytes_label(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => encode_string_label(text),
+        Err(_) => encode_raw_label(bytes),
+    }
+}
+
+/// Decode an internal raw-bytes label for JSON/YAML export. Non-UTF-8 bytes
+/// become U+FFFD, matching CUE's JSON export.
+#[must_use]
+pub fn decode_label_for_output(name: &str) -> String {
+    let Some(encoded) = name.strip_prefix(RAW_LABEL_PREFIX) else {
+        return name.to_owned();
+    };
+    let mut bytes = Vec::with_capacity(encoded.len() / 2);
+    let mut index = 0;
+    while index + 1 < encoded.len() {
+        if let Ok(byte) = u8::from_str_radix(&encoded[index..index + 2], 16) {
+            bytes.push(byte);
+        }
+        index += 2;
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+    #[test]
+    fn encode_decode_control_prefix() {
+        let text = "\u{7}ff";
+        let encoded = encode_string_label(text);
+        assert_eq!(decode_label_for_output(&encoded), text);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Label {
     Name(String, Span),

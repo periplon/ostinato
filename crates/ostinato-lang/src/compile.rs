@@ -806,7 +806,12 @@ fn extract_retry(value: Option<&Value>, path: &str) -> Result<RetryPolicy, LangE
             ..RetryPolicy::default()
         });
     }
-    if let Value::BigInt(max_retries) = value.concretize() {
+    let retries = match value.concretize() {
+        Value::BigInt(value) => Some(value.clone()),
+        Value::DecimalInt(value) => Some(value.with_scale(0).as_bigint_and_exponent().0),
+        _ => None,
+    };
+    if let Some(max_retries) = retries {
         let max_retries = u32::try_from(max_retries)
             .map_err(|_| LangError::Workflow(format!("{path} must be non-negative and <= 100")))?;
         if max_retries > 100 {
@@ -1442,6 +1447,11 @@ fn opt_int_value(value: &Value, path: &str) -> Result<i64, LangError> {
         Value::Int(value) => Ok(*value),
         Value::BigInt(value) => i64::try_from(value)
             .map_err(|_| LangError::Workflow(format!("{path} must fit in an int"))),
+        Value::DecimalInt(value) => {
+            let integer = value.with_scale(0).as_bigint_and_exponent().0;
+            i64::try_from(&integer)
+                .map_err(|_| LangError::Workflow(format!("{path} must fit in an int")))
+        }
         other => Err(LangError::Workflow(format!(
             "{path} must be an int, found {}",
             other.type_name()
@@ -1589,6 +1599,7 @@ fn dummy_value(value: &Value) -> Json {
         Value::Bool(_) => Json::Bool(false),
         Value::Int(_)
         | Value::BigInt(_)
+        | Value::DecimalInt(_)
         | Value::Float(_)
         | Value::Type(TypeKind::Int | TypeKind::Float | TypeKind::Number) => {
             Json::Number(serde_json::Number::from(0))
@@ -1861,6 +1872,12 @@ fn opt_int(map: &Struct, key: &str, path: &str) -> Result<Option<i64>, LangError
         Some(Value::BigInt(value)) => i64::try_from(value)
             .map(Some)
             .map_err(|_| LangError::Workflow(format!("{path} must fit in an int"))),
+        Some(Value::DecimalInt(value)) => {
+            let integer = value.with_scale(0).as_bigint_and_exponent().0;
+            i64::try_from(&integer)
+                .map(Some)
+                .map_err(|_| LangError::Workflow(format!("{path} must fit in an int")))
+        }
         Some(other) => Err(LangError::Workflow(format!(
             "{path} must be an int, found {}",
             other.type_name()
@@ -1868,14 +1885,17 @@ fn opt_int(map: &Struct, key: &str, path: &str) -> Result<Option<i64>, LangError
     }
 }
 
+fn numeric_string_as_f64(value: &bigdecimal::BigDecimal, path: &str) -> Result<f64, LangError> {
+    crate::numeric::cue_decimal_string(value)
+        .parse::<f64>()
+        .map_err(|_| LangError::Workflow(format!("{path} must be a finite number")))
+}
+
 fn opt_float(map: &Struct, key: &str, path: &str) -> Result<Option<f64>, LangError> {
     match map.get(key).map(Value::concretize) {
         None => Ok(None),
-        Some(Value::Float(value)) => {
-            Ok(Some(value.to_string().parse::<f64>().map_err(|_| {
-                LangError::Workflow(format!("{path} must be a finite number"))
-            })?))
-        }
+        Some(Value::Float(value)) => Ok(Some(numeric_string_as_f64(value, path)?)),
+        Some(Value::DecimalInt(value)) => Ok(Some(numeric_string_as_f64(value, path)?)),
         Some(Value::Int(value)) => Ok(Some(*value as f64)),
         Some(Value::BigInt(value)) => {
             Ok(Some(value.to_string().parse::<f64>().map_err(|_| {

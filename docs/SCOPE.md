@@ -23,7 +23,11 @@ workflow outside the Rust surface has a supported escape hatch.
   nested closedness, `[string]` / `[=~"regex"]` patterns, field aliases
   (`X=field: value`), unification,
   defaults, disjunctions with defaults and narrowing, numeric bounds
-  (`>=`, `>`, `<=`, `<`, `!=`, `=~`, `!~`), exact decimal arithmetic,
+  (`>=`, `>`, `<=`, `<`, `!=`, `=~`, `!~`), CUE-compatible decimal
+  arithmetic (exact literals, 34-significant-digit half-up rounding for
+  results, a 34-digit division expansion, apd exponent limits and
+  apd-compatible JSON formatting; see the residual rows for the few
+  representation-only differences),
   optional fields, type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - recursive definition materialization through optional fields and lists
@@ -38,8 +42,10 @@ workflow outside the Rust surface has a supported escape hatch.
 - comprehension-generated definitions (`#D: {if true {#I: 3}, a: #D.#I}`);
 - default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`);
 - optional/open metadata on non-definition struct literals (`base: {b?: int}; #D: base`, `{c: 1, ...}`), including nested/pattern/list forms;
-- arbitrary-precision integer literals and exact integer arithmetic
-  (add/subtract/multiply, comparison, typing, bounds and JSON export);
+- arbitrary-precision integer *literals* and arithmetic in CUE's
+  34-significant-digit decimal context (add/subtract/multiply round results
+  beyond 34 digits; comparison, typing, bounds and JSON export match CUE,
+  including exponent-form results such as `1.000…E+34`);
 - required fields that depend on optional fields materialized by unification
   (`#P: {name?: string, greeting: "Hello \\(name)"}`; `#P & {name: "Alice"}`),
   including compound optional structs, lists, list-of-lists and definitions,
@@ -48,8 +54,14 @@ workflow outside the Rust surface has a supported escape hatch.
   parameters;
 - `strings`, `list`, `regexp`, `math` and `time` builtins (including the full
   Go layout language, `FormatString`, `Split`, `ToUnix`/`ToUnixNano`,
-  `FormatDuration` and time constants), bytes literals (single-line, multiline
-  and interpolated) and global `len`;
+  `FormatDuration` and time constants). The exposed `math` functions
+  (`Abs`, rounding, `Pow`/`Exp`/`Exp2`/`Log`/`Log10`/`Log2`/`Cbrt`/`Sqrt`,
+  circular/hyperbolic functions, `Atan2`, `Mod`, `Remainder`) are matched
+  against the oracle for the tested surface; bytes literals (single-line,
+  multiline and interpolated), raw-byte bytes field labels (non-UTF-8 labels
+  keep their own identity, valid labels beginning with the internal escape
+  byte stay distinct, and raw labels are not selectable by their rendered
+  U+FFFD character) and global `len`;
 - constraint-based parameter overrides for split/definition-backed params and
   dependent params;
 - CUE build exclusions (`_test.cue`, `_tool.cue`, hidden/underscore files) for workflow loading;
@@ -105,13 +117,13 @@ workflow outside the Rust surface has a supported escape hatch.
 
 | Feature | Why |
 |---|---|
-| Non-UTF-8 bytes-label identity | Bytes labels decode lossily to U+FFFD, so `{'\xff': 1}` shares identity with `"\uFFFD"` and selection differs from CUE, which preserves the raw label bytes (its own JSON export also emits duplicate keys) |
 | Full disjunction lattice over patterns | Alternatives, defaults, bounds, narrowing and disjunction intersection are implemented; richer pattern intersections are not |
 | Default sets over patterns | Ambiguous multiple defaults are incomplete, as in CUE; selecting defaults through pattern interactions is out of scope |
-| `math` transcendental precision | `Pow`/`Exp`/`Log` and other transcendental helpers use native floating-point conversion where CUE uses its 34-digit decimal context; JSON export matches, but string interpolation can show fewer digits |
-| Decimal division digit count | Division uses `BigDecimal` precision, which can differ from CUE's 34-digit decimal expansion |
-| Integer arithmetic beyond 34 significant digits | CUE rounds arithmetic results to its 34-digit decimal context; Ostinato keeps exact `BigInt` results. Literals, comparisons and <=34-digit arithmetic match |
-| JSON export of high-precision decimals | Arithmetic is arbitrary precision, but `to_json` rounds non-integral values through f64; string interpolation and comparisons use the exact value |
+| Lossy JSON export of colliding raw-bytes labels | Raw non-UTF-8 labels keep their own identity and are not selectable by their rendered U+FFFD character, matching CUE. CUE's JSON export can emit duplicate keys for distinct raw labels that both render as U+FFFD; Ostinato's map representation cannot, so exporting a struct with such a collision is rejected instead of silently dropping a field |
+| Arithmetic negative zero | `BigDecimal` has no signed zero. Literal `-0`/`-0.0` canonicalizes like CUE, but an arithmetic result such as `0.0 * -1` is exported as `0.0` instead of `-0.0` |
+| `%` operator | CUE has no `%` operator (so there is no oracle for it); Ostinato keeps exact integer modulo as an extension. Use `math.Mod`/`math.Remainder` for CUE-compatible modulo/remainder |
+| Go float64 last-bit parity | The exposed float64-backed `math` functions match Go's routines for the conformance/tested surface. Rare `math.Asinh`, `math.Acosh` or `math.Atanh` inputs can still differ by 1 ulp from the oracle (for example `math.Atanh(-0.1731958024477226)`, `math.Acosh(204534.80525878677)`). `Asin`, `Acos` and `Atan2` are covered by the oracle fuzz and match |
+| Numeric unification lexical form | Numerically equal decimals keep the first operand's scale in some unifications (`(1.0 + 0) & 1.00` exports `1.0`; CUE exports `1.00`). Values compare equal; only the chosen representation differs |
 | Narrowing a defaulted constraint through a definition-valued definition | `#B: #A & {n: 4}` conflicts; narrowing inline/unified values and #A & {n: 4} directly recompute dependent fields |
 | Narrowing defaulted fields inside recursive definitions | `#Node: {n: *1|int, total: n+1, children?: [...#Node]}` does not recompute dependents when `n` is narrowed; recursive defaults themselves are preserved |
 | Default narrowing with a shadowing nested same-name definition | `#A: {n:*1|int, y:n+1, inner:{#A:5, v:#A}}` does not recompute `y` when `n` is narrowed; rename the nested definition or use the oracle |

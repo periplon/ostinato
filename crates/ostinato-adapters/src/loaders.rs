@@ -7877,6 +7877,10 @@ fn output_expr(value: &Value) -> Option<Expr> {
         Value::Bool(value) => Some(Expr::Bool(*value, Span::default())),
         Value::Int(value) => Some(Expr::Int(*value, Span::default())),
         Value::BigInt(value) => Some(Expr::BigInt(value.clone(), Span::default())),
+        Value::DecimalInt(value) => Some(Expr::BigInt(
+            value.with_scale(0).as_bigint_and_exponent().0,
+            Span::default(),
+        )),
         Value::Float(value) => Some(Expr::Float(value.clone(), Span::default())),
         Value::Bytes(value) => Some(Expr::Bytes(value.clone(), Span::default())),
         Value::Null => Some(Expr::Null(Span::default())),
@@ -10480,7 +10484,10 @@ fn env_value_kinds(value: &Value) -> u8 {
     match value {
         Value::Type(ostinato_lang::TypeKind::String) | Value::String(_) => ENV_STRING,
         Value::Type(ostinato_lang::TypeKind::Bool) | Value::Bool(_) => ENV_BOOL,
-        Value::Type(ostinato_lang::TypeKind::Int) | Value::Int(_) | Value::BigInt(_) => ENV_INT,
+        Value::Type(ostinato_lang::TypeKind::Int)
+        | Value::Int(_)
+        | Value::BigInt(_)
+        | Value::DecimalInt(_) => ENV_INT,
         Value::Type(ostinato_lang::TypeKind::Float) | Value::Float(_) => ENV_FLOAT,
         Value::Type(ostinato_lang::TypeKind::Number) => ENV_NUMBER,
         Value::Bounds(bounds) => {
@@ -10501,7 +10508,9 @@ fn env_value_kinds(value: &Value) -> u8 {
                 let operand = match &bound.operand {
                     Value::String(_) => ENV_STRING,
                     Value::Bool(_) => ENV_BOOL,
-                    Value::Int(_) | Value::BigInt(_) | Value::Float(_) => ENV_NUMBER,
+                    Value::Int(_) | Value::BigInt(_) | Value::DecimalInt(_) | Value::Float(_) => {
+                        ENV_NUMBER
+                    }
                     Value::Null => ENV_STRING | ENV_BOOL | ENV_NUMBER,
                     other => env_value_kinds(other),
                 };
