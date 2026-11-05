@@ -3312,6 +3312,11 @@ impl<'a> Frame<'a> {
         if name == "params" {
             return Ok(None);
         }
+        if name.starts_with('#') && segments.len() == 1 {
+            // Direct definition self-selection keeps the definition-local
+            // materialization rules; nested paths still use the resolver.
+            return Ok(None);
+        }
         let mut cursor = Some(self);
         while let Some(current) = cursor {
             if let Some(key) = current.any_field_key(&name) {
@@ -3322,6 +3327,7 @@ impl<'a> Frame<'a> {
                     // to the field value being evaluated, which the outer
                     // declaration projection does not see.
                     if frame_depth(self, current) == Some(segments.len())
+                        && self.frame_belongs_to_root(&name)
                         && let Some(value) = self.resolve_local_selector(&name, &segments, span)?
                     {
                         return Ok(Some(value));
@@ -3335,6 +3341,56 @@ impl<'a> Frame<'a> {
             cursor = current.parent;
         }
         Ok(None)
+    }
+
+    fn frame_belongs_to_root(&self, name: &str) -> bool {
+        let mut cursor = Some(self);
+        while let Some(current) = cursor {
+            if current.definition_context.borrow().as_deref() == Some(name) {
+                return true;
+            }
+            cursor = current.parent;
+        }
+        false
+    }
+
+    fn seed_narrowing_fields(&self, fields: &BTreeMap<String, Value>) {
+        for (name, value) in fields {
+            let Some(key) = self.any_field_key(name) else {
+                continue;
+            };
+            let is_definition = self
+                .fields
+                .borrow()
+                .get(&key)
+                .is_some_and(|definition| definition.definition);
+            if is_definition {
+                continue;
+            }
+            self.values.borrow_mut().insert(key.clone(), value.clone());
+            self.materialized.borrow_mut().insert(key.clone());
+            self.injected.borrow_mut().insert(key);
+        }
+    }
+
+    fn local_selector_is_sound(&self, key: &str) -> bool {
+        if self.is_injected_key(key) {
+            return true;
+        }
+        let injected = self.injected.borrow();
+        let fields = self.fields.borrow();
+        let Some(definition) = fields.get(key) else {
+            return false;
+        };
+        definition.exprs.iter().all(|expr| {
+            !contains_default(expr) && {
+                let mut identifiers = Vec::new();
+                collect_identifiers(expr, &mut identifiers);
+                identifiers.iter().all(|name| {
+                    is_type_keyword(name) || name.starts_with('#') || injected.contains(name)
+                })
+            }
+        })
     }
 
     fn resolve_local_selector(
@@ -3379,6 +3435,11 @@ impl<'a> Frame<'a> {
             // Selecting the field currently being evaluated must not read a
             // seeded injection: only the outer transparent-self-selection
             // path may resolve it, and non-transparent uses stay cyclic.
+            return Ok(None);
+        }
+        if !self.local_selector_is_sound(&key) {
+            // The local declaration may still carry its un-narrowed default.
+            // Let the outer path projection merge all operands instead.
             return Ok(None);
         }
         match self.eval_field_key(&key, span) {
@@ -3435,13 +3496,22 @@ impl<'a> Frame<'a> {
             .get(key)
             .map(|definition| definition.exprs.clone())
             .unwrap_or_default();
+        let mut injections = BTreeMap::new();
+        collect_static_narrowing_fields(self, &exprs, &mut injections);
         let mut values = Vec::new();
         let mut poisoned = false;
         let mut soft = None;
         for expr in &exprs {
             let mut visited = BTreeSet::new();
-            let projection =
-                self.project_selector_path(self, name, expr, segments, 0, &mut visited)?;
+            let projection = self.project_selector_path(
+                self,
+                name,
+                expr,
+                segments,
+                0,
+                &injections,
+                &mut visited,
+            )?;
             if projection.hard_cycle {
                 return Err(LangError::eval(
                     span.line,
@@ -3459,6 +3529,13 @@ impl<'a> Frame<'a> {
             values.extend(projection.values);
         }
         if values.is_empty() {
+            if segments.len() == 1
+                && let Some(SelectSegment::Field(field, _)) = segments.last()
+                && let Some(peer) = self.selector_peer(field)
+            {
+                // Split evaluation materializes a required optional peer.
+                return Ok(peer);
+            }
             if let Some(error) = soft {
                 return Err(error);
             }
@@ -3468,6 +3545,11 @@ impl<'a> Frame<'a> {
                 span.col,
                 format!("cyclic reference while evaluating `{name}`"),
             ));
+        }
+        // A concrete operand narrowing a constraint takes precedence over the
+        // constraint's default when selecting a dependent path.
+        if values.iter().any(value_is_plain_concrete) {
+            values.retain(value_is_plain_concrete);
         }
         let mut result = values.remove(0);
         for value in values {
@@ -3481,6 +3563,7 @@ impl<'a> Frame<'a> {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn project_selector_path(
         &self,
         scope: &Frame<'_>,
@@ -3488,6 +3571,7 @@ impl<'a> Frame<'a> {
         expr: &Expr,
         segments: &[SelectSegment],
         index: usize,
+        injections: &BTreeMap<String, Value>,
         visited: &mut BTreeSet<String>,
     ) -> Result<PathProjection, LangError> {
         let expr = strip_expr_parens(expr);
@@ -3515,17 +3599,21 @@ impl<'a> Frame<'a> {
         }
         match expr {
             Expr::Unify(left, right, _) => {
-                let left =
-                    self.project_selector_path(scope, name, left, segments, index, visited)?;
-                let right =
-                    self.project_selector_path(scope, name, right, segments, index, visited)?;
+                let left = self.project_selector_path(
+                    scope, name, left, segments, index, injections, visited,
+                )?;
+                let right = self.project_selector_path(
+                    scope, name, right, segments, index, injections, visited,
+                )?;
                 Ok(merge_non_poisoned(vec![left, right]))
             }
             Expr::Disjunction(left, right, _) => {
-                let left =
-                    self.project_selector_path(scope, name, left, segments, index, visited)?;
-                let right =
-                    self.project_selector_path(scope, name, right, segments, index, visited)?;
+                let left = self.project_selector_path(
+                    scope, name, left, segments, index, injections, visited,
+                )?;
+                let right = self.project_selector_path(
+                    scope, name, right, segments, index, injections, visited,
+                )?;
                 if left.poisoned || right.poisoned {
                     // A cycle inside any branch makes the disjunction itself
                     // cyclic; a non-default alternative must not rescue it.
@@ -3543,6 +3631,8 @@ impl<'a> Frame<'a> {
                     return Ok(PathProjection::default());
                 }
                 let child = Frame::from_static(items, Some(scope), HashMap::new())?;
+                child.seed_narrowing_fields(injections);
+                let next_injections = injection_subfields(injections, &segments[index]);
                 let mut results = Vec::new();
                 for value in matches {
                     results.push(self.project_selector_path(
@@ -3551,6 +3641,7 @@ impl<'a> Frame<'a> {
                         &value,
                         segments,
                         index + 1,
+                        &next_injections,
                         visited,
                     )?);
                 }
@@ -3565,7 +3656,7 @@ impl<'a> Frame<'a> {
                             return Ok(PathProjection::default());
                         }
                         let result = self.project_selector_path(
-                            current, name, &let_expr, segments, index, visited,
+                            current, name, &let_expr, segments, index, injections, visited,
                         );
                         visited.remove(&token);
                         return result;
@@ -3588,6 +3679,7 @@ impl<'a> Frame<'a> {
                                 &field_expr,
                                 segments,
                                 index,
+                                injections,
                                 visited,
                             )?);
                         }
@@ -3596,13 +3688,19 @@ impl<'a> Frame<'a> {
                     }
                     cursor = current.parent;
                 }
-                self.project_selector_value(scope, name, expr, segments, index)
+                self.project_selector_value(scope, name, expr, segments, index, injections)
             }
             Expr::List(items, _) => match segments[index] {
                 SelectSegment::Index(position) => match items.get(position) {
-                    Some(item) => {
-                        self.project_selector_path(scope, name, item, segments, index + 1, visited)
-                    }
+                    Some(item) => self.project_selector_path(
+                        scope,
+                        name,
+                        item,
+                        segments,
+                        index + 1,
+                        injections,
+                        visited,
+                    ),
                     None => Ok(PathProjection::default()),
                 },
                 SelectSegment::Field(_, _) => Ok(PathProjection::default()),
@@ -3610,16 +3708,32 @@ impl<'a> Frame<'a> {
             Expr::OpenListPrefix(items, tail, _) => match segments[index] {
                 SelectSegment::Index(position) => {
                     if let Some(item) = items.get(position) {
-                        self.project_selector_path(scope, name, item, segments, index + 1, visited)
+                        self.project_selector_path(
+                            scope,
+                            name,
+                            item,
+                            segments,
+                            index + 1,
+                            injections,
+                            visited,
+                        )
                     } else if let Some(tail) = tail {
-                        self.project_selector_path(scope, name, tail, segments, index + 1, visited)
+                        self.project_selector_path(
+                            scope,
+                            name,
+                            tail,
+                            segments,
+                            index + 1,
+                            injections,
+                            visited,
+                        )
                     } else {
                         Ok(PathProjection::default())
                     }
                 }
                 SelectSegment::Field(_, _) => Ok(PathProjection::default()),
             },
-            _ => self.project_selector_value(scope, name, expr, segments, index),
+            _ => self.project_selector_value(scope, name, expr, segments, index, injections),
         }
     }
 
@@ -3630,6 +3744,7 @@ impl<'a> Frame<'a> {
         expr: &Expr,
         segments: &[SelectSegment],
         index: usize,
+        _injections: &BTreeMap<String, Value>,
     ) -> Result<PathProjection, LangError> {
         let mut value = match eval_expr(expr, scope) {
             Ok(value) => value,
@@ -4520,12 +4635,18 @@ fn eval_split_field(
     let mut remaining = Vec::new();
     let mut deferred = Vec::new();
     let mut injection_fields = BTreeMap::new();
+    collect_static_narrowing_fields(frame, exprs, &mut injection_fields);
     for (index, part) in parts.iter().enumerate() {
         if expr_selects_key(part, name, frame) {
             remaining.push(index);
             continue;
         }
-        match eval_expr(part, frame) {
+        let result = if injection_fields.is_empty() {
+            eval_expr(part, frame)
+        } else {
+            eval_declaration_part(frame, part, &Value::Struct(injection_fields.clone()), span)
+        };
+        match result {
             Ok(value) => {
                 add_selector_peers(&mut peers, &value, &required, span)?;
                 if let Some(fields) = concrete_fields(&value) {
@@ -5025,6 +5146,149 @@ fn try_disjunction_narrowing(
         return Ok(Some(candidates.remove(0)));
     }
     Ok(Some(Value::Disjunction(candidates, defaults)))
+}
+
+/// Static, identifier-free field values from a field's unification operands.
+/// These are the narrowing sources that must be visible while projecting a
+/// selector path, independently of operand evaluation order.
+fn collect_static_narrowing_fields(
+    frame: &Frame<'_>,
+    exprs: &[Expr],
+    out: &mut BTreeMap<String, Value>,
+) {
+    fn merge(out: &mut BTreeMap<String, Value>, name: &str, value: Value) {
+        if let Some(existing) = out.get(name).cloned() {
+            out.insert(
+                name.to_owned(),
+                unify_values(&existing, &value, Span::default()).unwrap_or(value),
+            );
+        } else {
+            out.insert(name.to_owned(), value);
+        }
+    }
+    fn static_value(
+        frame: &Frame<'_>,
+        expr: &Expr,
+        visited: &mut BTreeSet<String>,
+    ) -> Option<Value> {
+        match strip_expr_parens(expr) {
+            Expr::Struct(items, _) => {
+                let mut fields = BTreeMap::new();
+                for item in items {
+                    let StructItem::Field(field) = item else {
+                        continue;
+                    };
+                    if field.optional {
+                        continue;
+                    }
+                    let crate::ast::Label::Name(name, _) = &field.label else {
+                        continue;
+                    };
+                    if let Some(value) = static_value(frame, &field.value, visited) {
+                        merge(&mut fields, name, value);
+                    }
+                }
+                (!fields.is_empty()).then_some(Value::Struct(fields))
+            }
+            Expr::Ident(name, _) => {
+                if is_type_keyword(name) {
+                    return None;
+                }
+                let resolved = frame.resolve_transparent_let(name);
+                if !visited.insert(resolved.clone()) {
+                    return None;
+                }
+                let mut result = None;
+                let mut cursor = Some(frame);
+                while let Some(current) = cursor {
+                    if let Some(let_expr) = current.lets.borrow().get(&resolved).cloned() {
+                        result = static_value(current, &let_expr, visited);
+                        break;
+                    }
+                    if let Some(key) = current.any_field_key(&resolved) {
+                        let exprs = current
+                            .fields
+                            .borrow()
+                            .get(&key)
+                            .map(|definition| definition.exprs.clone())
+                            .unwrap_or_default();
+                        let mut value = None;
+                        for expr in exprs {
+                            if let Some(next) = static_value(current, &expr, visited) {
+                                value = Some(match value {
+                                    Some(existing) => {
+                                        unify_values(&existing, &next, Span::default())
+                                            .unwrap_or(next)
+                                    }
+                                    None => next,
+                                });
+                            }
+                        }
+                        result = value;
+                        break;
+                    }
+                    cursor = current.parent;
+                }
+                visited.remove(&resolved);
+                result
+            }
+            _ => {
+                if contains_default(expr) {
+                    return None;
+                }
+                let mut identifiers = Vec::new();
+                collect_identifiers(expr, &mut identifiers);
+                if identifiers.iter().any(|name| !is_type_keyword(name)) {
+                    return None;
+                }
+                let value = eval_expr(expr, frame).ok()?;
+                value_is_plain_concrete(&value).then_some(value)
+            }
+        }
+    }
+    fn collect(frame: &Frame<'_>, expr: &Expr, out: &mut BTreeMap<String, Value>) {
+        match strip_expr_parens(expr) {
+            Expr::Unify(left, right, _) => {
+                collect(frame, left, out);
+                collect(frame, right, out);
+            }
+            Expr::Struct(items, _) => {
+                for item in items {
+                    let StructItem::Field(field) = item else {
+                        continue;
+                    };
+                    if field.optional {
+                        continue;
+                    }
+                    let crate::ast::Label::Name(name, _) = &field.label else {
+                        continue;
+                    };
+                    let Some(value) = static_value(frame, &field.value, &mut BTreeSet::new())
+                    else {
+                        continue;
+                    };
+                    merge(out, name, value);
+                }
+            }
+            _ => {}
+        }
+    }
+    for expr in exprs {
+        collect(frame, expr, out);
+    }
+}
+
+fn injection_subfields(
+    injections: &BTreeMap<String, Value>,
+    segment: &SelectSegment,
+) -> BTreeMap<String, Value> {
+    let SelectSegment::Field(name, _) = segment else {
+        return BTreeMap::new();
+    };
+    injections
+        .get(name)
+        .and_then(concrete_fields)
+        .unwrap_or_default()
 }
 
 /// Concrete fields (including concrete optional fields) used to narrow a
@@ -6820,10 +7084,10 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
         }
         Expr::Ident(name, span) => frame.lookup(name, *span),
         Expr::Select(base, field, quoted, span) => {
-            if let Some(value) = self_definition_select(frame, base, field, *quoted, *span)? {
+            if let Some(value) = frame.self_field_path_value(expr, *span)? {
                 return Ok(value);
             }
-            if let Some(value) = frame.self_field_path_value(expr, *span)? {
+            if let Some(value) = self_definition_select(frame, base, field, *quoted, *span)? {
                 return Ok(value);
             }
             if let Some(path) = params_select_path(expr, frame)
@@ -6969,6 +7233,9 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             apply_builtin(&callee, &values, *span)
         }
         Expr::Index(base, index, span) => {
+            if let Some(value) = frame.self_field_path_value(expr, *span)? {
+                return Ok(value);
+            }
             if let Expr::Str(parts, _) = &**index {
                 let mut key = String::new();
                 let mut literal = true;
@@ -6991,9 +7258,6 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
                 && let Ok(Value::String(key)) = eval_expr(index, frame)
                 && let Some(value) = self_definition_select(frame, base, &key, true, *span)?
             {
-                return Ok(value);
-            }
-            if let Some(value) = frame.self_field_path_value(expr, *span)? {
                 return Ok(value);
             }
             if frame.params_context.borrow().is_some()

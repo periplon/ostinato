@@ -19,9 +19,11 @@ workflow outside the Rust surface has a supported escape hatch.
   rejected, while cycles routed through plain fields (`let X = f, f: X`, and
   mutual let→field→let chains such as `let X = f`, `let Y = g`, `f`/`g`
   selecting each other) remain incomplete values or resolve field by field
-  like CUE. Split/composed fields and transparent let aliases (for example
-  `let X = f; f: {a: X.b} & {b: 1}`) resolve like CUE; composite/structural
-  cycles remain errors as in CUE;
+  when the cycle reaches a concrete field. Split/composed fields and
+  transparent let aliases (for example
+  `let X = f; f: {a: X.b} & {b: 1}`) resolve like CUE; structural
+  cross-field cycles fail closed (see the residuals table); composite/
+  structural cycles remain errors as in CUE;
 - `for`/`if` struct comprehensions, clause sequences (`for ... if ...`,
   nested `for`), dynamic labels, list comprehensions;
 - nested field shorthand, string and bytes literal field labels, **closed
@@ -56,7 +58,11 @@ workflow outside the Rust surface has a supported escape hatch.
   nested comprehension body
   (`#M: {b?: int, if true {b: 5, y: #M.b}}`); comprehension-generated
   labels remain reachable through selectors (`x.b`) but are not bare
-  identifiers, matching CUE (`x: {if true {b: 1}, a: b}` is rejected);
+  identifiers, matching CUE (`x: {if true {b: 1}, a: b}` is rejected).
+  Self-selection combined with disjunction/default narrowing recomputes
+  dependents from statically injectable narrowed operands; when that value
+  cannot be captured before path projection, evaluation fails closed rather
+  than emitting the un-narrowed default (see the residuals table);
 - comprehension-generated definitions (`#D: {if true {#I: 3}, a: #D.#I}`);
 - default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`), including through definition-valued definitions (`#B: #A & {n: 4}`), recursive definitions (dependents recomputed at every level, including optional/open-list recursive children and required defaulted open lists), disjunction alternatives (`({a: *1|int, b: a} | {a: string}) & {a: 3}` recomputes `b: 3`, including nested/list dependents, either alternative order, let/definition-valued alternatives and concrete optional values) and shadowing nested same-name definitions, plus generated declaration merges (`if true {#P: {env: "prod"}}` recomputes `#P.greeting`);
 - optional/open metadata on non-definition struct literals (`base: {b?: int}; #D: base`, `{c: 1, ...}`), including nested/pattern/list forms;
@@ -142,7 +148,9 @@ workflow outside the Rust surface has a supported escape hatch.
 | `%` operator | CUE has no `%` operator (so there is no oracle for it); Ostinato keeps exact integer modulo as an extension. Use `math.Mod`/`math.Remainder` for CUE-compatible modulo/remainder |
 | Go float64 last-bit parity | The exposed float64-backed `math` functions match Go's routines for the conformance/tested surface. Rare `math.Asinh`, `math.Acosh` or `math.Atanh` inputs can still differ by 1 ulp from the oracle (for example `math.Atanh(-0.1731958024477226)`, `math.Acosh(204534.80525878677)`). `Asin`, `Acos` and `Atan2` are covered by the oracle fuzz and match |
 | Numeric unification lexical form | Numerically equal decimals keep the first operand's scale in some unifications (`(1.0 + 0) & 1.00` exports `1.0`; CUE exports `1.00`). Values compare equal; only the chosen representation differs |
-| Bare identifiers across operands of a composed definition | `#D: {a: 1} & {b: a}` is accepted although CUE rejects the bare reference to a sibling operand's field; with an enclosing `a: 9`, `b` resolves to `1` instead of CUE's `9`. Non-definition composition and definition-valued narrowing match CUE; self-selection combined with disjunction/default narrowing is covered by the in-scope bullets and its own regression tests |
+| Bare identifiers across operands of a composed definition | `#D: {a: 1} & {b: a}` is accepted although CUE rejects the bare reference to a sibling operand's field; with an enclosing `a: 9`, `b` resolves to `1` instead of CUE's `9`. Non-definition composition and definition-valued narrowing match CUE; self-selection/narrowing is covered by the in-scope bullets for statically injectable operands, with the fail-closed cases in the two rows below |
+| Self-selection narrowing with non-static operands | When a narrowed value cannot be captured before selector-path projection (for example a let/alias chain that is not statically evaluable), Ostinato rejects the evaluation instead of emitting the operands' un-narrowed default. CUE may resolve the same program; no silent value is produced |
+| Cross-field mutual selection cycles | `x: {a: y.b, b: 1}; y: {b: x.a}` and the equivalent two-let form are rejected by Ostinato, while CUE reports an incomplete value. The same cycles that reach a concrete field (`g: {b: X.b}`) resolve like CUE; three-field cycles also fail closed |
 | Pending-output expressions in conditions and non-scalar interpolation | CUE rejects `if` conditions before running the producer; for list-valued interpolation CUE runs the producer and rejects during interpolation, while Ostinato rejects before execution. Both exit non-zero, with Ostinato's own diagnostic text. Scalar string/number operations (including string/bytes concatenation and repetition such as `run.stdout * 2` and `r.response.body * 2`), unary operators, comparisons, list indexing/comprehensions, `len`/`strings`/`list.Concat`/`math`/`regexp` helpers and pending values used as task inputs are deferred and match CUE |
 | Command-local alias read without a companion | `command: c: {a: base; t: cli.Print & {text: "\(a.stdout)"}}`: CUE rejects before execution; Ostinato executes `base` and then reports the non-concrete error. Exit codes match, but the producer side effect differs |
 | Cross-target module-hop reads | With `prep: lib.run; p2: prep; p3: p2`: `r: p2` plus `t: cli.Print & {text: "\(p3.stdout)"}` succeeds in CUE (order `PP`) while Ostinato rejects; `r: p3` plus `t: cli.Print & {text: "\(prep.stdout)"}` rejects in CUE after running `P` while Ostinato succeeds with order `PP`. The same shapes with a plain `q: "\(...)"` read agree (`0/PP` on both). Same-target hops and direct alias chains are covered |

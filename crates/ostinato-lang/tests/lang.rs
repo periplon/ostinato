@@ -8678,6 +8678,45 @@ nested: {o: {a: *1 | int, b: a, c: nested.o.b}} & {o: {a: 6}}
 }
 
 #[test]
+fn narrowed_selector_chains_and_cross_operand_projection_match_cue() {
+    let source = r#"
+package demo
+c1: {a: c1.b, b: c1.c, c: *1 | int} & {c: 3}
+c2: {a: c2.b, b: c2.c, c: int} & {c: 3}
+c3: {o: {a: *1 | int, b: a}} & {o: {a: 5}, c: c3.o.b}
+c4: {a: *1 | int, b: a} & {a: 5, c: c4.b}
+let V = 3
+c5: {a: *1 | int, c: *1 | int, z: c5.c} & {a: 5, c: V}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse narrowed selector chain");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval narrowed selector chain")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["c1"], serde_json::json!({"a": 3, "b": 3, "c": 3}));
+    assert_eq!(json["c2"], serde_json::json!({"a": 3, "b": 3, "c": 3}));
+    assert_eq!(json["c3"]["o"], serde_json::json!({"a": 5, "b": 5}));
+    assert_eq!(json["c3"]["c"], 5);
+    assert_eq!(json["c4"], serde_json::json!({"a": 5, "b": 5, "c": 5}));
+    assert_eq!(json["c5"], serde_json::json!({"a": 5, "c": 3, "z": 3}));
+}
+
+#[test]
+fn cross_field_mutual_selection_cycles_fail_closed() {
+    for source in [
+        "package demo\nx: {a: y.b, b: 1}\ny: {b: x.a}\n",
+        "package demo\nlet X = f\nlet Y = g\nf: {a: Y.b, b: 1}\ng: {b: X.a}\nx: f\n",
+        "package demo\nx: {a: y.b, b: 1}\ny: {b: z.c, c: 1}\nz: {c: x.a}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse cross-field cycle");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "cross-field selection cycle must fail closed: {source:?}"
+        );
+    }
+}
+
+#[test]
 fn disjunction_alternatives_through_aliases_and_optional_values() {
     let source = r#"
 package demo
