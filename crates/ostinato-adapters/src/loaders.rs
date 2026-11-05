@@ -1809,9 +1809,11 @@ pub fn run_tool_command_paths(
             }
         }
         find_field_expr_at_path(&combined.items, path).is_some_and(|value| {
+            let scoped = scopes_for_path(&combined.items, path);
+            let refs: Vec<&[StructItem]> = scoped.iter().map(|(items, _)| *items).collect();
             is_task_expr(
                 value,
-                &[combined.items.as_slice()],
+                &refs,
                 &combined.items,
                 &mut std::collections::BTreeSet::new(),
                 &non_task_imports,
@@ -1871,6 +1873,39 @@ pub fn run_tool_command_paths(
             _ => true,
         }
     });
+
+    // A command-alias field read (`a.stdout` where `a: p3`) materialises the
+    // concrete task at the end of a longer chain, just like a package read.
+    let mut command_field_reads = std::collections::BTreeSet::new();
+    let mut command_field_read_paths = std::collections::BTreeSet::new();
+    for item in &task_items {
+        if let StructItem::Field(field) = item {
+            collect_command_field_output_reads(
+                &field.value,
+                &mut command_field_reads,
+                &mut command_field_read_paths,
+            );
+        }
+    }
+    for (name, target) in &command_aliases {
+        let Some(local) = &target.local else {
+            continue;
+        };
+        let read_as_target =
+            command_field_reads.contains(name) || command_field_read_paths.contains(local);
+        if !read_as_target {
+            continue;
+        }
+        // Direct aliases keep CUE's declaration-first non-concrete behaviour.
+        if alias_chain_nodes(&combined.items, local).len() <= 2 {
+            continue;
+        }
+        let root = task_read_root(&combined.items, local);
+        if path_is_module_terminal(&combined.items, &imports, &root) {
+            continue;
+        }
+        external_paths.insert(root);
+    }
 
     // A task-input output read materialises the concrete task it reaches
     // through pure alias and `let` hops. CUE runs `\(p5.stdout)` once (at the
@@ -2094,6 +2129,33 @@ pub fn run_tool_command_paths(
             !read_through_definition_module(&combined.items, &imports, node)
         });
         if !carries_read {
+            continue;
+        }
+        for node in nodes {
+            if let Some(leaf) = node.last() {
+                task_name_set.insert(leaf.clone());
+            }
+        }
+    }
+    // Command-alias targets that carry a read keep every hop incomplete until
+    // injection. Direct declaration-first task inputs and definition-to-module
+    // aliases keep CUE's eager non-concrete error.
+    for (name, target) in &command_aliases {
+        let Some(local) = &target.local else {
+            continue;
+        };
+        if path_is_module_terminal(&combined.items, &imports, local) {
+            continue;
+        }
+        let nodes = alias_chain_nodes(&combined.items, local);
+        let package_read = command_field_read_paths.contains(local) && nodes.len() > 2;
+        if declaration_first_targets.contains(local)
+            && !command_field_reads.contains(name)
+            && !package_read
+        {
+            continue;
+        }
+        if read_through_definition_module(&combined.items, &imports, local) {
             continue;
         }
         for node in nodes {
@@ -4612,6 +4674,145 @@ fn root_bare_module_task(items: &[StructItem], name: &str, imports: &ImportKinds
     found && kind == TaskKind::Bare
 }
 
+/// Field names read as `<name>.stdout`/`.stderr`/`.success` anywhere in the
+/// command task tree.
+fn collect_command_field_output_reads(
+    expr: &Expr,
+    out: &mut std::collections::BTreeSet<String>,
+    paths: &mut std::collections::BTreeSet<Vec<String>>,
+) {
+    fn item_reads(
+        item: &StructItem,
+        out: &mut std::collections::BTreeSet<String>,
+        paths: &mut std::collections::BTreeSet<Vec<String>>,
+    ) {
+        match item {
+            StructItem::Field(field) => {
+                collect_command_field_output_reads(&field.value, out, paths)
+            }
+            StructItem::Pattern { value, .. } | StructItem::Let { value, .. } => {
+                collect_command_field_output_reads(value, out, paths);
+            }
+            StructItem::For { source, body, .. } => {
+                collect_command_field_output_reads(source, out, paths);
+                for item in body {
+                    item_reads(item, out, paths);
+                }
+            }
+            StructItem::If { cond, body, .. } => {
+                collect_command_field_output_reads(cond, out, paths);
+                for item in body {
+                    item_reads(item, out, paths);
+                }
+            }
+            StructItem::Ellipsis(_) => {}
+        }
+    }
+    match expr {
+        Expr::Select(base, field, _, _) => {
+            if matches!(field.as_str(), "stdout" | "stderr" | "success") {
+                if let Some(name) = command_field_read_name(base) {
+                    out.insert(name);
+                }
+                if let Some(path) = selector_names(base, None) {
+                    paths.insert(path);
+                }
+            }
+            collect_command_field_output_reads(base, out, paths);
+        }
+        Expr::Index(base, index, _) => {
+            collect_command_field_output_reads(base, out, paths);
+            collect_command_field_output_reads(index, out, paths);
+        }
+        Expr::Call(callee, arguments, _) => {
+            collect_command_field_output_reads(callee, out, paths);
+            for argument in arguments {
+                collect_command_field_output_reads(argument, out, paths);
+            }
+        }
+        Expr::Bound(_, inner, _)
+        | Expr::Paren(inner, _)
+        | Expr::Default(inner, _)
+        | Expr::Unary(_, inner, _) => collect_command_field_output_reads(inner, out, paths),
+        Expr::Struct(items, _) => {
+            for item in items {
+                item_reads(item, out, paths);
+            }
+        }
+        Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+            for item in items {
+                collect_command_field_output_reads(item, out, paths);
+            }
+        }
+        Expr::OpenList(Some(inner), _) => collect_command_field_output_reads(inner, out, paths),
+        Expr::OpenList(None, _) | Expr::Null(_) => {}
+        Expr::ListComp { clauses, body, .. } => {
+            for clause in clauses {
+                match clause {
+                    CompClause::For { source, .. } => {
+                        collect_command_field_output_reads(source, out, paths);
+                    }
+                    CompClause::If { cond, .. } => {
+                        collect_command_field_output_reads(cond, out, paths);
+                    }
+                }
+            }
+            collect_command_field_output_reads(body, out, paths);
+        }
+        Expr::Unify(left, right, _)
+        | Expr::Disjunction(left, right, _)
+        | Expr::Binary(_, left, right, _) => {
+            collect_command_field_output_reads(left, out, paths);
+            collect_command_field_output_reads(right, out, paths);
+        }
+        Expr::Str(parts, _) => {
+            for part in parts {
+                if let StrPart::Interp(inner) = part {
+                    collect_command_field_output_reads(inner, out, paths);
+                }
+            }
+        }
+        Expr::BytesInterp(parts, _) => {
+            for part in parts {
+                if let BytePart::Interp(inner) = part {
+                    collect_command_field_output_reads(inner, out, paths);
+                }
+            }
+        }
+        Expr::Bool(..)
+        | Expr::Int(..)
+        | Expr::BigInt(..)
+        | Expr::Float(..)
+        | Expr::Bytes(..)
+        | Expr::Ident(..) => {}
+    }
+}
+
+fn command_field_read_name(base: &Expr) -> Option<String> {
+    match base {
+        Expr::Ident(name, _) => Some(name.clone()),
+        Expr::Select(..) | Expr::Index(..) => selector_leaf(base),
+        _ => None,
+    }
+}
+
+fn path_is_module_terminal(
+    items: &[StructItem],
+    imports: &BTreeMap<String, Value>,
+    path: &[String],
+) -> bool {
+    find_field_expr_at_path_in_root(items, path, items).is_some_and(|value| {
+        module_task_path_scoped(
+            value,
+            &[items],
+            items,
+            imports,
+            &mut std::collections::BTreeSet::new(),
+        )
+        .is_some()
+    })
+}
+
 /// Definition-rooted paths of task values whose outputs the command reads.
 #[allow(clippy::too_many_arguments)]
 fn collect_output_task_paths<'a>(
@@ -4967,6 +5168,49 @@ fn collect_output_task_paths<'a>(
             imports,
             module_values,
         ),
+        Expr::ListComp { clauses, body, .. } => {
+            for clause in clauses {
+                match clause {
+                    ostinato_lang::ast::CompClause::For { source, .. } => {
+                        collect_output_task_paths(
+                            source,
+                            scopes,
+                            root,
+                            out,
+                            plain,
+                            in_task,
+                            visited,
+                            imports,
+                            module_values,
+                        );
+                    }
+                    ostinato_lang::ast::CompClause::If { cond, .. } => {
+                        collect_output_task_paths(
+                            cond,
+                            scopes,
+                            root,
+                            out,
+                            plain,
+                            in_task,
+                            visited,
+                            imports,
+                            module_values,
+                        );
+                    }
+                }
+            }
+            collect_output_task_paths(
+                body,
+                scopes,
+                root,
+                out,
+                plain,
+                in_task,
+                visited,
+                imports,
+                module_values,
+            );
+        }
         _ => {}
     }
 }
@@ -6795,7 +7039,13 @@ fn alias_local_target_scoped(
             path.push(label.clone());
             Some(path)
         }
-        Expr::Index(base, _, _) => alias_local_target_scoped(base, scopes, root),
+        Expr::Index(base, index, _) => {
+            let mut path = alias_local_target_scoped(base, scopes, root)?;
+            if let Some(segment) = index_field_name(index) {
+                path.push(segment);
+            }
+            Some(path)
+        }
         Expr::Paren(inner, _) | Expr::Default(inner, _) | Expr::Bound(_, inner, _) => {
             alias_local_target_scoped(inner, scopes, root)
         }

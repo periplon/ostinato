@@ -96,6 +96,14 @@ impl LocalHttpServer {
                                 "/nonutf8mixed" => {
                                     (200, vec![b'A', 0xff, b'B', 0xfe, 0xfd], Vec::new())
                                 }
+                                "/gzip" => (
+                                    200,
+                                    vec![
+                                        31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 203, 72, 205, 201, 201,
+                                        7, 0, 134, 166, 16, 54, 5, 0, 0, 0,
+                                    ],
+                                    vec![("Content-Encoding", "gzip")],
+                                ),
                                 "/redirect" => (302, Vec::new(), vec![("Location", "/ok")]),
                                 "/status404" => {
                                     (404, b"missing".to_vec(), vec![("X-Test", "nope")])
@@ -10853,6 +10861,128 @@ run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: st
 }
 
 #[test]
+fn tool_command_alias_chain_regressions_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let module = "module: \"example.com/k\"\nlanguage: version: \"v0.17.1\"\n";
+    let library = r#"package lib
+
+import e "tool/exec"
+
+run: e.Run & {cmd: ["sh", "-c", "printf P >> order.txt; printf out"], stdout: string}
+"#;
+    let base = "base: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\n";
+    let imports = "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n";
+    let mut cases: Vec<(String, String, bool)> = Vec::new();
+    for depth in 2..=7 {
+        let mut group = String::from(
+            "group: {\n\tbase: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\n",
+        );
+        let mut previous = "base".to_owned();
+        for level in 2..=depth {
+            group.push_str(&format!("\tp{level}: {previous}\n"));
+            previous = format!("p{level}");
+        }
+        group.push_str("}\n");
+        cases.push((
+            format!("container{depth}"),
+            format!(
+                "{imports}{group}command: container{depth}: {{\n\tr: group.{previous}\n\tq: \"\\\\(group.{previous}.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(group.{previous}.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ));
+    }
+    for depth in 2..=8 {
+        let mut chain = String::from(base);
+        let mut previous = "base".to_owned();
+        for level in 2..=depth {
+            chain.push_str(&format!("p{level}: {previous}\n"));
+            previous = format!("p{level}");
+        }
+        cases.push((
+            format!("fieldread{depth}"),
+            format!(
+                "{imports}{chain}command: fieldread{depth}: {{\n\ta: {previous}\n\tt: cli.Print & {{text: \"R=\\\\(a.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ));
+    }
+    for depth in 2..=5 {
+        let mut group = String::from(
+            "#G: {\n\tbase: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\n",
+        );
+        let mut previous = "base".to_owned();
+        for level in 2..=depth {
+            group.push_str(&format!("\tp{level}: {previous}\n"));
+            previous = format!("p{level}");
+        }
+        group.push_str("}\n");
+        cases.push((
+            format!("defcontainer{depth}"),
+            format!(
+                "{imports}{group}command: defcontainer{depth}: {{\n\tr: #G.{previous}\n\tq: \"\\\\(#G.{previous}.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(#G.{previous}.stdout)\"}}\n}}\n"
+            ),
+            false,
+        ));
+    }
+    cases.push((
+        "indexselector".to_owned(),
+        "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\ngroup: {\n\tbase: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\n\tp2: group[\"base\"]\n\tp3: p2\n}\ncommand: indexselector: {\n\tr: group.p3\n\tq: \"\\(group.p3.stdout)\"\n\tt: cli.Print & {text: \"R=\\(group.p3.stdout)\"}\n}\n".to_owned(),
+        false,
+    ));
+    cases.push((
+        "definitionodd".to_owned(),
+        "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n#base: exec.Run & {cmd: [\"sh\", \"-c\", \"printf P >> order.txt; printf out\"], stdout: string}\nprep: #base\np2: prep\np3: p2\ncommand: definitionodd: {\n\tr: p3\n\tq: \"\\(p3.stdout)\"\n\tt: cli.Print & {text: \"R=\\(p3.stdout)\"}\n}\n".to_owned(),
+        false,
+    ));
+    cases.push((
+        "letodd".to_owned(),
+        format!(
+            "{imports}{base}let first = base\np2: first\np3: p2\ncommand: letodd: {{\n\tr: p3\n\tq: \"\\\\(p3.stdout)\"\n\tt: cli.Print & {{text: \"R=\\\\(p3.stdout)\"}}\n}}\n"
+        ),
+        false,
+    ));
+    cases.push((
+        "moduleodd".to_owned(),
+        "package foo\nimport (\n\t\"tool/cli\"\n\t\"example.com/k/lib\"\n)\nprep: lib.run\np2: prep\np3: p2\ncommand: moduleodd: {\n\tr: p3\n\tq: \"\\(p3.stdout)\"\n\tt: cli.Print & {text: \"R=\\(p3.stdout)\"}\n}\n".to_owned(),
+        true,
+    ));
+    for (name, source, uses_module) in cases {
+        let cue_dir = tempfile::tempdir().expect("tempdir");
+        let rust_dir = tempfile::tempdir().expect("tempdir");
+        for directory in [cue_dir.path(), rust_dir.path()] {
+            std::fs::create_dir_all(directory.join("cue.mod")).expect("cue.mod");
+            std::fs::create_dir_all(directory.join("lib")).expect("lib");
+            write(&directory.join("cue.mod/module.cue"), module);
+            if uses_module {
+                write(&directory.join("lib/lib.cue"), library);
+            }
+            write(&directory.join("x_tool.cue"), &source);
+        }
+        let expected = Command::new(&cue)
+            .args(["cmd", &name])
+            .current_dir(cue_dir.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", &name, rust_dir.path().to_str().expect("path")]);
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{name}: cue stderr: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{name}: stdout differs");
+        assert_eq!(
+            std::fs::read(cue_dir.path().join("order.txt")).ok(),
+            std::fs::read(rust_dir.path().join("order.txt")).ok(),
+            "{name}: order.txt differs"
+        );
+    }
+}
+
+#[test]
 #[allow(clippy::type_complexity)]
 fn tool_command_pending_output_expressions_match_cue() {
     let Some(cue) = cue_command() else {
@@ -10902,6 +11032,27 @@ fn tool_command_pending_output_expressions_match_cue() {
                 "package foo\nimport (\n\t\"tool/exec\"\n\t\"tool/file\"\n)\n{run}command: pendingfile: {{\n\tt: file.Create & {{filename: \"out.txt\", contents: run.stdout}}\n}}\n"
             ),
             Some(("out.txt", "out")),
+        ),
+        (
+            "pendingunary",
+            format!(
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n)\n{run}command: pendingunary: {{\n\tt: cli.Print & {{text: \"n=\\(-len(run.stdout)) b=\\(!run.success)\"}}\n}}\n"
+            ),
+            None,
+        ),
+        (
+            "pendingconcatlist",
+            format!(
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n\t\"list\"\n\t\"strings\"\n)\n{run}command: pendingconcatlist: {{\n\tt: cli.Print & {{text: \"C=\\(list.Concat([strings.Split(run.stdout, \"u\"), [\"z\"]])[2])\"}}\n}}\n"
+            ),
+            None,
+        ),
+        (
+            "pendingcomp",
+            format!(
+                "package foo\nimport (\n\t\"tool/cli\"\n\t\"tool/exec\"\n\t\"strings\"\n)\n{run}command: pendingcomp: {{\n\tt: cli.Print & {{text: \"C=\\([for x in strings.Split(run.stdout, \"u\") {{strings.ToUpper(x)}}][0])\"}}\n}}\n"
+            ),
+            None,
         ),
     ];
     for (name, source, artifact) in cases {
@@ -14262,6 +14413,10 @@ command: nonutf8mixed: {
 	r: http.Get & {url: "__BASE__/nonutf8mixed", response: {body: string}}
 	p: cli.Print & {text: "n=\(len(r.response.body)) body=\(r.response.body)"}
 }
+command: gzip: {
+	r: http.Get & {url: "__BASE__/gzip", response: {body: string}}
+	p: cli.Print & {text: "body=\(r.response.body)"}
+}
 "#
     .replace("__BASE__", &server.base)
     .replace("__CLOSED__", &closed_port.to_string());
@@ -14287,6 +14442,7 @@ command: nonutf8mixed: {
         "consumed",
         "nonutf8",
         "nonutf8mixed",
+        "gzip",
     ] {
         let expected = run(Path::new(&cue), command);
         let actual = run(&bin(), command);

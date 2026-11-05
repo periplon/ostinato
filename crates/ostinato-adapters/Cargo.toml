@@ -29,7 +29,7 @@ num-bigint = { workspace = true }
 tempfile = { workspace = true }
 unicode-normalization = { workspace = true }
 rustix = { version = "1", features = ["fs"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "http2", "gzip"] }
 
 [lints]
 workspace = true
