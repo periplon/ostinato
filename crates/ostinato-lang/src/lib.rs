@@ -11,6 +11,18 @@
 //! Official CUE is the normative implementation. The native evaluator is
 //! intentionally not advertised as fully compliant.
 
+/// Machine-readable description of the float64 model used by `math` builtins.
+///
+/// Ostinato deliberately pins its Go-port arithmetic to the Go/arm64 FMA
+/// behaviour: every multiply-add in the ported Cephes code uses Rust's
+/// `f64::mul_add`, which is fused on all targets (falling back to a correctly
+/// rounded software `fma` where the hardware lacks FMA). This keeps the
+/// evaluator's own results platform-independent. It does **not** make the CUE
+/// oracle identical on every platform: Go only fuses on arm64, so a Go/amd64
+/// oracle can differ in the last bit. Rare 1-ulp `Asinh`/`Acosh`/`Atanh`
+/// residuals remain documented in `docs/SCOPE.md`.
+pub const GO_F64_MODEL: &str = "arm64-go-fma";
+
 pub mod ast;
 pub mod attributes;
 pub mod compile;
@@ -34,7 +46,7 @@ pub use condition::{eval_condition, validate_condition};
 pub use cue_data::{is_valid_package, render_cue_data};
 pub use error::LangError;
 pub use eval::{
-    Builtin, TypeKind, Value, builtin_module, eval_expr_with_json, eval_file,
+    Builtin, JsonExportError, TypeKind, Value, builtin_module, eval_expr_with_json, eval_file,
     eval_file_with_imports, eval_file_with_imports_mode,
     eval_file_with_imports_mode_allow_incomplete, eval_file_with_imports_mode_allow_outputs,
     eval_file_with_overrides, select_path, strip_hidden, unify, value_from_json,

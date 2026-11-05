@@ -14,7 +14,7 @@
 //! v0.17.1 oracle: arithmetic results, `math` builtins and the decimal string
 //! form used by JSON export and string interpolation.
 
-use bigdecimal::{BigDecimal, RoundingMode};
+use bigdecimal::{BigDecimal, RoundingMode, Zero};
 use num_bigint::{BigInt, Sign, ToBigInt};
 use std::cmp::Ordering;
 
@@ -137,11 +137,175 @@ pub fn cue_decimal_string(value: &BigDecimal) -> String {
     out
 }
 
+/// A decimal value with CUE's signed-zero information.
+///
+/// `bigdecimal::BigDecimal` has no signed zero, but CUE's `apd.Decimal`
+/// preserves the sign of zero produced by arithmetic (`0.0 * -1` exports
+/// `-0.0`).  The sign is kept alongside the (always non-negative) magnitude so
+/// that equality, ordering and arithmetic continue to treat it as zero.
+#[derive(Debug, Clone)]
+pub struct Decimal {
+    value: BigDecimal,
+    negative_zero: bool,
+    /// True when the expression currently being evaluated is a syntactic
+    /// numeric literal (including a non-zero negated literal). Used for the
+    /// lexical/scale choice in unification.
+    literal: bool,
+    /// True when the underlying value originated from a literal, even after it
+    /// is read through a reference. Used for signed-zero sign priority.
+    value_literal: bool,
+    /// True when the value was read through a reference.
+    reference: bool,
+}
+
+impl Decimal {
+    /// Wrap a non-negative-zero decimal.
+    #[must_use]
+    pub fn new(value: BigDecimal) -> Self {
+        Self {
+            value,
+            negative_zero: false,
+            literal: true,
+            value_literal: true,
+            reference: false,
+        }
+    }
+
+    /// Wrap an arithmetic or builtin result.
+    #[must_use]
+    pub fn computed(value: BigDecimal) -> Self {
+        Self {
+            value,
+            negative_zero: false,
+            literal: false,
+            value_literal: false,
+            reference: false,
+        }
+    }
+
+    /// Build a negative zero with the given decimal scale (for example scale
+    /// 1 renders `-0.0` and scale 0 renders `-0`).
+    #[must_use]
+    pub fn negative_zero(scale: i64) -> Self {
+        Self {
+            value: BigDecimal::new(BigInt::from(0), scale),
+            negative_zero: true,
+            literal: false,
+            value_literal: false,
+            reference: false,
+        }
+    }
+
+    /// The underlying magnitude.
+    #[must_use]
+    pub fn value(&self) -> &BigDecimal {
+        &self.value
+    }
+
+    /// Consume the wrapper and return the magnitude.
+    #[must_use]
+    pub fn into_inner(self) -> BigDecimal {
+        self.value
+    }
+
+    /// Whether this is CUE's signed zero.
+    #[must_use]
+    pub fn is_negative_zero(&self) -> bool {
+        self.negative_zero
+    }
+
+    /// Whether the value came from a syntactic numeric literal.
+    #[must_use]
+    pub fn is_literal(&self) -> bool {
+        self.literal
+    }
+
+    /// Mark a value as having been read through a reference. CUE gives a
+    /// reference lower representation priority than a syntactic literal or
+    /// expression in `&` (`(1.0 + 0) & a` keeps `1.0`, not `a`'s `1.00`).
+    #[must_use]
+    pub fn as_reference(mut self) -> Self {
+        self.literal = false;
+        self.reference = true;
+        self
+    }
+
+    /// Priority used when choosing the sign of an equal zero:
+    /// syntactic literal (2), then expression/result or reference-to-literal
+    /// (1), then reference-to-computed (0). A reference to a literal therefore
+    /// ties with an expression, so the left operand still wins on a tie.
+    #[must_use]
+    pub fn sign_priority(&self) -> u8 {
+        if self.literal {
+            2
+        } else if self.reference && !self.value_literal {
+            0
+        } else {
+            1
+        }
+    }
+
+    /// Whether the value is negative for sign-propagation purposes (either a
+    /// negative magnitude or negative zero).
+    #[must_use]
+    pub fn is_negative(&self) -> bool {
+        self.negative_zero || self.value.sign() == Sign::Minus
+    }
+
+    /// The decimal scale, used when formatting zero results.
+    #[must_use]
+    pub fn scale(&self) -> i64 {
+        self.value.as_bigint_and_exponent().1
+    }
+}
+
+impl std::ops::Deref for Decimal {
+    type Target = BigDecimal;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl PartialEq for Decimal {
+    fn eq(&self, other: &Self) -> bool {
+        // CUE compares `-0.0` and `0.0` as equal; the sign only affects the
+        // rendered representation.
+        self.value == other.value
+    }
+}
+
+impl Eq for Decimal {}
+
+impl PartialEq<BigDecimal> for Decimal {
+    fn eq(&self, other: &BigDecimal) -> bool {
+        &self.value == other
+    }
+}
+
+impl PartialEq<Decimal> for BigDecimal {
+    fn eq(&self, other: &Decimal) -> bool {
+        self == &other.value
+    }
+}
+
+/// Render a decimal exactly like `apd.Decimal.String()`, including a leading
+/// `-` for signed zero.
+#[must_use]
+pub fn decimal_display(value: &Decimal) -> String {
+    let text = cue_decimal_string(&value.value);
+    if value.negative_zero {
+        format!("-{text}")
+    } else {
+        text
+    }
+}
+
 /// Convert a `f64` into the decimal representation CUE produces for a
 /// `float64` builtin result (`apd.Decimal.SetFloat64` uses Go's
 /// `strconv.FormatFloat(f, 'E', -1, 64)`).
 #[must_use]
-pub fn decimal_from_f64(value: f64) -> Option<BigDecimal> {
+pub fn decimal_from_f64(value: f64) -> Option<Decimal> {
     if !value.is_finite() {
         return None;
     }
@@ -152,7 +316,13 @@ pub fn decimal_from_f64(value: f64) -> Option<BigDecimal> {
     let mut buffer = ryu::Buffer::new();
     let text = buffer.format_finite(value);
     let value: BigDecimal = text.parse().ok()?;
-    Some(value.normalized())
+    let value = value.normalized();
+    let negative_zero = text.starts_with('-');
+    if negative_zero && value.is_zero() {
+        Some(Decimal::negative_zero(0))
+    } else {
+        Some(Decimal::computed(value))
+    }
 }
 
 /// Errors raised by CUE-compatible arithmetic.
@@ -632,6 +802,7 @@ fn apd_ln_at(
         } else {
             let float = f64_of(&z).ok_or(NumericError::InvalidOperation)?;
             tmp1 = decimal_from_f64(crate::gomath::log(float))
+                .map(Decimal::into_inner)
                 .ok_or(NumericError::InvalidOperation)?;
         }
     }
@@ -1119,16 +1290,13 @@ mod tests {
 
     #[test]
     fn converts_float64_like_apd() {
+        assert_eq!(decimal_display(&decimal_from_f64(10.0).expect("f")), "1E+1");
         assert_eq!(
-            cue_decimal_string(&decimal_from_f64(10.0).expect("f")),
-            "1E+1"
-        );
-        assert_eq!(
-            cue_decimal_string(&decimal_from_f64(1.4142135623730951).expect("f")),
+            decimal_display(&decimal_from_f64(1.4142135623730951).expect("f")),
             "1.4142135623730951"
         );
         assert_eq!(
-            cue_decimal_string(&decimal_from_f64(0.0000001).expect("f")),
+            decimal_display(&decimal_from_f64(0.0000001).expect("f")),
             "1E-7"
         );
     }

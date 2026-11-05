@@ -33,6 +33,7 @@ use std::rc::Rc;
 
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
+use ostinato_lang::Value as CueValue;
 use saphyr::{Mapping, Scalar, ScalarStyle, Yaml, YamlEmitter, YamlLoader};
 use saphyr_parser::{BufferedInput, Event, Parser, Span, SpannedEventReceiver};
 use serde::Deserializer;
@@ -344,13 +345,33 @@ pub fn unify_values(left: &Json, right: &Json, origin: &Path) -> Result<Json, Da
 /// # Errors
 /// Returns [`DataError::Encode`] if the YAML emitter fails.
 pub fn to_yaml(value: &Json) -> Result<String, DataError> {
-    let normalized = normalize_number_signs(value);
-    let yaml = json_to_yaml(&normalized);
+    to_yaml_with_policy(value, true)
+}
+
+/// Encode JSON as YAML without canonicalizing negative zero. Workflow `export`
+/// uses this so arithmetic results such as `0.0 * -1` retain CUE's `-0.0`.
+///
+/// # Errors
+/// Returns [`DataError::Encode`] if the YAML emitter fails.
+pub fn to_yaml_preserving_negative_zero(value: &Json) -> Result<String, DataError> {
+    to_yaml_with_policy(value, false)
+}
+
+fn to_yaml_with_policy(value: &Json, canonicalize_zero: bool) -> Result<String, DataError> {
+    let normalized = if canonicalize_zero {
+        normalize_number_signs(value)
+    } else {
+        value.clone()
+    };
+    emit_yaml(&json_to_yaml(&normalized))
+}
+
+fn emit_yaml(yaml: &Yaml<'_>) -> Result<String, DataError> {
     let mut out = String::new();
     {
         let mut emitter = YamlEmitter::new(&mut out);
         emitter.quoted_value(true);
-        emitter.dump(&yaml).map_err(|error| DataError::Encode {
+        emitter.dump(yaml).map_err(|error| DataError::Encode {
             path: "<output>".to_owned(),
             message: error.to_string(),
         })?;
@@ -360,12 +381,114 @@ pub fn to_yaml(value: &Json) -> Result<String, DataError> {
     Ok(format!("{body}\n"))
 }
 
+/// Encode CUE export values as YAML while retaining the integer/float number
+/// kind. `serde_json` only carries the numeric token, so a positive zero from
+/// `0 / -1` and an integer zero both look like `0`. The typed `CueValue` tree
+/// disambiguates them: CUE prints `0` for integer-kind and `0.` for
+/// float-kind; the same split applies to `-0`/`-0.`.
+///
+/// # Errors
+/// Returns [`DataError::Encode`] if the YAML emitter fails.
+pub fn to_yaml_with_cue_kinds(
+    json_values: &[Json],
+    cue_values: &[CueValue],
+) -> Result<String, DataError> {
+    let mut encoded = Vec::with_capacity(json_values.len());
+    for (index, json) in json_values.iter().enumerate() {
+        let stripped = cue_values
+            .get(index)
+            .map(|value| ostinato_lang::strip_hidden(value.clone()));
+        let yaml = json_to_yaml_with_kind(json, stripped.as_ref());
+        encoded.push(emit_yaml(&yaml)?);
+    }
+    Ok(encoded.join("---\n"))
+}
+
+fn json_to_yaml_with_kind(value: &Json, cue: Option<&CueValue>) -> Yaml<'static> {
+    // A disjunction default (or recursive/deferred wrapper) hides the
+    // selected value's kind; resolve it before inspecting containers or
+    // numbers so `*(0 / -1) | 1` keeps the float-kind `0.` in YAML.
+    let resolved = cue.map(CueValue::export_unwrap);
+    let cue = resolved.as_ref();
+    match value {
+        Json::Number(number) => {
+            let text = cue_number_text(number);
+            // A float-kind integral zero/integer is printed with a trailing
+            // `.` in CUE's YAML; integer-kind values never get one.
+            let text = if matches!(cue, Some(CueValue::Float(_))) && !text.contains(['.', 'e', 'E'])
+            {
+                format!("{text}.")
+            } else {
+                text
+            };
+            Yaml::Representation(Cow::Owned(text), ScalarStyle::Plain, None)
+        }
+        Json::Array(items) => {
+            let cue_items = match cue {
+                Some(CueValue::List(items)) | Some(CueValue::OpenListPrefix(items, _)) => {
+                    Some(items)
+                }
+                _ => None,
+            };
+            let sequence = items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    json_to_yaml_with_kind(item, cue_items.and_then(|items| items.get(index)))
+                })
+                .collect();
+            Yaml::Sequence(sequence)
+        }
+        Json::Object(fields) => {
+            let cue_fields = match cue {
+                Some(CueValue::Struct(fields)) | Some(CueValue::Definition { fields, .. }) => {
+                    Some(fields)
+                }
+                _ => None,
+            };
+            let mut mapping = Mapping::default();
+            let cue_values = cue_fields.map(|fields| fields.values());
+            if let Some(mut cue_values) = cue_values {
+                for (key, value) in fields {
+                    mapping.insert(
+                        yaml_quoted(key),
+                        json_to_yaml_with_kind(value, cue_values.next()),
+                    );
+                }
+            } else {
+                for (key, value) in fields {
+                    mapping.insert(yaml_quoted(key), json_to_yaml_with_kind(value, None));
+                }
+            }
+            Yaml::Mapping(mapping)
+        }
+        other => json_to_yaml(other),
+    }
+}
+
 /// Encode a JSON value as pretty JSON with a trailing newline.
 ///
 /// # Errors
 /// Returns [`DataError::Encode`] if serialization fails.
 pub fn to_json(value: &Json) -> Result<String, DataError> {
-    let normalized = normalize_number_signs(value);
+    to_json_with_policy(value, true)
+}
+
+/// Encode JSON without canonicalizing negative zero. Workflow `export` uses
+/// this so arithmetic results such as `0.0 * -1` retain CUE's `-0.0`.
+///
+/// # Errors
+/// Returns [`DataError::Encode`] if serialization fails.
+pub fn to_json_preserving_negative_zero(value: &Json) -> Result<String, DataError> {
+    to_json_with_policy(value, false)
+}
+
+fn to_json_with_policy(value: &Json, canonicalize_zero: bool) -> Result<String, DataError> {
+    let normalized = if canonicalize_zero {
+        normalize_number_signs(value)
+    } else {
+        value.clone()
+    };
     let mut out = String::new();
     write_pretty_json(&normalized, 0, &mut out)?;
     out.push('\n');
@@ -2742,5 +2865,23 @@ mod tests {
             message.contains("cyclic") || message.contains("alias"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn workflow_encoding_can_preserve_computed_negative_zero() {
+        let value: Json = serde_json::from_str(r#"{"a":-0.0,"b":-0,"c":0.0}"#).expect("json");
+        let canonical_json = to_json(&value).expect("json");
+        assert!(!canonical_json.contains("-0"), "{canonical_json}");
+        let canonical_yaml = to_yaml(&value).expect("yaml");
+        assert!(!canonical_yaml.contains("-0"), "{canonical_yaml}");
+
+        let preserved_json = to_json_preserving_negative_zero(&value).expect("json");
+        assert!(preserved_json.contains("\"a\": -0.0"), "{preserved_json}");
+        assert!(preserved_json.contains("\"b\": -0"), "{preserved_json}");
+        assert!(preserved_json.contains("\"c\": 0.0"), "{preserved_json}");
+        let preserved_yaml = to_yaml_preserving_negative_zero(&value).expect("yaml");
+        assert!(preserved_yaml.contains("\"a\": -0.0"), "{preserved_yaml}");
+        assert!(preserved_yaml.contains("\"b\": -0"), "{preserved_yaml}");
+        assert!(preserved_yaml.contains("\"c\": 0.0"), "{preserved_yaml}");
     }
 }

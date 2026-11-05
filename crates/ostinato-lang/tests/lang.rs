@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used)]
+#![allow(clippy::panic)]
 
 use std::collections::BTreeMap;
 
@@ -9369,4 +9370,352 @@ d: math.Cosh(709.78)
     assert_eq!(json["b"].as_f64(), Some(6.361277807292747e307));
     assert_eq!(json["c"].as_f64(), Some(-8.964113971972578e307));
     assert_eq!(json["d"].as_f64(), Some(8.964113971972578e307));
+}
+
+#[test]
+fn arithmetic_negative_zero_matches_cue_json_and_interpolation() {
+    let source = r#"
+package negativezero
+import "math"
+a: 0.0 * -1
+b: -0.0
+c: 0 * -1.0
+d: math.Mod(-1, 1)
+e: math.Remainder(-1, 1)
+f: -0 + 0
+g: 0 * -1
+h: 0.0 * -1.0
+i: -0
+j: 0 / -1
+k: math.Mod(1, -1)
+l: math.Remainder(1, -1)
+m: -(0.0)
+n: 0 - 0.0
+o: 0.0 - 0.0
+p: -0.0 + 0.0
+q: -0.0 + -0.0
+r: (0.0 * -1) + (0.0 * -1)
+s: (0.0 * -1) - 0.0
+t: (0.0 * -1) - (0.0 * -1)
+u: "\(0.0 * -1)"
+v: "\(math.Mod(-1, 1))"
+w: "\(0 * -1)"
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "math".to_owned(),
+        ostinato_lang::builtin_module("math").expect("math builtin"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    for (field, expected) in [
+        ("a", "-0.0"),
+        ("b", "0.0"),
+        ("c", "-0.0"),
+        ("d", "-0"),
+        ("e", "-0"),
+        ("f", "0"),
+        ("g", "-0"),
+        ("h", "-0.00"),
+        ("i", "0"),
+        ("j", "0"),
+        ("k", "0"),
+        ("l", "0"),
+        ("m", "0.0"),
+        ("n", "0.0"),
+        ("o", "0.0"),
+        ("p", "0.0"),
+        ("q", "0.0"),
+        ("r", "-0.0"),
+        ("s", "-0.0"),
+        ("t", "0.0"),
+    ] {
+        assert_eq!(json[field].to_string(), expected, "{field}");
+    }
+    assert_eq!(json["u"], serde_json::json!("-0.0"));
+    assert_eq!(json["v"], serde_json::json!("-0"));
+    assert_eq!(json["w"], serde_json::json!("-0"));
+}
+
+#[test]
+fn numeric_unification_prefers_the_literal_representation_like_cue() {
+    let source = r#"
+package lexical
+a: (1.0 + 0) & 1.00
+b: 1.0 & 1.00
+c: 1.00 & 1.0
+d: 1.00 & (1.0 + 0)
+e: (1.0 + 0) & (1.00 + 0)
+f: 1.00 & (1.0 + 0)
+g: (1.00 + 0) & (1.0 + 0)
+x: 1.0
+h: x & 1.00
+i: 1.00 & x
+j: -1.0 & -1.00
+k: -1.00 & -1.0
+l: (1.0 + 0) & 1.00 & 1.000
+m: 1.00 & 1.0 & 1.000
+n: 0.0 * -1
+o: n & 0.0
+p: 0.0 & n
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    for (field, expected) in [
+        ("a", "1.00"),
+        ("b", "1.0"),
+        ("c", "1.00"),
+        ("d", "1.00"),
+        ("e", "1.0"),
+        ("f", "1.00"),
+        ("g", "1.00"),
+        ("h", "1.00"),
+        ("i", "1.00"),
+        ("j", "-1.0"),
+        ("k", "-1.00"),
+        ("l", "1.00"),
+        ("m", "1.00"),
+        ("o", "0.0"),
+        ("p", "0.0"),
+    ] {
+        assert_eq!(json[field].to_string(), expected, "{field}");
+    }
+    assert_eq!(json["a"].to_string(), "1.00");
+    assert_eq!(json["l"].to_string(), "1.00");
+}
+
+#[test]
+fn colliding_raw_labels_fail_closed_with_a_typed_error() {
+    let source = r"
+package collision
+x: {'\xff': 1, '\xfe': 2}
+";
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let error = value.to_json_checked().expect_err("collision");
+    match &error {
+        ostinato_lang::JsonExportError::LabelCollision { rendered, labels } => {
+            assert_eq!(rendered, "\u{fffd}");
+            assert_eq!(labels, &vec!["'\\xfe'".to_owned(), "'\\xff'".to_owned()]);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    let message = error.to_string();
+    assert!(message.contains("both render"), "{message}");
+    assert!(message.contains("'\\xfe'"), "{message}");
+    assert!(message.contains("'\\xff'"), "{message}");
+    assert!(value.to_json().is_none());
+}
+
+#[test]
+fn math_builtins_preserve_signed_zero_like_cue() {
+    let source = r#"
+package mathzero
+import "math"
+x: 0.0 * -1
+a: math.Mod(x, 1)
+b: math.Remainder(x, 1)
+c: math.Cbrt(x)
+d: math.Pow(x, 3)
+e: math.Pow(x, 2)
+f: math.Cbrt(0.0)
+g: math.Pow(0.0, 3)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "math".to_owned(),
+        ostinato_lang::builtin_module("math").expect("math builtin"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    for (field, expected) in [
+        ("a", "-0"),
+        ("b", "-0"),
+        ("c", "-0"),
+        ("d", "-0"),
+        ("e", "0"),
+        ("f", "0"),
+        ("g", "0"),
+    ] {
+        assert_eq!(json[field].to_string(), expected, "{field}");
+    }
+}
+
+#[test]
+fn numeric_unification_handles_disjunctions_and_struct_fields_like_cue() {
+    let source = r#"
+package lexicalnested
+a: (1.0 | 2.0) & 1.00
+b: (1.0 | *2.0) & 1.00
+c: {x: (1.0 + 0)} & {x: 1.00}
+d: {x: 1.00} & {x: (1.0 + 0)}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    for field in ["a", "b"] {
+        assert_eq!(json[field].to_string(), "1.00", "{field}");
+    }
+    assert_eq!(json["c"]["x"].to_string(), "1.00");
+    assert_eq!(json["d"]["x"].to_string(), "1.00");
+}
+
+#[test]
+fn references_have_lower_representation_priority_than_expressions_and_literals() {
+    let source = r#"
+package representation
+a: 1.00
+b: (1.0 + 0) & a
+c: a & (1.0 + 0)
+d: {v: (1.0 + 0)} & {v: a}
+e: {v: a} & {v: (1.0 + 0)}
+n: 0.0 * -1
+f: n & (0.0 * 1)
+g: (0.0 * 1) & n
+h: {x: (0.0 * 1)} & {x: n}
+i: {x: n} & {x: (0.0 * 1)}
+j: n & 0.0
+k: 0.0 & n
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    for (field, expected) in [
+        ("a", "1.00"),
+        ("b", "1.0"),
+        ("c", "1.00"),
+        ("n", "-0.0"),
+        ("f", "0.0"),
+        ("g", "0.0"),
+        ("j", "0.0"),
+        ("k", "0.0"),
+    ] {
+        assert_eq!(json[field].to_string(), expected, "{field}");
+    }
+    assert_eq!(json["d"]["v"].to_string(), "1.0");
+    assert_eq!(json["e"]["v"].to_string(), "1.00");
+    assert_eq!(json["h"]["x"].to_string(), "0.0");
+    assert_eq!(json["i"]["x"].to_string(), "0.0");
+}
+
+#[test]
+fn hyperbolic_math_preserves_negative_zero() {
+    let source = r#"
+package hyperzero
+import "math"
+n: 0.0 * -1
+a: math.Sinh(n)
+b: math.Asinh(n)
+c: math.Atanh(n)
+d: math.Sinh(0.0 * -1.0)
+e: math.Asinh(0.0 * -1.0)
+f: math.Atanh(0.0 * -1.0)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "math".to_owned(),
+        ostinato_lang::builtin_module("math").expect("math builtin"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    for field in ["a", "b", "c", "d", "e", "f"] {
+        assert_eq!(json[field].to_string(), "-0", "{field}");
+    }
+}
+
+#[test]
+fn named_definition_references_and_signed_zero_priority_match_cue() {
+    let source = r#"
+package representation2
+import "math"
+a: {v: 1.00}
+b: a & {v: 1.0}
+c: {v: 1.0} & a
+#D: {v: 1.00}
+d: #D & {v: 1.0}
+e: {v: 1.00} & #D
+r2a: 0.0*-1 & math.Sqrt(0)
+r2b: math.Mod(-1,1) & -0.0
+r2c: math.Sqrt(0) & (0.0*-1)
+r2d: -0.0 & math.Mod(-1,1)
+z: 0.0
+nz: 0.0 * -1
+za: nz & z
+zb: z & (0.0 * -1)
+ni: 0 * -1
+zi: 0
+ai: ni & zi
+p: 1.00
+r: p & (1.0 + 0)
+#ND: {v: 0 * -1}
+#NE: {v: 0}
+c2: #ND & #NE
+zi: 0
+ni: 0 * -1
+ia: (0 * -1) & zi
+ib: (0 * -1) & (1 - 1)
+ic: (0 * -1) & (0 * 1)
+bigzero: 100000000000000000000 - 100000000000000000000
+id: ni & bigzero
+ie: (0 * -1) & 0
+ig: 0 & (0 * -1)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let mut imports = BTreeMap::new();
+    imports.insert(
+        "math".to_owned(),
+        ostinato_lang::builtin_module("math").expect("math builtin"),
+    );
+    let value =
+        ostinato_lang::eval_file_with_imports(&file, &imports, &BTreeMap::new()).expect("eval");
+    let json = value.to_json().expect("json");
+    for (field, expected) in [
+        ("b", "1.0"),
+        ("c", "1.0"),
+        ("d", "1.0"),
+        ("e", "1.00"),
+        ("r2a", "-0.0"),
+        ("r2b", "-0"),
+        ("r2c", "0"),
+        ("r2d", "0.0"),
+        ("za", "0.0"),
+        ("zb", "0.0"),
+        ("ai", "0"),
+        ("r", "1.00"),
+        ("ia", "-0"),
+        ("ib", "-0"),
+        ("ic", "-0"),
+        ("id", "-0"),
+        ("ie", "0"),
+        ("ig", "0"),
+    ] {
+        let actual = if matches!(field, "b" | "c" | "d" | "e") {
+            json[field]["v"].to_string()
+        } else {
+            json[field].to_string()
+        };
+        assert_eq!(actual, expected, "{field}");
+    }
+    assert_eq!(json["c2"]["v"].to_string(), "0");
+}
+
+#[test]
+fn duplicate_signed_zero_defaults_are_a_documented_residual() {
+    let source = r#"
+package zerodefaults
+a: *(0 / -1) | *(0 * -1)
+"#;
+    let file = ostinato_lang::parse(source).expect("parse");
+    let value = ostinato_lang::eval_file(&file).expect("eval");
+    let json = value.to_json().expect("json");
+    // CUE reports an incomplete `0 | -0` here; Ostinato currently collapses
+    // the two defaults. Documented in docs/SCOPE.md.
+    assert_eq!(json["a"].to_string(), "0");
 }

@@ -8,6 +8,14 @@
 //! so matching the oracle requires the same algorithms.  The functions here
 //! are direct translations of the Go 1.26 sources (BSD licensed), including
 //! the Payne-Hanek argument reduction used by `Sin`/`Cos`/`Tan`.
+//!
+//! Determinism: every fused multiply-add in the translation uses Rust's
+//! [`f64::mul_add`], which is fused on all targets (software `fma` where the
+//! hardware lacks it). The result therefore does not depend on the host CPU.
+//! The pinned model is Go/arm64 (`ostinato_lang::GO_F64_MODEL`); a Go/amd64
+//! oracle may still differ in the last bit because Go does not fuse there.
+//! The known 1-ulp `Asinh`/`Acosh`/`Atanh` residuals are listed in
+//! `docs/SCOPE.md`.
 
 const PI: f64 = 3.14159265358979323846264338327950288419716939937510582097494459;
 const PI4A: f64 = 7.85398125648498535156e-1;
@@ -398,7 +406,9 @@ pub(crate) fn modulo(x: f64, y: f64) -> f64 {
     }
     let y = y.abs();
     let (yfr, yexp) = frexp(y);
-    let mut r = x.abs();
+    // Keep the sign of negative zero: `r = x` (not `x.abs()`) mirrors Go's
+    // `mod`, which returns `-0` for `Mod(-0, y)`.
+    let mut r = if x < 0.0 { -x } else { x };
     while r >= y {
         let (rfr, rexp) = frexp(r);
         let rexp = if rfr < yfr { rexp - 1 } else { rexp };
@@ -419,7 +429,7 @@ pub(crate) fn remainder(x: f64, y: f64) -> f64 {
         return x;
     }
     let sign = x < 0.0;
-    let mut x = x.abs();
+    let mut x = if sign { -x } else { x };
     let mut y = y.abs();
     if x == y {
         return if sign { -0.0 } else { 0.0 };
@@ -641,6 +651,9 @@ pub(crate) fn sinh(x: f64) -> f64 {
     const Q0: f64 = -0.6307673640497716991212077277e+6;
     const Q1: f64 = 0.1521517378790019070696485176e+5;
     const Q2: f64 = -0.173678953558233699533450911e+3;
+    if x == 0.0 {
+        return x;
+    }
     let sign = x < 0.0;
     let x = x.abs();
     let temp = if x > 21.0 {
@@ -711,6 +724,9 @@ pub(crate) fn asinh(x: f64) -> f64 {
     if x.is_nan() || x.is_infinite() {
         return x;
     }
+    if x == 0.0 {
+        return x;
+    }
     let sign = x < 0.0;
     let x = x.abs();
     let temp = if x > LARGE {
@@ -758,6 +774,9 @@ pub(crate) fn atanh(x: f64) -> f64 {
     }
     if x == -1.0 {
         return f64::NEG_INFINITY;
+    }
+    if x == 0.0 {
+        return x;
     }
     let sign = x < 0.0;
     let x = x.abs();

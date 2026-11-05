@@ -105,6 +105,9 @@ impl LocalHttpServer {
                                     vec![("Content-Encoding", "gzip")],
                                 ),
                                 "/redirect" => (302, Vec::new(), vec![("Location", "/ok")]),
+                                "/trailer" => {
+                                    (299, b"hello".to_vec(), vec![("Trailer", "X-Checksum")])
+                                }
                                 "/status404" => {
                                     (404, b"missing".to_vec(), vec![("X-Test", "nope")])
                                 }
@@ -118,6 +121,17 @@ impl LocalHttpServer {
                                 }
                                 _ => (404, b"unknown".to_vec(), Vec::new()),
                             };
+                        if status == 299 {
+                            // Actual HTTP/1.1 chunked response with a trailer.
+                            let raw = "HTTP/1.1 200 OK\r\n\
+                                       Trailer: X-Checksum\r\n\
+                                       Transfer-Encoding: chunked\r\n\
+                                       Connection: close\r\n\r\n\
+                                       5\r\nhello\r\n\
+                                       0\r\nX-Checksum: abc123\r\n\r\n";
+                            let _ = stream.write_all(raw.as_bytes());
+                            continue;
+                        }
                         let reason = match status {
                             200 => "OK",
                             302 => "Found",
@@ -193,6 +207,18 @@ fn write(path: &Path, contents: &str) {
 
 fn json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("valid json output")
+}
+
+fn yaml_scalar<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        let name = name.trim();
+        let name = name
+            .strip_prefix('"')
+            .and_then(|name| name.strip_suffix('"'))
+            .unwrap_or(name);
+        (name == key).then(|| value.trim())
+    })
 }
 
 fn run_id(db: &Path) -> String {
@@ -15255,6 +15281,423 @@ command: gzip: {
     assert!(!expected.status.success(), "connfail");
     assert_eq!(actual.status.code(), expected.status.code(), "connfail");
     assert_eq!(actual.stdout, expected.stdout, "connfail");
+}
+
+#[test]
+fn tool_command_http_trailer_and_serve_fail_closed() {
+    let server = LocalHttpServer::start();
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("x_tool.cue"),
+        &r#"
+package foo
+import "tool/http"
+command: trailer: {
+	r: http.Get & {url: "__BASE__/trailer", response: {body: string}}
+}
+command: requesttrailer: {
+	r: http.Post & {
+		url: "__BASE__/ok"
+		request: {body: "hello", trailer: "X-Checksum": "abc"}
+		response: {body: string}
+	}
+}
+command: serve: http.Serve & {address: ":0"}
+"#
+        .replace("__BASE__", &server.base),
+    );
+    let run = |command: &str| {
+        Command::new(bin())
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .output()
+            .expect("run command")
+    };
+
+    let trailer = run("trailer");
+    assert!(!trailer.status.success(), "trailer must fail closed");
+    let stderr = String::from_utf8_lossy(&trailer.stderr);
+    assert!(
+        stderr.contains("response trailers are not supported"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Trailer: X-Checksum"), "{stderr}");
+
+    let request_trailer = run("requesttrailer");
+    assert!(
+        !request_trailer.status.success(),
+        "request trailers must fail closed"
+    );
+    let stderr = String::from_utf8_lossy(&request_trailer.stderr);
+    assert!(
+        stderr.contains("request trailers are not supported"),
+        "{stderr}"
+    );
+
+    let serve = run("serve");
+    assert!(!serve.status.success(), "Serve must fail closed");
+    let stderr = String::from_utf8_lossy(&serve.stderr);
+    assert!(stderr.contains("long-running service task"), "{stderr}");
+    assert!(stderr.contains("tool/http.Serve"), "{stderr}");
+    assert!(
+        !stderr.contains("not implemented"),
+        "Serve needs a typed diagnosis, got: {stderr}"
+    );
+
+    // Document the oracle behaviour: CUE succeeds and exposes the trailer
+    // value. Ostinato's typed failure above is the deliberate divergence.
+    if let Some(cue) = cue_command() {
+        let expected = Command::new(cue)
+            .args(["cmd", "trailer"])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue");
+        assert!(expected.status.success(), "cue trailer should succeed");
+        assert!(expected.stdout.is_empty());
+    }
+}
+
+#[test]
+fn export_negative_zero_and_numeric_lexical_form_match_cue() {
+    let source = r#"
+package negativezero
+import "math"
+a: 0.0 * -1
+b: -0.0
+c: 0 * -1.0
+d: math.Mod(-1, 1)
+e: math.Remainder(-1, 1)
+f: -0 + 0
+g: 0 * -1
+h: 0.0 * -1.0
+i: -0
+j: 0 / -1
+k: (1.0 + 0) & 1.00
+l: 1.0 & 1.00
+m: 1.00 & 1.0
+n: x & 1.00
+o: -1 * 0
+p: math.Sqrt(0)
+q: *(0 / -1) | 1
+r: *(math.Sqrt(4)) | 1
+s: {v: *(0 / -1) | 1}
+t: [*(0 / -1) | 1, *(math.Sqrt(4)) | 1]
+u: *(0 * -1) | 1
+v: *(math.Mod(-1, 1)) | 1
+x: 1.0
+"#;
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("negative_zero.cue");
+    write(&path, source);
+    let output = ost(&["export", "--out", "json", path.to_str().expect("path")]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let actual = String::from_utf8(output.stdout).expect("utf8");
+    let compact = |text: &str| {
+        text.chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>()
+    };
+    let json = compact(&actual);
+    for snippet in [
+        "\"a\":-0.0",
+        "\"b\":0.0",
+        "\"c\":-0.0",
+        "\"d\":-0",
+        "\"e\":-0",
+        "\"f\":0",
+        "\"g\":-0",
+        "\"h\":-0.00",
+        "\"i\":0",
+        "\"j\":0",
+        "\"k\":1.00",
+        "\"l\":1.0",
+        "\"m\":1.00",
+        "\"n\":1.00",
+        "\"o\":-0",
+        "\"p\":0",
+    ] {
+        assert!(json.contains(snippet), "missing {snippet} in {json}");
+    }
+
+    let yaml = ost(&["export", "--out", "yaml", path.to_str().expect("path")]);
+    assert!(
+        yaml.status.success(),
+        "{}",
+        String::from_utf8_lossy(&yaml.stderr)
+    );
+    let yaml = String::from_utf8(yaml.stdout).expect("utf8");
+    for snippet in [
+        "\"a\": -0.0",
+        "\"c\": -0.0",
+        "\"d\": -0.",
+        "\"g\": -0",
+        "\"h\": -0.00",
+        "\"j\": 0.",
+        "\"o\": -0",
+        "\"p\": 0.",
+        "\"q\": 0.",
+        "\"r\": 2.",
+        "\"s\":\n  \"v\": 0.",
+        "\"t\":\n  - 0.\n  - 2.",
+        "\"u\": -0",
+        "\"v\": -0.",
+    ] {
+        assert!(yaml.contains(snippet), "missing {snippet} in {yaml}");
+    }
+
+    if let Some(cue) = cue_command() {
+        let expected = Command::new(&cue)
+            .args(["export", "--out", "json", path.to_str().expect("path")])
+            .output()
+            .expect("run cue");
+        assert!(expected.status.success());
+        assert_eq!(
+            compact(&String::from_utf8_lossy(&expected.stdout)),
+            json,
+            "JSON number tokens and lexical forms"
+        );
+
+        let expected_yaml = Command::new(cue)
+            .args(["export", "--out", "yaml", path.to_str().expect("path")])
+            .output()
+            .expect("run cue");
+        assert!(expected_yaml.status.success());
+        let expected_yaml = String::from_utf8(expected_yaml.stdout).expect("utf8");
+        for key in [
+            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q",
+            "r", "u", "v",
+        ] {
+            assert_eq!(
+                yaml_scalar(&yaml, key),
+                yaml_scalar(&expected_yaml, key),
+                "YAML scalar for {key}\nactual:\n{yaml}\nexpected:\n{expected_yaml}"
+            );
+        }
+    }
+}
+
+#[test]
+fn export_colliding_raw_labels_names_the_collision() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("collision.cue");
+    write(&path, "package collision\nx: {'\\xff': 1, '\\xfe': 2}\n");
+    for out in ["json", "yaml"] {
+        let output = ost(&["export", "--out", out, path.to_str().expect("path")]);
+        assert!(!output.status.success(), "{out} must fail closed");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("distinct labels"), "{stderr}");
+        assert!(stderr.contains("'\\xfe'"), "{stderr}");
+        assert!(stderr.contains("'\\xff'"), "{stderr}");
+        assert!(stderr.contains("duplicate keys"), "{stderr}");
+        assert!(!stderr.contains("incomplete fields"), "{stderr}");
+    }
+}
+
+#[test]
+fn export_multi_source_preserves_signed_zero_and_typed_collisions() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let first = directory.path().join("first.cue");
+    let second = directory.path().join("second.cue");
+    write(&first, "package x\nx: 0.0 * -1\n");
+    write(&second, "package x\ny: 1\n");
+
+    let output = ost(&[
+        "export",
+        "--out",
+        "json",
+        first.to_str().expect("path"),
+        second.to_str().expect("path"),
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let actual = String::from_utf8(output.stdout).expect("utf8");
+    assert!(actual.contains("\"x\": -0.0"), "{actual}");
+
+    let yaml = ost(&[
+        "export",
+        "--out",
+        "yaml",
+        first.to_str().expect("path"),
+        second.to_str().expect("path"),
+    ]);
+    assert!(
+        yaml.status.success(),
+        "{}",
+        String::from_utf8_lossy(&yaml.stderr)
+    );
+    let yaml = String::from_utf8(yaml.stdout).expect("utf8");
+    assert!(yaml.contains("\"x\": -0.0"), "{yaml}");
+
+    if let Some(cue) = cue_command() {
+        let expected = Command::new(&cue)
+            .args([
+                "export",
+                "--out",
+                "json",
+                first.to_str().expect("path"),
+                second.to_str().expect("path"),
+            ])
+            .output()
+            .expect("run cue");
+        assert!(expected.status.success());
+        let compact = |text: &str| {
+            text.chars()
+                .filter(|ch| !ch.is_whitespace())
+                .collect::<String>()
+        };
+        assert_eq!(
+            compact(&String::from_utf8_lossy(&expected.stdout)),
+            compact(&actual)
+        );
+
+        // The official-CUE evaluator must also preserve signed zero through
+        // multi-source JSON -> Value unification.
+        let oracle = Command::new(bin())
+            .env("CUE_BIN", &cue)
+            .args([
+                "--evaluator",
+                "cue",
+                "export",
+                "--out",
+                "json",
+                first.to_str().expect("path"),
+                second.to_str().expect("path"),
+            ])
+            .output()
+            .expect("run ostinato with cue evaluator");
+        assert!(
+            oracle.status.success(),
+            "{}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+        let oracle = String::from_utf8(oracle.stdout).expect("utf8");
+        assert!(oracle.contains("\"x\": -0.0"), "{oracle}");
+    }
+
+    // Colliding raw labels across two files still use the typed error.
+    let collision_a = directory.path().join("collision_a.cue");
+    let collision_b = directory.path().join("collision_b.cue");
+    write(&collision_a, "package collision\nv: {'\\xff': 1}\n");
+    write(&collision_b, "package collision\nv: {'\\xfe': 2}\n");
+    for out in ["json", "yaml"] {
+        let output = ost(&[
+            "export",
+            "--out",
+            out,
+            collision_a.to_str().expect("path"),
+            collision_b.to_str().expect("path"),
+        ]);
+        assert!(!output.status.success(), "{out} must fail closed");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("distinct labels"), "{stderr}");
+        assert!(stderr.contains("'\\xfe'"), "{stderr}");
+        assert!(stderr.contains("'\\xff'"), "{stderr}");
+        assert!(!stderr.contains("incomplete"), "{stderr}");
+    }
+}
+
+#[test]
+fn signed_zero_unification_matrix_matches_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("zero_matrix.cue");
+    let operands = [
+        "0.0",
+        "z",
+        "n",
+        "p",
+        "s",
+        "m",
+        "(0.0 * -1)",
+        "(0.0 * 1)",
+        "-0.0",
+    ];
+    let mut source = String::from(
+        "package zeromatrix\nimport \"math\"\n\
+         z: 0.0\nn: 0.0 * -1\np: 0.0 * 1\n\
+         s: math.Sqrt(0)\nm: math.Mod(-1, 1)\n",
+    );
+    for (index, left) in operands.iter().enumerate() {
+        for (partner, right) in operands.iter().enumerate() {
+            source.push_str(&format!(
+                "m_{}_{}: {} & {}\n",
+                index + 1,
+                partner + 1,
+                left,
+                right
+            ));
+        }
+    }
+    write(&path, &source);
+
+    let expected = Command::new(&cue)
+        .args(["export", "--out", "json", path.to_str().expect("path")])
+        .output()
+        .expect("run cue");
+    assert!(
+        expected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&expected.stderr)
+    );
+    let actual = ost(&["export", "--out", "json", path.to_str().expect("path")]);
+    assert!(
+        actual.status.success(),
+        "{}",
+        String::from_utf8_lossy(&actual.stderr)
+    );
+    let actual: Value = serde_json::from_slice(&actual.stdout).expect("actual json");
+    let expected: Value = serde_json::from_slice(&expected.stdout).expect("expected json");
+    assert_eq!(actual, expected, "9x9 float signed-zero matrix");
+
+    let int_path = directory.path().join("zero_int_matrix.cue");
+    let int_operands = [
+        "0",
+        "z",
+        "n",
+        "p",
+        "(0 * -1)",
+        "(0 * 1)",
+        "(1 - 1)",
+        "bigzero",
+        "(100000000000000000000 - 100000000000000000000)",
+    ];
+    let mut int_source = String::from(
+        "package zeroint\n\
+         z: 0\nn: 0 * -1\np: 0 * 1\n\
+         bigzero: 100000000000000000000 - 100000000000000000000\n",
+    );
+    for (index, left) in int_operands.iter().enumerate() {
+        for (partner, right) in int_operands.iter().enumerate() {
+            int_source.push_str(&format!(
+                "m_{}_{}: {} & {}\n",
+                index + 1,
+                partner + 1,
+                left,
+                right
+            ));
+        }
+    }
+    write(&int_path, &int_source);
+    let expected = Command::new(cue)
+        .args(["export", "--out", "json", int_path.to_str().expect("path")])
+        .output()
+        .expect("run cue");
+    assert!(expected.status.success());
+    let actual = ost(&["export", "--out", "json", int_path.to_str().expect("path")]);
+    assert!(actual.status.success());
+    let actual: Value = serde_json::from_slice(&actual.stdout).expect("actual json");
+    let expected: Value = serde_json::from_slice(&expected.stdout).expect("expected json");
+    assert_eq!(actual, expected, "9x9 integer signed-zero matrix");
 }
 
 #[test]

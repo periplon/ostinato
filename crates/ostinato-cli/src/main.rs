@@ -484,7 +484,15 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                     "evaluator": loaded.evaluator,
                     "source": loaded.source_file,
                 });
-                write_values(output.as_deref(), out, &[value], force, &protected)?;
+                write_values(
+                    output.as_deref(),
+                    out,
+                    &[value],
+                    force,
+                    &protected,
+                    false,
+                    None,
+                )?;
                 return Ok(ExitCode::SUCCESS);
             }
             let (engine, _) = build_runtime(&cli, agent_cmd, max_parallel)?;
@@ -493,7 +501,15 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             if out.is_some() || output.is_some() {
                 let value =
                     serde_json::to_value(&report).context("cannot encode run report as data")?;
-                write_values(output.as_deref(), out, &[value], force, &protected)?;
+                write_values(
+                    output.as_deref(),
+                    out,
+                    &[value],
+                    force,
+                    &protected,
+                    false,
+                    None,
+                )?;
             } else {
                 print_report(&report, json)?;
             }
@@ -515,6 +531,10 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             }
             let mut protected = sources.clone();
             protected.extend(inputs.iter().cloned());
+            let preserve_negative_zero = !sources
+                .iter()
+                .all(|source| data::DataFormat::is_data_path(source));
+            let mut typed_values: Option<Vec<ostinato_lang::Value>> = None;
             let values = if sources
                 .iter()
                 .all(|source| data::DataFormat::is_data_path(source))
@@ -574,39 +594,47 @@ fn execute(cli: Cli) -> Result<ExitCode> {
             {
                 bail!("cannot mix CUE and data sources in one export");
             } else {
+                let native = matches!(cli.evaluator, Evaluator::Rust);
                 let (loader, _) = build_loader(&cli)?;
                 if sources.len() == 1 {
-                    loader
-                        .evaluate(
-                            &LoadRequest {
-                                source: sources[0].clone(),
-                                params,
-                                inputs: data_inputs(&inputs),
-                            },
-                            &expressions,
-                            list,
-                        )
-                        .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                    let request = LoadRequest {
+                        source: sources[0].clone(),
+                        params,
+                        inputs: data_inputs(&inputs),
+                    };
+                    if native {
+                        let typed = NativeLoader.evaluate_values(&request, &expressions, list)?;
+                        let values = typed_export_values(&typed, &expressions)?;
+                        typed_values = Some(typed);
+                        values
+                    } else {
+                        loader
+                            .evaluate(&request, &expressions, list)
+                            .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                    }
                 } else {
                     let mut root: Option<ostinato_lang::Value> = None;
                     for (index, source) in sources.iter().enumerate() {
-                        let evaluated = loader
-                            .evaluate(
-                                &LoadRequest {
-                                    source: source.clone(),
-                                    params: params.clone(),
-                                    inputs: if index == 0 {
-                                        data_inputs(&inputs)
-                                    } else {
-                                        Vec::new()
-                                    },
-                                },
-                                &[],
-                                false,
-                            )
-                            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                        let request = LoadRequest {
+                            source: source.clone(),
+                            params: params.clone(),
+                            inputs: if index == 0 {
+                                data_inputs(&inputs)
+                            } else {
+                                Vec::new()
+                            },
+                        };
+                        let evaluated = if native {
+                            NativeLoader.evaluate_values(&request, &[], false)?
+                        } else {
+                            loader
+                                .evaluate(&request, &[], false)
+                                .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                                .iter()
+                                .map(ostinato_lang::value_from_json)
+                                .collect()
+                        };
                         for value in evaluated {
-                            let value = ostinato_lang::value_from_json(&value);
                             root = Some(match root {
                                 Some(current) => ostinato_lang::unify(&current, &value)
                                     .map_err(|error| anyhow::anyhow!(error.to_string()))?,
@@ -615,26 +643,32 @@ fn execute(cli: Cli) -> Result<ExitCode> {
                         }
                     }
                     let root = root.ok_or_else(|| anyhow::anyhow!("no CUE value to export"))?;
-                    if expressions.is_empty() {
-                        vec![
-                            root.to_json().ok_or_else(|| {
-                                anyhow::anyhow!("cannot export an incomplete value")
-                            })?,
-                        ]
+                    let typed = if expressions.is_empty() {
+                        vec![root]
                     } else {
                         let mut values = Vec::with_capacity(expressions.len());
                         for expression in &expressions {
-                            let selected = ostinato_lang::select_path(&root, expression)
-                                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                            values.push(selected.to_json().ok_or_else(|| {
-                                anyhow::anyhow!("cannot export `{expression}`: value is incomplete")
-                            })?);
+                            values.push(
+                                ostinato_lang::select_path(&root, expression)
+                                    .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+                            );
                         }
                         values
-                    }
+                    };
+                    let values = typed_export_values(&typed, &expressions)?;
+                    typed_values = Some(typed);
+                    values
                 }
             };
-            write_values(output.as_deref(), out, &values, force, &protected)?;
+            write_values(
+                output.as_deref(),
+                out,
+                &values,
+                force,
+                &protected,
+                preserve_negative_zero,
+                typed_values.as_deref(),
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Import {
@@ -1684,18 +1718,62 @@ fn select_data_values(
     Ok(values)
 }
 
+fn typed_export_values(
+    values: &[ostinato_lang::Value],
+    expressions: &[String],
+) -> Result<Vec<serde_json::Value>> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let label = expressions.get(index).map_or_else(
+                || "the root value".to_owned(),
+                |expression| format!("`{expression}`"),
+            );
+            value
+                .to_json_checked()
+                .map_err(|error| anyhow::anyhow!("cannot export {label}: {error}"))
+        })
+        .collect()
+}
+
 fn write_values(
     output: Option<&Path>,
     out: Option<DataFormatArg>,
     values: &[serde_json::Value],
     force: bool,
     protected: &[PathBuf],
+    preserve_negative_zero: bool,
+    typed_values: Option<&[ostinato_lang::Value]>,
 ) -> Result<()> {
     let format = resolve_output_format(out, output);
-    let codec = JsonYamlCodec;
-    let content = codec
-        .encode_stream(format, values)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let content = if matches!(format, DocumentFormat::Yaml)
+        && let Some(typed) = typed_values
+        && typed.len() == values.len()
+    {
+        data::to_yaml_with_cue_kinds(values, typed)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?
+    } else if preserve_negative_zero {
+        let mut encoded = Vec::with_capacity(values.len());
+        for value in values {
+            encoded.push(
+                match format {
+                    DocumentFormat::Json => data::to_json_preserving_negative_zero(value),
+                    DocumentFormat::Yaml => data::to_yaml_preserving_negative_zero(value),
+                }
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            );
+        }
+        match format {
+            DocumentFormat::Json => encoded.concat(),
+            DocumentFormat::Yaml => encoded.join("---\n"),
+        }
+    } else {
+        let codec = JsonYamlCodec;
+        codec
+            .encode_stream(format, values)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?
+    };
     let sink = FileOutputSink;
     sink.write(
         output,
