@@ -887,6 +887,9 @@ fn parse_number(word: &str) -> Option<Json> {
         return Some(Json::from(value));
     }
     if let Ok(Json::Number(value)) = serde_json::from_str::<Json>(word) {
+        if integer_parts(&value.to_string()).is_some() {
+            return Some(Json::Number(value));
+        }
         if let Some(float) = value.as_f64()
             && let Some(float) = serde_json::Number::from_f64(float)
         {

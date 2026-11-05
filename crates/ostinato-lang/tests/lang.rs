@@ -863,6 +863,50 @@ fn printf_integer_zero_padding_and_alternate_forms_match_go() {
 }
 
 #[test]
+fn plain_big_integer_literals_are_exact() {
+    let context = template_context();
+    assert_eq!(
+        render(
+            "{{eq 100000000000000000000 100000000000000000001}}",
+            &context
+        )
+        .expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render(
+            "{{lt 100000000000000000000 100000000000000000001}}",
+            &context
+        )
+        .expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{100000000000000000000}}", &context).expect("render"),
+        "100000000000000000000"
+    );
+    assert_eq!(
+        render("{{printf \"%q\" 100000000000000000000}}", &context).expect("render"),
+        "'�'"
+    );
+
+    let big: serde_json::Value =
+        serde_json::from_str(r#"{"big": 100000000000000000001}"#).expect("json");
+    assert_eq!(
+        render("{{eq .big 100000000000000000000}}", &big).expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render("{{gt .big 100000000000000000000}}", &big).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{lt .big 100000000000000000002}}", &big).expect("render"),
+        "true"
+    );
+}
+
+#[test]
 fn printf_formats_exponent_form_numbers_exactly() {
     let context = template_context();
     assert_eq!(
