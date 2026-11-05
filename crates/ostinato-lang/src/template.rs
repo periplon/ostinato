@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 
+use num_bigint::BigUint;
 use serde_json::Value as Json;
 
 use crate::error::LangError;
@@ -659,6 +660,9 @@ enum Operand {
 #[derive(Debug, Clone)]
 enum Lexeme {
     Word(String),
+    /// Adjacent postfix access such as `).name`; whitespace before the dot
+    /// makes it a regular dot-relative `Word` instead.
+    Postfix(String),
     Quoted(String),
     LeftParen,
     RightParen,
@@ -795,10 +799,7 @@ impl PipelineParser {
                     Some(Lexeme::RightParen) => Operand::Group(Box::new(pipeline)),
                     _ => return Err(error_at(self.position, "missing `)` in template pipeline")),
                 };
-                while let Some(Lexeme::Word(word)) = self.peek()
-                    && word != "."
-                    && word.starts_with('.')
-                {
+                while let Some(Lexeme::Postfix(word)) = self.peek() {
                     let word = word.clone();
                     self.index += 1;
                     let segments: Vec<String> = word[1..].split('.').map(str::to_owned).collect();
@@ -818,6 +819,10 @@ impl PipelineParser {
             }
             Lexeme::RightParen => Err(error_at(self.position, "unexpected `)`")),
             Lexeme::Pipe => Err(error_at(self.position, "unexpected `|`")),
+            Lexeme::Postfix(word) => Err(error_at(
+                self.position,
+                format!("postfix path `{word}` must follow a parenthesized pipeline"),
+            )),
             Lexeme::Word(word) => self.word_operand(&word, allow_function),
         }
     }
@@ -989,7 +994,12 @@ fn lex_expression(source: &str, position: Position) -> Result<Vec<Lexeme>, LangE
                         format!("unexpected character `{character}` in template action"),
                     ));
                 }
-                lexemes.push(Lexeme::Word(characters[start..index].iter().collect()));
+                let word: String = characters[start..index].iter().collect();
+                if character == '.' && start > 0 && characters[start - 1] == ')' {
+                    lexemes.push(Lexeme::Postfix(word));
+                } else {
+                    lexemes.push(Lexeme::Word(word));
+                }
             }
         }
     }
@@ -1448,18 +1458,8 @@ fn call_function(name: &str, arguments: &[Json], position: Position) -> Result<J
             for index in &arguments[1..] {
                 current = match current {
                     Json::Array(values) => {
-                        let position_index = integer_of(index).ok_or_else(|| {
-                            error_at(
-                                position,
-                                format!("index must be an integer, got {}", type_name(index)),
-                            )
-                        })?;
-                        let Ok(position_index) = usize::try_from(position_index) else {
-                            return Err(error_at(
-                                position,
-                                "array index must be a non-negative integer",
-                            ));
-                        };
+                        let position_index = exact_integer_index(index)
+                            .map_err(|message| error_at(position, message))?;
                         values.get(position_index).ok_or_else(|| {
                             error_at(
                                 position,
@@ -1606,6 +1606,33 @@ fn integer_parts(text: &str) -> Option<IntegerParts> {
     })
 }
 
+fn exact_integer(value: &Json) -> Option<IntegerParts> {
+    let Json::Number(number) = value else {
+        return None;
+    };
+    let text = number.to_string();
+    if let Some(parts) = integer_parts(&text) {
+        return Some(parts);
+    }
+    let float = number.as_f64()?;
+    if float.is_finite() && float.fract() == 0.0 {
+        integer_parts(&format!("{float:.0}"))
+    } else {
+        None
+    }
+}
+
+fn exact_integer_index(value: &Json) -> Result<usize, &'static str> {
+    let parts = exact_integer(value).ok_or("array index must be an integer")?;
+    if parts.negative {
+        return Err("array index must be non-negative");
+    }
+    parts
+        .digits
+        .parse::<usize>()
+        .map_err(|_| "array index is out of range")
+}
+
 fn compare_integer_parts(left: &IntegerParts, right: &IntegerParts) -> Ordering {
     if left.negative != right.negative {
         return if left.negative {
@@ -1622,22 +1649,6 @@ fn compare_integer_parts(left: &IntegerParts, right: &IntegerParts) -> Ordering 
         ordering.reverse()
     } else {
         ordering
-    }
-}
-
-fn integer_of(value: &Json) -> Option<i128> {
-    match value {
-        Json::Number(number) => {
-            if let Some(value) = number.as_i64() {
-                Some(i128::from(value))
-            } else if let Some(value) = number.as_u64() {
-                Some(i128::from(value))
-            } else {
-                number.as_f64().map(|value| value as i128)
-            }
-        }
-        Json::Bool(value) => Some(i128::from(*value)),
-        _ => None,
     }
 }
 
@@ -1675,8 +1686,10 @@ struct PrintfFlags {
 #[derive(Debug)]
 struct FormattedValue {
     text: String,
-    prefix_len: usize,
+    sign_len: usize,
+    base_len: usize,
     numeric: bool,
+    zero_pad: bool,
 }
 
 fn go_printf(format: &str, arguments: &[Json], position: Position) -> Result<String, LangError> {
@@ -1746,17 +1759,21 @@ fn go_printf(format: &str, arguments: &[Json], position: Position) -> Result<Str
 
         let mut width = if width_from_argument {
             let value = next_printf_argument(arguments, &mut argument_index, position)?;
-            let value = integer_of(value)
+            let value = exact_integer(value)
                 .ok_or_else(|| error_at(position, "printf: width argument must be an integer"))?;
-            if value < 0 {
+            if value.negative {
                 flags.left = true;
                 Some(checked_printf_size(
-                    value.unsigned_abs(),
+                    integer_parts_u128(&value, "width", position)?,
                     "width",
                     position,
                 )?)
             } else {
-                Some(checked_printf_size(value as u128, "width", position)?)
+                Some(checked_printf_size(
+                    integer_parts_u128(&value, "width", position)?,
+                    "width",
+                    position,
+                )?)
             }
         } else {
             fixed_printf_size(&width_digits, "width", position)?
@@ -1764,13 +1781,17 @@ fn go_printf(format: &str, arguments: &[Json], position: Position) -> Result<Str
 
         let precision = if precision_from_argument {
             let value = next_printf_argument(arguments, &mut argument_index, position)?;
-            let value = integer_of(value).ok_or_else(|| {
+            let value = exact_integer(value).ok_or_else(|| {
                 error_at(position, "printf: precision argument must be an integer")
             })?;
-            if value < 0 {
+            if value.negative {
                 None
             } else {
-                Some(checked_printf_size(value as u128, "precision", position)?)
+                Some(checked_printf_size(
+                    integer_parts_u128(&value, "precision", position)?,
+                    "precision",
+                    position,
+                )?)
             }
         } else {
             match precision_digits {
@@ -1831,6 +1852,19 @@ fn next_printf_argument<'a>(
     Ok(argument)
 }
 
+fn integer_parts_u128(
+    parts: &IntegerParts,
+    label: &str,
+    position: Position,
+) -> Result<u128, LangError> {
+    parts.digits.parse::<u128>().map_err(|_| {
+        error_at(
+            position,
+            format!("printf: {label} {} is too large", parts.digits),
+        )
+    })
+}
+
 fn checked_printf_size(value: u128, label: &str, position: Position) -> Result<usize, LangError> {
     if value > MAX_PRINTF_FIELD as u128 {
         return Err(error_at(
@@ -1852,10 +1886,17 @@ fn apply_width(value: FormattedValue, width: usize, flags: &PrintfFlags) -> Stri
         let mut text = value.text;
         text.push_str(&" ".repeat(padding));
         text
-    } else if flags.zero && value.numeric {
-        let prefix_len = value.prefix_len.min(value.text.len());
-        let (prefix, rest) = value.text.split_at(prefix_len);
-        format!("{prefix}{}{rest}", "0".repeat(padding))
+    } else if flags.zero && value.numeric && value.zero_pad {
+        let sign_len = value.sign_len.min(value.text.len());
+        let base_len = value.base_len.min(value.text.len() - sign_len);
+        let digits_len = value.text.len().saturating_sub(sign_len + base_len);
+        let zero_count = width.saturating_sub(sign_len + digits_len);
+        if zero_count == 0 {
+            return value.text;
+        }
+        let (sign, rest) = value.text.split_at(sign_len);
+        let (base, digits) = rest.split_at(base_len);
+        format!("{sign}{base}{}{digits}", "0".repeat(zero_count))
     } else {
         format!("{}{}", " ".repeat(padding), value.text)
     }
@@ -1871,8 +1912,10 @@ fn format_value(
     match verb {
         'v' => Ok(FormattedValue {
             text: stringify(argument),
-            prefix_len: 0,
+            sign_len: 0,
+            base_len: 0,
             numeric: false,
+            zero_pad: false,
         }),
         's' => {
             let mut text = stringify(argument);
@@ -1881,20 +1924,26 @@ fn format_value(
             }
             Ok(FormattedValue {
                 text,
-                prefix_len: 0,
+                sign_len: 0,
+                base_len: 0,
                 numeric: false,
+                zero_pad: false,
             })
         }
         'q' => Ok(FormattedValue {
-            text: go_quote(&stringify(argument)),
-            prefix_len: 0,
+            text: go_quote(argument, position)?,
+            sign_len: 0,
+            base_len: 0,
             numeric: false,
+            zero_pad: false,
         }),
         't' => match argument {
             Json::Bool(value) => Ok(FormattedValue {
                 text: value.to_string(),
-                prefix_len: 0,
+                sign_len: 0,
+                base_len: 0,
                 numeric: false,
+                zero_pad: false,
             }),
             other => Err(error_at(
                 position,
@@ -1902,16 +1951,16 @@ fn format_value(
             )),
         },
         'd' | 'i' | 'x' | 'X' | 'o' | 'b' => {
-            let value = integer_of(argument).ok_or_else(|| {
+            let value = exact_integer(argument).ok_or_else(|| {
                 error_at(
                     position,
                     format!(
-                        "printf: `%{verb}` requires a number, got {}",
+                        "printf: `%{verb}` requires an integer, got {}",
                         type_name(argument)
                     ),
                 )
             })?;
-            Ok(format_integer(verb, value, flags, precision))
+            format_integer(verb, &value, flags, precision, position)
         }
         'f' | 'e' | 'g' => {
             let value = float_of(argument).ok_or_else(|| {
@@ -1934,48 +1983,56 @@ fn format_value(
 
 fn format_integer(
     verb: char,
-    value: i128,
+    value: &IntegerParts,
     flags: &PrintfFlags,
     precision: Option<usize>,
-) -> FormattedValue {
-    let negative = value < 0;
-    let magnitude = value.unsigned_abs();
+    position: Position,
+) -> Result<FormattedValue, LangError> {
     let mut digits = match verb {
-        'd' | 'i' => magnitude.to_string(),
-        'x' => format!("{magnitude:x}"),
-        'X' => format!("{magnitude:X}"),
-        'o' => format!("{magnitude:o}"),
-        _ => format!("{magnitude:b}"),
+        'd' | 'i' => value.digits.clone(),
+        _ => {
+            let magnitude = BigUint::parse_bytes(value.digits.as_bytes(), 10)
+                .ok_or_else(|| error_at(position, "printf: invalid integer value"))?;
+            match verb {
+                'x' => magnitude.to_str_radix(16),
+                'X' => magnitude.to_str_radix(16).to_uppercase(),
+                'o' => magnitude.to_str_radix(8),
+                _ => magnitude.to_str_radix(2),
+            }
+        }
     };
     if let Some(precision) = precision {
-        if precision == 0 && magnitude == 0 {
+        if precision == 0 && value.digits == "0" {
             digits.clear();
         } else if digits.len() < precision {
             digits = format!("{}{digits}", "0".repeat(precision - digits.len()));
         }
     }
-    let mut prefix = String::new();
-    if negative {
-        prefix.push('-');
+    let mut sign = String::new();
+    if value.negative {
+        sign.push('-');
     } else if flags.plus {
-        prefix.push('+');
+        sign.push('+');
     } else if flags.space {
-        prefix.push(' ');
+        sign.push(' ');
     }
+    let mut base = String::new();
     if flags.alternate {
         match verb {
-            'x' => prefix.push_str("0x"),
-            'X' => prefix.push_str("0X"),
-            'o' if !digits.starts_with('0') => prefix.push('0'),
-            'b' => prefix.push_str("0b"),
+            'x' => base.push_str("0x"),
+            'X' => base.push_str("0X"),
+            'o' if !digits.starts_with('0') => digits.insert(0, '0'),
+            'b' => base.push_str("0b"),
             _ => {}
         }
     }
-    FormattedValue {
-        text: format!("{prefix}{digits}"),
-        prefix_len: prefix.len(),
+    Ok(FormattedValue {
+        text: format!("{sign}{base}{digits}"),
+        sign_len: sign.len(),
+        base_len: base.len(),
         numeric: true,
-    }
+        zero_pad: precision.is_none(),
+    })
 }
 
 fn format_float(
@@ -1986,24 +2043,48 @@ fn format_float(
 ) -> FormattedValue {
     let negative = value.is_sign_negative();
     let magnitude = value.abs();
-    let precision = precision.unwrap_or(6);
-    let mut prefix = String::new();
+    let mut sign = String::new();
     if negative {
-        prefix.push('-');
+        sign.push('-');
     } else if flags.plus {
-        prefix.push('+');
+        sign.push('+');
     } else if flags.space {
-        prefix.push(' ');
+        sign.push(' ');
     }
     let body = match verb {
-        'f' => format!("{magnitude:.precision$}"),
-        'e' => go_exponent(magnitude, precision),
+        'f' => {
+            let places = precision.unwrap_or(6);
+            let mut body = format!("{magnitude:.places$}");
+            if flags.alternate && places == 0 {
+                body.push('.');
+            }
+            body
+        }
+        'e' => {
+            let places = precision.unwrap_or(6);
+            let mut body = go_exponent(magnitude, places);
+            if flags.alternate {
+                body = ensure_decimal_point_in_exponent(body);
+            }
+            body
+        }
         _ => go_general(magnitude, precision, flags.alternate),
     };
     FormattedValue {
-        text: format!("{prefix}{body}"),
-        prefix_len: prefix.len(),
+        text: format!("{sign}{body}"),
+        sign_len: sign.len(),
+        base_len: 0,
         numeric: true,
+        zero_pad: true,
+    }
+}
+
+fn ensure_decimal_point_in_exponent(text: String) -> String {
+    match text.split_once('e') {
+        Some((mantissa, exponent)) if !mantissa.contains('.') => {
+            format!("{mantissa}.e{exponent}")
+        }
+        _ => text,
     }
 }
 
@@ -2022,30 +2103,62 @@ fn go_exponent(magnitude: f64, precision: usize) -> String {
     }
 }
 
-fn go_general(magnitude: f64, precision: usize, alternate: bool) -> String {
-    let precision = if precision == 0 { 1 } else { precision };
+fn go_general(magnitude: f64, precision: Option<usize>, alternate: bool) -> String {
     if magnitude == 0.0 {
-        return if alternate {
-            format!("{magnitude:.precision$}")
-        } else {
-            "0".to_owned()
+        return match (precision, alternate) {
+            (Some(places), true) => format!("0.{}", "0".repeat(places.saturating_sub(1))),
+            (Some(_), false) | (None, false) => "0".to_owned(),
+            (None, true) => "0.00000".to_owned(),
         };
     }
+    match precision {
+        Some(places) => go_general_explicit(magnitude, places, alternate),
+        None if alternate => go_general_explicit(magnitude, 6, true),
+        None => {
+            let (mantissa, exponent) = shortest_exponent(magnitude);
+            if !(-4..6).contains(&exponent) {
+                format!(
+                    "{mantissa}e{}{:02}",
+                    if exponent < 0 { '-' } else { '+' },
+                    exponent.unsigned_abs()
+                )
+            } else {
+                format!("{magnitude}")
+            }
+        }
+    }
+}
+
+fn shortest_exponent(magnitude: f64) -> (String, i32) {
+    let text = format!("{magnitude:e}");
+    match text.split_once('e') {
+        Some((mantissa, exponent)) => (mantissa.to_owned(), exponent.parse::<i32>().unwrap_or(0)),
+        None => (text, 0),
+    }
+}
+
+fn go_general_explicit(magnitude: f64, precision: usize, alternate: bool) -> String {
+    let effective = if precision == 0 { 1 } else { precision };
     let exponent = magnitude.log10().floor() as i32;
-    if exponent < -4 || exponent >= precision as i32 {
-        let mut output = go_exponent(magnitude, precision.saturating_sub(1));
-        if !alternate {
+    if exponent < -4 || exponent >= effective as i32 {
+        let mut output = go_exponent(magnitude, effective.saturating_sub(1));
+        if alternate {
+            output = ensure_decimal_point_in_exponent(output);
+        } else {
             output = trim_exponent_zeros(&output);
         }
         output
     } else {
-        let fractional = (precision as i32 - exponent - 1).max(0) as usize;
-        let output = format!("{magnitude:.fractional$}");
+        let fractional = (effective as i32 - exponent - 1).max(0) as usize;
+        let mut output = format!("{magnitude:.fractional$}");
         if alternate {
-            output
+            if !output.contains('.') {
+                output.push('.');
+            }
         } else {
-            trim_decimal_zeros(&output)
+            output = trim_decimal_zeros(&output);
         }
+        output
     }
 }
 
@@ -2068,31 +2181,78 @@ fn trim_decimal_zeros(text: &str) -> String {
     }
 }
 
-fn go_quote(value: &str) -> String {
+fn go_quote(value: &Json, position: Position) -> Result<String, LangError> {
+    match value {
+        Json::String(text) => Ok(quote_go(text, '"')),
+        Json::Number(number) => {
+            let text = number.to_string();
+            let Some(parts) = integer_parts(&text) else {
+                return Err(error_at(
+                    position,
+                    "printf: `%q` requires a string or integer, got a float",
+                ));
+            };
+            if parts.negative {
+                return Ok("'\u{fffd}'".to_owned());
+            }
+            let code = parts.digits.parse::<u32>().map_err(|_| {
+                error_at(
+                    position,
+                    "printf: `%q` integer is outside the Unicode range",
+                )
+            })?;
+            let character = char::from_u32(code).unwrap_or('\u{fffd}');
+            Ok(quote_go(&character.to_string(), '\''))
+        }
+        other => Err(error_at(
+            position,
+            format!("printf: `%q` does not support {} values", type_name(other)),
+        )),
+    }
+}
+
+fn quote_go(value: &str, quote: char) -> String {
     let mut output = String::with_capacity(value.len() + 2);
-    output.push('"');
+    output.push(quote);
     for character in value.chars() {
+        if character == quote {
+            output.push('\\');
+            output.push(quote);
+            continue;
+        }
         match character {
-            '"' => output.push_str("\\\""),
             '\\' => output.push_str("\\\\"),
+            '\u{7}' => output.push_str("\\a"),
+            '\u{8}' => output.push_str("\\b"),
+            '\u{c}' => output.push_str("\\f"),
             '\n' => output.push_str("\\n"),
             '\r' => output.push_str("\\r"),
             '\t' => output.push_str("\\t"),
-            '\u{8}' => output.push_str("\\b"),
-            '\u{c}' => output.push_str("\\f"),
             '\u{b}' => output.push_str("\\v"),
-            character if character.is_control() => {
-                if (character as u32) < 0x100 {
-                    output.push_str(&format!("\\x{:02x}", character as u32));
+            character if needs_go_escape(character) => {
+                let code = character as u32;
+                if code < 0x20 || code == 0x7f {
+                    output.push_str(&format!("\\x{code:02x}"));
+                } else if code <= 0xffff {
+                    output.push_str(&format!("\\u{code:04x}"));
                 } else {
-                    output.push_str(&format!("\\u{:04x}", character as u32));
+                    output.push_str(&format!("\\U{code:08x}"));
                 }
             }
             character => output.push(character),
         }
     }
-    output.push('"');
+    output.push(quote);
     output
+}
+
+fn needs_go_escape(character: char) -> bool {
+    character.is_control()
+        || (character.is_whitespace() && character != ' ')
+        || matches!(
+            character,
+            '\u{ad}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{feff}'
+        )
 }
 
 // ---------------------------------------------------------------------------

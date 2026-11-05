@@ -312,7 +312,7 @@ Plan construction:
 
 ## Templates
 
-Strings in `exec.cmd`, `exec.cwd`, `exec.env`, `agent.prompt`, `agent.system` and `agent.command` support Go `text/template`-style runtime placeholders:
+Strings in `exec.cmd`, `exec.cwd`, `exec.env`, `agent.prompt`, `agent.system`, `agent.command` and `agent.env` support a Go `text/template`-inspired subset of runtime placeholders:
 
 ```text
 {{ run_id }}
@@ -361,7 +361,7 @@ Unknown paths fail the step. Template substitution happens at execution time, so
 {{/* a comment */}}
 ```
 
-- `{{if PIPELINE}}...{{else if PIPELINE}}...{{else}}...{{end}}` runs the matching branch. Any number of `else if` branches is allowed.
+- `{{if PIPELINE}}...{{else if PIPELINE}}...{{else}}...{{end}}` runs the matching branch. `else if` chains count toward the overall 256-level nesting limit (a chain of at most 256 branches including the initial `if`).
 - `{{range PIPELINE}}...{{else}}...{{end}}` iterates arrays (the dot becomes the element) and objects (the dot becomes the value; keys are visited in sorted order for deterministic output). The `else` branch runs when the collection is empty.
 - `{{with PIPELINE}}...{{else}}...{{end}}` sets the dot to the pipeline value when it is truthy; otherwise it renders the `else` branch with the previous dot.
 - `{{/* ... */}}` is a comment and produces no output.
@@ -373,7 +373,7 @@ Go-like truthiness is used by `if`, `with`, `and`, `or` and `not`: `false`, `0`,
 
 A pipeline is `value | function arg...`. The value produced by a stage is appended as the last argument of the next function, so `{{ .name | printf "Hello, %s!" }}` behaves as `printf "Hello, %s!" .name`.
 
-Values may be paths, double-quoted strings (with Go-style escapes), backtick raw strings, integers, floats, `true`, `false`, `null`/`nil`, or parenthesized pipelines such as `(eq .round 2)`.
+Values may be paths, double-quoted strings, backtick raw strings, integers, floats, `true`, `false`, `null`/`nil`, or parenthesized pipelines such as `(eq .round 2)`. Double-quoted strings support the escapes `\a \b \f \n \r \t \v \\ \" \' \0`, hexadecimal `\xNN`, and Unicode `\uNNNN`/`\UNNNNNNNN`; Go octal escapes (`\123`) and rune literals (`'a'`) are not supported.
 
 | Function | Behavior |
 |---|---|
@@ -386,7 +386,20 @@ Values may be paths, double-quoted strings (with Go-style escapes), backtick raw
 | `len a` | Length of a string (bytes), array or object. |
 | `index item key...` | Indexes arrays (integer keys) and objects (string keys), descending through multiple keys. |
 | `print a...` | `fmt.Sprint`-style concatenation; spaces separate adjacent non-string values. |
-| `printf format a...` | `fmt.Sprintf`-style formatting. `%s`, `%d`, `%v`, `%q`, `%t`, `%f`, `%e`, `%g`, `%x`, `%X`, `%o`, `%b`, `%%`, widths and precisions are supported, including `-`, `+`, space, `0` and `#` flags and `*` width/precision arguments. Field widths and precisions are capped at 1 MiB; larger values are template errors rather than allocations. |
+| `printf format a...` | Go `fmt`-inspired formatting subset. Supports `%s` (stringified value), `%v` (raw string, plain scalar, or compact JSON for arrays/objects), `%q` (Go-quoted string or rune for integer values), `%t`, `%d`/`%i`, `%f`/`%e`/`%g`, `%x`/`%X`/`%o`/`%b`, `%%`, the `-`, `+`, space, `0` and `#` flags, and `*` width/precision arguments. Field widths and precisions are capped at 1 MiB; larger values are template errors rather than allocations. |
+
+### Not supported
+
+This is not a complete Go `text/template` or `fmt` implementation. In particular:
+
+- `{{define}}`, `{{template}}`, `{{block}}`, `{{call}}`, method values and `html/template` escaping are not supported.
+- Template variables other than `$` (root) are not supported, so `range $index, $value := ...` and `with $x := ...` do not parse.
+- `{{break}}` and `{{continue}}` are not supported.
+- Rune literals (`'a'`) and Go octal string escapes (`\123`) are rejected; use quoted strings, `\xNN` or `\uNNNN`.
+- `%v` is not Go's recursive `fmt` representation: strings print raw, scalars print plainly, and arrays/objects print as compact JSON.
+- `%p`, `%c`, `%U`, `%T`, argument-indexing (`%[2]d`) and other `fmt` verbs outside the table above are rejected.
+
+Only `printf` field widths and precisions are capped. There is currently **no per-template or per-argument output cap**: a template can expand a large context value or a long `range` body into a large string that is then persisted as a command argument or prompt. Keep templates bounded and prefer explicit paths.
 
 ### Whitespace and literal braces
 
