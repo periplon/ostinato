@@ -8789,6 +8789,54 @@ listcomp: ({l: [for i in [1] {a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [
 }
 
 #[test]
+fn disjunction_alternatives_inject_optional_narrowing_into_elements() {
+    let source = r#"
+package demo
+let P = {a: *1 | int, b: a}
+nested: ({o: {a: *1 | int, b: a}} | {o: {a: string}}) & {o: {a?: 3}}
+list: ({l: [{a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [{a?: 3}]}
+list2: ({l: [[{a: *1 | int, b: a}]]} | {l: [[{a: string}]]}) & {l: [[{a?: 3}]]}
+listcomp: ({l: [for i in [1] {a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [{a?: 4}]}
+let_alt: (P | {a: string}) & {a?: 5}
+#D: {a: *1 | int, b: a}
+def_alt: (#D | {a: string}) & {a?: 6}
+open: ({l: [{a: *1 | int, b: a}, ...]} | {l: [{a: string}]}) & {l: [{a?: 7}]}
+deep: ({o: {p: {a: *1 | int, b: a}}} | {o: {p: {a: string}}}) & {o: {p: {a?: 8}}}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse optional disjunction elements");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval optional disjunction elements")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["nested"]["o"], serde_json::json!({"a": 3, "b": 3}));
+    assert_eq!(json["list"]["l"][0], serde_json::json!({"a": 3, "b": 3}));
+    assert_eq!(
+        json["list2"]["l"][0][0],
+        serde_json::json!({"a": 3, "b": 3})
+    );
+    assert_eq!(
+        json["listcomp"]["l"][0],
+        serde_json::json!({"a": 4, "b": 4})
+    );
+    assert_eq!(json["let_alt"], serde_json::json!({"a": 5, "b": 5}));
+    assert_eq!(json["def_alt"], serde_json::json!({"a": 6, "b": 6}));
+    assert_eq!(json["open"]["l"][0], serde_json::json!({"a": 7, "b": 7}));
+    assert_eq!(json["deep"]["o"]["p"], serde_json::json!({"a": 8, "b": 8}));
+
+    // Multi-element optional disjunction lists currently fail closed.
+    for source in [
+        "package demo\nx: ({l: [{a: *1 | int, b: a}, {a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [{a?: 3}, {a?: 4}]}\n",
+        "package demo\nx: ({l: [{a: *1 | int, b: a}]} | {l: [{a: string}]}) & {l: [{a?: 3}], c: x.l[0].b}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse optional disjunction fail-closed");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "optional disjunction shape must fail closed: {source:?}"
+        );
+    }
+}
+
+#[test]
 fn let_mediated_self_default_cycles_fail_closed() {
     for source in [
         "package demo\nlet X = x.a + 0\nx: {a: X + 1} & {a: *2 | int}\n",

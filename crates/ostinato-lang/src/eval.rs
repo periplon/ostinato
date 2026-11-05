@@ -5950,9 +5950,19 @@ fn expr_sibling_dependency_names(
 
 fn value_has_any_field(value: &Value, names: &BTreeSet<String>) -> bool {
     match value {
-        Value::Struct(fields) | Value::Definition { fields, .. } => fields
+        Value::Struct(fields) => fields
             .iter()
             .any(|(key, value)| names.contains(key) || value_has_any_field(value, names)),
+        Value::Definition {
+            fields, optional, ..
+        } => {
+            fields
+                .iter()
+                .any(|(key, value)| names.contains(key) || value_has_any_field(value, names))
+                || optional
+                    .iter()
+                    .any(|(key, value)| names.contains(key) || value_has_any_field(value, names))
+        }
         Value::List(items) | Value::OpenListPrefix(items, _) => {
             items.iter().any(|item| value_has_any_field(item, names))
         }
