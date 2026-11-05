@@ -13605,6 +13605,10 @@ command: definside: {
 	#base: {q: cli.Print & {text: "BASE"}}
 	a: #base
 }
+command: {
+	#rootbase: {q: cli.Print & {text: "ROOTBASE"}}
+	defroot: #rootbase
+}
 "#,
     );
     let run = |implementation: &Path, command: &str| {
@@ -13621,6 +13625,7 @@ command: definside: {
         "bytesinterp",
         "listtail",
         "definside",
+        "defroot",
     ] {
         let expected = run(Path::new(&cue), command);
         let actual = run(&bin(), command);
@@ -13642,24 +13647,88 @@ fn tool_command_pruning_ignores_shadowed_command_names() {
         &directory.path().join("x_tool.cue"),
         r#"
 package foo
-import "tool/exec"
+import (
+	"tool/cli"
+	"tool/exec"
+)
 command: build: {
-	run: exec.Run & {cmd: ["sh", "-c", "printf BUILD > built.txt"]}
+	run: exec.Run & {cmd: ["sh", "-c", "printf BUILD > built.txt"], stdout: string}
+	print: cli.Print & {text: "R=\(run.stdout)"}
+}
+command: buildlet: {
+	let run = {value: "x"}
+	print: cli.Print & {text: "L=\(run.value)"}
 }
 command: run: {x: 1 & 2}
 "#,
     );
-    let expected = Command::new(&cue)
-        .args(["cmd", "build"])
-        .current_dir(directory.path())
-        .output()
-        .expect("run cue cmd");
-    let actual = ost(&["cmd", "build", directory.path().to_str().expect("path")]);
-    assert!(expected.status.success());
-    assert_eq!(actual.status.code(), expected.status.code());
-    assert_eq!(actual.stdout, expected.stdout);
-    assert_eq!(
-        std::fs::read(directory.path().join("built.txt")).expect("artifact"),
-        b"BUILD"
+    for (command, artifact, prefix) in [
+        ("build", Some(("built.txt", b"BUILD".as_slice())), "R="),
+        ("buildlet", None, "L="),
+    ] {
+        let expected = Command::new(&cue)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .output()
+            .expect("run cue cmd");
+        let actual = ost(&["cmd", command, directory.path().to_str().expect("path")]);
+        assert!(expected.status.success(), "{command}");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+        assert!(
+            String::from_utf8_lossy(&actual.stdout).starts_with(prefix),
+            "{command}"
+        );
+        if let Some((artifact, contents)) = artifact {
+            assert_eq!(
+                std::fs::read(directory.path().join(artifact)).expect("artifact"),
+                contents,
+                "{command}"
+            );
+        }
+    }
+}
+
+#[test]
+fn tool_command_sibling_command_aliases_match_cue() {
+    let Some(cue) = cue_command() else {
+        eprintln!("skipping: official cue not installed");
+        return;
+    };
+    let directory = tempfile::tempdir().expect("tempdir");
+    write(
+        &directory.path().join("x_tool.cue"),
+        r#"
+package foo
+import (
+	"tool/cli"
+	"tool/exec"
+)
+command: {
+	a1: {p: cli.Print & {text: "A"}}
+	b1: a1
+	a2: {run: exec.Run & {cmd: ["sh", "-c", "echo A"], stdout: string}}
+	b2: {
+		run2: a2.run
+		p: cli.Print & {text: "B"}
+	}
+}
+"#,
     );
+    let run = |implementation: &Path, command: &str| {
+        Command::new(implementation)
+            .args(["cmd", command])
+            .current_dir(directory.path())
+            .output()
+            .expect("run command")
+    };
+    for command in ["b1", "b2"] {
+        let expected = run(Path::new(&cue), command);
+        let actual = run(&bin(), command);
+        assert!(expected.status.success(), "{command}");
+        assert_eq!(actual.status.code(), expected.status.code(), "{command}");
+        assert_eq!(actual.stdout, expected.stdout, "{command}");
+        assert_eq!(actual.stderr, expected.stderr, "{command}");
+    }
 }
