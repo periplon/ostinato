@@ -170,6 +170,7 @@ pub enum NumericError {
     DivisionByZero,
     ExponentOutOfRange,
     Overflow,
+    Underflow,
     InvalidOperation,
 }
 
@@ -183,6 +184,7 @@ impl NumericError {
             Self::DivisionByZero => "division by zero",
             Self::ExponentOutOfRange => "exponent out of range",
             Self::Overflow => "overflow",
+            Self::Underflow => "underflow, subnormal",
             Self::InvalidOperation => "invalid operation",
         }
     }
@@ -309,6 +311,11 @@ fn mul_at(
     let result = BigDecimal::new(coefficient, scale);
     if result == 0 {
         return Ok(BigDecimal::new(BigInt::from(0), scale));
+    }
+    // apd's `round` re-checks the pre-rounding raw exponent against
+    // Min/MaxExponent before dropping digits.
+    if !(-MAX_EXPONENT..=MAX_EXPONENT).contains(&scale) {
+        return Err(NumericError::ExponentOutOfRange);
     }
     let rounded = round_with_mode(&result, precision, mode);
     check_exponent(&rounded)?;
@@ -533,7 +540,11 @@ fn apd_exp_at(
     }
     let limit = BigDecimal::from(cp.saturating_mul(23));
     if absolute_value > limit {
-        return Err(NumericError::Overflow);
+        return Err(if value < &BigDecimal::from(0) {
+            NumericError::Underflow
+        } else {
+            NumericError::Overflow
+        });
     }
     let tiny = BigDecimal::new(BigInt::from(9), i64::try_from(cp).unwrap_or(i64::MAX) + 1);
     if absolute_value <= tiny {
@@ -768,6 +779,12 @@ pub fn pow(base: &BigDecimal, exponent: &BigDecimal) -> NumericResult<BigDecimal
         integer_part = mul_at(&integer_part, &factor, precision, RoundingMode::HalfUp)?;
     }
 
+    // apd.Pow's final `round` rejects a raw exponent below MinExponent
+    // before it drops digits, so `10^-99958` fails even though its adjusted
+    // exponent is in range.  Quo deliberately does not use this check.
+    if !(MIN_EXPONENT..=MAX_EXPONENT).contains(&apd_exponent(&integer_part)) {
+        return Err(NumericError::ExponentOutOfRange);
+    }
     let mut result = round_with_mode(&integer_part, CUE_PRECISION, RoundingMode::HalfUp);
     check_exponent(&result)?;
     if negative_base
@@ -1062,8 +1079,21 @@ mod tests {
             Err(NumericError::ExponentOutOfRange)
         );
         assert_eq!(exp(&dec("23000")), Err(NumericError::Overflow));
+        assert_eq!(exp(&dec("-23000")), Err(NumericError::Underflow));
         assert_eq!(
             pow(&dec("10"), &dec("100001")),
+            Err(NumericError::ExponentOutOfRange)
+        );
+        assert_eq!(
+            pow(&dec("10"), &dec("-99958")),
+            Err(NumericError::ExponentOutOfRange)
+        );
+        assert_eq!(
+            pow(&dec("10"), &dec("-99950.5")),
+            Err(NumericError::ExponentOutOfRange)
+        );
+        assert_eq!(
+            mul(&dec("1e-99999"), &dec("1e-2")),
             Err(NumericError::ExponentOutOfRange)
         );
         assert_eq!(
@@ -1085,6 +1115,14 @@ mod tests {
         assert_eq!(
             cue_decimal_string(&mul(&dec("1e99999"), &dec("10")).expect("mul")),
             "1.0E+100000"
+        );
+        assert_eq!(
+            cue_decimal_string(&mul(&dec("1e-99999"), &dec("1e-1")).expect("mul")),
+            "1E-100000"
+        );
+        assert_eq!(
+            cue_decimal_string(&pow(&dec("10"), &dec("-99957")).expect("pow")),
+            "1.000000000000000000000000000000000E-99957"
         );
     }
 

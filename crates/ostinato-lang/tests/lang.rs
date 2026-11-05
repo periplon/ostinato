@@ -8388,6 +8388,28 @@ struct_comp: {for i in [1] {'k': i}}
         "two distinct labels that render as U+FFFD cannot be exported losslessly"
     );
 
+    let control_selection =
+        "package demo\nx: {\"\\u0007ff\": 1}\nsel: x.\"\\u0007ff\"\nkeys: [for k, v in x {k}]\n";
+    let file = ostinato_lang::parse(control_selection).expect("parse control selection");
+    let control_value = ostinato_lang::eval_file(&file).expect("eval control selection");
+    let json = control_value.to_json().expect("json");
+    assert_eq!(json["sel"], 1);
+    assert_eq!(json["keys"][0], "\u{7}ff");
+
+    let bell_selection =
+        "package demo\nx: {'\\a': 1}\nsel: x[\"\\a\"]\nkeys: [for k, v in x {k}]\n";
+    let file = ostinato_lang::parse(bell_selection).expect("parse bell selection");
+    let value = ostinato_lang::eval_file(&file).expect("eval bell selection");
+    let json = value.to_json().expect("json");
+    assert_eq!(json["sel"], 1);
+    assert_eq!(json["keys"][0], "\u{7}");
+    assert_eq!(
+        ostinato_lang::select_path(&control_value, "x.\"\\u0007ff\"")
+            .expect("select_path control")
+            .to_json(),
+        Some(serde_json::json!(1))
+    );
+
     let selection = r#"
 package demo
 x: {'k': 1}

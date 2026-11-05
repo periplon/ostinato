@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -575,6 +576,8 @@ fn lookup_field(fields: &BTreeMap<String, Value>, segment: &str) -> Result<Value
     // Hidden fields are stored with an internal prefix (`\u{3}_name`) and
     // escaped labels with another (`\u{4}`). `cue export -e _name` addresses
     // the user-visible name, so try the prefixed forms too.
+    let segment = crate::ast::encode_string_label(segment);
+    let segment = segment.as_str();
     fields
         .get(segment)
         .or_else(|| fields.get(&format!("\u{3}{segment}")))
@@ -928,7 +931,19 @@ fn output_field_name(name: &str) -> String {
     if is_hidden_key(name) || name.starts_with(ESCAPED_PREFIX) {
         name.to_owned()
     } else {
-        display_field_name(name).to_owned()
+        // Keep raw-bytes/control-prefix labels in their internal encoded form
+        // until the display/JSON boundary; selection also addresses this form.
+        strip_internal_prefix(name).to_owned()
+    }
+}
+
+fn strip_internal_prefix(key: &str) -> &str {
+    if let Some(rest) = key.strip_prefix(NON_DEFINITION_PREFIX) {
+        rest.strip_prefix(ESCAPED_PREFIX).unwrap_or(rest)
+    } else if let Some(rest) = key.strip_prefix(ESCAPED_PREFIX) {
+        rest
+    } else {
+        key.strip_prefix(HIDDEN_PREFIX).unwrap_or(key)
     }
 }
 
@@ -944,14 +959,13 @@ pub(crate) fn is_hidden_key(key: &str) -> bool {
     key.starts_with(HIDDEN_PREFIX)
 }
 
-fn display_field_name(key: &str) -> &str {
-    if let Some(rest) = key.strip_prefix(NON_DEFINITION_PREFIX) {
-        return rest.strip_prefix(ESCAPED_PREFIX).unwrap_or(rest);
+fn display_field_name(key: &str) -> Cow<'_, str> {
+    let stripped = strip_internal_prefix(key);
+    if stripped.starts_with(crate::ast::RAW_LABEL_PREFIX) {
+        Cow::Owned(crate::ast::decode_label_for_output(stripped))
+    } else {
+        Cow::Borrowed(stripped)
     }
-    if let Some(rest) = key.strip_prefix(ESCAPED_PREFIX) {
-        return rest;
-    }
-    key.strip_prefix(HIDDEN_PREFIX).unwrap_or(key)
 }
 
 #[derive(Debug)]
@@ -1168,7 +1182,7 @@ impl<'a> Frame<'a> {
                             if let Some(key) = key {
                                 bindings.insert(
                                     key.clone(),
-                                    Value::String(display_field_name(&entry_key).to_owned()),
+                                    Value::String(display_field_name(&entry_key).into_owned()),
                                 );
                             }
                             bindings.insert(value.clone(), entry_value);
@@ -1377,6 +1391,12 @@ impl<'a> Frame<'a> {
     }
 
     fn generated_optional_key(&self, field: &str, quoted: bool) -> Option<String> {
+        let field = if quoted {
+            crate::ast::encode_string_label(field)
+        } else {
+            field.to_owned()
+        };
+        let field = field.as_str();
         let optionals = self.generated_optionals.borrow();
         if quoted {
             if field.starts_with([HIDDEN_PREFIX, ESCAPED_PREFIX, NON_DEFINITION_PREFIX]) {
@@ -1704,12 +1724,12 @@ impl<'a> Frame<'a> {
 
     fn optional_is_materialized(&self, key: &str) -> bool {
         let materialized = self.materialized.borrow();
-        materialized.contains(key) || materialized.contains(display_field_name(key))
+        materialized.contains(key) || materialized.contains(display_field_name(key).as_ref())
     }
 
     fn is_injected_key(&self, key: &str) -> bool {
         let injected = self.injected.borrow();
-        injected.contains(key) || injected.contains(display_field_name(key))
+        injected.contains(key) || injected.contains(display_field_name(key).as_ref())
     }
 
     fn injected_field_reference(&self, name: &str) -> bool {
@@ -1882,6 +1902,8 @@ impl<'a> Frame<'a> {
         if !quoted {
             return self.any_field_key(name);
         }
+        let name = crate::ast::encode_string_label(name);
+        let name = name.as_str();
         let fields = self.fields.borrow();
         let escaped = escaped_field(name);
         if fields.contains_key(&escaped) {
@@ -2342,7 +2364,7 @@ impl<'a> Frame<'a> {
             self.evaluating.borrow_mut().insert(key.to_owned());
             let previous_next = self
                 .next_definition
-                .replace(Some(display_field_name(key).to_owned()));
+                .replace(Some(display_field_name(key).into_owned()));
             let mut flattened = false;
             let result = if let Some(items) = self.params_items(&exprs) {
                 flattened = true;
@@ -2411,10 +2433,10 @@ impl<'a> Frame<'a> {
         self.evaluating.borrow_mut().insert(key.to_owned());
         let previous_next = self
             .next_definition
-            .replace(Some(display_field_name(key).to_owned()));
+            .replace(Some(display_field_name(key).into_owned()));
         let segment = self
             .within_params()
-            .then(|| display_field_name(key).to_owned());
+            .then(|| display_field_name(key).into_owned());
         let outcome = (|| -> Result<Value, LangError> {
             let mut evaluated: Vec<Option<Value>> = Vec::with_capacity(exprs.len());
             let mut deferred: Option<LangError> = None;
@@ -2638,7 +2660,7 @@ impl<'a> Frame<'a> {
                         child
                             .materialized
                             .borrow_mut()
-                            .insert(display_field_name(&key).to_owned());
+                            .insert(display_field_name(&key).into_owned());
                     }
                 }
             }
@@ -2676,7 +2698,7 @@ impl<'a> Frame<'a> {
                 child
                     .materialized
                     .borrow_mut()
-                    .insert(display_field_name(&key).to_owned());
+                    .insert(display_field_name(&key).into_owned());
             }
         }
         if let Some(segment) = self.params_segment.borrow().clone() {
@@ -2922,7 +2944,7 @@ impl<'a> Frame<'a> {
             if let Some(key) = child.display_storage_key(name)
                 && let Some(value) = child.values.borrow().get(&key)
             {
-                materialized_values.insert(display_field_name(name).to_owned(), value.clone());
+                materialized_values.insert(display_field_name(name).into_owned(), value.clone());
             }
         }
         for key in overrides.keys() {
@@ -3175,7 +3197,8 @@ impl<'a> Frame<'a> {
                                     HIDDEN_PREFIX,
                                     ESCAPED_PREFIX,
                                     NON_DEFINITION_PREFIX,
-                                ]) || !generated.contains_key(display_field_name(name)))))
+                                ]) || !generated
+                                    .contains_key(display_field_name(name).as_ref()))))
                 })
                 .map(|(name, _)| name.clone())
                 .collect()
@@ -3243,7 +3266,7 @@ impl<'a> Frame<'a> {
                     && self
                         .generated_optionals
                         .borrow()
-                        .contains_key(display_field_name(name)))
+                        .contains_key(display_field_name(name).as_ref()))
             {
                 continue;
             }
@@ -3270,6 +3293,8 @@ impl<'a> Frame<'a> {
 }
 
 fn quoted_lookup<'m, V>(map: &'m BTreeMap<String, V>, field: &str) -> Option<&'m V> {
+    let field = crate::ast::encode_string_label(field);
+    let field = field.as_str();
     if field.starts_with([HIDDEN_PREFIX, ESCAPED_PREFIX, NON_DEFINITION_PREFIX]) {
         map.get(&escaped_field(field))
     } else {
@@ -5064,7 +5089,7 @@ fn eval_list_comp(
                     .filter(|(key, _)| !is_hidden_key(key))
                     .map(|(key, value)| {
                         (
-                            Some(Value::String(display_field_name(&key).to_owned())),
+                            Some(Value::String(display_field_name(&key).into_owned())),
                             value,
                         )
                     })
@@ -5326,12 +5351,12 @@ fn admitted(admissions: &[Admission], key: &str, span: Span) -> Result<bool, Lan
     }
     let label = display_field_name(key);
     for admission in admissions {
-        if admission.names.contains(key) || admission.names.contains(label) {
+        if admission.names.contains(key) || admission.names.contains(label.as_ref()) {
             continue;
         }
         let mut matched = false;
         for pattern in &admission.patterns {
-            if pattern_matches(pattern, label, span)? {
+            if pattern_matches(pattern, &label, span)? {
                 matched = true;
                 break;
             }
@@ -5411,7 +5436,7 @@ fn apply_patterns(
             continue;
         }
         if let Some(constrained) =
-            pattern_constraint(patterns, display_field_name(key), value, span)?
+            pattern_constraint(patterns, &display_field_name(key), value, span)?
         {
             *value = constrained;
         }
@@ -5429,12 +5454,12 @@ fn apply_optional_patterns(
             continue;
         }
         for (pattern, _) in patterns {
-            pattern_matches(pattern, display_field_name(key), span)?;
+            pattern_matches(pattern, &display_field_name(key), span)?;
         }
         if matches!(value, Value::Conflict(_)) {
             continue;
         }
-        match pattern_constraint(patterns, display_field_name(key), value, span) {
+        match pattern_constraint(patterns, &display_field_name(key), value, span) {
             Ok(Some(constrained)) => *value = constrained,
             Ok(None) => {}
             Err(err) if err.to_string().contains("invalid pattern regex") => return Err(err),
@@ -7987,7 +8012,7 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
                     fields.insert(key.clone(), unify_values(&constraint, value, span)?);
                 } else if admitted(admissions, key, span)? {
                     let value =
-                        pattern_constraint_closed(patterns, display_field_name(key), value, span)?
+                        pattern_constraint_closed(patterns, &display_field_name(key), value, span)?
                             .unwrap_or_else(|| value.clone());
                     fields.insert(key.clone(), value);
                 } else {
@@ -8040,7 +8065,7 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
                 } else if admitted(admissions_a, key, span)? {
                     let value = pattern_constraint_closed(
                         patterns_a,
-                        display_field_name(key),
+                        &display_field_name(key),
                         value,
                         span,
                     )?
@@ -8059,8 +8084,12 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
                 }
                 if !b.contains_key(key)
                     && !optional_b.contains_key(key)
-                    && let Some(constrained) =
-                        pattern_constraint_closed(patterns_b, display_field_name(key), value, span)?
+                    && let Some(constrained) = pattern_constraint_closed(
+                        patterns_b,
+                        &display_field_name(key),
+                        value,
+                        span,
+                    )?
                 {
                     fields.insert(key.clone(), constrained);
                 }
@@ -8084,7 +8113,7 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
                 if !optional_a_keys.contains(key) {
                     match pattern_constraint_closed(
                         patterns_a,
-                        display_field_name(key),
+                        &display_field_name(key),
                         &current,
                         span,
                     ) {
@@ -8099,7 +8128,7 @@ fn unify_values_impl(left: &Value, right: &Value, span: Span) -> Result<Value, L
                 if conflict.is_none() && !optional_b_keys.contains(key) {
                     match pattern_constraint_closed(
                         patterns_b,
-                        display_field_name(key),
+                        &display_field_name(key),
                         &current,
                         span,
                     ) {

@@ -22,6 +22,9 @@ params: {
 	cbrt10:   math.Cbrt(10)
 	cbrtneg:  math.Cbrt(-8)
 	exp2b:    math.Exp2(10)
+	exp2_low:   math.Exp2(-332049)
+	pow_low:    math.Pow(10, -99957)
+	pow_frac_low: math.Pow(10, -99913.5)
 
 	// float64-backed functions follow Go's math package exactly.
 	sqrt2:   math.Sqrt(2)

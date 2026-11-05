@@ -6,6 +6,8 @@ package bytesraw
 src: {
 	raw: {'\xff': 1}
 	valid: {"\uFFFD": 2}
+	control: {"\u0007ff": 1}
+	bell: {'\a': 1}
 }
 
 params: {
@@ -13,6 +15,10 @@ params: {
 	// Selecting the raw label by its rendered character does not work, as in
 	// CUE; only the containing field is selectable.
 	raw_nested: src.raw
+	control_sel: src.control."\u0007ff"
+	control_keys: [for k, v in src.control {k}]
+	bell_sel: src.bell["\a"]
+	bell_keys: [for k, v in src.bell {k}]
 }
 
 workflow: {

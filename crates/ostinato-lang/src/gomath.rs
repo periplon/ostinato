@@ -363,11 +363,30 @@ fn frexp(f: f64) -> (f64, i32) {
     (mantissa, exponent - 1022)
 }
 
-fn ldexp(f: f64, exponent: i32) -> f64 {
+fn ldexp(f: f64, mut exp: i32) -> f64 {
     if f == 0.0 || f.is_nan() || f.is_infinite() {
         return f;
     }
-    f * 2f64.powi(exponent)
+    let mut frac = f;
+    if frac.abs() < f64::MIN_POSITIVE {
+        frac *= (1u64 << 52) as f64;
+        exp -= 52;
+    }
+    let bits = frac.to_bits();
+    exp += ((bits >> 52) & 0x7ff) as i32 - 1023;
+    if exp < -1075 {
+        return 0.0f64.copysign(frac);
+    }
+    if exp > 1023 {
+        return f64::INFINITY.copysign(frac);
+    }
+    let mut m = 1.0;
+    if exp < -1022 {
+        exp += 53;
+        m = 1.0 / (1u64 << 53) as f64;
+    }
+    let x = (bits & !(0x7ffu64 << 52)) | (((exp + 1023) as u64) << 52);
+    m * f64::from_bits(x)
 }
 
 /// Go's `math.Mod`.
@@ -772,6 +791,10 @@ mod tests {
         assert_eq!(sinh(40.0), 1.1769263341850998e17);
         assert_eq!(cosh(40.0), 1.1769263341850998e17);
         assert_eq!(tanh(40.0), 1.0);
+        assert_eq!(sinh(709.7), 8.274920138401322e307);
+        assert_eq!(sinh(-709.7), -8.274920138401322e307);
+        assert_eq!(cosh(709.437), 6.361277807292747e307);
+        assert_eq!(cosh(709.78), 8.964113971972578e307);
     }
 
     #[test]

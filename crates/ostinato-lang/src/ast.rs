@@ -96,6 +96,17 @@ pub fn decode_label_for_output(name: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+    #[test]
+    fn encode_decode_control_prefix() {
+        let text = "\u{7}ff";
+        let encoded = encode_string_label(text);
+        assert_eq!(decode_label_for_output(&encoded), text);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Label {
     Name(String, Span),
