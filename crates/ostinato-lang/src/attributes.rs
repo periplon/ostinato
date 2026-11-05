@@ -295,6 +295,29 @@ impl Collector<'_> {
                 self.visiting.pop();
                 result
             }
+            Expr::List(items, _) | Expr::OpenListPrefix(items, _, _) => {
+                for item in items {
+                    self.expr(item, prefix, origin, origin_prefix, item_base)?;
+                }
+                Ok(())
+            }
+            Expr::OpenList(Some(inner), _) => {
+                self.expr(inner, prefix, origin, origin_prefix, item_base)
+            }
+            Expr::OpenList(None, _) => Ok(()),
+            Expr::ListComp { clauses, body, .. } => {
+                for clause in clauses {
+                    match clause {
+                        crate::ast::CompClause::For { source, .. } => {
+                            self.expr(source, prefix, origin, origin_prefix, item_base)?;
+                        }
+                        crate::ast::CompClause::If { cond, .. } => {
+                            self.expr(cond, prefix, origin, origin_prefix, item_base)?;
+                        }
+                    }
+                }
+                self.expr(body, prefix, origin, origin_prefix, item_base)
+            }
             _ => Ok(()),
         }
     }
@@ -845,6 +868,7 @@ fn validate_tag_items(items: &[StructItem], zone: TagZone) -> Result<(), LangErr
         match item {
             StructItem::Field(field) => {
                 let dynamic = matches!(field.label, Label::Dynamic(..));
+                let constraint = dynamic || field.optional;
                 if let Some(attribute) = tag_attribute(field) {
                     match zone {
                         TagZone::InList => {
@@ -862,7 +886,7 @@ fn validate_tag_items(items: &[StructItem], zone: TagZone) -> Result<(), LangErr
                                     "@tag is not allowed on a multi-rune bytes label",
                                 ));
                             }
-                            if dynamic {
+                            if constraint {
                                 return Err(tag_error(
                                     attribute,
                                     "@tag is not allowed within field constraint",
@@ -871,7 +895,7 @@ fn validate_tag_items(items: &[StructItem], zone: TagZone) -> Result<(), LangErr
                         }
                     }
                 }
-                let value_zone = if zone == TagZone::Allowed && dynamic {
+                let value_zone = if zone == TagZone::Allowed && constraint {
                     TagZone::Forbidden("@tag is not allowed within field constraint")
                 } else {
                     zone

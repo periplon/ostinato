@@ -3003,11 +3003,45 @@ impl<'a> Frame<'a> {
         self.evaluating.borrow_mut().insert(name.to_owned());
         let previous = self.self_rhs.replace(Some(name.to_owned()));
         let previous_cache = self.skip_cache.replace(true);
-        let result = eval_declaration_part(self, &expr, injections, span);
+        let effective = self.merge_let_injections(&expr, injections, span);
+        let result = match effective {
+            Ok(effective) => eval_declaration_part(self, &expr, &effective, span),
+            Err(err) => Err(err),
+        };
         self.skip_cache.set(previous_cache);
         *self.self_rhs.borrow_mut() = previous;
         self.evaluating.borrow_mut().remove(name);
         result
+    }
+
+    fn merge_let_injections(
+        &self,
+        expr: &Expr,
+        injections: &Value,
+        span: Span,
+    ) -> Result<Value, LangError> {
+        let Some(mut fields) = concrete_fields(injections) else {
+            return Ok(injections.clone());
+        };
+        let expr = strip_expr_parens(expr);
+        if !matches!(expr, Expr::Unify(_, _, _)) {
+            return Ok(injections.clone());
+        }
+        let mut operands = Vec::new();
+        collect_unify_operands(expr, &mut operands);
+        let Some(base_index) = split_base_index(&operands) else {
+            return Ok(injections.clone());
+        };
+        for (index, operand) in operands.iter().enumerate() {
+            if index == base_index || !expr_is_struct_literal(operand) {
+                continue;
+            }
+            let value = eval_expr(operand, self)?;
+            if let Some(extra) = concrete_fields(&value) {
+                merge_injection_fields(&mut fields, extra, span)?;
+            }
+        }
+        Ok(Value::Struct(fields))
     }
 
     fn eval_let(&self, name: &str, span: Span) -> Result<Value, LangError> {
@@ -3268,6 +3302,46 @@ fn concrete_fields(value: &Value) -> Option<BTreeMap<String, Value>> {
     }
 }
 
+fn collect_unify_operands<'e>(expr: &'e Expr, out: &mut Vec<&'e Expr>) {
+    let expr = strip_expr_parens(expr);
+    if let Expr::Unify(left, right, _) = expr {
+        collect_unify_operands(left, out);
+        collect_unify_operands(right, out);
+    } else {
+        out.push(expr);
+    }
+}
+
+fn expr_is_struct_literal(expr: &Expr) -> bool {
+    matches!(strip_expr_parens(expr), Expr::Struct(_, _))
+}
+
+fn split_base_index(operands: &[&Expr]) -> Option<usize> {
+    operands
+        .iter()
+        .position(|expr| matches!(strip_expr_parens(expr), Expr::Ident(_, _)))
+        .or_else(|| {
+            operands
+                .iter()
+                .position(|expr| expr_is_struct_literal(expr))
+        })
+}
+
+fn merge_injection_fields(
+    target: &mut BTreeMap<String, Value>,
+    fields: BTreeMap<String, Value>,
+    span: Span,
+) -> Result<(), LangError> {
+    for (key, value) in fields {
+        if let Some(existing) = target.remove(&key) {
+            target.insert(key, unify_values(&existing, &value, span)?);
+        } else {
+            target.insert(key, value);
+        }
+    }
+    Ok(())
+}
+
 fn value_is_plain_concrete(value: &Value) -> bool {
     match value {
         Value::Null
@@ -3370,6 +3444,18 @@ fn eval_definition_with_injections(
             return Ok(None);
         }
         if let Some(key) = current.any_field_key(name) {
+            let exprs = current
+                .fields
+                .borrow()
+                .get(&key)
+                .map(|definition| definition.exprs.clone())
+                .unwrap_or_default();
+            if exprs.len() == 1
+                && let Expr::Ident(target, _) = strip_expr_parens(&exprs[0])
+                && target != name
+            {
+                return eval_definition_with_injections(current, target, injections, span);
+            }
             let optional = current
                 .fields
                 .borrow()
@@ -3463,6 +3549,19 @@ fn definition_needs_narrowing(
     name: &str,
     injections: &BTreeMap<String, Value>,
 ) -> bool {
+    let mut visited = BTreeSet::new();
+    definition_needs_narrowing_inner(frame, name, injections, &mut visited)
+}
+
+fn definition_needs_narrowing_inner(
+    frame: &Frame<'_>,
+    name: &str,
+    injections: &BTreeMap<String, Value>,
+    visited: &mut BTreeSet<String>,
+) -> bool {
+    if !visited.insert(name.to_owned()) {
+        return false;
+    }
     let mut cursor = Some(frame);
     while let Some(current) = cursor {
         if let Some(key) = current.any_field_key(name) {
@@ -3479,9 +3578,21 @@ fn definition_needs_narrowing(
             {
                 return false;
             }
-            return exprs
+            if exprs
                 .iter()
-                .any(|expr| expr_narrows_key(current, expr, injections));
+                .any(|expr| expr_narrows_key(current, expr, injections))
+            {
+                return true;
+            }
+            for expr in &exprs {
+                if let Expr::Ident(target, _) = strip_expr_parens(expr)
+                    && target != name
+                    && definition_needs_narrowing_inner(current, target, injections, visited)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
         cursor = current.parent;
     }
@@ -4522,6 +4633,61 @@ fn eval_expr_impl(expr: &Expr, frame: &Frame<'_>) -> Result<Value, LangError> {
             Ok(Value::OpenListPrefix(values, tail))
         }
         Expr::Unify(left, right, span) => {
+            let mut operands = Vec::new();
+            collect_unify_operands(expr, &mut operands);
+            let pending_injections = frame.next_injections.borrow().clone();
+            if (operands.len() > 2 || pending_injections.is_some())
+                && let Some(base_index) = split_base_index(&operands)
+                && operands
+                    .iter()
+                    .enumerate()
+                    .all(|(index, operand)| index == base_index || expr_is_struct_literal(operand))
+            {
+                let mut injections = pending_injections.unwrap_or_default();
+                frame.next_injections.borrow_mut().take();
+                let mut override_values = Vec::new();
+                let mut merge_failed = false;
+                for (index, operand) in operands.iter().enumerate() {
+                    if index == base_index {
+                        continue;
+                    }
+                    let value = eval_expr(operand, frame)?;
+                    if let Some(fields) = concrete_fields(&value) {
+                        merge_injection_fields(&mut injections, fields, *span)?;
+                    } else {
+                        merge_failed = true;
+                    }
+                    override_values.push(value);
+                }
+                if !merge_failed {
+                    let base = operands[base_index];
+                    let base_value = match strip_expr_parens(base) {
+                        Expr::Ident(name, _) => {
+                            match eval_definition_with_injections(
+                                frame,
+                                name,
+                                injections.clone(),
+                                *span,
+                            )? {
+                                Some(value) => value,
+                                None => eval_expr(base, frame)?,
+                            }
+                        }
+                        Expr::Struct(_, _) => {
+                            let previous = frame.next_injections.replace(Some(injections.clone()));
+                            let value = eval_expr(base, frame);
+                            frame.next_injections.replace(previous);
+                            value?
+                        }
+                        _ => eval_expr(base, frame)?,
+                    };
+                    let mut result = base_value;
+                    for value in override_values {
+                        result = unify_values(&result, &value, *span)?;
+                    }
+                    return Ok(result);
+                }
+            }
             if let Some(value) = try_definition_unify(left, right, frame, *span)? {
                 return Ok(value);
             }
