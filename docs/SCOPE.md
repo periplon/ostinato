@@ -19,9 +19,11 @@ workflow outside the Rust surface has a supported escape hatch.
   rejected, while cycles routed through plain fields (`let X = f, f: X`, and
   mutual let→field→let chains such as `let X = f`, `let Y = g`, `f`/`g`
   selecting each other) remain incomplete values or resolve field by field
-  like CUE. Split/composed fields and transparent let aliases (for example
-  `let X = f; f: {a: X.b} & {b: 1}`) resolve like CUE; composite/structural
-  cycles remain errors as in CUE;
+  when the cycle reaches a concrete field. Split/composed fields and
+  transparent let aliases (for example
+  `let X = f; f: {a: X.b} & {b: 1}`) resolve like CUE; structural
+  cross-field cycles fail closed (see the residuals table); composite/
+  structural cycles remain errors as in CUE;
 - `for`/`if` struct comprehensions, clause sequences (`for ... if ...`,
   nested `for`), dynamic labels, list comprehensions;
 - nested field shorthand, string and bytes literal field labels, **closed
@@ -64,7 +66,11 @@ workflow outside the Rust surface has a supported escape hatch.
   nested comprehension body
   (`#M: {b?: int, if true {b: 5, y: #M.b}}`); comprehension-generated
   labels remain reachable through selectors (`x.b`) but are not bare
-  identifiers, matching CUE (`x: {if true {b: 1}, a: b}` is rejected);
+  identifiers, matching CUE (`x: {if true {b: 1}, a: b}` is rejected).
+  Self-selection combined with disjunction/default narrowing recomputes
+  dependents from statically injectable narrowed operands; when that value
+  cannot be captured before path projection, evaluation fails closed rather
+  than emitting the un-narrowed default (see the residuals table);
 - comprehension-generated definitions (`#D: {if true {#I: 3}, a: #D.#I}`);
 - default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`), including through definition-valued definitions (`#B: #A & {n: 4}`), recursive definitions (dependents recomputed at every level, including optional/open-list recursive children and required defaulted open lists), disjunction alternatives (`({a: *1|int, b: a} | {a: string}) & {a: 3}` recomputes `b: 3`, including nested/list dependents, either alternative order, let/definition-valued alternatives and concrete optional values) and shadowing nested same-name definitions, plus generated declaration merges (`if true {#P: {env: "prod"}}` recomputes `#P.greeting`);
 - optional/open metadata on non-definition struct literals (`base: {b?: int}; #D: base`, `{c: 1, ...}`), including nested/pattern/list forms;
@@ -154,6 +160,8 @@ workflow outside the Rust surface has a supported escape hatch.
 | Bare identifiers across operands of a composed definition | `#D: {a: 1} & {b: a}` is accepted although CUE rejects the bare reference to a sibling operand's field; with an enclosing `a: 9`, `b` resolves to `1` instead of CUE's `9`. Non-definition composition, selectors and definition-valued narrowing match CUE |
 | Pending-output conditions and non-scalar interpolation | `if run.success` rejects before the producer runs on both implementations, as does whole-task struct interpolation (`\(run)`). Literal list/struct interpolation over a pending read (`\([run.stdout])`, `\({x: run.stdout})`) rejects before the producer in CUE, while Ostinato schedules the producer and then rejects; exit codes match, with Ostinato's own diagnostic text. Scalar string/number operations (including string/bytes concatenation and repetition such as `run.stdout * 2` and `r.response.body * 2`), unary operators, comparisons, list indexing/comprehensions, `len`/`strings`/`list.Concat`/`math`/`regexp` helpers and pending values used as task inputs are deferred and match CUE |
 | Sibling `cli.Print` output order at even alias depths | Two sibling Print tasks reading the same even-depth alias chain produce the same exit code and execution count, but CUE's relative `S`/`R` stdout order is scheduler-dependent and varies between runs at some depths. Ostinato emits a deterministic task-name order |
+| Self-selection narrowing with non-static operands | When a narrowed value cannot be captured before selector-path projection (for example a let/alias chain that is not statically evaluable), Ostinato rejects the evaluation instead of emitting the operands' un-narrowed default. CUE may resolve the same program; no silent value is produced |
+| Cross-field mutual selection cycles | `x: {a: y.b, b: 1}; y: {b: x.a}` and the equivalent two-let form are rejected by Ostinato, while CUE reports an incomplete value. The same cycles that reach a concrete field (`g: {b: X.b}`) resolve like CUE; three-field cycles also fail closed |
 | Non-chunked `Transfer-Encoding` | CUE/Go rejects `Transfer-Encoding: identity` and `Transfer-Encoding: gzip` as unsupported transport encodings; Ostinato accepts the response body |
 | Tool packages beyond `tool/exec.Run`/`tool/cli.Print`/`tool/file.Append`/`Create`/`tool/os.Getenv`/`Environ` | `ostinato cmd` runs `*_tool.cue` tasks with those packages, including `stdout`/`stderr`/`success` injection and consumption of non-stdout outputs; `tool/os.Getenv`/`Environ` apply the `Value: bool \| number \| *string \| null` schema (bounds are intersected) and CUE scalar parsing, resolving schema defaults through local, cross-file and imported references plus composed task/command aliases; imported struct-valued env bases are expanded, and imported command aliases are expanded when their `tool/os` defaults are unambiguous (ambiguous defaults fail closed); command evaluation prunes the package AST to the selected command (and its referenced commands), so unrelated command bodies cannot poison it; `$usage`/`$short`/`$long` help metadata (with doc-comment fallback), multi-instance `cue cmd <name> [inputs...]` and `@cmd` attribute handling match CUE; `tool/http.Do`/`Get`/`Post`/`Put`/`Delete` execute blocking HTTP with method/url, `followRedirects`, `tls.verify`/`caCert` (bundled rustls roots), request body/header and response status/statusCode/body/header injection over HTTP/1.1 and, with ALPN over TLS, HTTP/2; `response.status` uses the client canonical reason phrase rather than CUE's raw server reason phrase (for example a non-standard `200 Weird Phrase` becomes `200 OK`), `Content-Encoding: gzip` responses are decompressed automatically like CUE's Go client, and non-UTF-8 bodies follow Go `strings.ToValidUTF8` semantics (each maximal invalid run becomes one U+FFFD). The blocking `reqwest` 0.12 client exposes no trailer API, so a non-empty `request.trailer` fails closed with a typed error and a response that declares `Trailer:` fails closed with a typed "response trailers are not supported" error rather than returning an empty map (trailers sent without a `Trailer:` declaration are not observable by reqwest and remain a documented residual); `tool/http.Serve` is a long-running service task that `cue cmd` does not terminate (the oracle hangs), so it fails closed with an explicit "long-running service task not supported by the CLI runner" error instead of a generic unknown-task error; other task packages remain unimplemented |
 | Arbitrary CUE packages with package-level patterns | Oracle territory |

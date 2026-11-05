@@ -47,6 +47,13 @@ let def_alias = #DefAlias
 #DefAlias: {a: def_alias.b, b: 1}
 def_let_self: #DefAlias
 
+narrow_chain: {a: narrow_chain.b, b: narrow_chain.c, c: *1 | int} & {c: 21}
+narrow_chain_int: {a: narrow_chain_int.b, b: narrow_chain_int.c, c: int} & {c: 22}
+narrow_projection: {o: {a: *1 | int, b: a}} & {o: {a: 23}, c: narrow_projection.o.b}
+narrow_flat_chain: {a: *1 | int, b: a} & {a: 24, c: narrow_flat_chain.b}
+let narrow_let = 25
+narrow_let_value: {a: *1 | int, c: *1 | int, z: narrow_let_value.c} & {a: 26, c: narrow_let}
+
 #A: {bs: [...#B], u: len(bs)}
 #B: {as: [...#A], t: len(as)}
 mutual_lists_x: #A & {bs: [{as: [{}]}]}
@@ -71,6 +78,11 @@ params: {
 	r_disj_def_alt: disj_def_alt
 	r_disj_optional: disj_optional
 	r_def_let_self: def_let_self
+	r_narrow_chain: narrow_chain
+	r_narrow_chain_int: narrow_chain_int
+	r_narrow_projection: narrow_projection
+	r_narrow_flat_chain: narrow_flat_chain
+	r_narrow_let_value: narrow_let_value
 	r_mutual: mutual_x
 	r_alias_self: alias_x
 	r_deep_mutual: deep_mutual
