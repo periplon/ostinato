@@ -12,7 +12,15 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.47.0
+
+- `tool/http` task parity, imported `tool/os` alias expansion, exact mixed
+  big-integer template comparisons, Go-compatible `%#g`, and optional
+  disjunction alternatives with hard-error propagation.
+- 652 tests; fmt/clippy/conformance green.
+
 ## v0.46.1
+
 
 - Final hardening for runtime templates, optional/parameterized template
   semantics and `cue cmd` tool-command parity (exact integers/printf, split

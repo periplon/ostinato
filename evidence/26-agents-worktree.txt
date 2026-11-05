@@ -1,10 +1,10 @@
 ### git status --porcelain (checkout must stay clean)
 
 ### HEAD
-5ec10a7
+77af835
 
 ### git worktree list
-/Users/joanmarc/dailywork/jmca/ostinato                                                5ec10a7 [release/v0.46.1]
+/Users/joanmarc/dailywork/jmca/ostinato                                                77af835 [release/v0.47.0]
 /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/parity-9631626       9631626 (detached HEAD)
 /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/pr251-base           5f3413e (detached HEAD)
 /private/var/folders/r6/d4m_9r8n5710yxk72t9qhg3m0000gn/T/opencode/review/ostinato-main 6eb54eb (detached HEAD)
@@ -25,14 +25,17 @@
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/module-task-exports                 dda0eba (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-order-after                  747bce6 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/nested-output-deps                  fee7d72 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/optional-disjunction                de56ec3 [fix/v0.47.0-optional-disjunction]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/order-scan                          79704b8 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/package-after                       628424d (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/path-keyed-reads                    6653528 (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/root-alias-repeat                   eb961ad (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/runtime-bignum                      b9ed0d4 [fix/v0.47.0-runtime-bignum]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/runtime-templates                   b251c76 [fix/v0.46.1-template-final]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/second-hop-aliases                  0050109 [fix/json-yaml-deep-review]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/selector-let                        aab750d [fix/v0.24.5-let-rejection-scope]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/stderr-injection                    cea92a7 (detached HEAD)
+/Users/joanmarc/dailywork/jmca/ostinato/.worktrees/tool-http                           013451a [feat/v0.47.0-tool-http]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/tool-template-parity                6a9070e [fix/v0.46.1-tool-comprehension]
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/unused-imports                      698ef6d (detached HEAD)
 /Users/joanmarc/dailywork/jmca/ostinato/.worktrees/verify-v0244                        768b178 (detached HEAD)
