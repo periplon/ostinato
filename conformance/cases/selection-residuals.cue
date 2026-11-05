@@ -54,6 +54,13 @@ narrow_flat_chain: {a: *1 | int, b: a} & {a: 24, c: narrow_flat_chain.b}
 let narrow_let = 25
 narrow_let_value: {a: *1 | int, c: *1 | int, z: narrow_let_value.c} & {a: 26, c: narrow_let}
 
+list_narrow: {l: [{a: *1 | int, b: a}]} & {l: [{a: 31}], c: list_narrow.l[0].b}
+list_deep_narrow: {l: [{o: {a: *1 | int, b: a}}]} & {l: [{o: {a: 32}}], c: list_deep_narrow.l[0].o.b}
+optional_narrow: {a: *1 | int, b: a} & {a?: 33}
+optional_nested_narrow: {o: {a: *1 | int, b: a}} & {o: {a?: 34}}
+comp_narrow: {if true {a: *1 | int, b: a}} & {a: 35}
+comp_list_narrow: {l: [for i in [1] {a: *1 | int, b: a}]} & {l: [{a: 36}]}
+
 #A: {bs: [...#B], u: len(bs)}
 #B: {as: [...#A], t: len(as)}
 mutual_lists_x: #A & {bs: [{as: [{}]}]}
@@ -83,6 +90,12 @@ params: {
 	r_narrow_projection: narrow_projection
 	r_narrow_flat_chain: narrow_flat_chain
 	r_narrow_let_value: narrow_let_value
+	r_list_narrow: list_narrow
+	r_list_deep_narrow: list_deep_narrow
+	r_optional_narrow: optional_narrow
+	r_optional_nested_narrow: optional_nested_narrow
+	r_comp_narrow: comp_narrow
+	r_comp_list_narrow: comp_list_narrow
 	r_mutual: mutual_x
 	r_alias_self: alias_x
 	r_deep_mutual: deep_mutual

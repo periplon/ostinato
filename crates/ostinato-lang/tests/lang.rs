@@ -8703,6 +8703,87 @@ c5: {a: *1 | int, c: *1 | int, z: c5.c} & {a: 5, c: V}
 }
 
 #[test]
+fn selector_paths_through_list_indices_propagate_narrowing() {
+    let source = r#"
+package demo
+x: {l: [{a: *1 | int, b: a}]} & {l: [{a: 5}], c: x.l[0].b}
+deep: {l: [{o: {a: *1 | int, b: a}}]} & {l: [{o: {a: 5}}], c: deep.l[0].o.b}
+deep2: {l: [[{a: *1 | int, b: a}]]} & {l: [[{a: 5}]], c: deep2.l[0][0].b}
+openl: {l: [{a: *1 | int, b: a}, ...]} & {l: [{a: 5}], c: openl.l[0].b}
+wrapped: {l: [{a: *1 | int, b: a}]} & {l: [{a: 5}], c: wrapped.l[0].b * 2}
+interp: {l: [{a: *1 | int, b: a}]} & {l: [{a: 5}], c: "\(interp.l[0].b)"}
+#D: {y: *2 | int, z: y}
+defs: {l: [{x: #D}]} & {l: [{x: {y: 6}}], c: defs.l[0].x.z}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse list selector narrowing");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval list selector narrowing")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"]["c"], 5);
+    assert_eq!(json["x"]["l"][0]["b"], 5);
+    assert_eq!(json["deep"]["c"], 5);
+    assert_eq!(json["deep2"]["c"], 5);
+    assert_eq!(json["openl"]["c"], 5);
+    assert_eq!(json["wrapped"]["c"], 10);
+    assert_eq!(json["interp"]["c"], "5");
+    assert_eq!(json["defs"]["c"], 6);
+}
+
+#[test]
+fn optional_operand_narrowing_recomputes_dependents_and_rejects_conflicts() {
+    let source = r#"
+package demo
+x: {a: *1 | int, b: a} & {a?: 5}
+y: {a: *1 | int, b: a, c: y.b} & {a?: 5}
+nested: {o: {a: *1 | int, b: a}} & {o: {a?: 5}}
+let V = 6
+let_form: {a: *1 | int, b: a} & {a?: V}
+#D: {a: *1 | int, b: a}
+def_form: #D & {a?: 7}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse optional narrowing");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval optional narrowing")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"], serde_json::json!({"a": 5, "b": 5}));
+    assert_eq!(json["y"], serde_json::json!({"a": 5, "b": 5, "c": 5}));
+    assert_eq!(json["nested"]["o"], serde_json::json!({"a": 5, "b": 5}));
+    assert_eq!(json["let_form"], serde_json::json!({"a": 6, "b": 6}));
+    assert_eq!(json["def_form"], serde_json::json!({"a": 7, "b": 7}));
+
+    for source in [
+        "package demo\nx: {a: *1 | int, b: a} & {a?: 5, b?: 7}\n",
+        "package demo\nx: {o: {a: *1 | int, b: a}} & {o: {a?: 5, b?: 7}}\n",
+    ] {
+        let file = ostinato_lang::parse(source).expect("parse optional conflict");
+        assert!(
+            ostinato_lang::eval_file(&file).is_err(),
+            "optional conflict must fail: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn comprehension_generated_fields_see_external_narrowing() {
+    let source = r#"
+package demo
+x: {if true {a: *1 | int, b: a}} & {a: 5}
+y: {l: [for i in [1] {a: *1 | int, b: a}]} & {l: [{a: 6}]}
+z: {l: [for i in [1] {a: int, b: a}]} & {l: [{a: 7}]}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse comprehension narrowing");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval comprehension narrowing")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x"], serde_json::json!({"a": 5, "b": 5}));
+    assert_eq!(json["y"]["l"][0]["b"], 6);
+    assert_eq!(json["z"]["l"][0]["b"], 7);
+}
+
+#[test]
 fn cross_field_mutual_selection_cycles_fail_closed() {
     for source in [
         "package demo\nx: {a: y.b, b: 1}\ny: {b: x.a}\n",
