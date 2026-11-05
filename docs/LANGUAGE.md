@@ -339,9 +339,11 @@ Bare paths (without a leading dot) are resolved from the context root, preservin
 | `{{ steps.build.json.items.0 }}` | Numeric segments index arrays. |
 
 `events.<name>` exposes the latest durable event with fields `event`, `source`,
-`seq`, `payload`, `emittedBy`, `ts` and `external`. Unknown paths fail the step.
-Template substitution happens at execution time, so values from earlier steps
-and previous cycle rounds are available.
+`seq`, `payload`, `emittedBy`, `ts` and `external`.
+
+For backwards compatibility, an action that contains only a dotted path (no pipeline operators) still accepts spaces inside segments, for example `{{ params.my key }}` or `{{ steps.build test.stdout }}`.
+
+Unknown paths fail the step. Template substitution happens at execution time, so values from earlier steps and previous cycle rounds are available.
 
 ### Control actions
 
@@ -384,7 +386,7 @@ Values may be paths, double-quoted strings (with Go-style escapes), backtick raw
 | `len a` | Length of a string (bytes), array or object. |
 | `index item key...` | Indexes arrays (integer keys) and objects (string keys), descending through multiple keys. |
 | `print a...` | `fmt.Sprint`-style concatenation; spaces separate adjacent non-string values. |
-| `printf format a...` | `fmt.Sprintf`-style formatting. `%s`, `%d`, `%v`, `%q`, `%t`, `%f`, `%e`, `%g`, `%x`, `%X`, `%o`, `%b`, `%%`, widths and precisions are supported. |
+| `printf format a...` | `fmt.Sprintf`-style formatting. `%s`, `%d`, `%v`, `%q`, `%t`, `%f`, `%e`, `%g`, `%x`, `%X`, `%o`, `%b`, `%%`, widths and precisions are supported, including `-`, `+`, space, `0` and `#` flags and `*` width/precision arguments. Field widths and precisions are capped at 1 MiB; larger values are template errors rather than allocations. |
 
 ### Whitespace and literal braces
 
@@ -398,7 +400,9 @@ deploy
 
 Literal braces can be emitted with a quoted string: `{{"{{"}}` prints `{{` and `{{"}}"}}` prints `}}`.
 
-Malformed actions, unknown functions, unknown paths and runtime evaluation failures produce a template error that fails the step with a message identifying the offending action and its line/column.
+Malformed actions, unknown functions, unknown paths and runtime evaluation failures produce a template error that fails the step with a message identifying the offending action and its line/column. Nesting of control actions and parenthesized pipelines is limited to 256 levels.
+
+> **Security note:** `{{ $ }}` and `{{ . }}` serialize the **entire** run context (parameters and all prior step outputs) into the rendered string. Those values may be persisted in exec arguments, environment values or agent prompts and shown in logs/process listings. Prefer explicit paths such as `{{ params.repo }}` or `{{ steps.build.stdout }}` so unrelated secrets and outputs do not leak into commands or prompts.
 
 ## Step output contract
 

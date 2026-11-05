@@ -624,6 +624,290 @@ fn reports_template_error_locations() {
 }
 
 #[test]
+fn printf_supports_go_style_flags_precision_and_verbs() {
+    let context = template_context();
+    assert_eq!(
+        render("{{printf \"%.3d\" 7}}", &context).expect("render"),
+        "007"
+    );
+    assert_eq!(
+        render("{{printf \"%05d\" -5}}", &context).expect("render"),
+        "-0005"
+    );
+    assert_eq!(
+        render("{{printf \"%+d\" 5}}", &context).expect("render"),
+        "+5"
+    );
+    assert_eq!(
+        render("{{printf \"% d\" 5}}", &context).expect("render"),
+        " 5"
+    );
+    assert_eq!(
+        render("{{printf \"%#x\" 42}}", &context).expect("render"),
+        "0x2a"
+    );
+    assert_eq!(
+        render("{{printf \"%#08x\" 42}}", &context).expect("render"),
+        "0x00002a"
+    );
+    assert_eq!(
+        render("{{printf \"%#o\" 8}}", &context).expect("render"),
+        "010"
+    );
+    assert_eq!(
+        render("{{printf \"%#b\" 5}}", &context).expect("render"),
+        "0b101"
+    );
+    assert_eq!(
+        render("{{printf \"%e\" 1234.5}}", &context).expect("render"),
+        "1.234500e+03"
+    );
+    assert_eq!(
+        render("{{printf \"%g\" 1.5}}", &context).expect("render"),
+        "1.5"
+    );
+    assert_eq!(
+        render("{{printf \"%.3g\" 1234}}", &context).expect("render"),
+        "1.23e+03"
+    );
+    assert_eq!(
+        render("{{printf \"%.0f\" 1.6}}", &context).expect("render"),
+        "2"
+    );
+    assert_eq!(
+        render("{{printf \"%q\" \"a\\tb\"}}", &context).expect("render"),
+        "\"a\\tb\""
+    );
+    assert_eq!(
+        render("{{printf \"%*d\" 5 7}}", &context).expect("render"),
+        "    7"
+    );
+    assert_eq!(
+        render("{{printf \"%.*f\" 2 1.234}}", &context).expect("render"),
+        "1.23"
+    );
+}
+
+#[test]
+fn printf_rejects_unbounded_field_sizes() {
+    let context = template_context();
+    for template in [
+        "{{printf \"%18446744073709551615d\" 7}}",
+        "{{printf \"%1000000000000d\" 7}}",
+        "{{printf \"%.18446744073709551615f\" 1.5}}",
+        "{{printf \"%*d\" 1000000000000 7}}",
+        "{{printf \"%.*f\" 1000000000000 1.5}}",
+    ] {
+        let message = render(template, &context)
+            .expect_err("huge field sizes must fail")
+            .to_string();
+        assert!(
+            message.contains("exceeds the maximum"),
+            "template {template:?} produced {message:?}"
+        );
+    }
+}
+
+#[test]
+fn compares_large_integers_exactly() {
+    let context = json!({
+        "big": 9_007_199_254_740_993i64,
+        "u": 18_446_744_073_709_551_615u64
+    });
+    assert_eq!(
+        render("{{eq 9007199254740992 9007199254740993}}", &context).expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render("{{lt 9007199254740992 9007199254740993}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{gt 9007199254740993 9007199254740992}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{eq .big 9007199254740993}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{lt .big 9007199254740994}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{gt .big 9007199254740992}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{eq .u 18446744073709551615}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{gt .u 18446744073709551614}}", &context).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render(
+            "{{eq 123456789012345678901234567890 123456789012345678901234567891}}",
+            &context
+        )
+        .expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render(
+            "{{lt 123456789012345678901234567890 123456789012345678901234567891}}",
+            &context
+        )
+        .expect("render"),
+        "true"
+    );
+}
+
+#[test]
+fn parses_fractional_literals_without_a_leading_zero() {
+    let array = json!([10, 20, 30]);
+    assert_eq!(render("{{.5}}", &array).expect("render"), "0.5");
+    assert_eq!(render("{{-.5}}", &array).expect("render"), "-0.5");
+    let object = json!({"5": "five"});
+    assert_eq!(render("{{.5}}", &object).expect("render"), "0.5");
+    assert_eq!(render("{{index . 0}}", &array).expect("render"), "10");
+}
+
+#[test]
+fn range_over_null_uses_else() {
+    assert_eq!(
+        render("{{range .}}x{{else}}empty{{end}}", &json!(null)).expect("render"),
+        "empty"
+    );
+}
+
+#[test]
+fn preserves_legacy_paths_with_spaces_in_segments() {
+    let context = json!({
+        "params": {"my key": "spaced"},
+        "steps": {"build test": {"stdout": "legacy"}}
+    });
+    assert_eq!(
+        render("{{ params.my key }}", &context).expect("render"),
+        "spaced"
+    );
+    assert_eq!(
+        render("{{ steps.build test.stdout }}", &context).expect("render"),
+        "legacy"
+    );
+    let message = render("{{ params.my key | len }}", &context)
+        .expect_err("operators disable the legacy fallback")
+        .to_string();
+    assert!(
+        message.contains("unexpected argument"),
+        "message: {message}"
+    );
+}
+
+#[test]
+fn supports_postfix_access_after_parenthesized_pipelines() {
+    assert_eq!(
+        render("{{(index . 0).name}}", &json!([{"name": "x"}])).expect("render"),
+        "x"
+    );
+    assert_eq!(
+        render("{{(index . \"a\").b}}", &json!({"a": {"b": "y"}})).expect("render"),
+        "y"
+    );
+    assert_eq!(
+        render(
+            "{{(index . 0).name | printf \"%s!\"}}",
+            &json!([{"name": "x"}])
+        )
+        .expect("render"),
+        "x!"
+    );
+}
+
+#[test]
+fn control_error_messages_keep_double_braces() {
+    let message = template_error("{{range .items}}");
+    assert!(message.contains("{{end}}"), "message: {message}");
+    let message = template_error("{{with .items}}");
+    assert!(message.contains("{{end}}"), "message: {message}");
+    let message = template_error("{{range .items}}x{{else}}y{{else}}z{{end}}");
+    assert!(message.contains("{{else}}"), "message: {message}");
+    let message = template_error("{{with .items}}x{{else}}y{{else}}z{{end}}");
+    assert!(message.contains("{{else}}"), "message: {message}");
+}
+
+#[test]
+fn rejects_deeply_nested_templates_on_small_stacks() {
+    let mut nested_ifs = String::new();
+    for _ in 0..10_000 {
+        nested_ifs.push_str("{{if true}}");
+    }
+    nested_ifs.push('x');
+    for _ in 0..10_000 {
+        nested_ifs.push_str("{{end}}");
+    }
+    let result = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || render(&nested_ifs, &json!({})))
+        .expect("spawn")
+        .join()
+        .expect("thread must not panic");
+    let message = result.expect_err("deeply nested ifs must fail").to_string();
+    assert!(message.contains("nesting"), "message: {message}");
+
+    let mut nested_parens = String::from("{{");
+    nested_parens.push_str(&"(".repeat(10_000));
+    nested_parens.push('1');
+    nested_parens.push_str(&")".repeat(10_000));
+    nested_parens.push_str("}}");
+    let result = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || render(&nested_parens, &json!({})))
+        .expect("spawn")
+        .join()
+        .expect("thread must not panic");
+    let message = result
+        .expect_err("deeply nested pipelines must fail")
+        .to_string();
+    assert!(message.contains("nesting"), "message: {message}");
+
+    let mut else_ifs = String::from("{{if false}}");
+    for _ in 0..10_000 {
+        else_ifs.push_str("{{else if true}}");
+    }
+    else_ifs.push('x');
+    else_ifs.push_str("{{end}}");
+    let result = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || render(&else_ifs, &json!({})))
+        .expect("spawn")
+        .join()
+        .expect("thread must not panic");
+    let message = result
+        .expect_err("deep else-if chains must fail")
+        .to_string();
+    assert!(message.contains("nesting"), "message: {message}");
+}
+
+#[test]
+fn renders_many_actions_quickly() {
+    let mut template = String::with_capacity(50_000 * 20);
+    for _ in 0..50_000 {
+        template.push_str("{{ params.value }}");
+    }
+    let context = json!({"params": {"value": "x"}});
+    let started = std::time::Instant::now();
+    let rendered = render(&template, &context).expect("render");
+    let elapsed = started.elapsed();
+    assert_eq!(rendered.len(), 50_000);
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "50k actions took {elapsed:?}"
+    );
+}
+
+#[test]
 fn native_parameter_overrides_are_injected_before_interpolation() {
     let source = r#"
 package demo
