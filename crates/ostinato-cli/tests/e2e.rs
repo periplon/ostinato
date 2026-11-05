@@ -14,7 +14,7 @@ struct LocalHttpServer {
 
 impl LocalHttpServer {
     fn start() -> Self {
-        use std::io::{Read, Write};
+        use std::io::{ErrorKind, Read, Write};
         use std::net::TcpListener;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,26 +27,31 @@ impl LocalHttpServer {
             while !stop_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // Accepted sockets inherit O_NONBLOCK from the
+                        // listener on macOS. Clear it before using timeouts.
+                        let _ = stream.set_nonblocking(false);
                         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
                         let mut data = Vec::new();
                         let mut chunk = [0u8; 4096];
-                        while let Ok(read) = stream.read(&mut chunk) {
-                            if read == 0 {
-                                break;
-                            }
-                            data.extend_from_slice(&chunk[..read]);
-                            if data.windows(4).any(|window| window == b"\r\n\r\n") {
-                                break;
+                        loop {
+                            match stream.read(&mut chunk) {
+                                Ok(0) => break,
+                                Ok(read) => {
+                                    data.extend_from_slice(&chunk[..read]);
+                                    if data.windows(4).any(|window| window == b"\r\n\r\n") {
+                                        break;
+                                    }
+                                }
+                                Err(err)
+                                    if matches!(
+                                        err.kind(),
+                                        ErrorKind::WouldBlock | ErrorKind::Interrupted
+                                    ) => {}
+                                Err(_) => break,
                             }
                         }
                         let text = String::from_utf8_lossy(&data).into_owned();
-                        let (head, rest) = text
-                            .split_once(
-                                "
-
-",
-                            )
-                            .unwrap_or((&text, ""));
+                        let (head, rest) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
                         let mut lines = head.lines();
                         let request_line = lines.next().unwrap_or_default();
                         let mut parts = request_line.split_whitespace();
@@ -68,14 +73,16 @@ impl LocalHttpServer {
                         }
                         let mut body = rest.as_bytes().to_vec();
                         while body.len() < content_length {
-                            let read = match stream.read(&mut chunk) {
-                                Ok(read) => read,
+                            match stream.read(&mut chunk) {
+                                Ok(0) => break,
+                                Ok(read) => body.extend_from_slice(&chunk[..read]),
+                                Err(err)
+                                    if matches!(
+                                        err.kind(),
+                                        ErrorKind::WouldBlock | ErrorKind::Interrupted
+                                    ) => {}
                                 Err(_) => break,
-                            };
-                            if read == 0 {
-                                break;
                             }
-                            body.extend_from_slice(&chunk[..read]);
                         }
                         let body_text = String::from_utf8_lossy(&body).into_owned();
                         let (status, response_body, headers): (u16, Vec<u8>, Vec<(&str, &str)>) =
@@ -97,7 +104,6 @@ impl LocalHttpServer {
                                     });
                                     (200, payload.to_string().into_bytes(), Vec::new())
                                 }
-                                "/trailer" => (200, b"hello".to_vec(), Vec::new()),
                                 _ => (404, b"unknown".to_vec(), Vec::new()),
                             };
                         let reason = match status {
@@ -106,41 +112,15 @@ impl LocalHttpServer {
                             404 => "Not Found",
                             _ => "",
                         };
-                        let mut response = format!(
-                            "HTTP/1.1 {status} {reason}
-"
-                        );
+                        let mut response = format!("HTTP/1.1 {status} {reason}\r\n");
                         for (name, value) in headers {
-                            response.push_str(&format!(
-                                "{name}: {value}
-"
-                            ));
+                            response.push_str(&format!("{name}: {value}\r\n"));
                         }
-                        if path == "/trailer" {
-                            response.push_str(
-                                "Transfer-Encoding: chunked
-Trailer: X-Trailer
-
-",
-                            );
-                            response.push_str(
-                                "5
-hello
-0
-X-Trailer: done
-
-",
-                            );
-                        } else {
-                            response.push_str(&format!(
-                                "Content-Length: {}
-Connection: close
-
-",
-                                response_body.len()
-                            ));
-                            response.push_str(&String::from_utf8_lossy(&response_body));
-                        }
+                        response.push_str(&format!(
+                            "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            response_body.len()
+                        ));
+                        response.push_str(&String::from_utf8_lossy(&response_body));
                         let _ = stream.write_all(response.as_bytes());
                     }
                     Err(_) => {
