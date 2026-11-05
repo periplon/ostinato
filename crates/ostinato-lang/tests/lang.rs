@@ -648,7 +648,7 @@ fn printf_supports_go_style_flags_precision_and_verbs() {
     );
     assert_eq!(
         render("{{printf \"%#08x\" 42}}", &context).expect("render"),
-        "0x00002a"
+        "0x0000002a"
     );
     assert_eq!(
         render("{{printf \"%#o\" 8}}", &context).expect("render"),
@@ -686,6 +686,303 @@ fn printf_supports_go_style_flags_precision_and_verbs() {
         render("{{printf \"%.*f\" 2 1.234}}", &context).expect("render"),
         "1.23"
     );
+}
+
+#[test]
+fn postfix_access_only_binds_when_adjacent() {
+    let context = json!({
+        "a": 1,
+        "b": true,
+        "items": [{"name": "x"}],
+        "x": "root"
+    });
+    assert_eq!(
+        render("{{if and (eq .a 1) .b}}yes{{else}}no{{end}}", &context).expect("render"),
+        "yes"
+    );
+    assert_eq!(
+        render("{{printf \"%s-%s\" (index .items 0).name .x}}", &context).expect("render"),
+        "x-root"
+    );
+    assert_eq!(
+        render("{{(index .items 0).name}}", &context).expect("render"),
+        "x"
+    );
+    assert_eq!(
+        render("{{and (eq .a 1) (index .items 0).name}}", &context).expect("render"),
+        "x"
+    );
+}
+
+#[test]
+fn printf_preserves_arbitrary_precision_integers() {
+    let context: serde_json::Value =
+        serde_json::from_str(r#"{"big": 123456789012345678901234567890}"#).expect("json");
+    assert_eq!(
+        render("{{printf \"%d\" .big}}", &context).expect("render"),
+        "123456789012345678901234567890"
+    );
+    assert_eq!(
+        render("{{printf \"%x\" .big}}", &context).expect("render"),
+        "18ee90ff6c373e0ee4e3f0ad2"
+    );
+    assert_eq!(
+        render("{{printf \"%o\" .big}}", &context).expect("render"),
+        "143564417755415637016711617605322"
+    );
+    assert_eq!(
+        render("{{printf \"%d\" 123456789012345678901234567890}}", &context).expect("render"),
+        "123456789012345678901234567890"
+    );
+    assert_eq!(
+        render("{{printf \"%x\" 18446744073709551615}}", &context).expect("render"),
+        "ffffffffffffffff"
+    );
+}
+
+#[test]
+fn index_rejects_fractional_boolean_and_out_of_range_keys() {
+    let context = json!({"items": ["a", "b"]});
+    assert_eq!(
+        render("{{index .items 1.0}}", &context).expect("render"),
+        "b"
+    );
+    for template in [
+        "{{index .items 1.9}}",
+        "{{index .items true}}",
+        "{{index .items -1}}",
+        "{{index .items 99}}",
+    ] {
+        let message = render(template, &context)
+            .expect_err("invalid index must fail")
+            .to_string();
+        assert!(
+            message.contains("index"),
+            "template {template:?} produced {message:?}"
+        );
+    }
+}
+
+#[test]
+fn printf_general_format_uses_shortest_digits() {
+    let context = template_context();
+    assert_eq!(
+        render("{{printf \"%g\" 100}}", &context).expect("render"),
+        "100"
+    );
+    assert_eq!(
+        render("{{printf \"%g\" 1000000}}", &context).expect("render"),
+        "1e+06"
+    );
+    assert_eq!(
+        render("{{printf \"%g\" 1234567}}", &context).expect("render"),
+        "1.234567e+06"
+    );
+    assert_eq!(
+        render("{{printf \"%g\" 0.0001}}", &context).expect("render"),
+        "0.0001"
+    );
+    assert_eq!(
+        render("{{printf \"%g\" 0.00001}}", &context).expect("render"),
+        "1e-05"
+    );
+    assert_eq!(
+        render("{{printf \"%g\" 1.2345678901234567}}", &context).expect("render"),
+        "1.2345678901234567"
+    );
+    assert_eq!(
+        render("{{printf \"%#g\" 0}}", &context).expect("render"),
+        "0.00000"
+    );
+    assert_eq!(
+        render("{{printf \"%#g\" 1.5}}", &context).expect("render"),
+        "1.50000"
+    );
+    assert_eq!(
+        render("{{printf \"%#g\" 100}}", &context).expect("render"),
+        "100.000"
+    );
+}
+
+#[test]
+fn printf_general_explicit_precision_uses_rounded_exponent() {
+    let context = template_context();
+    for (template, expected) in [
+        ("{{printf \"%.6g\" 999999.9}}", "1e+06"),
+        ("{{printf \"%.6g\" 999999.5}}", "1e+06"),
+        ("{{printf \"%.3g\" 999.9}}", "1e+03"),
+        ("{{printf \"%.2g\" 99.9}}", "1e+02"),
+        ("{{printf \"%.1g\" 9.9}}", "1e+01"),
+        ("{{printf \"%.4g\" 9999.5}}", "1e+04"),
+        ("{{printf \"%.6g\" 0.00009999999}}", "0.0001"),
+        ("{{printf \"%#.6g\" 999999.9}}", "1.00000e+06"),
+    ] {
+        assert_eq!(
+            render(template, &context).expect("render"),
+            expected,
+            "template {template}"
+        );
+    }
+}
+
+#[test]
+fn printf_integer_zero_padding_and_alternate_forms_match_go() {
+    let context = template_context();
+    assert_eq!(
+        render("{{printf \"%05.3d\" 7}}", &context).expect("render"),
+        "  007"
+    );
+    assert_eq!(
+        render("{{printf \"%#08x\" 42}}", &context).expect("render"),
+        "0x0000002a"
+    );
+    assert_eq!(
+        render("{{printf \"%#08b\" 5}}", &context).expect("render"),
+        "0b00000101"
+    );
+    assert_eq!(
+        render("{{printf \"%#.0f\" 2}}", &context).expect("render"),
+        "2."
+    );
+    assert_eq!(
+        render("{{printf \"%#.0e\" 2}}", &context).expect("render"),
+        "2.e+00"
+    );
+    for template in [
+        "{{printf \"%#.0o\" 0}}",
+        "{{printf \"%#.0x\" 0}}",
+        "{{printf \"%#.0X\" 0}}",
+        "{{printf \"%#.0b\" 0}}",
+    ] {
+        assert_eq!(
+            render(template, &context).expect("render"),
+            "",
+            "template {template}"
+        );
+    }
+}
+
+#[test]
+fn plain_big_integer_literals_are_exact() {
+    let context = template_context();
+    assert_eq!(
+        render(
+            "{{eq 100000000000000000000 100000000000000000001}}",
+            &context
+        )
+        .expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render(
+            "{{lt 100000000000000000000 100000000000000000001}}",
+            &context
+        )
+        .expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{100000000000000000000}}", &context).expect("render"),
+        "100000000000000000000"
+    );
+    assert_eq!(
+        render("{{printf \"%q\" 100000000000000000000}}", &context).expect("render"),
+        "'�'"
+    );
+
+    let big: serde_json::Value =
+        serde_json::from_str(r#"{"big": 100000000000000000001}"#).expect("json");
+    assert_eq!(
+        render("{{eq .big 100000000000000000000}}", &big).expect("render"),
+        "false"
+    );
+    assert_eq!(
+        render("{{gt .big 100000000000000000000}}", &big).expect("render"),
+        "true"
+    );
+    assert_eq!(
+        render("{{lt .big 100000000000000000002}}", &big).expect("render"),
+        "true"
+    );
+}
+
+#[test]
+fn printf_formats_exponent_form_numbers_exactly() {
+    let context = template_context();
+    assert_eq!(
+        render("{{printf \"%d\" 1e30}}", &context).expect("render"),
+        "1000000000000000000000000000000"
+    );
+    assert_eq!(
+        render("{{printf \"%x\" 1e30}}", &context).expect("render"),
+        "c9f2c9cd04674edea40000000"
+    );
+    assert_eq!(
+        render("{{printf \"%d\" 9007199254740993e0}}", &context).expect("render"),
+        "9007199254740993"
+    );
+    assert_eq!(
+        render("{{printf \"%x\" 9007199254740993e0}}", &context).expect("render"),
+        "20000000000001"
+    );
+
+    let exponent_context: serde_json::Value =
+        serde_json::from_str(r#"{"big": 123456789012345678901234567890e0}"#).expect("json");
+    assert_eq!(
+        render("{{printf \"%d\" .big}}", &exponent_context).expect("render"),
+        "123456789012345678901234567890"
+    );
+    assert_eq!(
+        render("{{printf \"%x\" .big}}", &exponent_context).expect("render"),
+        "18ee90ff6c373e0ee4e3f0ad2"
+    );
+    assert!(render("{{printf \"%d\" 1e2000000}}", &context).is_err());
+}
+
+#[test]
+fn printf_quotes_runes_strings_and_unicode_like_go() {
+    let context = template_context();
+    assert_eq!(
+        render("{{printf \"%q\" \"\\u00a0\"}}", &context).expect("render"),
+        "\"\\u00a0\""
+    );
+    assert_eq!(
+        render("{{printf \"%q\" \"\\u2028\"}}", &context).expect("render"),
+        "\"\\u2028\""
+    );
+    assert_eq!(
+        render("{{printf \"%q\" \"\\u2029\"}}", &context).expect("render"),
+        "\"\\u2029\""
+    );
+    assert_eq!(
+        render("{{printf \"%q\" \"é\"}}", &context).expect("render"),
+        "\"é\""
+    );
+    assert_eq!(
+        render("{{printf \"%q\" 65}}", &context).expect("render"),
+        "'A'"
+    );
+    assert_eq!(
+        render("{{printf \"%q\" 10}}", &context).expect("render"),
+        "'\\n'"
+    );
+    assert!(render("{{printf \"%q\" true}}", &context).is_err());
+    assert!(render("{{printf \"%q\" 1.5}}", &context).is_err());
+    for (template, expected) in [
+        ("{{printf \"%q\" \"\\u200e\"}}", "\"\\u200e\""),
+        ("{{printf \"%q\" \"\\u2060\"}}", "\"\\u2060\""),
+        ("{{printf \"%q\" \"\\u0600\"}}", "\"\\u0600\""),
+        ("{{printf \"%q\" \"\\ue000\"}}", "\"\\ue000\""),
+        ("{{printf \"%q\" \"\\U0010ffff\"}}", "\"\\U0010ffff\""),
+        ("{{printf \"%q\" 4294967296}}", "'�'"),
+        ("{{printf \"%q\" 1114112}}", "'�'"),
+    ] {
+        assert_eq!(
+            render(template, &context).expect("render"),
+            expected,
+            "template {template}"
+        );
+    }
 }
 
 #[test]

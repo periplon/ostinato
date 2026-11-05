@@ -13787,3 +13787,50 @@ command: {
         assert_eq!(actual.stderr, expected.stderr, "{command}");
     }
 }
+
+#[test]
+fn exec_printf_preserves_arbitrary_precision_cue_params() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let db = directory.path().join("db.sqlite");
+    let workflow = directory.path().join("big.cue");
+    let output_file = directory.path().join("rendered.txt");
+    let source = r#"
+package demo
+params: {
+    big: int | *123456789012345678901234567890
+}
+workflow: {
+    name: "big-param"
+    steps: {
+        emit: {
+            kind: "exec"
+            exec: {
+                cmd: ["sh", "-c", "printf '%s' '{{printf \"%d\" params.big}}' > '{OUT}'"]
+            }
+        }
+    }
+}
+"#;
+    write(
+        &workflow,
+        &source.replace("{OUT}", output_file.to_str().expect("output path")),
+    );
+    let output = ost(&[
+        "--db",
+        db.to_str().expect("db"),
+        "--evaluator",
+        "native",
+        "--json",
+        "run",
+        workflow.to_str().expect("workflow"),
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&output_file).expect("rendered output"),
+        "123456789012345678901234567890"
+    );
+}
