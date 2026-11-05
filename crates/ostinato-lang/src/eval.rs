@@ -2360,7 +2360,7 @@ impl<'a> Frame<'a> {
                 if !expr_is_narrowing_source(expr) {
                     continue;
                 }
-                if let Some(value) = evaluated[index].as_ref().and_then(&container)
+                if let Some(value) = evaluated[index].as_ref().and_then(container)
                     && !candidates.contains(&value)
                 {
                     candidates.push(value);
