@@ -77,6 +77,8 @@ disj_listcomp_optional: ({l: [for i in [1] {a: *1 | int, b: a}]} | {l: [{a: stri
 default_cycle: {a: default_cycle.b, b: default_cycle.a} & {b: *1 | int}
 optional_default_cycle: {a: optional_default_cycle.b, b: optional_default_cycle.a} & {b?: *1 | int}
 
+for_selector: {for i in [1] {b: i}, a: for_selector.b}
+
 #A: {bs: [...#B], u: len(bs)}
 #B: {as: [...#A], t: len(as)}
 mutual_lists_x: #A & {bs: [{as: [{}]}]}
@@ -123,6 +125,7 @@ params: {
 	r_disj_listcomp_optional: disj_listcomp_optional
 	r_default_cycle: default_cycle
 	r_optional_default_cycle: optional_default_cycle
+	r_for_selector: for_selector
 	r_mutual: mutual_x
 	r_alias_self: alias_x
 	r_deep_mutual: deep_mutual

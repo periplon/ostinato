@@ -8815,6 +8815,37 @@ x2: {a: x2.b} & {b: 1, b: x2.a}
 }
 
 #[test]
+fn struct_for_comprehension_selector_paths_keep_bindings() {
+    let source = r#"
+package demo
+x1: {for i in [1] {b: i}, a: x1.b}
+x2: {for i in [1, 2] if i > 1 {b: i}, a: x2.b}
+x3: {for k, v in {q: 3} {b: v, "k\(k)": v}, a: x3.b, c: x3.kq}
+x4: {for i in [1] {o: {b: i}}, a: x4.o.b}
+x5: {for i in [1] {b: i}, l: [x5.b]}
+x6: {for i in [2] {b: i}, a: x6.b + 1}
+x7: {for i in [3] {b: i}, a: "\(x7.b)"}
+x8: {for i in [1] {b: i}, c: x8.b, a: x8.c}
+"#;
+    let file = ostinato_lang::parse(source).expect("parse for-comprehension selectors");
+    let json = ostinato_lang::eval_file(&file)
+        .expect("eval for-comprehension selectors")
+        .to_json()
+        .expect("json");
+    assert_eq!(json["x1"], serde_json::json!({"b": 1, "a": 1}));
+    assert_eq!(json["x2"], serde_json::json!({"b": 2, "a": 2}));
+    assert_eq!(
+        json["x3"],
+        serde_json::json!({"b": 3, "kq": 3, "a": 3, "c": 3})
+    );
+    assert_eq!(json["x4"]["a"], 1);
+    assert_eq!(json["x5"]["l"], serde_json::json!([1]));
+    assert_eq!(json["x6"], serde_json::json!({"b": 2, "a": 3}));
+    assert_eq!(json["x7"], serde_json::json!({"b": 3, "a": "3"}));
+    assert_eq!(json["x8"], serde_json::json!({"b": 1, "c": 1, "a": 1}));
+}
+
+#[test]
 fn mutual_cycles_closed_by_defaults_resolve() {
     let source = r#"
 package demo

@@ -3987,16 +3987,29 @@ impl<'a> Frame<'a> {
                         ..PathProjection::default()
                     });
                 }
-                for value in matches {
-                    results.push(self.project_selector_path(
-                        &child,
-                        name,
-                        &value,
-                        segments,
-                        index + 1,
-                        next_injection.as_ref(),
-                        visited,
-                    )?);
+                for (value, bindings) in matches {
+                    if bindings.is_empty() {
+                        results.push(self.project_selector_path(
+                            &child,
+                            name,
+                            &value,
+                            segments,
+                            index + 1,
+                            next_injection.as_ref(),
+                            visited,
+                        )?);
+                    } else {
+                        let binding_frame = Frame::new(&[], Some(&child), bindings)?;
+                        results.push(self.project_selector_path(
+                            &binding_frame,
+                            name,
+                            &value,
+                            segments,
+                            index + 1,
+                            next_injection.as_ref(),
+                            visited,
+                        )?);
+                    }
                 }
                 Ok(merge_non_poisoned(results))
             }
@@ -4884,11 +4897,22 @@ fn optional_field_default(frame: &Frame<'_>, exprs: &[Expr], field: &str) -> Opt
     None
 }
 
+type StructFieldMatch = (Expr, HashMap<String, Value>);
+
 fn struct_field_values(
     frame: &Frame<'_>,
     items: &[StructItem],
     segment: SelectSegment,
-) -> Result<Vec<Expr>, LangError> {
+) -> Result<Vec<StructFieldMatch>, LangError> {
+    struct_field_values_with_bindings(frame, items, segment, &HashMap::new())
+}
+
+fn struct_field_values_with_bindings(
+    frame: &Frame<'_>,
+    items: &[StructItem],
+    segment: SelectSegment,
+    bindings: &HashMap<String, Value>,
+) -> Result<Vec<StructFieldMatch>, LangError> {
     let SelectSegment::Field(name, quoted) = segment else {
         return Ok(Vec::new());
     };
@@ -4918,16 +4942,17 @@ fn struct_field_values(
                     },
                 };
                 if matches && !field.optional {
-                    out.push(field.value.clone());
+                    out.push((field.value.clone(), bindings.clone()));
                 }
             }
             StructItem::If { cond, body, .. } => {
                 let condition = require_bool(frame, &eval_expr(cond, frame)?, Span::default())?;
                 if condition {
-                    out.extend(struct_field_values(
+                    out.extend(struct_field_values_with_bindings(
                         frame,
                         body,
                         SelectSegment::Field(target.clone(), quoted),
+                        bindings,
                     )?);
                 }
             }
@@ -4973,18 +4998,21 @@ fn struct_field_values(
                     }
                 };
                 for (entry_key, entry_value) in entries {
-                    let mut bindings = HashMap::new();
+                    let mut new_bindings = HashMap::new();
                     if let Some(key) = key
                         && let Some(entry_key) = entry_key
                     {
-                        bindings.insert(key.clone(), entry_key);
+                        new_bindings.insert(key.clone(), entry_key);
                     }
-                    bindings.insert(value.clone(), entry_value);
-                    let child = Frame::new(&[], Some(frame), bindings)?;
-                    out.extend(struct_field_values(
+                    new_bindings.insert(value.clone(), entry_value);
+                    let mut child_bindings = bindings.clone();
+                    child_bindings.extend(new_bindings);
+                    let child = Frame::new(&[], Some(frame), child_bindings.clone())?;
+                    out.extend(struct_field_values_with_bindings(
                         &child,
                         body,
                         SelectSegment::Field(target.clone(), quoted),
+                        &child_bindings,
                     )?);
                 }
             }
