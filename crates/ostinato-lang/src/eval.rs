@@ -3904,6 +3904,146 @@ impl<'a> Frame<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn project_struct_field_values(
+        &self,
+        scope: &Frame<'_>,
+        items: &[StructItem],
+        name: &str,
+        segments: &[SelectSegment],
+        index: usize,
+        injection: Option<&Value>,
+        visited: &mut BTreeSet<String>,
+    ) -> Result<Vec<PathProjection>, LangError> {
+        let SelectSegment::Field(target, quoted) = &segments[index] else {
+            return Ok(Vec::new());
+        };
+        let target = if *quoted {
+            crate::ast::encode_string_label(target)
+        } else {
+            target.clone()
+        };
+        let mut out = Vec::new();
+        for item in items {
+            match item {
+                StructItem::Field(field) => {
+                    let matches = match &field.label {
+                        crate::ast::Label::Name(label, _) => *label == target,
+                        crate::ast::Label::Dynamic(expr, _) => match eval_expr(expr, scope) {
+                            Ok(Value::String(value)) => {
+                                crate::ast::encode_string_label(&value) == target
+                            }
+                            Ok(_) => false,
+                            Err(error)
+                                if is_cyclic_reference_error(&error)
+                                    || is_deferrable_incomplete_error(&error) =>
+                            {
+                                false
+                            }
+                            Err(error) => return Err(error),
+                        },
+                    };
+                    if matches && !field.optional {
+                        let field_injection = injection_child(injection, &segments[index]);
+                        out.push(self.project_selector_path(
+                            scope,
+                            name,
+                            &field.value,
+                            segments,
+                            index + 1,
+                            field_injection.as_ref(),
+                            visited,
+                        )?);
+                    }
+                }
+                StructItem::If { cond, body, .. } => {
+                    let condition = require_bool(scope, &eval_expr(cond, scope)?, Span::default())?;
+                    if condition {
+                        let body_frame = Frame::from_static(body, Some(scope), HashMap::new())?;
+                        if let Some(fields) = injection.and_then(concrete_fields) {
+                            body_frame.seed_narrowing_fields(&fields);
+                        }
+                        out.extend(self.project_struct_field_values(
+                            &body_frame,
+                            body,
+                            name,
+                            segments,
+                            index,
+                            injection,
+                            visited,
+                        )?);
+                    }
+                }
+                StructItem::For {
+                    key,
+                    value,
+                    source,
+                    body,
+                    ..
+                } => {
+                    let source = eval_expr(source, scope)?.concretize().clone();
+                    let entries: Vec<(Option<Value>, Value)> = match source {
+                        Value::Struct(map) | Value::Definition { fields: map, .. } => map
+                            .into_iter()
+                            .filter(|(key, _)| !is_hidden_key(key))
+                            .map(|(key, value)| {
+                                (
+                                    Some(Value::String(display_field_name(&key).into_owned())),
+                                    value,
+                                )
+                            })
+                            .collect(),
+                        Value::List(values) | Value::OpenListPrefix(values, _) => values
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, value)| {
+                                (
+                                    Some(Value::Int(i64::try_from(index).unwrap_or(i64::MAX))),
+                                    value,
+                                )
+                            })
+                            .collect(),
+                        Value::OpenList(_) => Vec::new(),
+                        other => {
+                            return Err(LangError::eval(
+                                1,
+                                1,
+                                format!(
+                                    "`for ... in` requires a struct or list, found {}",
+                                    other.type_name()
+                                ),
+                            ));
+                        }
+                    };
+                    for (entry_key, entry_value) in entries {
+                        let mut bindings = HashMap::new();
+                        if let Some(key) = key
+                            && let Some(entry_key) = entry_key
+                        {
+                            bindings.insert(key.clone(), entry_key);
+                        }
+                        bindings.insert(value.clone(), entry_value);
+                        let body_frame = Frame::from_static(body, Some(scope), bindings)?;
+                        if let Some(fields) = injection.and_then(concrete_fields) {
+                            body_frame.seed_narrowing_fields(&fields);
+                        }
+                        out.extend(self.project_struct_field_values(
+                            &body_frame,
+                            body,
+                            name,
+                            segments,
+                            index,
+                            injection,
+                            visited,
+                        )?);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn project_selector_path(
         &self,
         scope: &Frame<'_>,
@@ -3970,10 +4110,6 @@ impl<'a> Frame<'a> {
             }
             Expr::Struct(items, _) => {
                 let child = Frame::from_static(items, Some(scope), HashMap::new())?;
-                let matches = struct_field_values(&child, items, segments[index].clone())?;
-                if matches.is_empty() {
-                    return Ok(PathProjection::default());
-                }
                 if let Some(fields) = injection.and_then(concrete_fields) {
                     child.seed_narrowing_fields(&fields);
                 }
@@ -3987,30 +4123,9 @@ impl<'a> Frame<'a> {
                         ..PathProjection::default()
                     });
                 }
-                for (value, bindings) in matches {
-                    if bindings.is_empty() {
-                        results.push(self.project_selector_path(
-                            &child,
-                            name,
-                            &value,
-                            segments,
-                            index + 1,
-                            next_injection.as_ref(),
-                            visited,
-                        )?);
-                    } else {
-                        let binding_frame = Frame::new(&[], Some(&child), bindings)?;
-                        results.push(self.project_selector_path(
-                            &binding_frame,
-                            name,
-                            &value,
-                            segments,
-                            index + 1,
-                            next_injection.as_ref(),
-                            visited,
-                        )?);
-                    }
-                }
+                results.extend(self.project_struct_field_values(
+                    &child, items, name, segments, index, injection, visited,
+                )?);
                 Ok(merge_non_poisoned(results))
             }
             Expr::Ident(target, _) => {
@@ -4895,131 +5010,6 @@ fn optional_field_default(frame: &Frame<'_>, exprs: &[Expr], field: &str) -> Opt
         }
     }
     None
-}
-
-type StructFieldMatch = (Expr, HashMap<String, Value>);
-
-fn struct_field_values(
-    frame: &Frame<'_>,
-    items: &[StructItem],
-    segment: SelectSegment,
-) -> Result<Vec<StructFieldMatch>, LangError> {
-    struct_field_values_with_bindings(frame, items, segment, &HashMap::new())
-}
-
-fn struct_field_values_with_bindings(
-    frame: &Frame<'_>,
-    items: &[StructItem],
-    segment: SelectSegment,
-    bindings: &HashMap<String, Value>,
-) -> Result<Vec<StructFieldMatch>, LangError> {
-    let SelectSegment::Field(name, quoted) = segment else {
-        return Ok(Vec::new());
-    };
-    let target = if quoted {
-        crate::ast::encode_string_label(&name)
-    } else {
-        name
-    };
-    let mut out = Vec::new();
-    for item in items {
-        match item {
-            StructItem::Field(field) => {
-                let matches = match &field.label {
-                    crate::ast::Label::Name(label, _) => *label == target,
-                    crate::ast::Label::Dynamic(expr, _) => match eval_expr(expr, frame) {
-                        Ok(Value::String(value)) => {
-                            crate::ast::encode_string_label(&value) == target
-                        }
-                        Ok(_) => false,
-                        Err(error)
-                            if is_cyclic_reference_error(&error)
-                                || is_deferrable_incomplete_error(&error) =>
-                        {
-                            false
-                        }
-                        Err(error) => return Err(error),
-                    },
-                };
-                if matches && !field.optional {
-                    out.push((field.value.clone(), bindings.clone()));
-                }
-            }
-            StructItem::If { cond, body, .. } => {
-                let condition = require_bool(frame, &eval_expr(cond, frame)?, Span::default())?;
-                if condition {
-                    out.extend(struct_field_values_with_bindings(
-                        frame,
-                        body,
-                        SelectSegment::Field(target.clone(), quoted),
-                        bindings,
-                    )?);
-                }
-            }
-            StructItem::For {
-                key,
-                value,
-                source,
-                body,
-                ..
-            } => {
-                let source = eval_expr(source, frame)?.concretize().clone();
-                let entries: Vec<(Option<Value>, Value)> = match source {
-                    Value::Struct(map) | Value::Definition { fields: map, .. } => map
-                        .into_iter()
-                        .filter(|(key, _)| !is_hidden_key(key))
-                        .map(|(key, value)| {
-                            (
-                                Some(Value::String(display_field_name(&key).into_owned())),
-                                value,
-                            )
-                        })
-                        .collect(),
-                    Value::List(values) | Value::OpenListPrefix(values, _) => values
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, value)| {
-                            (
-                                Some(Value::Int(i64::try_from(index).unwrap_or(i64::MAX))),
-                                value,
-                            )
-                        })
-                        .collect(),
-                    Value::OpenList(_) => Vec::new(),
-                    other => {
-                        return Err(LangError::eval(
-                            1,
-                            1,
-                            format!(
-                                "`for ... in` requires a struct or list, found {}",
-                                other.type_name()
-                            ),
-                        ));
-                    }
-                };
-                for (entry_key, entry_value) in entries {
-                    let mut new_bindings = HashMap::new();
-                    if let Some(key) = key
-                        && let Some(entry_key) = entry_key
-                    {
-                        new_bindings.insert(key.clone(), entry_key);
-                    }
-                    new_bindings.insert(value.clone(), entry_value);
-                    let mut child_bindings = bindings.clone();
-                    child_bindings.extend(new_bindings);
-                    let child = Frame::new(&[], Some(frame), child_bindings.clone())?;
-                    out.extend(struct_field_values_with_bindings(
-                        &child,
-                        body,
-                        SelectSegment::Field(target.clone(), quoted),
-                        &child_bindings,
-                    )?);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(out)
 }
 
 fn project_value_path(value: &Value, segments: &[SelectSegment]) -> Option<Value> {

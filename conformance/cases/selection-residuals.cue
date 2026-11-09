@@ -78,6 +78,7 @@ default_cycle: {a: default_cycle.b, b: default_cycle.a} & {b: *1 | int}
 optional_default_cycle: {a: optional_default_cycle.b, b: optional_default_cycle.a} & {b?: *1 | int}
 
 for_selector: {for i in [1] {b: i}, a: for_selector.b}
+for_selector_sibling: {for i in [1] {b: i, c: b + 1}, a: for_selector_sibling.c}
 
 #A: {bs: [...#B], u: len(bs)}
 #B: {as: [...#A], t: len(as)}
@@ -126,6 +127,7 @@ params: {
 	r_default_cycle: default_cycle
 	r_optional_default_cycle: optional_default_cycle
 	r_for_selector: for_selector
+	r_for_selector_sibling: for_selector_sibling
 	r_mutual: mutual_x
 	r_alias_self: alias_x
 	r_deep_mutual: deep_mutual

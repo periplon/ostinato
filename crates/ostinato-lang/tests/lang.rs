@@ -8826,6 +8826,10 @@ x5: {for i in [1] {b: i}, l: [x5.b]}
 x6: {for i in [2] {b: i}, a: x6.b + 1}
 x7: {for i in [3] {b: i}, a: "\(x7.b)"}
 x8: {for i in [1] {b: i}, c: x8.b, a: x8.c}
+sib: {for i in [1] {b: i, c: b + 1}, a: sib.c}
+sib_if: {if true {b: 1, c: b + 1}, a: sib_if.c}
+sib_filtered: {for i in [1, 2] if i > 1 {b: i, c: b + 1}, a: sib_filtered.c}
+sib_nested: {for i in [1] {o: {b: i, c: b + 1}}, a: sib_nested.o.c}
 "#;
     let file = ostinato_lang::parse(source).expect("parse for-comprehension selectors");
     let json = ostinato_lang::eval_file(&file)
@@ -8843,6 +8847,14 @@ x8: {for i in [1] {b: i}, c: x8.b, a: x8.c}
     assert_eq!(json["x6"], serde_json::json!({"b": 2, "a": 3}));
     assert_eq!(json["x7"], serde_json::json!({"b": 3, "a": "3"}));
     assert_eq!(json["x8"], serde_json::json!({"b": 1, "c": 1, "a": 1}));
+    assert_eq!(json["sib"], serde_json::json!({"b": 1, "c": 2, "a": 2}));
+    assert_eq!(json["sib_if"], serde_json::json!({"b": 1, "c": 2, "a": 2}));
+    assert_eq!(
+        json["sib_filtered"],
+        serde_json::json!({"b": 2, "c": 3, "a": 3})
+    );
+    assert_eq!(json["sib_nested"]["o"], serde_json::json!({"b": 1, "c": 2}));
+    assert_eq!(json["sib_nested"]["a"], 2);
 }
 
 #[test]

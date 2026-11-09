@@ -72,7 +72,8 @@ workflow outside the Rust surface has a supported escape hatch.
   `x.l[0].o.b`, quoted indices and open-list prefixes), concrete optional
   operands and comprehension-generated fields (`if`/`for`/list
   comprehensions, including selector paths through list-comprehension
-  elements) are narrowed before dependent fields are recomputed.
+  elements and sibling fields declared in the same comprehension body) are
+  narrowed before dependent fields are recomputed.
   Self-selection combined with disjunction/default narrowing recomputes
   dependents from statically injectable narrowed operands; a soundness guard
   re-evaluates local shortcuts against the full declaration projection and
