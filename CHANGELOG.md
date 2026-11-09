@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.49.0
+
+Closes the remaining implementable residuals from the v0.48.0 reviews and hardens the inherent limits.
+
+- **Selection/narrowing**: nested cross-dependent split operands, nested selector self-selection, self-selecting non-literal split bases, disjunction-alternative dependent recomputation, mutual field-mediated let cycles, and fast mutually-recursive open-list re-materialization. Selector projection now narrows through list indices, list/open-list comprehensions and optional values; optional values narrow only fields required by another operand (optional-vs-optional stays omitted), and unprovable cases fail closed rather than emitting a stale default.
+- **Tool commands**: command-target alias chains (`command: c: pN`), plain-field interpolation depths, pending-output producer side-effect ordering (invalid operands run-then-fail like CUE), module-backed command-local and cross-target reads, and index-selector/if/for pending reads.
+- **Inherent limits**: signed-zero arithmetic for integer and float kinds across JSON/YAML/interpolation, typed colliding-raw-label export errors, HTTP request/response-trailer and `tool/http.Serve` typed fail-closed behavior, signed-zero-aware unified representations, and a documented platform-independent Go-f64 model.
+- **Security**: `rusqlite 0.41` / `libsqlite3-sys 0.39.1` (SQLite 3.54.1) fixes RUSTSEC-2026-0459; MSRV is now Rust 1.89.
+- `docs/SCOPE.md` records the precise remaining residuals (composed-definition bare identifiers, some comprehension/parser forms, multi-element optional-disjunction lists, inline optional materialization without a required field, lone default markers, non-static let bases, and platform-scoped f64 last-bit cases).
+
+- 728 tests; fmt/clippy/conformance/audit green.
+
+## v0.48.0
 ## v0.48.0
 
 Remaining category gaps closed after the v0.47.0 reviews.

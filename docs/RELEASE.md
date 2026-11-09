@@ -12,7 +12,16 @@ Branch protection on `main` requires both `fmt / clippy / test` and
 `dependency audit` with strict (up-to-date) checks. Auto-merge is enabled only
 for non-draft PRs and therefore waits for these checks before squashing.
 
+## v0.49.0
+
+- Close the remaining selection/narrowing and tool-command residuals, harden
+  signed zero, label collisions, HTTP trailers/Serve and f64 policy, and patch
+  the bundled-SQLite advisory (rusqlite 0.41, MSRV 1.89).
+- Precise residuals are recorded in `docs/SCOPE.md`.
+- 728 tests; fmt/clippy/conformance/audit green.
+
 ## v0.48.0
+
 
 - Close the remaining selection/narrowing, numeric-fidelity and tool-command
   category gaps: recursive/optional/open-list materialization, 34-digit decimal
