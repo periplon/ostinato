@@ -60,7 +60,7 @@ CUE source ──► Rust CUE evaluator (default) ──► typed workflow spec 
 
 Requirements:
 
-- Rust stable (edition 2024; `rust-version = 1.88`)
+- Rust stable (edition 2024; `rust-version = 1.89`)
 - **Optional**: official CUE **>= v0.17.1** for `--evaluator cue` and conformance tests
 
 ```sh
