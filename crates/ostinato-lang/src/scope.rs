@@ -60,6 +60,15 @@ fn is_field_node(name: &str) -> bool {
     name.starts_with('\u{2}')
 }
 
+fn selector_root_ident(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Ident(name, _) => Some(name),
+        Expr::Select(base, _, _, _) | Expr::Index(base, _, _) => selector_root_ident(base),
+        Expr::Paren(inner, _) | Expr::Default(inner, _) => selector_root_ident(inner),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Scalar {
     Int(i64),
@@ -219,6 +228,10 @@ struct AliasCtx {
     scopes: Vec<AliasScope>,
     aliases: Vec<AliasInfo>,
     let_edges: Vec<((usize, String), (usize, String))>,
+    /// Edges whose reference is a selector base (`X.b` / `X["b"]`). A
+    /// definition cycle that only uses such aliases can resolve at evaluation
+    /// time; a bare reference (`X`) remains a structural cycle.
+    selector_let_edges: HashSet<((usize, String), (usize, String))>,
     import_aliases: HashSet<String>,
     import_used: HashSet<String>,
     /// Scopes materialized while walking a `let` value. Cycles that pass
@@ -439,6 +452,33 @@ impl AliasCtx {
             }
         }
         false
+    }
+
+    fn record_selector_let_edge(
+        &mut self,
+        base: &Expr,
+        chain: &[usize],
+        shadowed: &HashSet<String>,
+        from: &(usize, String),
+    ) {
+        let Some(root) = selector_root_ident(base) else {
+            return;
+        };
+        if shadowed.contains(root) {
+            return;
+        }
+        for scope in chain.iter().rev() {
+            if self.scopes[*scope].lets.contains(root) {
+                self.selector_let_edges
+                    .insert((from.clone(), (*scope, root.to_owned())));
+                return;
+            }
+            if self.scopes[*scope].required_fields.contains(root)
+                || self.scopes[*scope].aliases.contains_key(root)
+            {
+                return;
+            }
+        }
     }
 
     fn scope(
@@ -721,6 +761,9 @@ impl AliasCtx {
             }
             Expr::Bound(_, inner, _) => self.expr(inner, chain, shadowed, from)?,
             Expr::Select(base, _, _, _) => {
+                if let Some(from) = from {
+                    self.record_selector_let_edge(base, chain, shadowed, from);
+                }
                 if !matches!(&**base, Expr::Ident(name, _) if name == "params")
                     || self.import_aliases.contains("params")
                 {
@@ -728,6 +771,9 @@ impl AliasCtx {
                 }
             }
             Expr::Index(base, index, _) => {
+                if let Some(from) = from {
+                    self.record_selector_let_edge(base, chain, shadowed, from);
+                }
                 self.expr(base, chain, shadowed, from)?;
                 self.expr(index, chain, shadowed, from)?;
             }
@@ -882,6 +928,7 @@ pub fn validate_imports(file: &File) -> Result<(), LangError> {
         scopes: Vec::new(),
         aliases: Vec::new(),
         let_edges: Vec::new(),
+        selector_let_edges: HashSet::new(),
         import_aliases,
         import_used: HashSet::new(),
         let_value_scopes: HashSet::new(),
@@ -930,6 +977,7 @@ pub fn validate_aliases(items: &[StructItem], import_aliases: &[String]) -> Resu
         scopes: Vec::new(),
         aliases: Vec::new(),
         let_edges: Vec::new(),
+        selector_let_edges: HashSet::new(),
         import_aliases: import_aliases.iter().cloned().collect(),
         import_used: HashSet::new(),
         let_value_scopes: HashSet::new(),
@@ -1120,17 +1168,35 @@ fn let_cycle_defers_to_evaluation(cycle: &[(usize, String)], ctx: &AliasCtx) -> 
     if !has_let || !has_field {
         return false;
     }
-    let mut defers = true;
+    let has_definition = cycle
+        .iter()
+        .any(|(_, name)| is_field_node(name) && name.trim_start_matches('\u{2}').starts_with('#'));
+    if has_definition {
+        // A definition cycle that references its let alias through a selector
+        // (`X.b`) is a self-selection and resolves during evaluation. A bare
+        // alias reference (`X`) is a structural cycle and stays static.
+        for (index, from) in cycle.iter().enumerate() {
+            let to = &cycle[(index + 1) % cycle.len()];
+            if is_field_node(&from.1)
+                && !is_field_node(&to.1)
+                && !ctx.selector_let_edges.contains(&(from.clone(), to.clone()))
+            {
+                return false;
+            }
+        }
+    }
+    let mut defers = false;
     for (scope, name) in cycle {
         if !is_field_node(name) {
             continue;
         }
-        // Definition cycles (and fields declared inside a `let` value) are
-        // static errors; CUE reports structural cycles for these.
-        if name.trim_start_matches('\u{2}').starts_with('#') || ctx.let_value_scopes.contains(scope)
-        {
-            defers = false;
-            break;
+        // A cycle routed through a field declared inside a `let` value is
+        // only resolvable when the same cycle also reaches a field outside
+        // that value (for example `let base = {c: x.a}; x: {a: x.b} & base`).
+        // Purely let-internal structure (`let A = {x: B}; let B = A`) remains
+        // a static error.
+        if !ctx.let_value_scopes.contains(scope) {
+            defers = true;
         }
     }
     defers

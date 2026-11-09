@@ -16,10 +16,14 @@ workflow outside the Rust surface has a supported escape hatch.
 - imports: `strings`, `list`; local modules via `cue.mod`; relative imports;
   module path comments and `@v` suffixes;
 - file-scoped `let`, lazy/forward bindings; direct/indirect `let` cycles are
-  rejected, while cycles routed through a plain field (`let X = f, f: X`)
-  remain incomplete values like CUE. Split/composed fields and transparent
-  let aliases (for example `let X = f; f: {a: X.b} & {b: 1}`) resolve like
-  CUE; composite/structural cycles remain errors as in CUE;
+  rejected, while cycles routed through plain fields (`let X = f, f: X`, and
+  mutual let→field→let chains such as `let X = f`, `let Y = g`, `f`/`g`
+  selecting each other) remain incomplete values or resolve field by field
+  when the cycle reaches a concrete field. Split/composed fields and
+  transparent let aliases (for example
+  `let X = f; f: {a: X.b} & {b: 1}`) resolve like CUE; structural
+  cross-field cycles fail closed (see the residuals table); composite/
+  structural cycles remain errors as in CUE;
 - `for`/`if` struct comprehensions, clause sequences (`for ... if ...`,
   nested `for`), dynamic labels, list comprehensions;
 - nested field shorthand, string and bytes literal field labels, **closed
@@ -43,24 +47,41 @@ workflow outside the Rust surface has a supported escape hatch.
   optional fields, type constraints;
 - `[...T}` and `[x, ...T]` open lists with prefix/element constraints;
 - recursive definition materialization through optional fields and lists
-  (`#Tree: {children?: [...#Tree]}`, mutually recursive definitions);
+  (`#Tree: {children?: [...#Tree]}`, mutually recursive definitions),
+  including mutual open-list re-materialization where a second value reuses a
+  selector such as `z: #A & {bs: x.bs}` without re-expanding the subtree;
 - string and bytes interpolation, including nested quoted expressions and
   nested """..."""/'''...''' literals inside interpolation;
 - multiline strings (`"""..."""`) with CUE opening/closing rules, dedent, CR
   stripping and interpolation continuations;
 - self-selection of a definition's or struct field's own fields
-  (`#D: {a: #D.b, b: 1}`, `x: {a: x.b, b: 1}`), including nested and composed
-  definitions, split composed non-definition literals
-  (`x: {a: x.b} & {b: 1}`, non-literal bases that do not themselves
-  self-select (`let base`/field bases), reversed operands, `x: {a: x.a} & {a: 1}`, quoted and computed labels,
-  top-level cross-dependent and 3-operand chains such as
+  (`#D: {a: #D.b, b: 1}`, `x: {a: x.b, b: 1}`), including nested selectors
+  (`x: {o: {a: x.o.b, b: 1}}`, `#D: {o: {a: #D.o.b, b: 1}}`), nested and
+  composed definitions, split composed non-definition literals
+  (`x: {a: x.b} & {b: 1}`, self-selecting non-literal `let`/field bases such
+  as `let base = {b: 1, c: x.a}; x: {a: x.b} & base`, nested/list forms,
+  reversed operands, `x: {a: x.a} & {a: 1}`, quoted and computed labels,
+  top-level and nested cross-dependent chains, and 3-operand chains such as
   `x: {a: x.b} & {b: 1, c: x.a}`) and fields materialized by the same or a
   nested comprehension body
   (`#M: {b?: int, if true {b: 5, y: #M.b}}`); comprehension-generated
   labels remain reachable through selectors (`x.b`) but are not bare
-  identifiers, matching CUE (`x: {if true {b: 1}, a: b}` is rejected);
+  identifiers, matching CUE (`x: {if true {b: 1}, a: b}` is rejected).
+  Selector paths through list indices with required optional leaves
+  (`x.l[0].b`, `x.l[0][0].b`,
+  `x.l[0].o.b`, quoted indices and open-list prefixes), concrete optional
+  operands and comprehension-generated fields (`if`/`for`/list
+  comprehensions, including selector paths through list-comprehension
+  elements and sibling fields declared in the same comprehension body) are
+  narrowed before dependent fields are recomputed.
+  Self-selection combined with disjunction/default narrowing recomputes
+  dependents from statically injectable narrowed operands; a soundness guard
+  re-evaluates local shortcuts against the full declaration projection and
+  evaluation fails closed on disagreement, while values that cannot be
+  captured before path projection also fail closed (see the residuals
+  table);
 - comprehension-generated definitions (`#D: {if true {#I: 3}, a: #D.#I}`);
-- default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`), including through definition-valued definitions (`#B: #A & {n: 4}`), recursive definitions (dependents recomputed at every level, including optional/open-list recursive children and required defaulted open lists) and shadowing nested same-name definitions, plus generated declaration merges (`if true {#P: {env: "prod"}}` recomputes `#P.greeting`);
+- default narrowing with dependent-field recomputation (`{x: int | *1, y: x + 1} & {x: 3}`, `#A & {n: 6}`), including through definition-valued definitions (`#B: #A & {n: 4}`), recursive definitions (dependents recomputed at every level, including optional/open-list recursive children and required defaulted open lists), disjunction alternatives (`({a: *1|int, b: a} | {a: string}) & {a: 3}` recomputes `b: 3`, including nested/list dependents, either alternative order, let/definition-valued alternatives and concrete optional values), concrete optional operand narrowing when another operand requires the field (`{a: *1|int, b: a} & {a?: 5}` recomputes `b: 5`; conflicting `b?: 7` rejects; optional-vs-optional values stay omitted and cannot legalize references to them) and shadowing nested same-name definitions, plus generated declaration merges (`if true {#P: {env: "prod"}}` recomputes `#P.greeting`);
 - optional/open metadata on non-definition struct literals (`base: {b?: int}; #D: base`, `{c: 1, ...}`), including nested/pattern/list forms;
 - arbitrary-precision integer *literals* and arithmetic in CUE's
   34-significant-digit decimal context (add/subtract/multiply round results
@@ -146,14 +167,15 @@ workflow outside the Rust surface has a supported escape hatch.
 | Zero-result exponent representation | `1e-10 - 1e-10` keeps CUE's exponent form in Ostinato (`0E-10`), while the oracle exports an expanded decimal (`0.0000000000`). The values compare equal; only the chosen zero spelling differs |
 | Go float64 last-bit parity | The exposed float64-backed `math` functions are pinned to the Go/arm64 FMA model (`ostinato_lang::GO_F64_MODEL == "arm64-go-fma"`): the port uses Rust's fused `f64::mul_add`, so Ostinato's own results are platform-independent. This is not a claim of universal oracle parity: Go only fuses on arm64, so a Go/amd64 oracle can differ in the last bit, and rare `math.Asinh`, `math.Acosh` or `math.Atanh` inputs can still differ by 1 ulp (for example `math.Atanh(-0.1731958024477226)`, `math.Acosh(204534.80525878677)`). `Asin`, `Acos` and `Atan2` are covered by the oracle fuzz and match |
 | Bare identifiers across operands of a composed definition | `#D: {a: 1} & {b: a}` is accepted although CUE rejects the bare reference to a sibling operand's field; with an enclosing `a: 9`, `b` resolves to `1` instead of CUE's `9`. Non-definition composition, selectors and definition-valued narrowing match CUE |
-| Nested cross-dependent split operands | `x: {o: {a: x.o.b}} & {o: {b: 1, c: x.o.a}}` remains cyclic although CUE resolves it; top-level operands (including multi-dependent and three-operand chains) match CUE |
-| Nested selector self-selection | `x: {o: {a: x.o.b, b: 1}}` and `#D: {o: {a: #D.o.b, b: 1}}` remain cyclic although CUE resolves them; flat, composed and split self-selection match CUE |
-| Mutually recursive open-list re-materialization | The mutually recursive `#A`/`#B` open-list shape with `z: #A & {bs: x.bs}` (corpus `rec_mutual_lists2`) still exceeds 60 s; the one-way mutually recursive open-list shape matches CUE |
-| Mutual field-mediated let cycles | Two lets routed through separate fields (`let X = f`, `let Y = g`, `f`/`g` selecting each other) remain unsupported; single-let field cycles, transparent aliases and split forms match CUE |
-| Self-selecting non-literal split bases | `let base = {b: 1, c: x.a}; x: {a: x.b} & base` (and the field-base variant) remains cyclic although CUE resolves it; literal operands, transparent let aliases and top-level cross-dependent operands match CUE |
-| Disjunction-alternative dependent recomputation | `({a: *1|int, b: a} | {a: string}) & {a: 3}` leaves `b` at `1` although CUE recomputes `b: 3` |
 | Pending-output conditions and non-scalar interpolation | `if run.success` rejects before the producer runs on both implementations, as does whole-task struct interpolation (`\(run)`). Literal list/struct interpolation over a pending read (`\([run.stdout])`, `\({x: run.stdout})`) rejects before the producer in CUE, while Ostinato schedules the producer and then rejects; exit codes match, with Ostinato's own diagnostic text. Scalar string/number operations (including string/bytes concatenation and repetition such as `run.stdout * 2` and `r.response.body * 2`), unary operators, comparisons, list indexing/comprehensions, `len`/`strings`/`list.Concat`/`math`/`regexp` helpers and pending values used as task inputs are deferred and match CUE |
 | Sibling `cli.Print` output order at even alias depths | Two sibling Print tasks reading the same even-depth alias chain produce the same exit code and execution count, but CUE's relative `S`/`R` stdout order is scheduler-dependent and varies between runs at some depths. Ostinato emits a deterministic task-name order |
+| Self-selection narrowing with non-static operands | When a narrowed value cannot be captured before selector-path projection (for example a let/alias chain that is not statically evaluable), Ostinato rejects the evaluation instead of emitting the operands' un-narrowed default. CUE may resolve the same program; no silent value is produced. Open-list-form list-comprehension self-selection also fails closed |
+| Self-selecting non-literal let base with a dependent field | `let base = {a: 2, b: x.a}; x: {a: x.b} & base` and the defaulted `{a: *2 \| int, b: x.a}` form are rejected although CUE yields `{a: 2, b: 2}`. Literal bases without a self-dependent field (`a: 2` alone) and self-selecting non-literal bases whose dependents resolve match CUE |
+| Inline optional materialization without a required field | `x: {a?: int, b: a} & {a: 5}` is rejected although CUE materializes the optional `a` from the external concrete unification and yields `b: 5`. Definition-backed optional materialization and optional fields required by another operand match CUE |
+| Let-mediated self-default cycles | A `let` whose scalar body reads the field/path being defined (`let X = x.a + 0; x: {a: X + 1} & {a: *2 \| int}`) fails closed, including nested/list/`#D` forms. CUE may resolve the default variant; no un-narrowed or cached let value is emitted |
+| Cross-field mutual selection cycles | `x: {a: y.b, b: 1}; y: {b: x.a}` and the equivalent two-let form are rejected by Ostinato, while CUE reports an incomplete value. The same cycles that reach a concrete field (`g: {b: X.b}`) resolve like CUE; three-field cycles also fail closed |
+| Optional narrowing in multi-element disjunction lists and selector forms | Single-element nested/list/list-of-list/list-comprehension/open-list/let/definition alternatives recompute dependents from concrete optional values. Multi-element disjunction lists fail closed (`cannot unify lists of different lengths`) where CUE resolves each element, and selector forms over such alternatives fail closed rather than emitting a stale default |
+| Optional field referencing a comprehension-generated definition | `x: {if true {#I: 3}, a?: #I}` exports `x: {}` although CUE rejects the optional reference with `reference "#I" not found`. Non-optional references to generated definitions (`a: #I`) match CUE; this row covers the optional-constraint path only |
 | Non-chunked `Transfer-Encoding` | CUE/Go rejects `Transfer-Encoding: identity` and `Transfer-Encoding: gzip` as unsupported transport encodings; Ostinato accepts the response body |
 | Tool packages beyond `tool/exec.Run`/`tool/cli.Print`/`tool/file.Append`/`Create`/`tool/os.Getenv`/`Environ` | `ostinato cmd` runs `*_tool.cue` tasks with those packages, including `stdout`/`stderr`/`success` injection and consumption of non-stdout outputs; `tool/os.Getenv`/`Environ` apply the `Value: bool \| number \| *string \| null` schema (bounds are intersected) and CUE scalar parsing, resolving schema defaults through local, cross-file and imported references plus composed task/command aliases; imported struct-valued env bases are expanded, and imported command aliases are expanded when their `tool/os` defaults are unambiguous (ambiguous defaults fail closed); command evaluation prunes the package AST to the selected command (and its referenced commands), so unrelated command bodies cannot poison it; `$usage`/`$short`/`$long` help metadata (with doc-comment fallback), multi-instance `cue cmd <name> [inputs...]` and `@cmd` attribute handling match CUE; `tool/http.Do`/`Get`/`Post`/`Put`/`Delete` execute blocking HTTP with method/url, `followRedirects`, `tls.verify`/`caCert` (bundled rustls roots), request body/header and response status/statusCode/body/header injection over HTTP/1.1 and, with ALPN over TLS, HTTP/2; `response.status` uses the client canonical reason phrase rather than CUE's raw server reason phrase (for example a non-standard `200 Weird Phrase` becomes `200 OK`), `Content-Encoding: gzip` responses are decompressed automatically like CUE's Go client, and non-UTF-8 bodies follow Go `strings.ToValidUTF8` semantics (each maximal invalid run becomes one U+FFFD). The blocking `reqwest` 0.12 client exposes no trailer API, so a non-empty `request.trailer` fails closed with a typed error and a response that declares `Trailer:` fails closed with a typed "response trailers are not supported" error rather than returning an empty map (trailers sent without a `Trailer:` declaration are not observable by reqwest and remain a documented residual); `tool/http.Serve` is a long-running service task that `cue cmd` does not terminate (the oracle hangs), so it fails closed with an explicit "long-running service task not supported by the CLI runner" error instead of a generic unknown-task error; other task packages remain unimplemented |
 | Arbitrary CUE packages with package-level patterns | Oracle territory |
@@ -186,6 +208,8 @@ rejects:
   This extension is covered by
   `conformance/tool_cases/selector-let-injection` (marked `extension`) and the
   `tool_command_let_selector_injection_is_an_ostinato_extension` e2e test.
+
+- **Lone default markers.** `y: {a: *3}` is accepted and exports `a: 3`; CUE rejects the preference marker outside a disjunction. Defaults inside a disjunction (`a: *3 | int`) match CUE.
 
 ## What this means
 
